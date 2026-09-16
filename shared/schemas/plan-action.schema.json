@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zhitu.local/schemas/plan-action.schema.json",
+  "title": "PlanAction",
+  "description": "计划中的最小可执行单元。用户实际勾选、计时、复盘的对象。",
+  "type": "object",
+  "required": ["id", "plan_node_id", "title", "type", "status"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "全局唯一 ID"
+    },
+    "plan_node_id": {
+      "type": "string",
+      "description": "所属计划节点,对应 plan-node.schema.json 的 id"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 2000,
+      "description": "可选的补充说明,通常由 Agent 生成"
+    },
+    "type": {
+      "type": "string",
+      "enum": ["task", "habit", "learning", "reflection"],
+      "description": "task=一次性任务,habit=需重复的习惯,learning=学习类,reflection=复盘类"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["pending", "in_progress", "done", "skipped"],
+      "default": "pending"
+    },
+    "recurrence": {
+      "type": ["object", "null"],
+      "description": "habit 类型的重复规则;其它类型为 null",
+      "required": ["rule"],
+      "additionalProperties": false,
+      "properties": {
+        "rule": {
+          "type": "string",
+          "enum": ["daily", "weekly", "monthly"]
+        },
+        "times_per_period": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "scheduled_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "计划执行时间"
+    },
+    "estimate_minutes": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "maximum": 1440
+    },
+    "completed_at": {
+      "type": ["string", "null"],
+      "format": "date-time"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}
