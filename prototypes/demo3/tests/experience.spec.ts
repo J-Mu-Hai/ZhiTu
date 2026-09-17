@@ -1,0 +1,83 @@
+import { test, expect } from '@playwright/test';
+
+test('recursive spaces keep nodes and files attached to their parent', async ({page})=>{
+  const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));
+  await page.goto('/workbench');
+  await expect(page.getByRole('tab', { name: '时间线', exact: true })).toBeVisible();
+  await page.locator('.react-flow__node[data-id="research"]').dblclick({delay:100});
+  await expect(page.locator('.space-breadcrumb')).toContainText('科研能力');
+  await expect(page.locator('.react-flow__node[data-id="research"] .goal')).toBeVisible();
+  await page.getByRole('button',{name:'进入联系导师空间',exact:true}).click();
+  await page.getByRole('button',{name:'新建节点',exact:true}).click();
+  await page.getByLabel('节点名称').fill('整理实验室资料');
+  await page.getByRole('button',{name:'创建节点',exact:true}).click();
+  await expect(page.getByRole('button',{name:'进入整理实验室资料空间'})).toBeVisible();
+  await page.getByRole('button',{name:'进入整理实验室资料空间'}).click();
+  await page.getByRole('button',{name:'新建节点',exact:true}).click();
+  await page.getByLabel('节点名称').fill('阅读导师论文');
+  await page.getByRole('button',{name:'创建节点',exact:true}).click();
+  await page.getByRole('button',{name:/空间文件/}).click();
+  await page.getByLabel('添加空间文件').setInputFiles({name:'research-notes.md',mimeType:'text/markdown',buffer:Buffer.from('导师方向：大模型与自然语言处理')});
+  await expect(page.getByRole('button',{name:'预览 research-notes.md'})).toBeVisible();
+  await page.getByRole('button',{name:'预览 research-notes.md'}).click();
+  await expect(page.locator('.file-preview')).toContainText('大模型与自然语言处理');
+  await page.getByRole('button',{name:'关闭弹窗'}).last().click();
+  await page.getByRole('button',{name:'关闭弹窗'}).click();
+  await page.screenshot({path:'artifacts/nested-space.png'});
+  await page.getByRole('tab',{name:'任务',exact:true}).click();
+  await expect(page.locator('.task-detail')).toContainText(['整理实验室资料','阅读导师论文']);
+  await page.getByRole('tab',{name:'路径',exact:true}).click();
+  await page.getByRole('button',{name:'返回上级空间'}).click();
+  await expect(page.locator('.space-breadcrumb')).toContainText('联系导师');
+  await page.getByRole('button',{name:/空间文件/}).click();
+  await expect(page.locator('.file-list')).toHaveCount(0);
+  await page.getByRole('button',{name:'关闭弹窗'}).click();
+  await page.getByRole('button',{name:'进入整理实验室资料空间'}).click();
+  await page.getByRole('button',{name:/空间文件/}).click();
+  await expect(page.getByRole('button',{name:'预览 research-notes.md'})).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test('today, journal, conversation history and profile remain connected',async({page})=>{
+  const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));
+  await page.goto('/today');
+  await page.getByRole('button',{name:'开始专注'}).click();
+  await expect(page.locator('.focus-timer')).toBeVisible({timeout:5000});
+  await page.getByRole('button',{name:'完成学习'}).click();
+  await expect(page.locator('.completed-label')).toBeVisible();
+  await page.getByRole('button',{name:'为什么这样安排？'}).click();
+  await expect(page.locator('.insight-explanation')).toBeVisible();
+  await page.screenshot({path:'artifacts/today.png'});
+  await page.getByRole('navigation').getByRole('link',{name:'随笔',exact:true}).click();
+  await page.getByLabel('此刻的想法').fill('迈出了联系导师的第一步\n今天整理好了实验室资料。');
+  await page.getByRole('button',{name:'关联计划',exact:true}).click();
+  await page.getByLabel('标签', {exact:true}).fill('科研');
+  await page.getByLabel('关联计划', {exact:true}).selectOption('contact');
+  await page.getByRole('button',{name:'发布',exact:true}).click();
+  await expect(page.locator('.journal-entry').first()).toContainText('迈出了联系导师的第一步');
+  await page.screenshot({path:'artifacts/journal.png'});
+  await page.getByRole('navigation').getByRole('link',{name:'对话',exact:true}).click();
+  await page.getByRole('button',{name:/Transformer 学习/}).click();
+  await expect(page.locator('.hub-messages')).toContainText('Query');
+  await page.getByLabel('继续历史对话').fill('我已经理解了注意力分数');
+  await page.getByRole('button',{name:'发送历史对话'}).click();
+  await expect(page.locator('.hub-messages')).toContainText('我已经理解了注意力分数');
+  await page.screenshot({path:'artifacts/conversations.png'});
+  await page.getByRole('navigation').getByRole('link',{name:'我的',exact:true}).click();
+  await expect(page.locator('.profile-page')).toBeVisible();
+  await page.screenshot({path:'artifacts/profile.png'});
+  const slugs=['archive','profile','reports','assets','behavior','memory','settings'];
+  for(const slug of slugs){await page.locator(`.top-profile-nav a[href="/me/${slug}"]`).click();await expect(page.locator('.detail-page h1')).toBeVisible();}
+  await page.getByRole('button',{name:'陪伴',exact:true}).click();
+  await page.getByRole('switch',{name:'主动聊天'}).click();
+  await expect(page.getByRole('switch',{name:'主动聊天'})).toHaveAttribute('aria-checked','false');
+  await page.locator('.top-profile-nav a[href="/me/reports"]').click();
+  await page.getByRole('link',{name:/周报/}).click();
+  await expect(page.locator('.report-body')).toBeVisible();
+  await page.locator('.top-profile-nav a[href="/me/settings"]').click();
+  await expect(page.getByRole('button',{name:'陪伴',exact:true})).toHaveAttribute('aria-pressed','true');
+  await expect(page.getByRole('switch',{name:'主动聊天'})).toHaveAttribute('aria-checked','false');
+  expect(errors).toEqual([]);
+});
+
+

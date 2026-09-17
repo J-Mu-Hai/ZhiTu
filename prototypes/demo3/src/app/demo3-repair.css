@@ -1,0 +1,41 @@
+/* Layout owns separate canvas and conversation regions; messages never overlap. */
+.workbench-body{height:auto;flex:1;min-height:0;display:block}
+.open-workbench .workspace{height:100%;padding-right:clamp(350px,36vw,540px);transition:padding .2s}
+.open-workbench .chat-hidden .workspace{padding-right:0}
+.space-topbar{position:relative;z-index:25;height:56px;gap:12px;overflow:visible}
+.space-breadcrumb{flex:1;max-width:none}.space-breadcrumb>span:last-child button{color:#233c60}
+.space-topbar .view-tabs{margin-left:0;flex-shrink:0}.space-topbar .view-tabs button{padding:9px 12px;font-size:12px;white-space:nowrap}
+.space-floating-tools{right:auto;max-width:calc(100% - 30px)}
+.conversation-overlay{left:auto;right:0;top:0;bottom:0;width:clamp(350px,36vw,540px);z-index:21;pointer-events:none}
+.conversation-overlay[hidden]{display:none}
+.floating-conversation{inset:12px 20px 18px 12px;width:auto;height:auto;pointer-events:none;display:flex;flex-direction:column;gap:14px}
+.floating-title{flex-shrink:0;height:32px;align-self:flex-end;pointer-events:auto}
+.conversation-move{display:flex;align-items:center;gap:8px;cursor:grab;touch-action:none;font-size:11px;color:#536d8b}
+.conversation-move:active{cursor:grabbing}
+.open-workbench .floating-conversation .conversation-panel{flex:1;min-height:0;width:100%;display:flex;flex-direction:column;position:static;pointer-events:none;background:transparent}
+.floating-conversation .conversation-history{flex:1;min-height:0;overflow:auto;padding:8px 8px 24px;mask-image:none;pointer-events:auto;scrollbar-gutter:stable}
+.floating-conversation .message{position:relative;display:block;width:90%;margin:0 0 24px;padding:18px 20px;flex-shrink:0}
+.floating-conversation .message:nth-child(3n+1){width:88%;margin-left:8%}
+.floating-conversation .message:nth-child(3n+2){width:91%;margin-left:0}
+.floating-conversation .message:nth-child(3n){width:86%;margin-left:12%}
+.floating-conversation .message.user .message-text{background:transparent;border:0;border-radius:0}
+.floating-conversation .message-text{font-size:12px;line-height:1.9}
+.floating-conversation .composer-area{position:static;flex-shrink:0;margin-top:6px;padding:10px 4px 0;background:transparent;pointer-events:auto}
+.floating-conversation .composer textarea{height:54px}.floating-conversation .context-options{background:#fff;padding:8px;border-radius:8px}
+.inline-question-card{position:static;margin:4px 6% 22px 2%;padding:16px;background:#f0f6ff;box-shadow:none}
+.inline-question-card input{width:100%}.inline-question-card>div{min-height:36px}
+button:hover:not(:disabled){color:#355d95}.icon-button:hover{background:#eaf0f8}.primary-button:hover,.send-button:hover{color:#fff;background:#557eaf}
+.demo-dialog{background:#fff;border-color:#d6e0ec}.node-form input,.node-form select,.journal-options input,.journal-options select,.date-editor input{background:#f8fafc;color:#304967;border-color:#d6e0ec}
+.node-enter{background:#edf4fe;border-color:#bbcee8}.growth-node.milestone{background:#fff;color:#486486}
+.message-text,.file-preview pre{color:#455d79}.message.user .message-text{background:#edf4fc;border-color:#dce6f2;color:#3d5677}
+.hub-list,.hub-thread,.journal-composer,.hub-composer{background:#fafcfe;border-color:#dce5f0}
+.hub-item strong,.profile-facts strong,.portrait>p,.today-aside h2,.long-portrait h2,.memory-intro h2,.memory-row>p,.report-body section p{color:#314d70}
+.hub-item.active,.mode-options button.active{background:#e9f1fc;border-color:#bdd0e9;color:#3d6496}
+.journal-composer textarea,.hub-composer textarea,.hub-search input{color:#304b6c}
+.journal-insight,.insight-explanation,.attachment-chips>span{background:#edf4fb;color:#58769b}
+.section-label,.focus-timer,.journal-date>strong,.asset-summary strong,.behavior-stats strong{color:#43688e}
+.profile-avatar{background:#edf3fa;border-color:#cedbed;color:#5c7da6}
+.task-detail,.task-detail time{color:#425e7e}.filter-row button.active{background:#e9f1fc;border-color:#cbdced;color:#416790}
+.stage-summary,.task-row,.today-task,.today-aside,.profile-facts,.portrait,.profile-links>a,.journal-entry,.journal-feed-header,.setting-row,.settings-content section,.memory-row,.asset-summary,.asset-row,.report-list>a,.behavior-stats,.report-body section,.hub-thread>header,.hub-linked{border-color:#dce5ef}
+@media(max-width:1000px){.space-topbar{gap:5px;padding:0 10px}.space-topbar .view-tabs button{padding:8px 6px}.space-floating-tools>span{display:none}}
+@media(max-width:720px){.open-workbench .workspace{padding-right:0}.conversation-overlay{top:56px;width:min(390px,92vw);background:#f6f9fced;backdrop-filter:blur(10px)}.floating-conversation{right:10px}.space-topbar .view-tabs svg{display:block}.top-navigation{gap:12px}.top-navigation nav{gap:0}.top-navigation nav a{padding:7px}.top-profile-nav{overflow:auto;white-space:nowrap}}
