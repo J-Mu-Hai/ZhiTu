@@ -45,3 +45,6 @@ Thumbs.db
 logs/
 uploads/
 data/
+
+# Claude Code 本地个人配置(不进仓库)
+.claude/settings.local.json
