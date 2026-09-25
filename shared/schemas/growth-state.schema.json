@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zhitu.local/schemas/growth-state.schema.json",
+  "title": "GrowthState",
+  "description": "某个成长空间在某一时刻的状态快照。由 analyzer 产出,供前端展示与 Agent 读取。",
+  "type": "object",
+  "required": ["growth_space_id", "updated_at", "phase", "metrics"],
+  "additionalProperties": false,
+  "properties": {
+    "growth_space_id": {
+      "type": "string"
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "phase": {
+      "type": "string",
+      "enum": ["exploring", "building", "consolidating", "reviewing"],
+      "description": "exploring=探索方向,building=稳定推进,consolidating=巩固习惯,reviewing=阶段复盘"
+    },
+    "metrics": {
+      "type": "object",
+      "required": ["streak_days", "completion_rate_7d"],
+      "additionalProperties": false,
+      "properties": {
+        "streak_days": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "连续有执行记录的天数"
+        },
+        "completion_rate_7d": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "近 7 天动作完成率"
+        },
+        "actions_done_30d": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "active_minutes_30d": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "signals": {
+      "type": "array",
+      "description": "analyzer 识别到的信号,如停滞、节奏失衡、强度过高",
+      "items": {
+        "type": "object",
+        "required": ["kind", "message"],
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": ["momentum", "stagnation", "overload", "imbalance", "milestone"]
+          },
+          "message": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "severity": {
+            "type": "string",
+            "enum": ["info", "attention", "urgent"],
+            "default": "info"
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": ["string", "null"],
+      "maxLength": 2000,
+      "description": "面向用户的一段自然语言总结"
+    }
+  }
+}

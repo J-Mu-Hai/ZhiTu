@@ -1,0 +1,60 @@
+import { expect, test } from '@playwright/test';
+import { growthReducer } from '../src/features/growth/reducer';
+import { initialGrowth } from '../src/mock/growth-state';
+import type { GrowthState } from '../src/types/growth';
+
+test('deleting a node removes all descendants and connected edges', () => {
+  const state: GrowthState = structuredClone(initialGrowth);
+  state.nodes['delete-parent'] = {
+    id: 'delete-parent', title: '待删除父节点', type: 'capability', parentId: 'research', category: 'research',
+    status: 'pending', priority: 'medium',
+  };
+  state.nodes['delete-child'] = {
+    id: 'delete-child', title: '待删除子节点', type: 'task', parentId: 'delete-parent', category: 'research',
+    status: 'pending', priority: 'medium',
+  };
+  state.nodes['delete-grandchild'] = {
+    id: 'delete-grandchild', title: '待删除孙节点', type: 'task', parentId: 'delete-child', category: 'research',
+    status: 'pending', priority: 'medium',
+  };
+  state.edges.push(
+    { id: 'delete-edge', source: 'delete-child', target: 'project', type: 'dependency' },
+    { id: 'keep-edge', source: 'contact', target: 'project', type: 'dependency' },
+  );
+
+  const next = growthReducer(state, { type: 'DELETE_NODE', nodeId: 'delete-parent' });
+
+  expect(next.nodes['delete-parent']).toBeUndefined();
+  expect(next.nodes['delete-child']).toBeUndefined();
+  expect(next.nodes['delete-grandchild']).toBeUndefined();
+  expect(next.nodes.project).toBeDefined();
+  expect(next.edges.map(edge => edge.id)).not.toContain('delete-edge');
+  expect(next.edges.map(edge => edge.id)).toContain('keep-edge');
+});
+
+test('node trash appears on hover and deletes the node from its path', async ({ page }) => {
+  await page.goto('/workbench');
+  await page.locator('.react-flow__node[data-id="research"]').click();
+
+  await page.getByRole('button', { name: '添加树叶', exact: true }).click();
+  await page.getByLabel('树叶名称').fill('待删除方向');
+  await page.getByLabel('树叶类型').selectOption('capability');
+  await page.getByRole('dialog').getByRole('button', { name: '添加树叶', exact: true }).click();
+  await page.getByRole('button', { name: '进入待删除方向空间' }).click();
+
+  await page.getByRole('button', { name: '添加树叶', exact: true }).click();
+  await page.getByLabel('树叶名称').fill('待删除子任务');
+  await page.getByRole('dialog').getByRole('button', { name: '添加树叶', exact: true }).click();
+  await page.getByRole('button', { name: '返回上级空间' }).click();
+
+  const parentNode = page.locator('.react-flow__node').filter({ hasText: '待删除方向' });
+  const deleteButton = parentNode.getByRole('button', { name: '删除待删除方向及其子节点' });
+  await expect(deleteButton).toHaveCSS('opacity', '0');
+  await parentNode.hover();
+  await expect(deleteButton).toHaveCSS('opacity', '1');
+  await deleteButton.click();
+
+  await expect(parentNode).toHaveCount(0);
+  await page.reload();
+  await expect(page.locator('.react-flow__node').filter({ hasText: '待删除方向' })).toHaveCount(0);
+});

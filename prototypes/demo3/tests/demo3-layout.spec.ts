@@ -1,0 +1,23 @@
+import {test,expect} from '@playwright/test';
+test('cards stay separate, move together and both inputs share the conversation',async({page})=>{
+  await page.goto('/workbench');
+  await expect(page.locator('.react-flow__node[data-id="research"]')).toBeVisible();
+  const cards=page.locator('.floating-conversation .message');
+  const bounds=await cards.evaluateAll(es=>es.map(e=>{const r=e.getBoundingClientRect();return {top:r.top,bottom:r.bottom};}));
+  for(let i=1;i<bounds.length;i++)expect(bounds[i].top-bounds[i-1].bottom).toBeGreaterThanOrEqual(20);
+  const field=page.locator('.floating-conversation');const before=await field.boundingBox();
+  await page.getByRole('button',{name:'整体移动对话'}).focus();
+  await page.getByRole('button',{name:'整体移动对话'}).press('ArrowLeft');
+  expect((await field.boundingBox())!.x).toBe(before!.x-10);
+  await page.getByLabel('卡片内回答').fill('先整理导师资料');
+  await page.getByRole('button',{name:'发送卡片回答'}).click();
+  await expect(cards.filter({hasText:'先整理导师资料'})).toBeVisible();
+  await page.getByRole('button',{name:'收起对话'}).click();
+  await expect(field).toBeHidden();
+  await page.getByRole('tab',{name:'时间线',exact:true}).click();
+  await expect(page.getByRole('group',{name:'时间尺度'})).toBeVisible();
+  await page.getByRole('button',{name:'展开对话'}).click();
+  await page.getByLabel('给 AI 的消息').fill('继续讨论');
+  await page.getByRole('button',{name:'发送消息',exact:true}).click();
+  await expect(cards.filter({hasText:'继续讨论'})).toBeVisible();
+});

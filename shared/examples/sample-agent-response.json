@@ -1,0 +1,54 @@
+{
+  "agent": "planner",
+  "conversation_id": "cv_001",
+  "growth_space_id": "gs_001",
+  "message": "你提到想跑半马,但过去两次都在第三周断掉。这次我先把目标压到「每周三次、每次 20 分钟的轻松跑」,跑完只记一句体感。等这一步稳定两周,我们再谈加距离——可以吗?",
+  "structured": {
+    "proposed_node": {
+      "id": "pn_001",
+      "growth_space_id": "gs_001",
+      "parent_id": null,
+      "title": "建立跑步习惯",
+      "intent": "从零开始,把跑步变成每周稳定的日程,而不是靠意志力硬撑。",
+      "status": "draft",
+      "order": 0,
+      "actions": [
+        {
+          "id": "pa_001",
+          "plan_node_id": "pn_001",
+          "title": "每周三次轻松跑 20 分钟",
+          "description": "以能边跑边说话的强度为准,不追求配速。",
+          "type": "habit",
+          "status": "pending",
+          "recurrence": { "rule": "weekly", "times_per_period": 3 },
+          "scheduled_at": null,
+          "estimate_minutes": 20,
+          "completed_at": null,
+          "created_at": "2026-09-16T20:31:00+08:00",
+          "updated_at": "2026-09-16T20:31:00+08:00"
+        }
+      ],
+      "created_at": "2026-09-16T20:31:00+08:00",
+      "updated_at": "2026-09-16T20:31:00+08:00"
+    }
+  },
+  "requires_confirmation": true,
+  "memory_writes": [
+    {
+      "kind": "preference",
+      "content": "过去两次制定跑步计划都在第三周中断",
+      "confidence": 0.8
+    },
+    {
+      "kind": "goal",
+      "content": "想完成一次半程马拉松",
+      "confidence": 0.95
+    }
+  ],
+  "usage": {
+    "model": "claude-sonnet-5",
+    "input_tokens": 3820,
+    "output_tokens": 612
+  },
+  "created_at": "2026-09-16T20:31:02+08:00"
+}

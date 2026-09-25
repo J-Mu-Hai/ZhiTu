@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zhitu.local/schemas/plan-node.schema.json",
+  "title": "PlanNode",
+  "description": "计划中的一个节点,可嵌套形成树。叶子节点下挂 PlanAction。",
+  "type": "object",
+  "required": ["id", "growth_space_id", "title", "status"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "growth_space_id": {
+      "type": "string",
+      "description": "所属成长空间"
+    },
+    "parent_id": {
+      "type": ["string", "null"],
+      "description": "父节点 id;根节点为 null"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "intent": {
+      "type": ["string", "null"],
+      "maxLength": 2000,
+      "description": "这个节点想达成的结果,用于 Agent 理解上下文"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["draft", "active", "paused", "completed", "archived"],
+      "default": "draft"
+    },
+    "order": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 0,
+      "description": "同级排序"
+    },
+    "actions": {
+      "type": "array",
+      "description": "挂在本节点下的动作,元素符合 plan-action.schema.json",
+      "items": {
+        "$ref": "plan-action.schema.json"
+      }
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

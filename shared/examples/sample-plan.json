@@ -1,0 +1,73 @@
+{
+  "growth_space_id": "gs_001",
+  "title": "跑完一次半马",
+  "nodes": [
+    {
+      "id": "pn_001",
+      "growth_space_id": "gs_001",
+      "parent_id": null,
+      "title": "建立跑步习惯",
+      "intent": "从零开始,把跑步变成每周稳定的日程,而不是靠意志力硬撑。",
+      "status": "active",
+      "order": 0,
+      "actions": [
+        {
+          "id": "pa_001",
+          "plan_node_id": "pn_001",
+          "title": "每周三次轻松跑 20 分钟",
+          "description": "以能边跑边说话的强度为准,不追求配速。",
+          "type": "habit",
+          "status": "in_progress",
+          "recurrence": { "rule": "weekly", "times_per_period": 3 },
+          "scheduled_at": "2026-09-17T07:00:00+08:00",
+          "estimate_minutes": 20,
+          "completed_at": null,
+          "created_at": "2026-09-10T21:12:00+08:00",
+          "updated_at": "2026-09-16T08:03:00+08:00"
+        },
+        {
+          "id": "pa_002",
+          "plan_node_id": "pn_001",
+          "title": "记录每次跑后的体感",
+          "type": "reflection",
+          "status": "pending",
+          "recurrence": null,
+          "scheduled_at": null,
+          "estimate_minutes": 5,
+          "completed_at": null,
+          "created_at": "2026-09-10T21:12:00+08:00",
+          "updated_at": "2026-09-10T21:12:00+08:00"
+        }
+      ],
+      "created_at": "2026-09-10T21:10:00+08:00",
+      "updated_at": "2026-09-16T08:03:00+08:00"
+    },
+    {
+      "id": "pn_002",
+      "growth_space_id": "gs_001",
+      "parent_id": "pn_001",
+      "title": "把单次距离拉到 10 公里",
+      "intent": "习惯稳定后,逐步增加耐力,为半马打基础。",
+      "status": "draft",
+      "order": 0,
+      "actions": [
+        {
+          "id": "pa_003",
+          "plan_node_id": "pn_002",
+          "title": "每周一次长距离慢跑",
+          "description": "每两周增加 1 公里,不超过前一周总量的 10%。",
+          "type": "habit",
+          "status": "pending",
+          "recurrence": { "rule": "weekly", "times_per_period": 1 },
+          "scheduled_at": "2026-10-04T08:00:00+08:00",
+          "estimate_minutes": 70,
+          "completed_at": null,
+          "created_at": "2026-09-10T21:14:00+08:00",
+          "updated_at": "2026-09-10T21:14:00+08:00"
+        }
+      ],
+      "created_at": "2026-09-10T21:14:00+08:00",
+      "updated_at": "2026-09-10T21:14:00+08:00"
+    }
+  ]
+}
