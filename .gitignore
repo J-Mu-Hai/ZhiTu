@@ -8,6 +8,7 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+.python-deps/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -48,3 +49,10 @@ data/
 
 # Claude Code 本地个人配置(不进仓库)
 .claude/settings.local.json
+
+# 本地迁移备份与测试产物
+.incoming-zhitu/
+.previous-zhitu-*/
+pytest-cache-files-*/
+artifacts/
+.next-dev/

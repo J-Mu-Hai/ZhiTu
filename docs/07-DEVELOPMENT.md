@@ -62,7 +62,7 @@ Mother Demo → Parallel Exploration → Integration → Next Version
 
 - 改动数据契约时,先改 [shared/schemas/](../shared/schemas/),再同步 Web / Mobile / Backend,并更新 [05-DATA-MODEL.md](05-DATA-MODEL.md)
 - 产品行为变化后,更新文档
-- 大改动之前先说明影响范围,见 [../AGENTS.md](../AGENTS.md)
+- 大改动之前先说明影响范围,见 [../代码ai的约束.md](../代码ai的约束.md)
 
 ## 待补全
 

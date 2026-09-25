@@ -59,7 +59,7 @@ INFRASTRUCTURE  FastAPI / PostgreSQL / LLM API / Server
 任何人在动代码之前,先读这两个:
 
 - **[docs/CURRENT-DESIGN.md](docs/CURRENT-DESIGN.md)** — 当前有效设计,每天要看的
-- **[AGENTS.md](AGENTS.md)** — 给 AI Coding Agent 的指令
+- **[代码ai的约束.md](代码ai的约束.md)** — 给 AI Coding Agent 的仓库约束
 
 其余按主题:
 
@@ -78,6 +78,16 @@ INFRASTRUCTURE  FastAPI / PostgreSQL / LLM API / Server
 cp .env.example .env     # 填入模型 API Key 等配置
 docker compose up -d     # 启动 Postgres / Redis / API
 ```
+
+当前可直接体验的 Web 产品位于 `apps/web/`：
+
+```bash
+cd apps/web
+npm install
+npm run dev
+```
+
+浏览器打开 <http://127.0.0.1:5173/workbench>。首次访问会进入登录页；可注册本地演示账户，每个账户的计划和个人资料分别保存在当前浏览器。正式身份认证、数据库与真实模型接入属于下一阶段。
 
 分端启动方式见 [07-DEVELOPMENT.md](docs/07-DEVELOPMENT.md)。
 

@@ -29,10 +29,10 @@ function useDemoState() {
     setSpaceId('goal'); select(proposal.nodeId); setPreviewProposalId(id); setImpact(true);
   }
   function enterSpace(id: string) { if (!growth.nodes[id]) return; setSpaceId(id); select(id); }
-  function addNode(title: string, type: GrowthNode['type'] = 'task') {
+  function addNode(title: string, type: GrowthNode['type'] = 'task', description = '') {
     if (!title.trim()) return;
     const parent = growth.nodes[spaceId]; const id = crypto.randomUUID();
-    dispatch({ type: 'CREATE_NODE', node: { id, title: title.trim(), type, parentId: spaceId, category: parent.category ?? 'personal', stageId: growth.currentStageId, status: 'pending', priority: 'medium', startDate: DEMO_TODAY, endDate: DEMO_TODAY, scheduledDate: DEMO_TODAY } });
+    dispatch({ type: 'CREATE_NODE', node: { id, title: title.trim(), description: description.trim() || undefined, type, parentId: spaceId, category: parent.category ?? 'personal', stageId: growth.currentStageId, status: 'pending', priority: 'medium', startDate: DEMO_TODAY, endDate: DEMO_TODAY, scheduledDate: DEMO_TODAY } });
     select(id); return id;
   }
   function addFiles(ownerId: string, incoming: File[]) {

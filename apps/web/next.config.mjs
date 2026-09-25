@@ -1,9 +1,3 @@
 /** @type {import('next').NextConfig} */
-const nextConfig = {
-  reactStrictMode: true,
-  env: {
-    API_BASE_URL: process.env.NEXT_PUBLIC_API_BASE_URL,
-  },
-};
-
-export default nextConfig;
+const config = { reactStrictMode: true, devIndicators: false, distDir: process.env.NODE_ENV === 'development' ? '.next-dev' : '.next' };
+export default config;
