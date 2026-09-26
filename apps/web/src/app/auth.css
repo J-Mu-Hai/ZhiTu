@@ -44,11 +44,13 @@
   align-items: center;
   gap: clamp(50px, 8vw, 130px);
   padding: clamp(38px, 6vw, 86px) clamp(36px, 9vw, 150px);
-  background-color: #080d14;
+  color-scheme: light;
+  color: #24354a;
+  background-color: #fafbf8;
   background-image:
-    radial-gradient(circle at 18% 30%, rgba(50, 102, 164, .2), transparent 36%),
-    radial-gradient(circle at 82% 78%, rgba(46, 119, 109, .1), transparent 28%),
-    radial-gradient(rgba(104, 139, 181, .2) .7px, transparent .7px);
+    radial-gradient(circle at 18% 30%, rgba(190, 219, 246, .35), transparent 36%),
+    radial-gradient(circle at 82% 78%, rgba(194, 213, 195, .22), transparent 28%),
+    radial-gradient(rgba(104, 139, 181, .12) .7px, transparent .7px);
   background-size: auto, auto, 25px 25px;
 }
 
@@ -68,18 +70,18 @@
   height: 42px;
   display: grid;
   place-items: center;
-  color: #9fc6fb;
-  border: 1px solid #39597c;
+  color: #327bc1;
+  border: 1px solid #cfe2ef;
   border-radius: 11px;
-  background: rgba(22, 39, 58, .75);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, .25);
+  background: #edf6ff;
+  box-shadow: 0 10px 30px rgba(58, 89, 118, .06);
 }
 
 .auth-brand strong {
   display: block;
   font-size: 23px;
   letter-spacing: .18em;
-  color: #e8f0fa;
+  color: #23364c;
 }
 
 .auth-brand small {
@@ -97,7 +99,7 @@
 
 .auth-story-copy h1 {
   margin-top: 25px;
-  color: #f2f6fc;
+  color: #24354a;
   font-size: clamp(40px, 4.3vw, 64px);
   font-weight: 560;
   line-height: 1.5;
@@ -107,7 +109,7 @@
 .auth-story-copy > p {
   max-width: 540px;
   margin-top: 25px;
-  color: #8ea1b7;
+  color: #63758a;
   font-size: 13px;
   line-height: 2.05;
 }
@@ -121,10 +123,10 @@
   margin-top: 36px;
   padding: 18px 20px;
   color: #91b9ef;
-  border: 1px solid #345579;
+  border: 1px solid #d2e3ed;
   border-radius: 11px;
-  background: rgba(19, 36, 53, .72);
-  box-shadow: 0 18px 45px rgba(0, 0, 0, .22);
+  background: #f0f7fc;
+  box-shadow: 0 18px 45px rgba(58, 89, 118, .06);
 }
 
 .auth-plan-preview small,
@@ -140,7 +142,7 @@
 
 .auth-plan-preview strong {
   margin-top: 7px;
-  color: #b9cce4;
+  color: #334d67;
   font-size: 12px;
   font-weight: 500;
 }
@@ -172,11 +174,11 @@
   flex-direction: column;
   gap: 18px;
   padding: clamp(28px, 3vw, 42px);
-  border: 1px solid #2c4258;
+  border: 1px solid #dce6ec;
   border-radius: 16px;
-  background-color: rgba(15, 25, 36, .94);
-  background-image: linear-gradient(145deg, rgba(24, 42, 59, .68), rgba(12, 20, 30, .9));
-  box-shadow: 0 30px 90px rgba(0, 0, 0, .42);
+  background-color: #fff;
+  background-image: none;
+  box-shadow: 0 24px 70px rgba(58, 89, 118, .09);
   backdrop-filter: blur(18px);
 }
 
@@ -186,14 +188,14 @@
 
 .auth-card h2 {
   margin-top: 15px;
-  color: #eef4fc;
+  color: #24354a;
   font-size: 25px;
   font-weight: 560;
 }
 
 .auth-card header > p {
   margin-top: 13px;
-  color: #879bb2;
+  color: #63758a;
   font-size: 11px;
   line-height: 1.8;
 }
@@ -203,7 +205,7 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  color: #93a8c0;
+  color: #465c72;
   font-size: 11px;
 }
 
@@ -213,11 +215,11 @@
   min-width: 0;
   height: 43px;
   padding: 0 12px;
-  color: #dce6f2;
-  border: 1px solid #2d4054;
+  color: #24354a;
+  border: 1px solid #cfdde7;
   border-radius: 7px;
   outline: none;
-  background: #0a131d;
+  background: #fafcfe;
 }
 
 .auth-card input::placeholder {
@@ -238,10 +240,10 @@
 
 .auth-error {
   padding: 10px 12px;
-  color: #f1a9ad;
+  color: #9c3544;
   border: 1px solid rgba(176, 75, 82, .45);
   border-radius: 7px;
-  background: rgba(91, 39, 44, .36);
+  background: #fff2f2;
   font-size: 11px;
   line-height: 1.7;
 }
@@ -267,7 +269,7 @@
 
 .auth-switch {
   align-self: center;
-  color: #80a7d6;
+  color: #326fa8;
   font-size: 11px;
 }
 

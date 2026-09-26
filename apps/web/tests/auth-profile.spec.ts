@@ -38,18 +38,13 @@ test.beforeAll(async ({ request }) => {
   await assertBackendRunning(request);
 });
 
-/** 注册表单上有八个字段,少一个就提交不了。填法集中在这里,免得三处各写一遍。 */
+/** 注册只需要手机号与密码。 */
 async function fillRegisterForm(
   page: import('@playwright/test').Page,
   input: { name: string; email: string; password: string; school: string; major: string; target: string },
 ) {
-  await page.getByLabel('怎么称呼你').fill(input.name);
-  await page.getByLabel('学校').fill(input.school);
-  await page.getByLabel('专业').fill(input.major);
-  await page.getByLabel('年级').selectOption('大三');
-  await page.getByLabel('目标方向').fill(input.target);
-  await page.getByLabel('目标年份').fill('2027');
-  await page.getByLabel('邮箱').fill(input.email);
+  await expect(page.locator('.auth-card input')).toHaveCount(2);
+  await page.getByLabel('手机号码').fill(input.email);
   await page.getByLabel('密码').fill(input.password);
 }
 
@@ -74,7 +69,7 @@ const stamp = () => `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
 
 test('注册之后自己建空间、建节点，刷新后还在', async ({ page }) => {
   const s = stamp();
-  const wang = { name: '王小途', email: `wang-${s}@zhitu.test`, password: 'password123' };
+  const wang = { name: '知途用户', email: `139${Date.now().toString().slice(-8)}`, password: 'password123' };
   const spaceTitle = `王小途的科研计划 ${s}`;
   const nodeTitle = '王小途的专属调研';
 
@@ -89,7 +84,7 @@ test('注册之后自己建空间、建节点，刷新后还在', async ({ page 
 
   await page.getByRole('button', { name: '还没有账户？注册' }).click();
   await fillRegisterForm(page, { ...wang, school: '北京邮电大学', major: '人工智能', target: '保研' });
-  await page.getByRole('button', { name: '创建账户与计划' }).click();
+  await page.getByRole('button', { name: '创建账户', exact: true }).click();
 
   // **落点是空间列表,不是工作台。** 工作台需要一个具体空间,而这个账户刚注册、
   // 一个都还没有。以前这里会落到示例空间,于是新用户看到的是一份别人的保研计划。

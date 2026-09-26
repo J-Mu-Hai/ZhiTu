@@ -1,8 +1,9 @@
 'use client';
+import { BrandMark } from '@/components/ui/BrandMark';
 
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ArrowUp, ArrowUpRight, MessageCircle, PencilLine, Plus, Search, Sparkles } from 'lucide-react';
+import { ArrowUp, ArrowUpRight, MessageCircle, PencilLine, Plus, Search } from 'lucide-react';
 import { useDemo } from '@/features/growth/provider';
 import { Dialog } from '@/components/ui/Dialog';
 import { degradedHint, sourceLabel } from '@/lib/backend';
@@ -154,7 +155,7 @@ export function ConversationHub() {
           {current.messages.map(message => (
             <article className={`message ${message.role}${message.pending ? ' pending' : ''}${message.failed ? ' failed' : ''}`} key={message.id}>
               <div className="message-byline">
-                {message.role === 'assistant' ? <Sparkles size={15} /> : <span className="user-dot">我</span>}
+                {message.role === 'assistant' ? <BrandMark size={22} /> : <span className="user-dot">我</span>}
                 <strong>{message.role === 'assistant' ? '知途' : '我'}</strong>
                 {message.isExample && <span className="example-badge" title="系统预置的示例内容">示例</span>}
               </div>

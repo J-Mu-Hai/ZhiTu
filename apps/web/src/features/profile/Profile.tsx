@@ -83,7 +83,7 @@ export function Profile() {
       <header><div><span className="eyebrow">PERSONAL PROFILE</span><h2>编辑你的个人资料</h2></div><button className="icon-button" type="button" aria-label="取消编辑" onClick={cancel}><X size={17}/></button></header>
       <div className="profile-form-grid">
         <label>姓名<input aria-label="姓名" required maxLength={50} value={draft.name} onChange={(event) => update('name', event.target.value)}/></label>
-        <label>邮箱<input aria-label="邮箱" value={user.email} disabled/></label>
+        <label>登录账号<input aria-label="登录账号" value={user.email} disabled/></label>
         <label>学校<input aria-label="学校" required maxLength={80} value={draft.school} onChange={(event) => update('school', event.target.value)}/></label>
         <label>专业<input aria-label="专业" required maxLength={80} value={draft.major} onChange={(event) => update('major', event.target.value)}/></label>
         <label>年级<select aria-label="年级" value={draft.year} onChange={(event) => update('year', event.target.value)}>{['大一','大二','大三','大四','研究生'].map((year) => <option key={year}>{year}</option>)}</select></label>

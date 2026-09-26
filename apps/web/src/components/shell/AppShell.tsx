@@ -1,7 +1,8 @@
 'use client';
+import { BrandMark } from '@/components/ui/BrandMark';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { Blocks, House, NotebookPen, MessagesSquare, UserRound, Sprout, ArrowUpRight, LoaderCircle, Layers3 } from 'lucide-react';
+import { Blocks, House, NotebookPen, MessagesSquare, UserRound, ArrowUpRight, LoaderCircle, Layers3 } from 'lucide-react';
 import { useEffect, type ReactNode } from 'react';
 import { profileEntries } from '@/mock/life';
 import { useAuth } from '@/features/auth/provider';
@@ -22,13 +23,13 @@ export function AppShell({ children }: { children: ReactNode }) {
     if (!user && !isLogin) router.replace('/login');
     if (user && isLogin) router.replace('/spaces');
   }, [blocked, isLogin, ready, router, user]);
-  if (!ready) return <div className="boot-screen"><Sprout size={24}/><LoaderCircle className="auth-spinner" size={20}/><span>正在打开你的成长空间…</span></div>;
-  if (blocked) return <div className="boot-screen is-blocked"><Sprout size={24}/><strong>暂时连不上后端,你的登录状态还在。</strong><small className="boot-detail">{restoreProblem}</small><button className="primary-button" onClick={() => void retryRestore()}>重试</button></div>;
-  if (!user && !isLogin) return <div className="boot-screen"><Sprout size={24}/><LoaderCircle className="auth-spinner" size={20}/><span>正在打开你的成长空间…</span></div>;
+  if (!ready) return <div className="boot-screen"><BrandMark size={28}/><LoaderCircle className="auth-spinner" size={20}/><span>正在打开你的成长空间…</span></div>;
+  if (blocked) return <div className="boot-screen is-blocked"><BrandMark size={28}/><strong>暂时连不上后端,你的登录状态还在。</strong><small className="boot-detail">{restoreProblem}</small><button className="primary-button" onClick={() => void retryRestore()}>重试</button></div>;
+  if (!user && !isLogin) return <div className="boot-screen"><BrandMark size={28}/><LoaderCircle className="auth-spinner" size={20}/><span>正在打开你的成长空间…</span></div>;
   if (isLogin) return <main className="auth-main">{children}</main>;
   if (!user) return null;
   return <div className="app-shell"><header className="top-navigation">
-    <Link href="/spaces" className="top-brand" aria-label="知途成长空间"><Sprout size={19}/><strong>知途</strong><small>GROWTH SPACE</small></Link>
+    <Link href="/spaces" className="top-brand" aria-label="知途成长空间"><BrandMark size={28}/><strong>知途</strong><small>GROWTH SPACE</small></Link>
     <nav aria-label="主导航">{links.map(([href,label,Icon])=><Link key={href} href={href} className={pathname.startsWith(href)?'active':''}><Icon size={15}/><span>{label}</span></Link>)}</nav>
     {/* targetYear 未填写时是 0、targetGoal 是空串。以前直接渲染就变成"0 · " ——
         一个由两个空值拼出来的东西,看起来像数据,其实什么都不是。 */}

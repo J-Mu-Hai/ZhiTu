@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Background,
+  BaseEdge,
   Controls,
   Handle,
   MiniMap,
@@ -10,14 +11,16 @@ import {
   ReactFlow,
   ReactFlowProvider,
   useReactFlow,
+  useNodesInitialized,
+  getSmoothStepPath,
   type Edge,
+  type EdgeProps,
   type Node,
   type NodeProps,
 } from '@xyflow/react';
 import {
   ArrowUpRight,
   CheckSquare,
-  Circle,
   FileText,
   Flag,
   Focus,
@@ -60,35 +63,16 @@ function GrowthNodeComponent({ data, selected }: NodeProps<FlowNode>) {
       className={`growth-node ${data.root ? 'goal' : node.type} ${node.category ?? ''} ${selected ? 'is-selected' : ''} ${node.status === 'completed' ? 'is-complete' : ''}`}
     >
       {!data.root && <Handle type="target" position={targetPosition} />}
-      {data.root ? (
-        <>
-          <Flag size={23} />
-          <strong>{node.title}</strong>
-          {/* 这里原来写死了 `'2027 · AI 方向'` —— 演示数据主人的目标年份和方向。
-              它在**每一个**空间的根目标下面都印着,包括一个叫「Python 学习」的新空间:
-              用户在画布正中看到一句自己从没说过的话。现在只显示真实存在的描述。 */}
-          <span>{node.description || (data.root ? '根目标' : `${data.children} 片树叶 · 中心路径`)}</span>
-        </>
-      ) : node.type === 'capability' ? (
-        <>
-          <span className="node-category-dot" aria-hidden="true" />
-          <div>
-            <strong>{node.title}</strong>
-            <span>{node.description || `${data.children} 片树叶`}</span>
-          </div>
-        </>
-      ) : (
-        <>
-          <span className="node-bullet">
-            {node.status === 'completed' ? <CheckSquare size={13} /> : <Circle size={8} fill="currentColor" />}
-          </span>
-          <div className="leaf-copy">
-            <span className="leaf-title">{node.title}</span>
-            {node.description && <small className="leaf-summary">{node.description}</small>}
-          </div>
-          {node.status === 'doing' && <span className="node-doing" />}
-        </>
-      )}
+      <div className="node-heading">
+        <span className="node-marker" aria-hidden="true">
+          {data.root ? <Flag size={21} /> : node.type === 'task'
+            ? (node.status === 'completed' ? <CheckSquare size={14} /> : <span className="node-task-box" />)
+            : <span className="node-title-dot" />}
+        </span>
+        <strong className="node-title">{node.title}</strong>
+      </div>
+      {(node.description || data.root) && <p className="node-description">{node.description || '根目标'}</p>}
+      {node.status === 'doing' && <span className="node-doing" />}
       {!data.root && (
         <button
           className="node-delete nodrag nopan"
@@ -127,9 +111,30 @@ function GrowthNodeComponent({ data, selected }: NodeProps<FlowNode>) {
 
 const nodeTypes = { growth: GrowthNodeComponent };
 
+/** Siblings share an outgoing lane, without drawing extra junction dots. */
+function BranchEdge(props: EdgeProps) {
+  const forward = props.targetX > props.sourceX + 100;
+  const [path] = getSmoothStepPath({
+    sourceX: props.sourceX, sourceY: props.sourceY,
+    targetX: props.targetX, targetY: props.targetY,
+    sourcePosition: props.sourcePosition, targetPosition: props.targetPosition,
+    borderRadius: 38, offset: 24,
+    ...(forward ? { centerX: props.sourceX + 78 } : {}),
+  });
+  // Almost level siblings should have a gentle join, not a tiny staircase.
+  const nearLevel = forward && Math.abs(props.targetY - props.sourceY) < 12;
+  const renderedPath = nearLevel
+    ? `M ${props.sourceX},${props.sourceY} C ${props.sourceX + 78},${props.sourceY} ${props.targetX - 60},${props.targetY} ${props.targetX},${props.targetY}`
+    : path;
+  return <BaseEdge id={props.id} path={renderedPath} style={props.style} />;
+}
+const edgeTypes = { branch: BranchEdge };
+
 function Canvas() {
   const { growth, selectedId, select, positions, setPositions, spaceId, enterSpace, addNode, updateNode, files, isRealSpace, planSaving, planLoading, planError, setPlanError } = useDemo();
   const { fitView } = useReactFlow();
+  const nodesInitialized = useNodesInitialized();
+  const fittedScope = useRef<string | null>(null);
   /**
    * 待打开的节点详情。
    *
@@ -212,7 +217,7 @@ function Canvas() {
     const nextEdges: Edge[] = [];
     const all = Object.values(growth.nodes);
     const directChildren = all.filter((node) => node.parentId === spaceId);
-    const vertical = !isRootSpace;
+    const vertical = false;
 
     // 兜底:`spaceId` 的契约是"一定指得到一个节点"(见 provider 里的 `currentSpaceId`)。
     // 万一将来这个契约被破坏,**这里不画比整个页面崩掉好** —— 在渲染中抛异常会把整棵
@@ -245,45 +250,42 @@ function Canvas() {
         id: `${parent}-${node.id}`,
         source: parent,
         target: node.id,
-        type: 'smoothstep',
+        type: 'branch',
         style: {
           stroke: colors[node.category ?? 'academic'],
-          opacity: selectedId === node.id ? 0.7 : 0.4,
-          strokeWidth: 1,
+          opacity: 1,
+          strokeWidth: selectedId === node.id ? 1.8 : 1.35,
         },
       });
     }
 
-    if (vertical) {
-      // 子空间以当前主题为中心，树叶从中心向下生长。三列布局可在内容增加时保持可读性。
-      const columns = Math.min(Math.max(directChildren.length, 1), 3);
-      const canvasWidth = (columns - 1) * 230 + 190;
-      add(growth.nodes[spaceId], (canvasWidth - 155) / 2, 20, true);
-      directChildren.forEach((node, index) => {
-        const column = index % columns;
-        const row = Math.floor(index / columns);
-        add(node, column * 230, 230 + row * 145);
-        connect(spaceId, node);
+    // Use measured content height rather than fixed rows: long copy must not overlap.
+    const height = (node: GrowthNode) => measurements[node.id]?.height ?? 86;
+    const width = (node: GrowthNode) => measurements[node.id]?.width ?? 300;
+    const root = growth.nodes[spaceId];
+    const childX = width(root) + 190;
+    let cursorY = 30;
+    const centers: number[] = [];
+    directChildren.forEach((node) => {
+      const descendants = isRootSpace && node.type === 'capability'
+        ? all.filter((child) => child.parentId === node.id && !['attention', 'screen'].includes(child.id)).slice(0, 4)
+        : [];
+      const descendantHeight = descendants.reduce((sum, child) => sum + height(child) + 32, 0) - (descendants.length ? 32 : 0);
+      const blockHeight = Math.max(height(node), descendantHeight);
+      const center = cursorY + blockHeight / 2;
+      centers.push(center);
+      add(node, childX, center - height(node) / 2);
+      connect(spaceId, node);
+      let descendantY = cursorY;
+      descendants.forEach((child) => {
+        add(child, childX + width(node) + 170, descendantY);
+        connect(node.id, child);
+        descendantY += height(child) + 32;
       });
-    } else {
-      add(growth.nodes[spaceId], 0, Math.max(20, (directChildren.length - 1) * 125), true);
-      directChildren.forEach((node, index) => {
-        const x = 260;
-        const y = 20 + index * 250;
-        add(node, x, y);
-        connect(spaceId, node);
-        if (node.type === 'capability') {
-          all
-            .filter((child) => child.parentId === node.id)
-            .filter((child) => !['attention', 'screen'].includes(child.id))
-            .slice(0, 4)
-            .forEach((child, childIndex) => {
-              add(child, x + 235, y - 20 + childIndex * 54);
-              connect(node.id, child);
-            });
-        }
-      });
-    }
+      cursorY += blockHeight + 56;
+    });
+    const rootCenter = centers.length ? (centers[0] + centers[centers.length - 1]) / 2 : 90;
+    add(root, 0, rootCenter - height(root) / 2, true);
 
     growth.edges.forEach((edge) => {
       if (nextNodes.some((node) => node.id === edge.source) && nextNodes.some((node) => node.id === edge.target)) {
@@ -296,6 +298,17 @@ function Canvas() {
     });
     return { nodes: nextNodes, edges: nextEdges };
   }, [growth, spaceId, isRootSpace, selectedId, positions, dragging, files, measurements]);
+
+  // Initial fit must wait for wrapped text to be measured and layout to settle.
+  // Do not re-fit while the user drags or edits an already opened scope.
+  useEffect(() => {
+    if (!nodesInitialized || planLoading || fittedScope.current === spaceId) return;
+    const timer = window.setTimeout(() => {
+      fittedScope.current = spaceId;
+      void fitView({ padding: 0.18, maxZoom: 1, duration: 0 });
+    }, 180);
+    return () => window.clearTimeout(timer);
+  }, [nodesInitialized, planLoading, spaceId, measurements, fitView]);
 
   const createLabel = isRootSpace ? '新建节点' : '添加树叶';
   /**
@@ -329,7 +342,7 @@ function Canvas() {
   return (
     <div className={`path-canvas ${isRootSpace ? 'root-path' : 'leaf-path'}`}>
       <div className="space-floating-tools">
-        <span>{isRootSpace ? '点击四个成长分类进入专属路径' : '当前主题位于中心 · 树叶从下方生长'}</span>
+        <span>单击编辑内容 · 双击进入子路径</span>
         <button disabled={!canCreate} title={canCreate ? undefined : '正在读取计划…'} onClick={() => { setPlanError(null); setDialog('node'); }}>
           <Plus size={15} />
           {createLabel}
@@ -343,6 +356,7 @@ function Canvas() {
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
         fitView
         fitViewOptions={{ padding: 0.18, maxZoom: 1 }}
         zoomOnDoubleClick={false}

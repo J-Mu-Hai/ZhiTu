@@ -1,7 +1,8 @@
 'use client';
+import { BrandMark } from '@/components/ui/BrandMark';
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Sparkles, ArrowUp, Plus, X, CornerDownLeft, ArrowUpRight, AlertCircle, RotateCcw, RefreshCw } from 'lucide-react';
+import { ArrowUp, Plus, X, CornerDownLeft, ArrowUpRight, AlertCircle, RotateCcw, RefreshCw } from 'lucide-react';
 import { useDemo } from '@/features/growth/provider';
 import { degradedHint, fieldLabel, sourceLabel } from '@/lib/backend';
 
@@ -75,7 +76,7 @@ export function ConversationPanel() {
   return (
     <aside className="conversation-panel" aria-label="与 AI 一起思考">
       <header className="conversation-header">
-        <div className="ai-symbol"><Sparkles size={21} /></div>
+        <div className="ai-symbol"><BrandMark size={28} /></div>
         <div>
           <h2>与 AI 一起思考</h2>
           <p>基于当前空间 · {growth.nodes[spaceId]?.title ?? growth.title}</p>
@@ -88,7 +89,7 @@ export function ConversationPanel() {
 
         {!historyLoading && !messages.length && (
           <div className="conversation-empty">
-            <Sparkles size={18} />
+            <BrandMark size={24} />
             <strong>{isRealSpace ? '说说你想推进什么' : '这是示例空间'}</strong>
             <p>
               {isRealSpace
@@ -116,7 +117,7 @@ export function ConversationPanel() {
             <article className={`message ${m.role}${m.pending ? ' pending' : ''}${m.failed ? ' failed' : ''}`} key={m.id}>
               <div className="message-byline">
                 {m.role === 'assistant'
-                  ? <><Sparkles size={14} /><strong>知途</strong><span>与你一起</span></>
+                  ? <><BrandMark size={20} /><strong>知途</strong><span>与你一起</span></>
                   : <><span className="user-dot">我</span><strong>我</strong></>}
                 {m.isExample && <span className="example-badge" title="系统预置的示例内容">示例</span>}
               </div>
@@ -199,7 +200,7 @@ export function ConversationPanel() {
             确认,甚至连"系统提过调整"这件事都不知道。 */}
         {isRealSpace && orphanProposals.map(proposal => (
           <article className="message assistant" key={proposal.id}>
-            <div className="message-byline"><Sparkles size={14} /><strong>知途</strong><span>按你的执行情况</span></div>
+            <div className="message-byline"><BrandMark size={20} /><strong>知途</strong><span>按你的执行情况</span></div>
             <div className="message-text">
               我看了最近的执行情况，提出下面这些调整。你看过之后再决定要不要写进计划。
             </div>

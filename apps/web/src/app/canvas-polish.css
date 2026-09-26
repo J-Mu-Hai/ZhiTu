@@ -1,0 +1,114 @@
+/* Scoped after the historical demo styles. Content owns node height. */
+.brand-mark { display: inline-block; flex-shrink: 0; vertical-align: middle; }
+.auth-brand > span { background: transparent; border: 0; box-shadow: none; }
+.path-canvas .growth-node,
+.path-canvas .growth-node.task,
+.path-canvas .growth-node.milestone {
+  --semantic: #739dc4;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 0;
+  width: max-content;
+  min-width: 190px;
+  max-width: 330px;
+  height: auto;
+  min-height: 58px;
+  padding: 13px 28px 13px 14px;
+  border-radius: 12px;
+  white-space: normal;
+}
+.path-canvas .growth-node.academic { --semantic: #739dc4; }
+.path-canvas .growth-node.research { --semantic: #6aa99b; }
+.path-canvas .growth-node.experience { --semantic: #c5a06e; }
+.path-canvas .growth-node.personal { --semantic: #a495c6; }
+.path-canvas .growth-node.stage,
+.path-canvas .growth-node.milestone {
+  position: relative;
+  top: auto;
+  background: #fffefa;
+  border: 1px solid #dae5eb;
+  box-shadow: 0 4px 14px rgba(68, 98, 120, .05);
+}
+.path-canvas .growth-node.goal { min-width: 190px; max-width: 300px; }
+.path-canvas .growth-node .node-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+  width: 100%;
+}
+.path-canvas .growth-node .node-marker {
+  position: static;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 21px;
+  width: 21px;
+  height: 23px;
+  margin: 0;
+  padding: 0;
+  color: var(--semantic);
+}
+.path-canvas .growth-node .node-title-dot {
+  display: block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--semantic);
+  margin: 0;
+}
+.path-canvas .growth-node .node-task-box {
+  display: block;
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid currentColor;
+  border-radius: 3px;
+  margin: 0;
+}
+.path-canvas .growth-node .node-title {
+  display: block;
+  flex: 1;
+  min-width: 0;
+  max-width: none;
+  text-align: left;
+  color: #2d455b;
+  font-size: 14px;
+  line-height: 23px;
+  font-weight: 600;
+  letter-spacing: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow: visible;
+  text-overflow: clip;
+}
+.path-canvas .growth-node.goal .node-title {
+  font-size: 17px;
+  max-width: none;
+  text-align: left;
+}
+.path-canvas .growth-node .node-description {
+  display: block;
+  min-width: 0;
+  margin: 5px 0 0 31px;
+  color: #708395;
+  font-size: 12px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow: visible;
+  -webkit-line-clamp: unset;
+}
+.path-canvas .growth-node.is-complete .node-title { text-decoration: line-through; }
+.path-canvas .growth-node .react-flow__handle { opacity: 0; pointer-events: none; }
+.path-canvas .react-flow__edge-path { stroke-linecap: round; stroke-linejoin: round; }
+.path-canvas .growth-node .node-enter { right: -10px; bottom: -10px; }
+.path-canvas .growth-node .node-delete { right: -10px; top: -10px; }
+.path-canvas .growth-node.is-selected { border-color: var(--semantic); background: #f0f7fc; }
+.space-floating-tools > button { background: #fff; color: #425e77; border-color: #d4e2ec; }
+.space-floating-tools > button:hover:not(:disabled) { background: #edf5fb; color: #28577f; }
+@media (max-width: 600px) {
+  .path-canvas .growth-node { max-width: 270px; }
+}

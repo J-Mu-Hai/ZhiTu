@@ -29,6 +29,32 @@ def _error(response: httpx.Response) -> str:
     return response.json()["error"]["code"]
 
 
+async def test_phone_account_register_login_and_duplicate(app_client: httpx.AsyncClient) -> None:
+    payload = {"email": "13900001234", "password": DEFAULT_PASSWORD, "displayName": "知途用户"}
+    registered = await app_client.post("/api/auth/register", json=payload)
+    assert registered.status_code == 201
+    assert registered.json()["user"]["email"] == payload["email"]
+    duplicate = await app_client.post("/api/auth/register", json=payload)
+    assert duplicate.status_code == 409
+    login = await app_client.post("/api/auth/login", json={
+        "email": payload["email"], "password": payload["password"],
+    })
+    assert login.status_code == 200
+    assert login.json()["user"]["id"] == registered.json()["user"]["id"]
+    wrong = await app_client.post("/api/auth/login", json={
+        "email": payload["email"], "password": "wrong-password",
+    })
+    assert wrong.status_code == 401
+
+
+@pytest.mark.parametrize("phone", ["12345", "12900001234", "139000012345", "１３９００００１２３４"])
+async def test_invalid_phone_registration(app_client: httpx.AsyncClient, phone: str) -> None:
+    result = await app_client.post("/api/auth/register", json={
+        "email": phone, "password": DEFAULT_PASSWORD, "displayName": "知途用户",
+    })
+    assert result.status_code == 422
+
+
 # ---------------------------------------------------------------------------------
 # 注册
 # ---------------------------------------------------------------------------------

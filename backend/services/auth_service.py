@@ -24,7 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from backend.core.security import (
-    email_problem,
+    account_problem,
     generate_token,
     hash_ip,
     hash_password,
@@ -163,11 +163,11 @@ async def register(
     # 不只是为了查重:它保证了 flush 时不可能撞上 ck_users_email_is_canonical,
     # 于是下面捕获到的 IntegrityError 只可能来自唯一约束,可以放心报 409。
     email = normalize_email(email)
-    if email_problem(email):
-        raise InvalidInput("邮箱格式不正确。")
+    if account_problem(email):
+        raise InvalidInput("手机号或邮箱格式不正确。")
 
     if await _find_user_by_email(db, email) is not None:
-        raise EmailAlreadyRegistered("这个邮箱已经注册过了。")
+        raise EmailAlreadyRegistered("这个账号已经注册过了。")
 
     user = User(
         email=email,
@@ -182,7 +182,7 @@ async def register(
         # 两个请求同时注册同一个邮箱时,先到的那条提交后这条才会撞上唯一约束。
         # 不捕获的话用户看到的是 500 —— 而这其实是"已经注册过了"这个正常结果。
         await db.rollback()
-        raise EmailAlreadyRegistered("这个邮箱已经注册过了。") from exc
+        raise EmailAlreadyRegistered("这个账号已经注册过了。") from exc
 
     # 刻意**不**在这里创建 UserCapacityProfile。那会把一个猜出来的每周时间预算
     # 当成用户已经确认过的事实存下来。预算必须由用户说出来(阶段 3 的对话里问)。
@@ -204,13 +204,13 @@ async def login(
 
     if user is None:
         verify_password(password, _dummy_hash())
-        raise InvalidCredentials("邮箱或密码不正确。")
+        raise InvalidCredentials("账号或密码不正确。")
     if not verify_password(password, user.password_hash):
-        raise InvalidCredentials("邮箱或密码不正确。")
+        raise InvalidCredentials("账号或密码不正确。")
     if not user.is_active:
         # 停用的账号与密码错误返回同一个错误。分开报会让"这个账号存在吗"这个问题
         # 又多一个可以问的地方。
-        raise InvalidCredentials("邮箱或密码不正确。")
+        raise InvalidCredentials("账号或密码不正确。")
 
     issued = await _issue_session(db, user, user_agent=user_agent, ip=ip)
     await db.commit()

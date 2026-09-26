@@ -29,6 +29,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import re
 import secrets
 import uuid
 from dataclasses import dataclass
@@ -115,6 +116,16 @@ def hash_token(token: str) -> str:
     而且每个请求都要算它,慢哈希会让每次请求都变慢。慢哈希是给低熵密码用的。
     """
     return hashlib.sha256(token.encode("ascii")).hexdigest()
+
+
+def account_problem(value: str) -> str | None:
+    """兼容旧邮箱账号与中国大陆手机号；手机号尚未通过短信核验。
+
+    预览版沿用历史 email 字段存储登录标识，不伪造邮箱、不迁移旧账号。
+    """
+    if re.fullmatch(r"1[3-9][0-9]{9}", value):
+        return None
+    return email_problem(value)
 
 
 def normalize_email(raw: str) -> str:

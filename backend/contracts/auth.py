@@ -27,7 +27,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import Field, field_validator
 
 from backend.contracts.common import ApiModel
-from backend.core.security import email_problem, normalize_email
+from backend.core.security import account_problem, normalize_email
 
 
 def _validate_timezone(value: str) -> str:
@@ -53,7 +53,7 @@ class RegisterRequest(ApiModel):
     @classmethod
     def _check_email(cls, value: str) -> str:
         email = normalize_email(value)
-        problem = email_problem(email)
+        problem = account_problem(email)
         if problem:
             raise ValueError(problem)
         return email
