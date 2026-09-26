@@ -255,8 +255,11 @@ Vercel 部署的是 `next build` 的产物；本地开发用的是 `next dev`，
 - **本次（2026-09-26 23:07 实测）**：`npm run test:accept` = **31 passed / 1 skipped / 0 failed**
   （113.2s，`--workers=1`）。运行编号 `20260926-230710-a5892ed`，现场在
   `apps/web/artifacts/runs/20260926-230710-a5892ed/` —— 它的 `summary.txt` 里写着跑的时候
-  工作区**有 3 项未提交改动**，那 3 项就是这一节所属提交的全部内容（两个测试基础设施文件
-  加本文件），跑完原样提交。往前那几轮（`1d6e30f` 的三轮 + 一次全新库）结果相同。
+  工作区**有 3 项未提交改动**，就是被验的那三份代码：`playwright.config.ts`、
+  `scripts/dev/accept-e2e.mjs` 和本文件。跑完原样提交，提交是 **`cf4ee81`**
+  （`test(e2e): keep every acceptance run's evidence in its own directory`）。
+  那个提交里有 4 个文件 —— 多出来的 `apps/web/README.md` 是这一轮**之后**才改的，
+  纯文档，不是那一次跑的东西。往前那几轮（`1d6e30f` 的三轮 + 一次全新库）结果相同。
 
   这一轮同时验了**新的现场目录**：截图、trace、JSON 报告、两个日志、摘要都落在**这一次
   自己的**目录里（见下面那一条）；失败路径另用一条**故意失败**的临时用例验过一遍 ——
@@ -290,6 +293,10 @@ Vercel 部署的是 `next build` 的产物；本地开发用的是 `next dev`，
   - **没跑到测试那一步就如实写"没有 report.json"**，不写"0 失败"：那会把"没跑"读成"全过"。
   - 本地 `npm run test:e2e` 也会按时间戳给自己建一个目录（不会盖掉别的运行），但它没有
     `summary.txt` —— 摘要由验收脚本写，只有它知道端口、提交和数据库在哪。
+  - **还没跟着走的**：`auth-profile.spec.ts`、`canvas-polish.spec.ts` 里几条"记录用"截图
+    仍写在固定的 `artifacts/*.png` 路径上，跑一次盖一次。**失败现场已经按运行隔离了**
+    （`screenshot: only-on-failure` 与 trace 都落在这一次的 `test-results/` 里），
+    这几张是给人看某页面长什么样的记录图，不是取证用的 —— 但它们是"最近一次"，如实记着。
   - 旧的那几轮现场（`artifacts/round-1/` 等）留在原处不动，它们是历史记录。
 
 - **重启服务不会把在线用户登出**。这一条是修出来的：恢复登录状态的代码原来不分
