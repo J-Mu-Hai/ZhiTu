@@ -114,6 +114,20 @@ class PlanNode(UuidPk, TimestampMixin, Base):
     # 为什么彻底删除也要留行:`plan_revisions.snapshot` 里引用着这些 id,物理删除会让
     # 历史版本指向空气。"彻底"指的是不可恢复,不是从历史里抹掉。
     purged_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
+    # 这一次删除的批次号。**同一个删除动作给整支子树打的是同一个 UUID。**
+    #
+    # 恢复要回答的问题是"当时是哪一下把它带走的",而不是"它下面现在有哪些节点" ——
+    # 后者会把用户**更早单独收起来**的子项一起复活(见 `restore_node`)。这个列就是
+    # 那个"哪一下"。
+    #
+    # 为什么不用 `deleted_at` 当批次标识(它曾经就是):那要靠"两次归档不会落在同一个
+    # 微秒上"成立。现在确实不会 —— 但那是一条**关于精度的默认性质**,不是写下来的
+    # 约束:列类型、驱动、某一处 `replace(microsecond=0)` 都能让它不成立,而失效时的
+    # 症状是"我恢复了一项,他当时特意收起来的另一项也跟着回来了" —— 恰好是这个功能
+    # 最不该有的错,而且不会有任何提示。显式给号,这条约束就不再依赖时间精度。
+    #
+    # 可空:活着的节点没有批次可言(`deleted_at` 为空的行这一列也是空)。
+    archive_batch_id: Mapped[uuid.UUID | None] = mapped_column()
 
     workspace: Mapped[Workspace] = relationship()  # noqa: F821
     parent: Mapped[PlanNode | None] = relationship(

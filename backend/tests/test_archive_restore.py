@@ -27,7 +27,7 @@ import uuid
 from datetime import timedelta
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.db.models import Dependency, NodeRelation, PlanNode, ScheduledSession
@@ -149,6 +149,26 @@ async def _scheduled(
         )
     )
     await db.commit()
+
+
+async def _archived_rows(
+    db: AsyncSession, account: Account, node_ids: list[str]
+) -> list[tuple[object, uuid.UUID, uuid.UUID | None]]:
+    """这几行的 `(deleted_at, id, archive_batch_id)`。
+
+    **只能从库里读**:批次号是恢复认哪一批的依据,但它不在任何响应里(界面不需要知道
+    它)。断言画布或接口都碰不到它,而这一组要验的恰好是它。
+    """
+    return list(
+        await db.execute(
+            select(PlanNode.deleted_at, PlanNode.id, PlanNode.archive_batch_id)
+            .where(
+                PlanNode.workspace_id == uuid.UUID(account.workspace_id),
+                PlanNode.id.in_([uuid.UUID(item) for item in node_ids]),
+            )
+            .execution_options(populate_existing=True)
+        )
+    )
 
 
 async def _sessions(db: AsyncSession, account: Account) -> dict[str, tuple]:
@@ -307,6 +327,74 @@ async def test_restore_brings_back_only_the_batch_it_was_archived_with(
 
     assert (await _restore(app_client, account, child)).status_code == 200
     assert "先收起来的子项" in await _titles(app_client, account)
+
+
+async def test_two_archives_that_share_a_timestamp_stay_two_batches(
+    app_client: httpx.AsyncClient, make_account, db: AsyncSession
+) -> None:
+    """两次归档**时间戳一模一样**时,恢复仍然只认自己那一批。
+
+    批次号以前就是"`deleted_at` 相等"。那条判据靠的是"两次归档不会落在同一个微秒上"
+    —— 一条关于精度的默认性质,而它失效时的症状是**静默的**:用户点一行恢复,他当时
+    特意单独收起来的子项也跟着回来了,界面上没有任何东西提示过这件事。
+
+    这里把两批的 `deleted_at` 直接改成同一个值,把这个状态**造出来**(生产里要两次
+    归档落在同一微秒才碰得到,和上面那条成环用例同一个理由:永远不会被触发的守卫,
+    和没有守卫是一样的)。场景与 `test_restore_brings_back_only_the_batch_it_was_
+    archived_with` 完全相同 —— 差别只在时间戳,所以两条一比就知道这个键到底有没有
+    在起作用:把服务层换回按时间戳认批,这一条会红成 `restoredCount == 2`。
+    """
+    account = await make_account()
+    root = await _root(app_client, account)
+    stage = await _node(app_client, account, root, "阶段")
+    child = await _node(app_client, account, stage, "先收起来的子项")
+
+    assert (await _archive(app_client, account, child)).status_code == 200
+    assert (await _archive(app_client, account, stage)).status_code == 200
+
+    # 两批的时间戳抹成同一个。批次号不动 —— 它才是恢复该认的东西。
+    collision = (await _archived_rows(db, account, [child, stage]))[0][0]
+    await db.execute(
+        update(PlanNode)
+        .where(PlanNode.id.in_([uuid.UUID(child), uuid.UUID(stage)]))
+        .values(deleted_at=collision)
+        .execution_options(synchronize_session=False)
+    )
+    await db.commit()
+    rows = await _archived_rows(db, account, [child, stage])
+    assert {row[0] for row in rows} == {collision}, "前提没造出来:两行的时间戳不相等"
+    assert len({row[2] for row in rows}) == 2, "前提没造出来:两行本来就是同一批"
+
+    restored = await _restore(app_client, account, stage)
+    assert restored.status_code == 200, restored.text
+    assert restored.json()["restoredCount"] == 1, "时间戳撞上了也不许把更早那一批带回来"
+    assert "先收起来的子项" not in await _titles(app_client, account)
+
+
+async def test_archiving_stamps_one_batch_id_on_the_whole_subtree(
+    app_client: httpx.AsyncClient, make_account, db: AsyncSession
+) -> None:
+    """一次删除给整支打**同一个**批次号;两次删除的号不同;恢复之后清空。
+
+    三条一起验,是因为它们合起来才是"批次"这个词的意思:同一个号的是一批,不同号
+    的不是一批,而活着的节点没有批次可言(`deleted_at` 为空时那一列也该是空)。
+    """
+    account = await make_account()
+    root = await _root(app_client, account)
+    stage = await _node(app_client, account, root, "阶段")
+    child = await _node(app_client, account, stage, "子项")
+    lonely = await _node(app_client, account, root, "另一次收的")
+
+    assert (await _archive(app_client, account, stage)).status_code == 200
+    assert (await _archive(app_client, account, lonely)).status_code == 200
+
+    batches = {row[1]: row[2] for row in await _archived_rows(db, account, [stage, child, lonely])}
+    assert batches[uuid.UUID(stage)] == batches[uuid.UUID(child)], "同一支要同一个号"
+    assert batches[uuid.UUID(stage)] != batches[uuid.UUID(lonely)], "两次归档不能同一个号"
+
+    assert (await _restore(app_client, account, stage)).status_code == 200
+    after = {row[1]: row[2] for row in await _archived_rows(db, account, [stage, child])}
+    assert set(after.values()) == {None}, "恢复回来的节点不该还挂着批次号"
 
 
 async def test_restore_refuses_while_the_parent_is_still_archived(

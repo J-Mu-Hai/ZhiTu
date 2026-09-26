@@ -47,9 +47,14 @@ lock_workspace  ->  新版本号  ->  plan_revisions 一行  ->  domain_events �
 | | `archive`(默认) | `delete` |
 | --- | --- | --- |
 | `deleted_at` / `purged_at` | 打 / 留空 | 打 / 打 |
+| `archive_batch_id` | 一次删除一个号 | 一次删除一个号 |
 | 挂在上面的边 | **一行不动** | 物理删掉 |
 | 场次 | 一行不动 | 一行不动 |
 | 恢复 | 可以(`restore_node`) | 拒绝 |
+
+"一次删除一个号"那一行是恢复**认哪一批**的依据 —— 恢复要认的是"当时是哪一下把它
+带走的",不是"它下面现在有什么"(那会把用户更早单独收起来的子项也复活)。这个号
+以前是"`deleted_at` 相等",换成显式的号的理由见 `PlanNode.archive_batch_id`。
 
 归档**不动边**这一条是这一节存在的理由。以前这里无条件物理删掉挂在上面的
 `dependencies` 行,而恢复入口一出现,那样做的后果就变成了"恢复回来的是一个一条前置
@@ -423,7 +428,7 @@ async def delete_node(
         )
         now = utcnow()
 
-        values: dict[str, object] = {"deleted_at": now}
+        values: dict[str, object] = {"deleted_at": now, "archive_batch_id": uuid.uuid4()}
         if purging:
             values["purged_at"] = now
         await db.execute(
@@ -568,9 +573,15 @@ async def list_archive(db: AsyncSession, ctx: WorkspaceContext) -> list[Archived
         )
     )
     by_id = {node.id: node for node in archived}
-    by_batch: dict[datetime, list[PlanNode]] = {}
+    # 批次号为空时退回**它自己一个批次**(用 id 当键),而不是按时间戳归堆:归堆会把
+    # 第一行之外的那些当成"同一批的后代"从列表里藏掉,而藏起来是看不见的。
+    # 这个退化路径不该出现 —— 迁移给每一行归档都补了号(见 `PlanNode.archive_batch_id`)。
+    def batch_key(node: PlanNode) -> uuid.UUID:
+        return node.archive_batch_id or node.id
+
+    by_batch: dict[uuid.UUID, list[PlanNode]] = {}
     for node in archived:
-        by_batch.setdefault(node.deleted_at, []).append(node)
+        by_batch.setdefault(batch_key(node), []).append(node)
 
     # 父亲不在归档里的那些,要单独查一次才分得清"父亲活着"(不挡)和"父亲被彻底
     # 删除了"(挡住,而且**没有**"先恢复父亲"这条路可走)。一次查询,不做 N+1。
@@ -592,7 +603,7 @@ async def list_archive(db: AsyncSession, ctx: WorkspaceContext) -> list[Archived
     entries: list[ArchivedEntry] = []
     for node in archived:
         parent = by_id.get(node.parent_id) if node.parent_id is not None else None
-        if parent is not None and parent.deleted_at == node.deleted_at:
+        if parent is not None and batch_key(parent) == batch_key(node):
             # 和它同一批走的,列的是那一批的根。
             continue
         blocked = None
@@ -607,7 +618,7 @@ async def list_archive(db: AsyncSession, ctx: WorkspaceContext) -> list[Archived
                         if outer is not None and outer.purged_at is not None
                         else "PARENT_ARCHIVED"
                     )
-        subtree = _collect_subtree(by_batch[node.deleted_at], node.id)
+        subtree = _collect_subtree(by_batch[batch_key(node)], node.id)
         entries.append(
             ArchivedEntry(
                 node=node,
@@ -665,12 +676,16 @@ async def restore_node(
 ) -> RestoreResult:
     """把一个归档的节点恢复回来 —— **连同当时一起被归档的那一支**。
 
-    ## 认人的依据是时间戳,不是"整棵子树"
+    ## 认人的依据是批次号,不是"整棵子树",也不是时间戳
 
-    一次归档给整棵子树上的是**同一个** `deleted_at`。恢复据此把"这一次带走的"认出来,
-    而不是无条件地把现在这棵子树都清掉:那样会把**更早以前单独归档过**的子孙一起复活,
-    而用户点的是这一行 —— 他以为只回来了一项,实际回来了一片,那一片里可能有他当时
-    特意收起来的东西。
+    一次归档给整棵子树上的是**同一个** `archive_batch_id`。恢复据此把"这一次带走的"
+    认出来,而不是无条件地把现在这棵子树都清掉:那样会把**更早以前单独归档过**的子孙
+    一起复活,而用户点的是这一行 —— 他以为只回来了一项,实际回来了一片,那一片里可能
+    有他当时特意收起来的东西。
+
+    **这个键以前是 `deleted_at` 相等**,换成了显式的号:时间戳相等要靠"两次归档不落在
+    同一个微秒上"成立,那是精度的性质而不是写下来的约束,而它失效时的症状正好是这个
+    功能最不该有的错(见 `PlanNode.archive_batch_id` 那段)。
 
     ## 三道校验,一道都不许静默通过
 
@@ -716,13 +731,21 @@ async def restore_node(
                 )
             )
         )
-        # 同一批(同一个时间戳)且**不是被彻底删除的**那些。遍历只在这批里做:
+        # 同一批(同一个批次号)且**不是被彻底删除的**那些。遍历只在这批里做:
         # 同一批的后代一定也在这一批里(见上面"认人的依据")。
-        batch = [
-            node
-            for node in archived
-            if node.deleted_at == root.deleted_at and node.purged_at is None
-        ]
+        #
+        # 批次号为空只可能是"库里的归档行没经过那次回填"(迁移给每一行都补过号),
+        # 这时退化成"只恢复它自己":恢复得**少**是看得见的(子项还留在归档列表里),
+        # 恢复得多则是静默的,而那正是这里最不能出的错。
+        batch = (
+            [root]
+            if root.archive_batch_id is None
+            else [
+                node
+                for node in archived
+                if node.archive_batch_id == root.archive_batch_id and node.purged_at is None
+            ]
+        )
         restore_ids = _collect_subtree(batch, root.id)
         restore_ids.add(root.id)
 
@@ -751,7 +774,9 @@ async def restore_node(
         await db.execute(
             update(PlanNode)
             .where(PlanNode.id.in_(restore_ids), PlanNode.workspace_id == ctx.id)
-            .values(deleted_at=None)
+            # 批次号一起清掉,让"活着 ⇒ 没有批次"这条不变式成立:留着一个已经作废的
+            # 批次号,下一个人读库时会以为它还在某一次归档里。
+            .values(deleted_at=None, archive_batch_id=None)
             .execution_options(synchronize_session=False)
         )
 
@@ -778,7 +803,10 @@ async def restore_node(
         # 返回的那个节点要反映**恢复之后**的状态。用 `root` 对象本身不行:上面的
         # `update()` 走的是 SQL,这个 ORM 实例还带着 `deleted_at` —— 响应里会带着一个
         # 早已过期的删除时间(`synchronize_session=False` 就是为了不惊动会话里的对象)。
+        # 批次号同理:它和 `deleted_at` 是同一条 SQL 一起清的,对象上也得跟着清,
+        # 否则这个实例和它对应的那一行说的不是同一件事。
         root.deleted_at = None
+        root.archive_batch_id = None
         return RestoreResult(
             node=root,
             revision_version=change.version,
