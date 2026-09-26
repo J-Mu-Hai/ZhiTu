@@ -265,7 +265,8 @@ test('换个人登进来，上一个人没提交的输入不跟过来', async ({
   // 两个账户:甲是现在这个浏览器上登录的,乙只在后端存在(`signIn: false`)。
   // 两个人都要有一个空间 —— 理由见下面那段"为什么非得站在还没到的画布上"。
   const jia = await registerAccount(page, 'draft-iso-a');
-  const jiaSpace = await createWorkspace(page, jia.token, '草稿隔离甲空间', '甲的空间');
+  // 空间 id 不存下来:这个用例是按卡片上的名字点的,存着它反而会让人以为哪一步在用它。
+  await createWorkspace(page, jia.token, '草稿隔离甲空间', '甲的空间');
   const yi = await registerAccount(page, 'draft-iso-b', { signIn: false });
   await createWorkspace(page, yi.token, '草稿隔离乙空间', '乙的空间');
   const marker = '甲写了一半的东西';

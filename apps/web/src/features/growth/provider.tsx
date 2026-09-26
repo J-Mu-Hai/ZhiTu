@@ -1,5 +1,5 @@
 'use client';
-import { Suspense, createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Suspense, createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode, type SetStateAction } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import type { AISettings, Conversation, FileAsset, GrowthNode, GrowthRelationType, JournalEntry, Message, PlanAction } from '@/types/growth';
 import { dayNumber, todayInTimeZone } from './timeline';
@@ -9,7 +9,7 @@ import type { AccountProfile } from '@/features/auth/types';
 import { workspaceStorageKey } from './workspaces';
 import * as backend from '@/lib/backend';
 import type { RelationPayload } from '@/lib/backend';
-import { ApiError } from '@/lib/api';
+import { ApiError, getToken } from '@/lib/api';
 
 /**
  * 成长空间状态。
@@ -151,6 +151,25 @@ function loadLocalPrefs(user: AccountProfile | null, space: SpaceInfo): LocalPre
   }
 }
 
+/**
+ * 攒多久再发一次布局。
+ *
+ * 拖动一次会连续产生几十个位置,而整份提交的语义已经是"最后一次赢"
+ * (见 `PutLayoutRequest` 的注释)—— 中间那些不必上路。600 毫秒是"用户停手了"的
+ * 一个大致刻度:比一次拖动的间隔长,比人再去点别的东西快。
+ */
+const LAYOUT_SAVE_DEBOUNCE_MS = 600;
+
+/** 两份位置表是不是一模一样。见 `setPositions` 里为什么需要它。 */
+function samePositions(
+  a: Record<string, { x: number; y: number }>,
+  b: Record<string, { x: number; y: number }>,
+): boolean {
+  const keys = Object.keys(a);
+  if (keys.length !== Object.keys(b).length) return false;
+  return keys.every(key => b[key]?.x === a[key]?.x && b[key]?.y === a[key]?.y);
+}
+
 function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
   const [seed] = useState(() => loadLocalPrefs(user, space));
 
@@ -219,22 +238,19 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
   const canvasKey = spaceId === PLACEHOLDER_ROOT_ID ? growth.goalId : spaceId;
 
   /**
-   * 每个层级各自的视口(平移 + 缩放),以及时间线自己那一份。
+   * 每个层级各自的视口(平移 + 缩放)。
    *
-   * **只活在内存里,按空间分开** —— 它在 Provider 里,而 Provider 的 `key` 是空间 id,
+   * **按空间分开** —— 它在 Provider 里,而 Provider 的 `key` 是空间 id,
    * 所以换空间天然拿不到上一个空间的那一份。
    *
-   * 为什么不顺手也落 localStorage:`positions` 落盘是因为"我把这张图摆成什么样"
-   * 值得跨刷新留着;视口是**对当前画面的一瞥**,而节点集合一变(补了节点、删了子树),
-   * 上一次的视口就可能框住一片空白 —— 那种"打开是一张空图"比"重新 fit 一次"更难解释。
-   * 跨刷新、跨设备的那一份留给步骤 3 的后端 `scope_viewports`。
+   * 它已经**不只是内存里的一份了**:2026-09-27 起会写进后端的 `scope_viewports`
+   * (见下面"布局落库"那一段,`setScopeViewport` 也搬到了那里)。
+   * 落 localStorage 仍然不做 —— 节点集合一变(补了节点、删了子树),上一次的视口
+   * 就可能框住一片空白,而"打开是一张空图"比"重新 fit 一次"更难解释。
+   * 跨设备那一份走后端,理由不同:那是用户在**另一台机器上**摆过的位置,不是这台
+   * 机器的本地状态。
    */
-  const [viewports, setViewports] = useState<Record<string, { x: number; y: number; zoom: number }>>({});
-  const setScopeViewport = useCallback((scopeId: string, viewport: { x: number; y: number; zoom: number }) => {
-    setViewports(old => (old[scopeId]?.x === viewport.x && old[scopeId]?.y === viewport.y && old[scopeId]?.zoom === viewport.zoom
-      ? old
-      : { ...old, [scopeId]: viewport }));
-  }, []);
+  const [viewports, setViewportsRaw] = useState<Record<string, { x: number; y: number; zoom: number }>>({});
   // 时间线的那一份形状不同(`start` 是"从第几天开始看",`density` 是每天多少像素),
   // 所以不塞进上面那个表。它的初始值以前算在 `TimelineView` 里,现在挪到这里 ——
   // 不然切一次视图回去,时间线就跳回今天。
@@ -253,7 +269,7 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
   useEffect(() => { if (!focus.running) return; const timer = setInterval(() => setFocus(f => ({ ...f, seconds: f.seconds + 1 })), 1000); return () => clearInterval(timer); }, [focus.running]);
   const [selectedId, select] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
-  const [positions, setPositions] = useState<Record<string, { x: number; y: number }>>(seed.positions);
+  const [positions, setPositionsRaw] = useState<Record<string, { x: number; y: number }>>(seed.positions);
 
   // 对话状态。真实空间才用:加载中 / 发送中 / 这一轮的错误 / 还缺哪些规划条件。
   const [historyLoading, setHistoryLoading] = useState(space.kind === 'real');
@@ -407,6 +423,241 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     }
   }
 
+  // ---------------------------------------------------------------------------------
+  // 布局落库(步骤 3B)
+  // ---------------------------------------------------------------------------------
+  /**
+   * 画布布局(**节点位置 + 每层视口**)的读写。
+   *
+   * 这一段要同时守住四件事,它们互相拉扯,所以放在一处、一次说清:
+   *
+   * 1. **串行**:同一时刻只允许一个 PUT 在飞。两个同时在飞时,先发的那个可能后落地
+   *    —— 用户把节点拖到 A、再拖到 B,界面上一路都对,刷新却看到它在 A,
+   *    而他明明看到过 B。
+   * 2. **合并**:拖动会连续产生几十个中间位置,而整份提交的语义已经是"最后一次赢"
+   *    (见 `PutLayoutRequest`)。中间那些不上路:攒一小会儿,只发最后一份。
+   * 3. **按空间隔离**:切空间时,上一个空间还没发出去的那一份**绝不能**写进新空间。
+   *    做法是让待发的数据留在闭包里 —— 定时器和它捕获的 `space.id` 是一起被丢掉的,
+   *    新空间拿到的是新挂载的一套 ref。**卸载时故意不取消那个定时器**:它属于上一个
+   *    空间,数据也只该进上一个空间,而"拖动之后立刻切走"正是必须存住的场景之一。
+   * 4. **失败要看得见**:写不成就把话说明白,并留一个**能用**的重试。不自动重试 ——
+   *    自动重试会把"后端一直存不上"变成"界面一切正常、刷新就丢"。
+   */
+  const [layoutError, setLayoutError] = useState<string | null>(null);
+  /**
+   * 后端那份布局**问过一次了**(成功、失败都算)。
+   *
+   * 它是给 `PathView` 的自动 fit 用的:后端那份还没回来就 fit,等于用一个默认视角
+   * 盖掉用户上次摆好的位置 —— 而且那一次 fit 会被当成"用户的视口"存回去,
+   * 把库里的那一份也改掉。见 `PathView` 里那个 effect 的第一行。
+   */
+  const [layoutReady, setLayoutReady] = useState(!isReal);
+  /** 读回来、还没用上的那一份。见下面那个合并 effect。 */
+  const [serverLayout, setServerLayout] = useState<backend.LayoutPayload | null>(null);
+
+  /** 有改动还没写进去。 */
+  const dirty = useRef(false);
+  /** 有一个 PUT 正在飞。**它就是"串行"的全部实现。** */
+  const inFlight = useRef(false);
+  const saveTimer = useRef<number | null>(null);
+  /** 攒改动时用的是哪个账户的令牌。见 `flushLayout` 开头那道判断。 */
+  const pendingToken = useRef<string | null>(null);
+  /**
+   * 用户**这一次会话里自己动过**布局。
+   *
+   * 后端那份回来得比用户的手慢时(计划还没到、或者用户手快),它就不能再盖上来:
+   * 用户刚把节点拖到某个地方,没有理由拿一份更旧的位置把他按回去。
+   */
+  const layoutTouched = useRef(false);
+
+  /**
+   * 最新的这三份东西,**给回调读**。
+   *
+   * 保存是异步的:定时器、PUT、失败后的重试都不在渲染里跑,而闭包捕获到的是
+   * "这次渲染开始时"的那一份。镜像保证了无论在哪一刻拼载荷,拼的都是最新的一份
+   * (这也正是"合并未发出的更新"的实现方式:重试用的是重试那一刻的数据,
+   * 不是失败那一刻的)。
+   */
+  const positionsRef = useRef(positions);
+  const viewportsRef = useRef(viewports);
+  const growthRef = useRef(growth);
+  positionsRef.current = positions;
+  viewportsRef.current = viewports;
+  growthRef.current = growth;
+
+  /**
+   * 把本地这份布局拼成一次提交的载荷。**两个筛子,缺一个都会出事。**
+   *
+   * - **哨兵值不上路**:计划还没从后端到的时候占位树的根是 `PLACEHOLDER_ROOT_ID`
+   *   (`'goal'`),而画布是活的 —— 用户在那个窗口里拖一下,位置表里就会留下
+   *   `goal:goal` 这样的键。`PUT /layout` 收的 `node_id` 是 UUID,发过去是 422。
+   * - **计划里已经没有的节点不上路**:`put_layout` 对不认识的 id 是**整批拒绝**
+   *   (见 `layout_service.py`),一个已经删掉的节点留在本地位置表里,会让此后
+   *   每一次保存都失败 —— 而失败信息和"拖动"看起来毫无关系。
+   *
+   * 还有一件不那么显然的:同一个节点可能有两份位置。`node_positions` 一行只装得下
+   * 一个(`(用户, 空间, 节点)` 唯一),而画布上同一个节点在**两个层级**里都画得出来
+   * ——作为某一层的子节点,和作为它自己那一层的根——各自的键是 `看到的那一层:节点`。
+   * 取它的**归属层级**那一份(`${parentId ?? 自己}:${自己}`,根目标归自己):
+   * 那一份回答的是"这个节点在这个空间里在哪",另一份只是这次会话里的一瞥。
+   */
+  const layoutPayload = useCallback((): backend.PutLayoutRequest => {
+    const known = growthRef.current.nodes;
+    const canonical = new Map<string, { x: number; y: number }>();
+    for (const [key, value] of Object.entries(positionsRef.current)) {
+      const nodeId = key.slice(key.indexOf(':') + 1);
+      const node = known[nodeId];
+      if (!node || !UUID_RE.test(nodeId)) continue;
+      const home = `${node.parentId ?? nodeId}:${nodeId}`;
+      if (!canonical.has(nodeId) || key === home) canonical.set(nodeId, value);
+    }
+    return {
+      positions: [...canonical].map(([nodeId, value]) => ({ nodeId, x: value.x, y: value.y })),
+      viewports: Object.entries(viewportsRef.current)
+        .filter(([scopeId]) => Boolean(known[scopeId]) && UUID_RE.test(scopeId))
+        .map(([scopeNodeId, viewport]) => ({ scopeNodeId, zoom: viewport.zoom, panX: viewport.x, panY: viewport.y })),
+    };
+  }, []);
+
+  /**
+   * 把攒着的那一份写进后端。**永远只有一趟在飞**(`inFlight`),写完之后如果又攒了
+   * 新的,用**最新的一份**再发一次 —— 这一趟在飞的时候发生的事不会丢,也不会
+   * 和它抢着写。
+   */
+  const flushLayout = useCallback(async () => {
+    if (!isReal || inFlight.current) return;
+    // 账户换过了就**不发**。待发的这一份产生在上一个账户的画布上,而"退出登录"到
+    // "下一个人登进来"之间那个定时器还活着(上面说了为什么故意不取消它)。令牌就是
+    // 账户的凭据:它变了,这一份就该作废 —— 而不是拿新账户的身份去写旧空间。
+    if (pendingToken.current !== getToken()) { dirty.current = false; return; }
+    inFlight.current = true;
+    // 「这个节点不在这个空间里」这种失败只修一次,不空转(见下面 catch)。
+    let repaired = false;
+    try {
+      while (dirty.current) {
+        dirty.current = false;
+        try {
+          await backend.putLayout(space.id, layoutPayload());
+          setLayoutError(null);
+        } catch (cause) {
+          dirty.current = true;   // 没写成就还是脏的
+          setLayoutError(cause instanceof ApiError ? cause.message : '布局没保存上。');
+          if (!repaired && cause instanceof ApiError && cause.code === 'NODE_NOT_FOUND') {
+            // 后端是**整批拒绝**的,而这里最常见的原因是本地这份计划落后了(刚删掉的
+            // 那个节点还在这边的位置表里)。那样的话重试发出去的是同一份载荷,点几次
+            // 都一样 —— 所以先把计划拉回来再试一次;还不行就停,把错误留在界面上。
+            repaired = true;
+            await refreshPlan().catch(() => {});
+            continue;
+          }
+          break;
+        }
+      }
+    } finally {
+      inFlight.current = false;
+    }
+  }, [isReal, layoutPayload, refreshPlan, space.id]);
+
+  /** 记下"布局脏了",并安排一次延迟保存。 */
+  const scheduleLayoutSave = useCallback(() => {
+    dirty.current = true;
+    pendingToken.current = getToken();
+    if (saveTimer.current !== null) window.clearTimeout(saveTimer.current);
+    saveTimer.current = window.setTimeout(() => { saveTimer.current = null; void flushLayout(); }, LAYOUT_SAVE_DEBOUNCE_MS);
+  }, [flushLayout]);
+
+  /**
+   * 用户点「重试」。**载荷是这一刻现拼的**,所以它比失败那一次新 ——
+   * 网络回来了、或者计划补上了,同一下就能成。这也是为什么这个按钮不看
+   * `ApiError.retryable`:那个判断说的是"同样的请求再发一次有没有意义"。
+   */
+  const retryLayoutSave = useCallback(() => {
+    pendingToken.current = getToken();
+    dirty.current = true;
+    void flushLayout();
+  }, [flushLayout]);
+
+  /**
+   * 节点位置。**值没变就不算改动。**
+   *
+   * 这一条不是省事:拖动结束时 ReactFlow 会连着报几次,而"点了但没挪动"也会报一次。
+   * 不比较的话,那些都不会产生新的位置,却会各排一次保存 —— 库里那一行一个字节
+   * 都不会变,而界面上"刚才那下到底存上没有"变成了一个没有答案的问题。
+   */
+  const setPositions = useCallback((updater: SetStateAction<Record<string, { x: number; y: number }>>) => {
+    const next = typeof updater === 'function' ? updater(positionsRef.current) : updater;
+    if (next === positionsRef.current || samePositions(next, positionsRef.current)) return;
+    // 立刻更新镜像:同一串连续改动里,后一次读到的是前一次的结果(而不是上一次渲染的)。
+    positionsRef.current = next;
+    setPositionsRaw(next);
+    layoutTouched.current = true;
+    scheduleLayoutSave();
+  }, [scheduleLayoutSave]);
+
+  /**
+   * 一个层级的视口。同样的道理:**值没变就不算改动**。
+   *
+   * 这里不比较的代价更大:我们自己在"回到记忆里的位置"时会 `setViewport` 一次,
+   * ReactFlow 随后就用同一个视口喊 `onMoveEnd` —— 于是每一次"回到记忆位置"都会变成
+   * 一次新的保存,而它写进去的和库里已经有的一模一样。
+   *
+   * 顺带说明**自动 fit 也会走到这里**(它下一步就是 `onMoveEnd`):所以打开一个空间
+   * 本身也会留下一行"这一层我上次看到的是这个样子"。那是有意的 —— 下次进来回到那儿,
+   * 而不是每次都被重新摆一遍;节点变化之后那个视口可能显得空,用户拖一下就覆盖了。
+   */
+  const setScopeViewport = useCallback((scopeId: string, viewport: { x: number; y: number; zoom: number }) => {
+    const old = viewportsRef.current[scopeId];
+    if (old && old.x === viewport.x && old.y === viewport.y && old.zoom === viewport.zoom) return;
+    const next = { ...viewportsRef.current, [scopeId]: viewport };
+    viewportsRef.current = next;
+    setViewportsRaw(next);
+    layoutTouched.current = true;
+    scheduleLayoutSave();
+  }, [scheduleLayoutSave]);
+
+  // 后端那份布局。**读失败不报错**:位置退回 localStorage 那份(视口没有),画布照样
+  // 能用,下一次保存会把这份推上去 —— 这不是用户做错了什么,不该给他一行红字。
+  // 但 `layoutReady` 必须翻成 true,否则自动 fit 会一直不跑,画布停在默认视角。
+  useEffect(() => {
+    if (!isReal) { setLayoutReady(true); return; }
+    let cancelled = false;
+    setLayoutReady(false);
+    backend.getLayout(space.id)
+      .then(payload => { if (!cancelled) setServerLayout(payload); })
+      .catch(() => { if (!cancelled) setServerLayout(null); })
+      .finally(() => { if (!cancelled) setLayoutReady(true); });
+    return () => { cancelled = true; };
+  }, [isReal, space.id]);
+
+  /**
+   * 把读回来的那一份合进本地。**计划没到就不合** —— 位置的键要从计划里的
+   * `parentId` 推出来(`${归属层级}:${节点}`),而计划没到时画布上是一棵占位树,
+   * 拿它去认节点会把整份布局丢光。
+   */
+  useEffect(() => {
+    if (!serverLayout || !plan) return;
+    // 只用一次。留着的话,此后每一次计划重取(改一个节点、删一个节点都会重取)都会
+    // 把这份旧布局再盖回来 —— 把用户刚拖过的位置按回去。
+    setServerLayout(null);
+    if (layoutTouched.current) return;
+    const known = growth.nodes;
+    const mergedPositions = { ...positionsRef.current };
+    for (const item of serverLayout.positions) {
+      const node = known[item.nodeId];
+      if (!node) continue;
+      mergedPositions[`${node.parentId ?? item.nodeId}:${item.nodeId}`] = { x: item.x, y: item.y };
+    }
+    positionsRef.current = mergedPositions;
+    setPositionsRaw(mergedPositions);
+    const mergedViewports = { ...viewportsRef.current };
+    for (const item of serverLayout.viewports) {
+      if (!known[item.scopeNodeId]) continue;
+      mergedViewports[item.scopeNodeId] = { x: item.panX, y: item.panY, zoom: item.zoom };
+    }
+    viewportsRef.current = mergedViewports;
+    setViewportsRaw(mergedViewports);
+  }, [serverLayout, plan, growth]);
+
   function updateNode(nodeId: string, patch: Extract<PlanAction, { type: 'UPDATE_NODE' }>['patch']) {
     if (!isReal) return;
     // 界面的 patch 里有 `startDate`/`endDate`,后端**没有这两个字段** ——
@@ -505,7 +756,16 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     // 保留一个指向"正在被删的节点"的选中态会让详情面板闪一下空白。
     // **计划本身不动** —— 以 `refreshPlan` 回来的那份为准。
     if (selectedId === nodeId) select(null);
-    setPositions(old => Object.fromEntries(Object.entries(old).filter(([key]) => !key.endsWith(`:${nodeId}`))));
+    // 这一下走**原始 setter**,不排保存。两个理由:
+    //
+    // 1. 后端读布局时本来就会滤掉已删节点的位置行(`load_layout`),这一下清理纯粹是
+    //    本地的,没有要告诉后端的东西。
+    // 2. 排了反而危险:删除请求刚发出去、计划还没重取回来那一刻,本地这份计划里
+    //    **还有**这个节点,于是那次保存会把它的位置一起提交上去 —— 而 `put_layout`
+    //    对不认识的 id 是整批拒绝的,用户会收到一行和"删除"看不出关系的保存失败。
+    const remaining = Object.fromEntries(Object.entries(positionsRef.current).filter(([key]) => !key.endsWith(`:${nodeId}`)));
+    positionsRef.current = remaining;
+    setPositionsRaw(remaining);
     void mutatePlan(() => backend.deleteNode(space.id, nodeId));
   }
   function addFiles(ownerId: string, incoming: File[]) {
@@ -717,8 +977,11 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     spaceId: currentSpaceId,
     // 画布子树的 key。**与 `spaceId` 不是同一个东西**,别拿它去查节点 —— 见 `canvasKey`。
     canvasKey,
-    // 视口(用户偏好,不落盘也不进版本账)。画布按层级存,时间线一份。
+    // 视口(用户偏好,不进版本账)。画布按层级存,时间线一份。
     viewports, setScopeViewport, timelineViewport, setTimelineViewport,
+    // 布局落库的那三样。`layoutReady` 是"后端那份问过了",自动 fit 要等它;
+    // `layoutError` 与 `retryLayoutSave` 是保存失败时界面上那一行和那个按钮。
+    layoutReady, layoutError, retryLayoutSave,
     enterSpace, updateNode, setNodeStatus, addNode, deleteNode,
     // 关系。三种边共用这三个入口(后端也是同一组)—— 分成 dependsOn / relatedTo
     // 两套 API 会让调用方先知道"这条边在哪个表里",而那正是接口层要挡掉的事。

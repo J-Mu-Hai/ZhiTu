@@ -129,6 +129,26 @@
 .path-canvas .growth-node.is-selected { border-color: var(--semantic); background: #f0f7fc; }
 .space-floating-tools > button { background: #fff; color: #425e77; border-color: #d4e2ec; }
 .space-floating-tools > button:hover:not(:disabled) { background: #edf5fb; color: #28577f; }
+/* 布局没保存上。它必须**看得见**(拖动可以悄悄失败:画面上节点停在你放手的地方,
+   而库里没有)而且**点得到重试** —— `.space-floating-tools` 整块是
+   `pointer-events: none`(见 experience.css 里它的定义),所以这里要显式收回来,
+   否则那一行只是一张看着能点的画。配色沿用表单里错误那一套(`today-live.css`)。 */
+.layout-save-error {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 7px 6px 11px;
+  border: 1px solid #d9a795;
+  border-left-width: 2px;
+  border-radius: 0 4px 4px 0;
+  background: #fdf4f1;
+  color: #a85341;
+  font-size: 10px;
+  line-height: 1.7;
+}
+.layout-save-error button { background: #fff; color: #a85341; border-color: #d9a795; }
+.layout-save-error button:hover { background: #fbeae4; color: #8f3f2d; }
 @media (max-width: 600px) {
   .path-canvas .growth-node { max-width: 270px; }
 }

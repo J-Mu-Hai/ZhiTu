@@ -213,6 +213,7 @@ function Canvas() {
     growth, selectedId, select, positions, setPositions, spaceId, workspaceId, canvasKey, viewports, setScopeViewport,
     enterSpace, addNode, updateNode, addRelation, updateRelation, removeRelation,
     files, isRealSpace, planSaving, planLoading, planError, setPlanError,
+    layoutReady, layoutError, retryLayoutSave,
   } = useDemo();
   const { fitView, setViewport } = useReactFlow();
   const nodesInitialized = useNodesInitialized();
@@ -461,7 +462,12 @@ function Canvas() {
   // 就等于"你刚才挪过的位置不算了"。`fittedScope` 也说明了另一半:它是组件里的一个
   // ref,**跟着组件一起被卸载** —— 这就是为什么重挂载会让 fit 再跑一遍。
   useEffect(() => {
-    if (!nodesInitialized || planLoading || fittedScope.current === spaceId) return;
+    // `layoutReady` 那一项是步骤 3B 加的,补上这条注释里原来缺的一环:布局也会
+    // **从后端**回来了(位置和视口)。不等它就 fit,等于拿一个默认视角盖掉用户上次
+    // 摆好的位置 —— 而更糟的是那一次 fit 产生的视口会被当成"用户设的视口"存回去,
+    // 把库里那一份也改掉。等它问过之后:有记忆的层级回到记忆里(下面的分支),
+    // 没有记忆的才 fit。
+    if (!nodesInitialized || planLoading || !layoutReady || fittedScope.current === spaceId) return;
     const timer = window.setTimeout(() => {
       fittedScope.current = spaceId;
       const remembered = viewports[spaceId];
@@ -469,7 +475,7 @@ function Canvas() {
       else void fitView({ padding: 0.18, maxZoom: 1, duration: 0 });
     }, 180);
     return () => window.clearTimeout(timer);
-  }, [nodesInitialized, planLoading, spaceId, measurements, fitView, setViewport, viewports]);
+  }, [nodesInitialized, planLoading, layoutReady, spaceId, measurements, fitView, setViewport, viewports]);
 
   const createLabel = isRootSpace ? '新建节点' : '添加树叶';
   /**
@@ -654,6 +660,16 @@ function Canvas() {
           <FolderOpen size={15} />
           空间文件 <small>{files.filter((file) => file.ownerId === spaceId).length || ''}</small>
         </button>
+        {/* 布局没存上。**拖动是可以悄悄失败的操作** —— 画面上节点就停在你放手的地方,
+            而库里没有,刷新之后它回到原处,中间没有任何东西提示过你。所以这一行必须
+            看得见,而且带一个**有用的**重试:载荷是点的那一刻现拼的,网络回来了、
+            或者计划补上了,同一下就能成。 */}
+        {layoutError && (
+          <div className="layout-save-error" role="alert">
+            <span>{layoutError}</span>
+            <button onClick={retryLayoutSave}>重试</button>
+          </div>
+        )}
       </div>
       <ReactFlow<FlowNode>
         nodes={nodes}
