@@ -1,0 +1,3725 @@
+{
+  "$defs": {
+    "ActionError": {
+      "additionalProperties": false,
+      "description": "一条变更被拒绝的原因。\n\n`ordinal` 指向提案里的第几条(从 1 开始),界面据此高亮到具体那一行。",
+      "properties": {
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "ordinal": {
+          "title": "Ordinal",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "ordinal",
+        "code",
+        "message"
+      ],
+      "title": "ActionError",
+      "type": "object"
+    },
+    "ApiErrorBody": {
+      "additionalProperties": false,
+      "description": "错误体里 `error` 那一层。\n\n`code` 是接口的一部分,和字段名同级 —— 客户端按它分支。`message` 只是给人看的\n文案,会改;按文案分支的客户端会在某次\"把话说得更清楚\"的改动里静默失灵。",
+      "properties": {
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "details": {
+          "additionalProperties": true,
+          "title": "Details",
+          "type": "object"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "title": "ApiErrorBody",
+      "type": "object"
+    },
+    "ApiErrorResponse": {
+      "additionalProperties": false,
+      "description": "**所有**非 2xx 响应的形状。\n\n它在这里不是\"顺便描述一下\":前端要处理的错误响应和成功响应一样多,而一个没有\n契约的错误体只能靠读后端源码来对接。真正生成这些响应的是\n`backend/services/errors.py::DomainError.to_body()`,契约与它的绑定由\n`backend/tests/test_contract_drift.py` 钉住 —— 改了一边而没改另一边,测试会红。",
+      "properties": {
+        "error": {
+          "$ref": "#/$defs/ApiErrorBody"
+        }
+      },
+      "required": [
+        "error"
+      ],
+      "title": "ApiErrorResponse",
+      "type": "object"
+    },
+    "AppliedChangeView": {
+      "additionalProperties": false,
+      "description": "确认之后实际写进去了什么。**是查出来的,不是提案里声明的。**\n\n用户点确认之后看到\"已应用 6 项变更\",这个 6 如果来自提案本身,那它就只是一个\n复述 —— 万一写入中途只成功了一半,界面照样会说 6。所以这几个数字来自写入后\n重新查库的结果。",
+      "properties": {
+        "dependenciesAdded": {
+          "default": 0,
+          "title": "Dependenciesadded",
+          "type": "integer"
+        },
+        "dependenciesRemoved": {
+          "default": 0,
+          "title": "Dependenciesremoved",
+          "type": "integer"
+        },
+        "nodesCreated": {
+          "default": 0,
+          "title": "Nodescreated",
+          "type": "integer"
+        },
+        "nodesDeleted": {
+          "default": 0,
+          "title": "Nodesdeleted",
+          "type": "integer"
+        },
+        "nodesUpdated": {
+          "default": 0,
+          "title": "Nodesupdated",
+          "type": "integer"
+        },
+        "revisionVersion": {
+          "default": 0,
+          "title": "Revisionversion",
+          "type": "integer"
+        }
+      },
+      "title": "AppliedChangeView",
+      "type": "object"
+    },
+    "AuthResult": {
+      "additionalProperties": false,
+      "properties": {
+        "absoluteExpiresAt": {
+          "format": "date-time",
+          "title": "Absoluteexpiresat",
+          "type": "string"
+        },
+        "expiresAt": {
+          "format": "date-time",
+          "title": "Expiresat",
+          "type": "string"
+        },
+        "token": {
+          "title": "Token",
+          "type": "string"
+        },
+        "user": {
+          "$ref": "#/$defs/UserProfile"
+        }
+      },
+      "required": [
+        "token",
+        "expiresAt",
+        "absoluteExpiresAt",
+        "user"
+      ],
+      "title": "AuthResult",
+      "type": "object"
+    },
+    "BriefView": {
+      "additionalProperties": false,
+      "description": "当前已知的规划条件。\n\n`missing` 是服务端算出来的\"还缺哪些条件\",不是前端猜的。界面据此提示\n\"还差每周时间预算\",与模型是否可用无关 —— 模型挂了也该显示。\n\n定义在 plan.py 而不是 conversation.py:`missing` 是用来判断\"能不能排计划\"的,\n它属于计划这一侧的事实;对话只是恰好也在响应里带上它。",
+      "properties": {
+        "constraints": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Constraints",
+          "type": "array"
+        },
+        "currentLevel": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Currentlevel"
+        },
+        "deadline": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Deadline"
+        },
+        "goal": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Goal"
+        },
+        "missing": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Missing",
+          "type": "array"
+        },
+        "successCriteria": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Successcriteria"
+        },
+        "version": {
+          "default": 0,
+          "title": "Version",
+          "type": "integer"
+        },
+        "weeklyAvailableMinutes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Weeklyavailableminutes"
+        }
+      },
+      "title": "BriefView",
+      "type": "object"
+    },
+    "CheckInQuestion": {
+      "additionalProperties": false,
+      "description": "一句**提问**,不是一句结论。\n\n没有记录不等于没完成 —— 用户可能是做完了忘了记,也可能是那天临时有事。\n系统能给的最准确的东西就是这句话本身,以及一个\"记一下\"的入口。",
+      "properties": {
+        "daysAgo": {
+          "title": "Daysago",
+          "type": "integer"
+        },
+        "nodeId": {
+          "format": "uuid",
+          "title": "Nodeid",
+          "type": "string"
+        },
+        "nodeTitle": {
+          "title": "Nodetitle",
+          "type": "string"
+        },
+        "plannedMinutes": {
+          "title": "Plannedminutes",
+          "type": "integer"
+        },
+        "question": {
+          "title": "Question",
+          "type": "string"
+        },
+        "scheduledDate": {
+          "format": "date",
+          "title": "Scheduleddate",
+          "type": "string"
+        },
+        "sessionId": {
+          "format": "uuid",
+          "title": "Sessionid",
+          "type": "string"
+        },
+        "workspaceId": {
+          "format": "uuid",
+          "title": "Workspaceid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "nodeId",
+        "workspaceId",
+        "nodeTitle",
+        "scheduledDate",
+        "daysAgo",
+        "plannedMinutes",
+        "question"
+      ],
+      "title": "CheckInQuestion",
+      "type": "object"
+    },
+    "ConfirmProposalRequest": {
+      "additionalProperties": false,
+      "description": "确认请求。\n\n`idempotency_key` 由客户端生成,是\"双击确认不会建两遍节点\"的**唯一**依据。\n所以它必填 —— 让它是可选的、由服务端在缺失时补一个随机值,等于把这个保证\n悄悄关掉:用户双击两次会得到两个随机键,两条节点。",
+      "properties": {
+        "idempotencyKey": {
+          "maxLength": 64,
+          "minLength": 8,
+          "title": "Idempotencykey",
+          "type": "string"
+        }
+      },
+      "required": [
+        "idempotencyKey"
+      ],
+      "title": "ConfirmProposalRequest",
+      "type": "object"
+    },
+    "ConfirmProposalResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "applied": {
+          "$ref": "#/$defs/AppliedChangeView"
+        },
+        "proposal": {
+          "$ref": "#/$defs/ProposalView"
+        },
+        "replayed": {
+          "default": false,
+          "title": "Replayed",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "proposal",
+        "applied"
+      ],
+      "title": "ConfirmProposalResponse",
+      "type": "object"
+    },
+    "ConversationView": {
+      "additionalProperties": false,
+      "description": "一个空间的对话。新空间没有对话时,`messages` 是空数组,不是 404。",
+      "properties": {
+        "brief": {
+          "$ref": "#/$defs/BriefView"
+        },
+        "id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Id"
+        },
+        "messages": {
+          "items": {
+            "$ref": "#/$defs/MessageView"
+          },
+          "title": "Messages",
+          "type": "array"
+        },
+        "truncated": {
+          "default": false,
+          "title": "Truncated",
+          "type": "boolean"
+        }
+      },
+      "title": "ConversationView",
+      "type": "object"
+    },
+    "CreateDependencyAction": {
+      "additionalProperties": false,
+      "properties": {
+        "op": {
+          "const": "create_dependency",
+          "title": "Op",
+          "type": "string"
+        },
+        "predecessorRef": {
+          "pattern": "^n[0-9]{1,5}$",
+          "title": "Predecessorref",
+          "type": "string"
+        },
+        "successorRef": {
+          "pattern": "^n[0-9]{1,5}$",
+          "title": "Successorref",
+          "type": "string"
+        }
+      },
+      "required": [
+        "op",
+        "predecessorRef",
+        "successorRef"
+      ],
+      "title": "CreateDependencyAction",
+      "type": "object"
+    },
+    "CreateDependencyRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "predecessorId": {
+          "format": "uuid",
+          "title": "Predecessorid",
+          "type": "string"
+        },
+        "successorId": {
+          "format": "uuid",
+          "title": "Successorid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "predecessorId",
+        "successorId"
+      ],
+      "title": "CreateDependencyRequest",
+      "type": "object"
+    },
+    "CreateNodeAction": {
+      "additionalProperties": false,
+      "description": "新建一个节点。\n\n`parent_ref` 必须指向**已经存在**的节点,或在**本条之前**已经建立的本地编号。\n只允许向后引用这一条,让\"父子关系成环\"在结构上不可能发生 —— 不需要写一个\n环检测器去防它。",
+      "properties": {
+        "acceptanceCriteria": {
+          "anyOf": [
+            {
+              "maxLength": 1000,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Acceptancecriteria"
+        },
+        "deadline": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Deadline"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "estimateMinutes": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 100000,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Estimateminutes"
+        },
+        "localId": {
+          "pattern": "^n[0-9]{1,5}$",
+          "title": "Localid",
+          "type": "string"
+        },
+        "nodeType": {
+          "$ref": "#/$defs/NodeType",
+          "default": "task"
+        },
+        "op": {
+          "const": "create_node",
+          "title": "Op",
+          "type": "string"
+        },
+        "parentRef": {
+          "pattern": "^n[0-9]{1,5}$",
+          "title": "Parentref",
+          "type": "string"
+        },
+        "priority": {
+          "$ref": "#/$defs/Priority",
+          "default": "medium"
+        },
+        "title": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "op",
+        "localId",
+        "parentRef",
+        "title"
+      ],
+      "title": "CreateNodeAction",
+      "type": "object"
+    },
+    "CreateNodeRequest": {
+      "additionalProperties": false,
+      "description": "用户手工新建一个节点。\n\n**没有 `parentRef`/`localId` 这套记号。** 那套东西是给模型用的 —— 模型看不见\n真实 UUID,所以需要服务端替它把记号翻译回 id;而用户点的是界面上那个真实的\n节点,客户端手里本来就有 UUID。硬套同一套契约只会让前端多做一次无意义的映射。",
+      "properties": {
+        "acceptanceCriteria": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Acceptancecriteria"
+        },
+        "deadline": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Deadline"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "estimateMinutes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Estimateminutes"
+        },
+        "nodeType": {
+          "default": "task",
+          "title": "Nodetype",
+          "type": "string"
+        },
+        "parentId": {
+          "format": "uuid",
+          "title": "Parentid",
+          "type": "string"
+        },
+        "priority": {
+          "default": "medium",
+          "title": "Priority",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "parentId",
+        "title"
+      ],
+      "title": "CreateNodeRequest",
+      "type": "object"
+    },
+    "CreateWorkspaceRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "goal": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Goal"
+        },
+        "intent": {
+          "default": "",
+          "maxLength": 500,
+          "title": "Intent",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 120,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title"
+      ],
+      "title": "CreateWorkspaceRequest",
+      "type": "object"
+    },
+    "DailyLoadView": {
+      "additionalProperties": false,
+      "description": "某一天被占了多少、本来有多少。",
+      "properties": {
+        "byWorkspace": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "Byworkspace",
+          "type": "object"
+        },
+        "capacityMinutes": {
+          "default": 0,
+          "title": "Capacityminutes",
+          "type": "integer"
+        },
+        "date": {
+          "format": "date",
+          "title": "Date",
+          "type": "string"
+        },
+        "plannedMinutes": {
+          "default": 0,
+          "title": "Plannedminutes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "date"
+      ],
+      "title": "DailyLoadView",
+      "type": "object"
+    },
+    "DeleteDependencyAction": {
+      "additionalProperties": false,
+      "properties": {
+        "op": {
+          "const": "delete_dependency",
+          "title": "Op",
+          "type": "string"
+        },
+        "predecessorRef": {
+          "pattern": "^n[0-9]{1,5}$",
+          "title": "Predecessorref",
+          "type": "string"
+        },
+        "successorRef": {
+          "pattern": "^n[0-9]{1,5}$",
+          "title": "Successorref",
+          "type": "string"
+        }
+      },
+      "required": [
+        "op",
+        "predecessorRef",
+        "successorRef"
+      ],
+      "title": "DeleteDependencyAction",
+      "type": "object"
+    },
+    "DeleteNodeAction": {
+      "additionalProperties": false,
+      "description": "删除一个节点**及其全部子节点**。\n\n子节点跟着一起走,不是\"顺手\"而是必须:计划里留一堆父节点已不存在的任务,\n它们会永远排在时间线上,而用户找不到任何入口去处理它们。",
+      "properties": {
+        "op": {
+          "const": "delete_node",
+          "title": "Op",
+          "type": "string"
+        },
+        "targetRef": {
+          "pattern": "^n[0-9]{1,5}$",
+          "title": "Targetref",
+          "type": "string"
+        }
+      },
+      "required": [
+        "op",
+        "targetRef"
+      ],
+      "title": "DeleteNodeAction",
+      "type": "object"
+    },
+    "DependencyPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "depType": {
+          "title": "Deptype",
+          "type": "string"
+        },
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "lagDays": {
+          "default": 0,
+          "title": "Lagdays",
+          "type": "integer"
+        },
+        "predecessorId": {
+          "format": "uuid",
+          "title": "Predecessorid",
+          "type": "string"
+        },
+        "successorId": {
+          "format": "uuid",
+          "title": "Successorid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "predecessorId",
+        "successorId",
+        "depType"
+      ],
+      "title": "DependencyPayload",
+      "type": "object"
+    },
+    "DeviationView": {
+      "additionalProperties": false,
+      "description": "一条偏差事实。\n\n`isQuestion` 是这一层最重要的一个字段。同一批数据里有两类完全不同的东西:\n\n- `true`  —— 我们**不知道**发生了什么(那场没有记录)。它可以被问,不能被算作\n  偏差去驱动调整。把它当成\"没完成\",用户从第一天起就会被系统按一个他从没确认过\n  的事实去重排计划。\n- `false` —— 用户**说了**发生了什么(记录成跳过/失败/部分完成),或者一件事\n  客观上过期了(截止日已过而节点未完成)。这些可以驱动调整。",
+      "properties": {
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "daysAgo": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Daysago"
+        },
+        "detail": {
+          "default": "",
+          "title": "Detail",
+          "type": "string"
+        },
+        "facts": {
+          "additionalProperties": true,
+          "title": "Facts",
+          "type": "object"
+        },
+        "isQuestion": {
+          "default": false,
+          "title": "Isquestion",
+          "type": "boolean"
+        },
+        "nodeId": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Nodeid"
+        },
+        "nodeTitle": {
+          "default": "",
+          "title": "Nodetitle",
+          "type": "string"
+        },
+        "sessionId": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sessionid"
+        },
+        "workspaceId": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Workspaceid"
+        }
+      },
+      "required": [
+        "code"
+      ],
+      "title": "DeviationView",
+      "type": "object"
+    },
+    "DeviationsResponse": {
+      "additionalProperties": false,
+      "description": "只是偏差事实 —— 不请模型,不花钱,永远可用。\n\n单独一个接口而不是\"POST /replan 里顺便返回\",是因为这两件事的可靠性完全不同:\n这一份是纯查询,模型挂了、key 没了、额度用光了,它照样正确。界面要先能显示它,\n再考虑要不要问模型。",
+      "properties": {
+        "analyzedFor": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Analyzedfor"
+        },
+        "deviations": {
+          "items": {
+            "$ref": "#/$defs/DeviationView"
+          },
+          "title": "Deviations",
+          "type": "array"
+        },
+        "note": {
+          "default": "",
+          "title": "Note",
+          "type": "string"
+        },
+        "questionCount": {
+          "default": 0,
+          "title": "Questioncount",
+          "type": "integer"
+        }
+      },
+      "title": "DeviationsResponse",
+      "type": "object"
+    },
+    "DismissReminderRequest": {
+      "additionalProperties": false,
+      "description": "关掉一条提醒。\n\n键放在请求体里而不是路径上:它不是一行资源的 id,而是一个由 kind + 时间片 + 空间\n拼出来的稳定标识(`weekend:2026-W39`),把它塞进 URL 路径只会让\"这个值是复合的\"\n这件事变得不明显。",
+      "properties": {
+        "key": {
+          "maxLength": 160,
+          "minLength": 3,
+          "title": "Key",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "title": "DismissReminderRequest",
+      "type": "object"
+    },
+    "ExecutionHistoryResponse": {
+      "additionalProperties": false,
+      "description": "一个场次的反馈历史。**只读,新的在前。**\n\n`session` 与记录一起返回,是因为用户打开\"这场做过什么\"时真正想知道的是\n\"现在这场算不算做完了\" —— 那是场次行的状态,不是某一条记录的内容。",
+      "properties": {
+        "records": {
+          "items": {
+            "$ref": "#/$defs/ExecutionRecordView"
+          },
+          "title": "Records",
+          "type": "array"
+        },
+        "session": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionPayload"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "ExecutionHistoryResponse",
+      "type": "object"
+    },
+    "ExecutionRecordView": {
+      "additionalProperties": false,
+      "description": "落库之后的那条记录,原样回给客户端。",
+      "properties": {
+        "actualMinutes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Actualminutes"
+        },
+        "completionRatio": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Completionratio"
+        },
+        "createdAt": {
+          "format": "date-time",
+          "title": "Createdat",
+          "type": "string"
+        },
+        "delayReason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Delayreason"
+        },
+        "endedAt": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Endedat"
+        },
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "nodeId": {
+          "format": "uuid",
+          "title": "Nodeid",
+          "type": "string"
+        },
+        "result": {
+          "title": "Result",
+          "type": "string"
+        },
+        "sessionId": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sessionid"
+        },
+        "startedAt": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Startedat"
+        },
+        "userFeedback": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Userfeedback"
+        },
+        "workspaceId": {
+          "format": "uuid",
+          "title": "Workspaceid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "nodeId",
+        "workspaceId",
+        "result",
+        "createdAt"
+      ],
+      "title": "ExecutionRecordView",
+      "type": "object"
+    },
+    "IssuedToken": {
+      "additionalProperties": false,
+      "description": "一张新签发的会话令牌。\n\n`absolute_expires_at` 与 `expires_at` 一起给出,是为了让前端能如实告诉用户\n\"这次登录最晚能用到什么时候\" —— 只给滑动过期,用户会以为可以无限续下去。",
+      "properties": {
+        "absoluteExpiresAt": {
+          "format": "date-time",
+          "title": "Absoluteexpiresat",
+          "type": "string"
+        },
+        "expiresAt": {
+          "format": "date-time",
+          "title": "Expiresat",
+          "type": "string"
+        },
+        "token": {
+          "title": "Token",
+          "type": "string"
+        }
+      },
+      "required": [
+        "token",
+        "expiresAt",
+        "absoluteExpiresAt"
+      ],
+      "title": "IssuedToken",
+      "type": "object"
+    },
+    "LoginRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "email": {
+          "title": "Email",
+          "type": "string"
+        },
+        "password": {
+          "title": "Password",
+          "type": "string"
+        }
+      },
+      "required": [
+        "email",
+        "password"
+      ],
+      "title": "LoginRequest",
+      "type": "object"
+    },
+    "MessageView": {
+      "additionalProperties": false,
+      "properties": {
+        "content": {
+          "title": "Content",
+          "type": "string"
+        },
+        "contextNodeId": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Contextnodeid"
+        },
+        "createdAt": {
+          "format": "date-time",
+          "title": "Createdat",
+          "type": "string"
+        },
+        "degraded": {
+          "default": false,
+          "title": "Degraded",
+          "type": "boolean"
+        },
+        "degradedReason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Degradedreason"
+        },
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "modelSource": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Modelsource"
+        },
+        "proposalId": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Proposalid"
+        },
+        "role": {
+          "title": "Role",
+          "type": "string"
+        },
+        "seq": {
+          "title": "Seq",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "role",
+        "content",
+        "seq",
+        "createdAt"
+      ],
+      "title": "MessageView",
+      "type": "object"
+    },
+    "NodeEditResponse": {
+      "additionalProperties": false,
+      "description": "一次直接编辑的结果:改完之后的那个节点,加上新的计划版本号。\n\n**带上版本号是必须的。** 客户端本地缓存着计划,编辑成功后它要么重取整份计划、\n要么就地打补丁;无论哪种,它都需要知道\"现在是多少版\" —— 否则下一次它拿本地\n那份旧计划去比对 `baseRevisionVersion`,会以为自己看到的是最新的。",
+      "properties": {
+        "deletedCount": {
+          "default": 0,
+          "title": "Deletedcount",
+          "type": "integer"
+        },
+        "node": {
+          "$ref": "#/$defs/PlanNodePayload"
+        },
+        "removedDependencies": {
+          "default": 0,
+          "title": "Removeddependencies",
+          "type": "integer"
+        },
+        "revisionVersion": {
+          "title": "Revisionversion",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "node",
+        "revisionVersion"
+      ],
+      "title": "NodeEditResponse",
+      "type": "object"
+    },
+    "NodeStatus": {
+      "enum": [
+        "pending",
+        "doing",
+        "completed",
+        "archived"
+      ],
+      "title": "NodeStatus",
+      "type": "string"
+    },
+    "NodeType": {
+      "enum": [
+        "goal",
+        "capability",
+        "stage",
+        "task",
+        "milestone"
+      ],
+      "title": "NodeType",
+      "type": "string"
+    },
+    "PlanNodePayload": {
+      "additionalProperties": false,
+      "description": "一个计划节点。**不含任何排期字段** —— \"哪天做\"在 sessions 里。",
+      "properties": {
+        "acceptanceCriteria": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Acceptancecriteria"
+        },
+        "completedAt": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Completedat"
+        },
+        "createdAt": {
+          "format": "date-time",
+          "title": "Createdat",
+          "type": "string"
+        },
+        "deadline": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Deadline"
+        },
+        "depth": {
+          "default": 0,
+          "title": "Depth",
+          "type": "integer"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "estimateMinutes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Estimateminutes"
+        },
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "nodeType": {
+          "title": "Nodetype",
+          "type": "string"
+        },
+        "orderIndex": {
+          "default": 0,
+          "title": "Orderindex",
+          "type": "integer"
+        },
+        "origin": {
+          "title": "Origin",
+          "type": "string"
+        },
+        "parentId": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parentid"
+        },
+        "priority": {
+          "title": "Priority",
+          "type": "string"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "nodeType",
+        "status",
+        "priority",
+        "origin",
+        "createdAt"
+      ],
+      "title": "PlanNodePayload",
+      "type": "object"
+    },
+    "PlanPayload": {
+      "additionalProperties": false,
+      "description": "一个空间的完整计划。路径 / 时间线 / 任务 / 周计划都读这一份。",
+      "properties": {
+        "brief": {
+          "$ref": "#/$defs/BriefView"
+        },
+        "completedNodes": {
+          "default": 0,
+          "title": "Completednodes",
+          "type": "integer"
+        },
+        "dependencies": {
+          "items": {
+            "$ref": "#/$defs/DependencyPayload"
+          },
+          "title": "Dependencies",
+          "type": "array"
+        },
+        "nodes": {
+          "items": {
+            "$ref": "#/$defs/PlanNodePayload"
+          },
+          "title": "Nodes",
+          "type": "array"
+        },
+        "revisionVersion": {
+          "title": "Revisionversion",
+          "type": "integer"
+        },
+        "sessions": {
+          "items": {
+            "$ref": "#/$defs/SessionPayload"
+          },
+          "title": "Sessions",
+          "type": "array"
+        },
+        "totalNodes": {
+          "default": 0,
+          "title": "Totalnodes",
+          "type": "integer"
+        },
+        "workspaceId": {
+          "format": "uuid",
+          "title": "Workspaceid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "workspaceId",
+        "revisionVersion"
+      ],
+      "title": "PlanPayload",
+      "type": "object"
+    },
+    "PlannedSessionView": {
+      "additionalProperties": false,
+      "description": "排期算法希望存在的一场。\n\n`session_id` 为空表示这一场是**新加的**;非空表示它对应库里已经有的一行(可能挪了\n日子,也可能原样没动)。界面上\"新增 3 场 / 移动 2 场\"这句摘要就靠它区分。\n\n`node_title` 冗余带上:预览是独立的一份载荷,界面不该为了显示\"周三做《写文献综述》\"\n再去拉一次节点表。",
+      "properties": {
+        "bufferMinutes": {
+          "default": 0,
+          "title": "Bufferminutes",
+          "type": "integer"
+        },
+        "endMinute": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Endminute"
+        },
+        "locked": {
+          "default": false,
+          "title": "Locked",
+          "type": "boolean"
+        },
+        "nodeId": {
+          "format": "uuid",
+          "title": "Nodeid",
+          "type": "string"
+        },
+        "nodeTitle": {
+          "title": "Nodetitle",
+          "type": "string"
+        },
+        "origin": {
+          "default": "scheduler",
+          "title": "Origin",
+          "type": "string"
+        },
+        "plannedMinutes": {
+          "title": "Plannedminutes",
+          "type": "integer"
+        },
+        "scheduledDate": {
+          "format": "date",
+          "title": "Scheduleddate",
+          "type": "string"
+        },
+        "seq": {
+          "default": 0,
+          "title": "Seq",
+          "type": "integer"
+        },
+        "sessionId": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sessionid"
+        },
+        "startMinute": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Startminute"
+        },
+        "workspaceId": {
+          "format": "uuid",
+          "title": "Workspaceid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "nodeId",
+        "workspaceId",
+        "nodeTitle",
+        "scheduledDate",
+        "plannedMinutes"
+      ],
+      "title": "PlannedSessionView",
+      "type": "object"
+    },
+    "Priority": {
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "title": "Priority",
+      "type": "string"
+    },
+    "ProposalItemView": {
+      "additionalProperties": false,
+      "description": "一条变更的展示形态。\n\n`summary` 是一句人能读的中文。**由服务端生成,不交给前端拼** —— 前端拼的时候\n必须自己判断\"这条 create 的是什么类型、有没有截止时间\",判断逻辑会分叉成好几处,\n而任何一处漏了都会让预览少显示一条变更。少显示一条变更的后果是:用户点确认时\n看到的是 5 条,实际写进去 6 条。",
+      "properties": {
+        "affectedChildren": {
+          "default": 0,
+          "title": "Affectedchildren",
+          "type": "integer"
+        },
+        "localId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Localid"
+        },
+        "op": {
+          "title": "Op",
+          "type": "string"
+        },
+        "ordinal": {
+          "title": "Ordinal",
+          "type": "integer"
+        },
+        "payload": {
+          "additionalProperties": true,
+          "title": "Payload",
+          "type": "object"
+        },
+        "summary": {
+          "title": "Summary",
+          "type": "string"
+        },
+        "targetNodeId": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Targetnodeid"
+        },
+        "targetTitle": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Targettitle"
+        }
+      },
+      "required": [
+        "ordinal",
+        "op",
+        "summary"
+      ],
+      "title": "ProposalItemView",
+      "type": "object"
+    },
+    "ProposalView": {
+      "additionalProperties": false,
+      "properties": {
+        "baseRevisionVersion": {
+          "title": "Baserevisionversion",
+          "type": "integer"
+        },
+        "changeSummary": {
+          "additionalProperties": true,
+          "title": "Changesummary",
+          "type": "object"
+        },
+        "createdAt": {
+          "format": "date-time",
+          "title": "Createdat",
+          "type": "string"
+        },
+        "decidedAt": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Decidedat"
+        },
+        "expiresAt": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expiresat"
+        },
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "itemCount": {
+          "default": 0,
+          "title": "Itemcount",
+          "type": "integer"
+        },
+        "items": {
+          "items": {
+            "$ref": "#/$defs/ProposalItemView"
+          },
+          "title": "Items",
+          "type": "array"
+        },
+        "reasoning": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reasoning"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "triggerType": {
+          "title": "Triggertype",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "status",
+        "triggerType",
+        "baseRevisionVersion",
+        "createdAt"
+      ],
+      "title": "ProposalView",
+      "type": "object"
+    },
+    "QuietHoursView": {
+      "additionalProperties": false,
+      "description": "当前的免打扰时段,以及此刻是不是正处在里面。",
+      "properties": {
+        "active": {
+          "default": false,
+          "title": "Active",
+          "type": "boolean"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "fromMinute": {
+          "default": 1320,
+          "title": "Fromminute",
+          "type": "integer"
+        },
+        "source": {
+          "default": "default",
+          "title": "Source",
+          "type": "string"
+        },
+        "toMinute": {
+          "default": 480,
+          "title": "Tominute",
+          "type": "integer"
+        }
+      },
+      "title": "QuietHoursView",
+      "type": "object"
+    },
+    "RecordExecutionRequest": {
+      "additionalProperties": false,
+      "description": "一次执行反馈。**只追加**,不会修改这条记录。",
+      "properties": {
+        "actualMinutes": {
+          "anyOf": [
+            {
+              "maximum": 1440,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Actualminutes"
+        },
+        "completionRatio": {
+          "anyOf": [
+            {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Completionratio"
+        },
+        "delayReason": {
+          "anyOf": [
+            {
+              "maxLength": 1000,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Delayreason"
+        },
+        "endedAt": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Endedat"
+        },
+        "idempotencyKey": {
+          "maxLength": 64,
+          "minLength": 8,
+          "title": "Idempotencykey",
+          "type": "string"
+        },
+        "result": {
+          "title": "Result",
+          "type": "string"
+        },
+        "startedAt": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Startedat"
+        },
+        "userFeedback": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Userfeedback"
+        }
+      },
+      "required": [
+        "result",
+        "idempotencyKey"
+      ],
+      "title": "RecordExecutionRequest",
+      "type": "object"
+    },
+    "RecordExecutionResponse": {
+      "additionalProperties": false,
+      "description": "一次反馈的结果。\n\n`session` 是写完之后的**那一行场次**,不是客户端发上来的东西 —— 界面据此显示\n\"已完成 / 还在进行\"这类状态时,看到的是库里的真相。",
+      "properties": {
+        "nodeCompletedSessions": {
+          "default": 0,
+          "title": "Nodecompletedsessions",
+          "type": "integer"
+        },
+        "nodeRemainingSessions": {
+          "default": 0,
+          "title": "Noderemainingsessions",
+          "type": "integer"
+        },
+        "record": {
+          "$ref": "#/$defs/ExecutionRecordView"
+        },
+        "replayed": {
+          "default": false,
+          "title": "Replayed",
+          "type": "boolean"
+        },
+        "saved": {
+          "default": true,
+          "title": "Saved",
+          "type": "boolean"
+        },
+        "session": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionPayload"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "record"
+      ],
+      "title": "RecordExecutionResponse",
+      "type": "object"
+    },
+    "RecoveryOptionView": {
+      "additionalProperties": false,
+      "description": "一条出路。`resolvesGap` 是**重跑一遍算出来的**,不是断言的。",
+      "properties": {
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "params": {
+          "additionalProperties": true,
+          "title": "Params",
+          "type": "object"
+        },
+        "remainingUnscheduledMinutes": {
+          "default": 0,
+          "title": "Remainingunscheduledminutes",
+          "type": "integer"
+        },
+        "resolvesGap": {
+          "default": false,
+          "title": "Resolvesgap",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "kind",
+        "label",
+        "description"
+      ],
+      "title": "RecoveryOptionView",
+      "type": "object"
+    },
+    "RefreshRequest": {
+      "additionalProperties": false,
+      "description": "轮换令牌。\n\n刻意要求把当前令牌放进请求体,而不是\"读 Authorization 头再续期\"。\n滑动续期必须是一个显式动作:如果每个请求都顺手续期,一个被偷走的令牌只要被用过\n一次就自动延长了 30 天,而用户与日志里都看不出任何异常。",
+      "properties": {
+        "token": {
+          "minLength": 1,
+          "title": "Token",
+          "type": "string"
+        }
+      },
+      "required": [
+        "token"
+      ],
+      "title": "RefreshRequest",
+      "type": "object"
+    },
+    "RegisterRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "displayName": {
+          "maxLength": 80,
+          "minLength": 1,
+          "title": "Displayname",
+          "type": "string"
+        },
+        "email": {
+          "title": "Email",
+          "type": "string"
+        },
+        "password": {
+          "title": "Password",
+          "type": "string"
+        },
+        "timezone": {
+          "default": "Asia/Shanghai",
+          "title": "Timezone",
+          "type": "string"
+        }
+      },
+      "required": [
+        "email",
+        "password",
+        "displayName"
+      ],
+      "title": "RegisterRequest",
+      "type": "object"
+    },
+    "RejectProposalRequest": {
+      "additionalProperties": false,
+      "description": "拒绝提案。理由是给人看的,不做校验之外的解释。",
+      "properties": {
+        "reason": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        }
+      },
+      "title": "RejectProposalRequest",
+      "type": "object"
+    },
+    "ReminderStateView": {
+      "additionalProperties": false,
+      "description": "一次处置的结果。",
+      "properties": {
+        "dismissed": {
+          "default": false,
+          "title": "Dismissed",
+          "type": "boolean"
+        },
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "snoozedUntil": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Snoozeduntil"
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "title": "ReminderStateView",
+      "type": "object"
+    },
+    "ReminderView": {
+      "additionalProperties": false,
+      "description": "一条提醒。",
+      "properties": {
+        "body": {
+          "title": "Body",
+          "type": "string"
+        },
+        "forDate": {
+          "default": "",
+          "title": "Fordate",
+          "type": "string"
+        },
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "workspaceId": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Workspaceid"
+        }
+      },
+      "required": [
+        "key",
+        "kind",
+        "title",
+        "body"
+      ],
+      "title": "ReminderView",
+      "type": "object"
+    },
+    "RemindersResponse": {
+      "additionalProperties": false,
+      "description": "当前该显示的提醒。",
+      "properties": {
+        "note": {
+          "default": "",
+          "title": "Note",
+          "type": "string"
+        },
+        "quietHours": {
+          "$ref": "#/$defs/QuietHoursView"
+        },
+        "reminders": {
+          "items": {
+            "$ref": "#/$defs/ReminderView"
+          },
+          "title": "Reminders",
+          "type": "array"
+        },
+        "suppressedCount": {
+          "default": 0,
+          "title": "Suppressedcount",
+          "type": "integer"
+        }
+      },
+      "title": "RemindersResponse",
+      "type": "object"
+    },
+    "ReplanResponse": {
+      "additionalProperties": false,
+      "description": "一次\"按执行情况调整\"的结果。\n\n三样东西刻意分开返回:用户**总能**拿到偏差事实;模型**可能**给出提案;模型不可用时\n事实照样在,只是 `proposal` 为空而 `message` 说明原因。",
+      "properties": {
+        "analyzedFor": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Analyzedfor"
+        },
+        "consultedModel": {
+          "default": false,
+          "title": "Consultedmodel",
+          "type": "boolean"
+        },
+        "degraded": {
+          "default": false,
+          "title": "Degraded",
+          "type": "boolean"
+        },
+        "degradedReason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Degradedreason"
+        },
+        "deviations": {
+          "items": {
+            "$ref": "#/$defs/DeviationView"
+          },
+          "title": "Deviations",
+          "type": "array"
+        },
+        "message": {
+          "default": "",
+          "title": "Message",
+          "type": "string"
+        },
+        "proposal": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProposalView"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "proposalErrors": {
+          "items": {
+            "$ref": "#/$defs/ActionError"
+          },
+          "title": "Proposalerrors",
+          "type": "array"
+        },
+        "retryable": {
+          "default": false,
+          "title": "Retryable",
+          "type": "boolean"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source"
+        }
+      },
+      "title": "ReplanResponse",
+      "type": "object"
+    },
+    "RootNode": {
+      "additionalProperties": false,
+      "description": "新建空间时唯一被创建的那个根目标节点。\n\n把它单列出来返回,是为了让前端能立刻拿到 id 去关联后续对话 —— 并且让\"新空间里\n到底有什么\"这件事在响应里一目了然:一个根目标,别无他物。\n\n**这个响应里没有会话、没有提案、没有排期**,因为创建过程不会产生它们。",
+      "properties": {
+        "deadline": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Deadline"
+        },
+        "depth": {
+          "title": "Depth",
+          "type": "integer"
+        },
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "nodeType": {
+          "$ref": "#/$defs/NodeType"
+        },
+        "status": {
+          "$ref": "#/$defs/NodeStatus"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "nodeType",
+        "status",
+        "depth"
+      ],
+      "title": "RootNode",
+      "type": "object"
+    },
+    "ScheduleAppliedView": {
+      "additionalProperties": false,
+      "description": "实际写进去了多少。\n\n`created` / `updated` / `canceled` 这几个数字取自数据库回报的 `rowcount`,\n不是算法说它想改多少。两者不一致时用户看到的是真实发生的那个数 —— 比如某一行\n在写入前被状态保护挡下来了,报告里就不会算成\"已取消\"。",
+      "properties": {
+        "canceled": {
+          "default": 0,
+          "title": "Canceled",
+          "type": "integer"
+        },
+        "created": {
+          "default": 0,
+          "title": "Created",
+          "type": "integer"
+        },
+        "kept": {
+          "default": 0,
+          "title": "Kept",
+          "type": "integer"
+        },
+        "moved": {
+          "default": 0,
+          "title": "Moved",
+          "type": "integer"
+        },
+        "unscheduledMinutes": {
+          "default": 0,
+          "title": "Unscheduledminutes",
+          "type": "integer"
+        },
+        "updated": {
+          "default": 0,
+          "title": "Updated",
+          "type": "integer"
+        },
+        "workspaces": {
+          "default": 0,
+          "title": "Workspaces",
+          "type": "integer"
+        }
+      },
+      "title": "ScheduleAppliedView",
+      "type": "object"
+    },
+    "ScheduleApplyRequest": {
+      "additionalProperties": false,
+      "description": "应用一份排期。",
+      "properties": {
+        "idempotencyKey": {
+          "maxLength": 64,
+          "minLength": 8,
+          "title": "Idempotencykey",
+          "type": "string"
+        },
+        "scheduleVersion": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Scheduleversion",
+          "type": "string"
+        }
+      },
+      "required": [
+        "scheduleVersion",
+        "idempotencyKey"
+      ],
+      "title": "ScheduleApplyRequest",
+      "type": "object"
+    },
+    "ScheduleApplyResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "applied": {
+          "$ref": "#/$defs/ScheduleAppliedView"
+        },
+        "churn": {
+          "$ref": "#/$defs/ScheduleChurnView"
+        },
+        "replayed": {
+          "default": false,
+          "title": "Replayed",
+          "type": "boolean"
+        },
+        "scheduleVersion": {
+          "title": "Scheduleversion",
+          "type": "string"
+        }
+      },
+      "required": [
+        "scheduleVersion",
+        "applied"
+      ],
+      "title": "ScheduleApplyResponse",
+      "type": "object"
+    },
+    "ScheduleChurnView": {
+      "additionalProperties": false,
+      "description": "这次排期动了多少东西。**要说给用户听。**",
+      "properties": {
+        "canceled": {
+          "default": 0,
+          "title": "Canceled",
+          "type": "integer"
+        },
+        "created": {
+          "default": 0,
+          "title": "Created",
+          "type": "integer"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "kept": {
+          "default": 0,
+          "title": "Kept",
+          "type": "integer"
+        },
+        "moved": {
+          "default": 0,
+          "title": "Moved",
+          "type": "integer"
+        }
+      },
+      "title": "ScheduleChurnView",
+      "type": "object"
+    },
+    "ScheduleGapView": {
+      "additionalProperties": false,
+      "description": "排不进去的那部分。**结构化的事实,不是一句\"排不下\"。**\n\n`bindingConstraint` 是\"哪一道闸门卡住的\",用户能做的三件事各自对应一个取值:\n每日上限 -> 少做点,周预算 -> 少做点或多投入,可用时段 -> 换个时间,\n锁定场次 -> 解开一个锁,截止日 -> 延期。给错约束的代价由用户承担。",
+      "properties": {
+        "bindingConstraint": {
+          "title": "Bindingconstraint",
+          "type": "string"
+        },
+        "detail": {
+          "additionalProperties": true,
+          "title": "Detail",
+          "type": "object"
+        },
+        "nodeId": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Nodeid"
+        },
+        "nodeTitle": {
+          "default": "",
+          "title": "Nodetitle",
+          "type": "string"
+        },
+        "reasonCode": {
+          "title": "Reasoncode",
+          "type": "string"
+        },
+        "unscheduledMinutes": {
+          "default": 0,
+          "title": "Unscheduledminutes",
+          "type": "integer"
+        },
+        "workspaceId": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Workspaceid"
+        }
+      },
+      "required": [
+        "reasonCode",
+        "bindingConstraint"
+      ],
+      "title": "ScheduleGapView",
+      "type": "object"
+    },
+    "SchedulePreviewResponse": {
+      "additionalProperties": false,
+      "description": "预览一份排期。**只读,不产生任何写入。**",
+      "properties": {
+        "churn": {
+          "$ref": "#/$defs/ScheduleChurnView"
+        },
+        "dailyLoad": {
+          "items": {
+            "$ref": "#/$defs/DailyLoadView"
+          },
+          "title": "Dailyload",
+          "type": "array"
+        },
+        "gaps": {
+          "items": {
+            "$ref": "#/$defs/ScheduleGapView"
+          },
+          "title": "Gaps",
+          "type": "array"
+        },
+        "horizonDays": {
+          "default": 0,
+          "title": "Horizondays",
+          "type": "integer"
+        },
+        "options": {
+          "items": {
+            "$ref": "#/$defs/RecoveryOptionView"
+          },
+          "title": "Options",
+          "type": "array"
+        },
+        "scheduleVersion": {
+          "default": "",
+          "title": "Scheduleversion",
+          "type": "string"
+        },
+        "scopeWorkspaceIds": {
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "title": "Scopeworkspaceids",
+          "type": "array"
+        },
+        "sessions": {
+          "items": {
+            "$ref": "#/$defs/PlannedSessionView"
+          },
+          "title": "Sessions",
+          "type": "array"
+        },
+        "today": {
+          "format": "date",
+          "title": "Today",
+          "type": "string"
+        },
+        "totalPlannedMinutes": {
+          "default": 0,
+          "title": "Totalplannedminutes",
+          "type": "integer"
+        },
+        "truncated": {
+          "default": false,
+          "title": "Truncated",
+          "type": "boolean"
+        },
+        "unscheduledMinutes": {
+          "default": 0,
+          "title": "Unscheduledminutes",
+          "type": "integer"
+        },
+        "weeklyBudgetMinutes": {
+          "default": 0,
+          "title": "Weeklybudgetminutes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "today"
+      ],
+      "title": "SchedulePreviewResponse",
+      "type": "object"
+    },
+    "SendMessageRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "clientMessageId": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Clientmessageid"
+        },
+        "content": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "title": "Content",
+          "type": "string"
+        },
+        "contextNodeId": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Contextnodeid"
+        },
+        "currentView": {
+          "anyOf": [
+            {
+              "maxLength": 40,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Currentview"
+        }
+      },
+      "required": [
+        "content"
+      ],
+      "title": "SendMessageRequest",
+      "type": "object"
+    },
+    "SendMessageResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "assistantMessage": {
+          "$ref": "#/$defs/MessageView"
+        },
+        "brief": {
+          "$ref": "#/$defs/BriefView"
+        },
+        "changedFields": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Changedfields",
+          "type": "array"
+        },
+        "degraded": {
+          "default": false,
+          "title": "Degraded",
+          "type": "boolean"
+        },
+        "degradedReason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Degradedreason"
+        },
+        "latencyMs": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Latencyms"
+        },
+        "modelName": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Modelname"
+        },
+        "promptVersion": {
+          "default": "",
+          "title": "Promptversion",
+          "type": "string"
+        },
+        "proposal": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProposalView"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "proposalErrors": {
+          "items": {
+            "$ref": "#/$defs/ActionError"
+          },
+          "title": "Proposalerrors",
+          "type": "array"
+        },
+        "replayed": {
+          "default": false,
+          "title": "Replayed",
+          "type": "boolean"
+        },
+        "reply": {
+          "title": "Reply",
+          "type": "string"
+        },
+        "retryable": {
+          "default": false,
+          "title": "Retryable",
+          "type": "boolean"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "userMessage": {
+          "$ref": "#/$defs/MessageView"
+        }
+      },
+      "required": [
+        "userMessage",
+        "assistantMessage",
+        "reply",
+        "source",
+        "brief"
+      ],
+      "title": "SendMessageResponse",
+      "type": "object"
+    },
+    "SessionInfo": {
+      "additionalProperties": false,
+      "description": "一条登录记录。**不带 token_hash,也不带明文令牌。**\n\n明文只在签发那一刻存在于内存里,之后无论谁查库都拿不到 —— 这正是\"库被读走也\n登不进任何账号\"的原因。",
+      "properties": {
+        "absoluteExpiresAt": {
+          "format": "date-time",
+          "title": "Absoluteexpiresat",
+          "type": "string"
+        },
+        "current": {
+          "default": false,
+          "title": "Current",
+          "type": "boolean"
+        },
+        "expiresAt": {
+          "format": "date-time",
+          "title": "Expiresat",
+          "type": "string"
+        },
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "issuedAt": {
+          "format": "date-time",
+          "title": "Issuedat",
+          "type": "string"
+        },
+        "userAgent": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Useragent"
+        }
+      },
+      "required": [
+        "id",
+        "issuedAt",
+        "expiresAt",
+        "absoluteExpiresAt"
+      ],
+      "title": "SessionInfo",
+      "type": "object"
+    },
+    "SessionPayload": {
+      "additionalProperties": false,
+      "description": "一个排期场次 —— \"哪天做\"的**唯一**表示。\n\n一个节点要 8 小时就有 8 行这个,而 `plan_nodes` 里始终只有一行。这不是实现细节,\n是产品规则:把「写文献综述」为了填满日历复制成 8 个同名任务,用户要勾 8 次完成、\n进度百分比失去意义,复盘时也看不出它们其实是同一件事。\n\n`start_minute` 为空是**一等状态**,不是缺失值:用户说过\"我每天大概两小时\",没说\n过\"我 19:00 开始\"。凭空指定一个时钟时间会让他在自己的日历里看到一个自己没同意过\n的时间表。",
+      "properties": {
+        "actualMinutes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Actualminutes"
+        },
+        "bufferMinutes": {
+          "default": 0,
+          "title": "Bufferminutes",
+          "type": "integer"
+        },
+        "completedAt": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Completedat"
+        },
+        "endMinute": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Endminute"
+        },
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "lockReason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Lockreason"
+        },
+        "locked": {
+          "default": false,
+          "title": "Locked",
+          "type": "boolean"
+        },
+        "nodeId": {
+          "format": "uuid",
+          "title": "Nodeid",
+          "type": "string"
+        },
+        "nodeTitle": {
+          "title": "Nodetitle",
+          "type": "string"
+        },
+        "origin": {
+          "default": "scheduler",
+          "title": "Origin",
+          "type": "string"
+        },
+        "plannedMinutes": {
+          "title": "Plannedminutes",
+          "type": "integer"
+        },
+        "scheduledDate": {
+          "format": "date",
+          "title": "Scheduleddate",
+          "type": "string"
+        },
+        "seq": {
+          "default": 0,
+          "title": "Seq",
+          "type": "integer"
+        },
+        "startMinute": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Startminute"
+        },
+        "status": {
+          "default": "planned",
+          "title": "Status",
+          "type": "string"
+        },
+        "workspaceId": {
+          "format": "uuid",
+          "title": "Workspaceid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "nodeId",
+        "workspaceId",
+        "nodeTitle",
+        "scheduledDate",
+        "plannedMinutes"
+      ],
+      "title": "SessionPayload",
+      "type": "object"
+    },
+    "SnoozeReminderRequest": {
+      "additionalProperties": false,
+      "description": "让一条提醒过一会儿再说。\n\n**\"稍后\"是一个真实的承诺**:到点之后它会重新出现,而不是被软化成\"关掉\"。",
+      "properties": {
+        "hours": {
+          "default": 24,
+          "maximum": 168,
+          "minimum": 1,
+          "title": "Hours",
+          "type": "integer"
+        },
+        "key": {
+          "maxLength": 160,
+          "minLength": 3,
+          "title": "Key",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "title": "SnoozeReminderRequest",
+      "type": "object"
+    },
+    "TodayItemView": {
+      "additionalProperties": false,
+      "description": "今天要做的一件事。",
+      "properties": {
+        "actualMinutes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Actualminutes"
+        },
+        "bufferMinutes": {
+          "default": 0,
+          "title": "Bufferminutes",
+          "type": "integer"
+        },
+        "delayReason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Delayreason"
+        },
+        "endMinute": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Endminute"
+        },
+        "locked": {
+          "default": false,
+          "title": "Locked",
+          "type": "boolean"
+        },
+        "nodeId": {
+          "format": "uuid",
+          "title": "Nodeid",
+          "type": "string"
+        },
+        "nodeTitle": {
+          "title": "Nodetitle",
+          "type": "string"
+        },
+        "plannedMinutes": {
+          "title": "Plannedminutes",
+          "type": "integer"
+        },
+        "recorded": {
+          "default": false,
+          "title": "Recorded",
+          "type": "boolean"
+        },
+        "result": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Result"
+        },
+        "seq": {
+          "default": 0,
+          "title": "Seq",
+          "type": "integer"
+        },
+        "sessionId": {
+          "format": "uuid",
+          "title": "Sessionid",
+          "type": "string"
+        },
+        "startMinute": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Startminute"
+        },
+        "status": {
+          "default": "planned",
+          "title": "Status",
+          "type": "string"
+        },
+        "workspaceId": {
+          "format": "uuid",
+          "title": "Workspaceid",
+          "type": "string"
+        },
+        "workspaceTitle": {
+          "title": "Workspacetitle",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "nodeId",
+        "workspaceId",
+        "workspaceTitle",
+        "nodeTitle",
+        "plannedMinutes"
+      ],
+      "title": "TodayItemView",
+      "type": "object"
+    },
+    "TodayResponse": {
+      "additionalProperties": false,
+      "description": "跨空间的「今天」。**聚合这一个账号的全部活动空间。**",
+      "properties": {
+        "actualMinutes": {
+          "default": 0,
+          "title": "Actualminutes",
+          "type": "integer"
+        },
+        "checkInQuestions": {
+          "items": {
+            "$ref": "#/$defs/CheckInQuestion"
+          },
+          "title": "Checkinquestions",
+          "type": "array"
+        },
+        "itemCount": {
+          "default": 0,
+          "title": "Itemcount",
+          "type": "integer"
+        },
+        "note": {
+          "default": "",
+          "title": "Note",
+          "type": "string"
+        },
+        "plannedMinutes": {
+          "default": 0,
+          "title": "Plannedminutes",
+          "type": "integer"
+        },
+        "recordedCount": {
+          "default": 0,
+          "title": "Recordedcount",
+          "type": "integer"
+        },
+        "timezone": {
+          "title": "Timezone",
+          "type": "string"
+        },
+        "today": {
+          "format": "date",
+          "title": "Today",
+          "type": "string"
+        },
+        "workspaces": {
+          "items": {
+            "$ref": "#/$defs/TodayWorkspaceView"
+          },
+          "title": "Workspaces",
+          "type": "array"
+        }
+      },
+      "required": [
+        "today",
+        "timezone"
+      ],
+      "title": "TodayResponse",
+      "type": "object"
+    },
+    "TodayWorkspaceView": {
+      "additionalProperties": false,
+      "description": "一个活动空间今天的安排。按空间分组是为了让界面能直接显示\"哪个目标占的\"。",
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/$defs/TodayItemView"
+          },
+          "title": "Items",
+          "type": "array"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "workspaceId": {
+          "format": "uuid",
+          "title": "Workspaceid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "workspaceId",
+        "title"
+      ],
+      "title": "TodayWorkspaceView",
+      "type": "object"
+    },
+    "UpdateNodeAction": {
+      "additionalProperties": false,
+      "description": "修改一个已有节点。只写要改的字段。\n\n**刻意没有 `parent_ref`。** 重新挂父节点是最容易造出环的操作,而它在\n\"AI 帮我排出阶段和任务\"这件事里并不需要。不做它,`PARENT_CYCLE` 这个错误码\n在阶段 4 就不是\"还没实现\",而是\"不可能发生\" —— 后者是可以对用户讲的,\n前者只是又一个待办。",
+      "properties": {
+        "acceptanceCriteria": {
+          "anyOf": [
+            {
+              "maxLength": 1000,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Acceptancecriteria"
+        },
+        "deadline": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Deadline"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "estimateMinutes": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 100000,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Estimateminutes"
+        },
+        "op": {
+          "const": "update_node",
+          "title": "Op",
+          "type": "string"
+        },
+        "priority": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Priority"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "status": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NodeStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "targetRef": {
+          "pattern": "^n[0-9]{1,5}$",
+          "title": "Targetref",
+          "type": "string"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        }
+      },
+      "required": [
+        "op",
+        "targetRef"
+      ],
+      "title": "UpdateNodeAction",
+      "type": "object"
+    },
+    "UpdateNodeRequest": {
+      "additionalProperties": false,
+      "description": "用户改一个节点。\n\n**每个字段都可选,而且\"没传\"和\"传了 null\"是两件事。** 前者表示不改,后者表示\n清空(`deadline` 从有日期改成没有日期)。用 `model_dump(exclude_unset=True)` 取\n差异,所以两者不会混起来 —— 混起来的后果是\"我只改了标题,说明被清空了\"。",
+      "properties": {
+        "acceptanceCriteria": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Acceptancecriteria"
+        },
+        "deadline": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Deadline"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "estimateMinutes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Estimateminutes"
+        },
+        "nodeType": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Nodetype"
+        },
+        "priority": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Priority"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Status"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        }
+      },
+      "title": "UpdateNodeRequest",
+      "type": "object"
+    },
+    "UpdateProfileRequest": {
+      "additionalProperties": false,
+      "description": "PATCH /api/users/me。所有字段可选,只更新传了的那些。\n\n用 `model_fields_set` 区分\"没传\"与\"传了 null\" —— 前者不动,后者清空。\n没有这个区分,PATCH 就没法表达\"把 bio 清掉\"。",
+      "properties": {
+        "bio": {
+          "anyOf": [
+            {
+              "maxLength": 1000,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Bio"
+        },
+        "displayName": {
+          "anyOf": [
+            {
+              "maxLength": 80,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Displayname"
+        },
+        "major": {
+          "anyOf": [
+            {
+              "maxLength": 120,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Major"
+        },
+        "rank": {
+          "anyOf": [
+            {
+              "maximum": 100000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rank"
+        },
+        "school": {
+          "anyOf": [
+            {
+              "maxLength": 120,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "School"
+        },
+        "targetGoal": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Targetgoal"
+        },
+        "targetYear": {
+          "anyOf": [
+            {
+              "maximum": 2200,
+              "minimum": 1900,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Targetyear"
+        },
+        "timezone": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timezone"
+        },
+        "year": {
+          "anyOf": [
+            {
+              "maxLength": 32,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Year"
+        }
+      },
+      "title": "UpdateProfileRequest",
+      "type": "object"
+    },
+    "UpdateWorkspaceRequest": {
+      "additionalProperties": false,
+      "description": "PATCH。只更新传了的字段。\n\n刻意**没有** `current_revision_version` —— 版本号只能由确认提案或用户编辑经由\n服务层推进,不开放给客户端直接设置,否则\"提案过期检测\"就形同虚设。",
+      "properties": {
+        "intent": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Intent"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkspaceStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "title": {
+          "anyOf": [
+            {
+              "maxLength": 120,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        }
+      },
+      "title": "UpdateWorkspaceRequest",
+      "type": "object"
+    },
+    "UserProfile": {
+      "additionalProperties": false,
+      "description": "当前用户档案。**没有 password_hash,也没有任何令牌字段。**\n\n字段与前端 `AccountProfile` 对齐(少一个 `passwordDigest` —— 那是前端旧方案在浏览器里\n自己算的摘要,服务端从来不需要,也不该有)。",
+      "properties": {
+        "bio": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Bio"
+        },
+        "createdAt": {
+          "format": "date-time",
+          "title": "Createdat",
+          "type": "string"
+        },
+        "displayName": {
+          "title": "Displayname",
+          "type": "string"
+        },
+        "email": {
+          "title": "Email",
+          "type": "string"
+        },
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "major": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Major"
+        },
+        "rank": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rank"
+        },
+        "school": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "School"
+        },
+        "targetGoal": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Targetgoal"
+        },
+        "targetYear": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Targetyear"
+        },
+        "timezone": {
+          "title": "Timezone",
+          "type": "string"
+        },
+        "year": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Year"
+        }
+      },
+      "required": [
+        "id",
+        "email",
+        "displayName",
+        "timezone",
+        "createdAt"
+      ],
+      "title": "UserProfile",
+      "type": "object"
+    },
+    "WorkspaceCounts": {
+      "additionalProperties": false,
+      "description": "空间里各类实体的真实行数。\n\n存在的理由之一:空间概览页此前显示的是 `spaces.length * 8` 这种凭空乘出来的数字。\n任何要显示的统计都必须来自一次真实的 count 查询。",
+      "properties": {
+        "conversations": {
+          "title": "Conversations",
+          "type": "integer"
+        },
+        "nodes": {
+          "title": "Nodes",
+          "type": "integer"
+        },
+        "proposals": {
+          "title": "Proposals",
+          "type": "integer"
+        },
+        "scheduledSessions": {
+          "title": "Scheduledsessions",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "nodes",
+        "conversations",
+        "proposals",
+        "scheduledSessions"
+      ],
+      "title": "WorkspaceCounts",
+      "type": "object"
+    },
+    "WorkspaceCreated": {
+      "additionalProperties": false,
+      "properties": {
+        "rootNode": {
+          "$ref": "#/$defs/RootNode"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceDetail"
+        }
+      },
+      "required": [
+        "workspace",
+        "rootNode"
+      ],
+      "title": "WorkspaceCreated",
+      "type": "object"
+    },
+    "WorkspaceDetail": {
+      "additionalProperties": false,
+      "properties": {
+        "archivedAt": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Archivedat"
+        },
+        "counts": {
+          "$ref": "#/$defs/WorkspaceCounts"
+        },
+        "createdAt": {
+          "format": "date-time",
+          "title": "Createdat",
+          "type": "string"
+        },
+        "currentRevisionVersion": {
+          "title": "Currentrevisionversion",
+          "type": "integer"
+        },
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "intent": {
+          "title": "Intent",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/WorkspaceStatus"
+        },
+        "timezone": {
+          "title": "Timezone",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "updatedAt": {
+          "format": "date-time",
+          "title": "Updatedat",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "intent",
+        "createdAt",
+        "status",
+        "timezone",
+        "currentRevisionVersion",
+        "updatedAt",
+        "counts"
+      ],
+      "title": "WorkspaceDetail",
+      "type": "object"
+    },
+    "WorkspaceStatus": {
+      "enum": [
+        "active",
+        "archived"
+      ],
+      "title": "WorkspaceStatus",
+      "type": "string"
+    },
+    "WorkspaceSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "createdAt": {
+          "format": "date-time",
+          "title": "Createdat",
+          "type": "string"
+        },
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "intent": {
+          "title": "Intent",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "intent",
+        "createdAt"
+      ],
+      "title": "WorkspaceSummary",
+      "type": "object"
+    }
+  },
+  "$id": "https://zhitu.local/schemas/domain.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "知途 ZhiTu 的线格式契约。**这份文件是生成的,不要手改** —— 权威在 backend/contracts/ 的 Pydantic 模型里;改契约请改模型,然后跑 `python -m backend.contracts.schema`。backend/tests/test_contract_drift.py 会双向比对这份文件与模型,任何漂移都让测试失败。",
+  "title": "知途 ZhiTu 领域契约"
+}

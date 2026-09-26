@@ -1,7 +1,17 @@
 import { expect, test } from '@playwright/test';
+import { openDemoSpace, registerAccount } from './support/session';
 
+/*
+ * 这一条验的是"自己建的第一条对话会顶掉那四条示例"。
+ *
+ * 那四条示例现在只在**示例空间**里 —— 新账户的空间列表是空的,示例内容要用户
+ * 自己点进去看(`?workspace=primary`),不再是他一打开对话页就摆在那儿的默认值。
+ * 所以这里先登录、再显式进示例空间。
+ */
 test('first personal conversation replaces examples and supports editable tags', async ({ page }) => {
-  await page.goto('/conversations');
+  await registerAccount(page, 'conversations');
+  await openDemoSpace(page, '/conversations');
+
   await expect(page.locator('.hub-item')).toHaveCount(4);
   await expect(page.locator('.hub-item .example-badge')).toHaveCount(4);
 

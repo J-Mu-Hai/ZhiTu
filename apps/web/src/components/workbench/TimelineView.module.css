@@ -7,38 +7,38 @@
 .continuation::after{width:7px;height:7px;transform:rotate(45deg);border:0;border-left:1px solid var(--color);border-bottom:1px solid var(--color);background:transparent;border-radius:0}
 @media(max-width:1000px){.toolbar{padding:14px 14px 10px}.hint{padding-left:14px;padding-right:14px}.scales button{padding:6px 9px}.overview{margin-left:14px;margin-right:14px}.hint span:last-child{display:none}.controls input{width:45px}}
 
-/* The timeline is its own CSS module, so it carries the same obsidian surface system here. */
+/* The timeline is its own CSS module, so it carries the warm-white and mist-blue surface system here. */
 .view {
-  color: #cbd6e4;
-  background-color: #090e15;
+  color: #304b62;
+  background-color: #fbfaf6;
   background-image:
     radial-gradient(circle at 52% 22%, rgba(70, 119, 185, .08), transparent 35%),
-    linear-gradient(145deg, #0b1119, #080c12);
+    linear-gradient(145deg, #fbfaf6, #f3f8fa);
 }
 
 .scales {
-  background: #0f1824;
-  border-color: #29394d;
+  background: #edf4f7;
+  border-color: #d4e1e7;
 }
 
 .scales button,
 .controls button {
-  color: #91a3ba;
+  color: #516c83;
 }
 
 .scales .active {
-  color: #c7dcfa;
-  background: #1a2b43;
-  box-shadow: inset 0 0 0 1px #31547b;
+  color: #315f87;
+  background: #e4f0f8;
+  box-shadow: inset 0 0 0 1px #bfd6e5;
 }
 
 .controls button {
-  background: #101925;
-  border-color: #2a394d;
+  background: #fffefa;
+  border-color: #d4e1e7;
 }
 
 .controls button:hover {
-  background: #19283a;
+  background: #eaf3f8;
 }
 
 .controls input {
@@ -48,7 +48,7 @@
 .density,
 .hint,
 .empty {
-  color: #73869f;
+  color: #61768a;
 }
 
 .hint span:last-child,
@@ -56,7 +56,7 @@
 .year,
 .ghostLabel,
 .previewTag {
-  color: #90a6c1 !important;
+  color: #526f89 !important;
 }
 
 .axis,
@@ -64,15 +64,15 @@
 .ruler,
 .majorTick,
 .overviewLine {
-  background: #2a3a4e;
+  background: #c8d9e1;
 }
 
 .tick {
-  background: #1d2a3a;
+  background: #dce6eb;
 }
 
 .axisEnd {
-  color: #2c3e54;
+  color: #7891a3;
 }
 
 .today {
@@ -81,9 +81,9 @@
 }
 
 .todayLabel {
-  color: #d9e8fb;
-  background: #24466e;
-  border: 1px solid #3c6798;
+  color: #315779;
+  background: #e1eff9;
+  border: 1px solid #bad5e7;
 }
 
 .todayDot {
@@ -92,52 +92,52 @@
 
 .endpoint,
 .goal::after {
-  fill: #0d1520;
-  background: #0d1520;
+  fill: #fffefa;
+  background: #fffefa;
 }
 
 .card,
 .eventCard {
-  color: #d4deeb;
-  background-color: #111a26;
-  background-image: linear-gradient(135deg, rgba(23, 34, 48, .98), rgba(14, 21, 30, .98));
-  border-color: color-mix(in srgb, var(--color) 42%, #273548);
-  border-left-color: color-mix(in srgb, var(--color) 78%, #273548);
-  box-shadow: 0 10px 24px rgba(0, 0, 0, .27);
+  color: #304b62;
+  background-color: #fffefa;
+  background-image: linear-gradient(135deg, rgba(255, 254, 250, .98), rgba(240, 247, 249, .98));
+  border-color: color-mix(in srgb, var(--color) 42%, #d8e5ea);
+  border-left-color: color-mix(in srgb, var(--color) 78%, #d8e5ea);
+  box-shadow: 0 10px 24px rgba(74, 105, 126, .12);
 }
 
 .card small {
-  color: #788aa2;
+  color: #61778b;
 }
 
 .selected .card,
 .card:hover {
-  color: #edf4fd;
-  background-color: #172335;
-  background-image: linear-gradient(135deg, rgba(28, 43, 61, .98), rgba(17, 26, 38, .98));
+  color: #254a68;
+  background-color: #eef6fb;
+  background-image: linear-gradient(135deg, rgba(230, 242, 250, .98), rgba(247, 251, 252, .98));
   border-color: var(--color);
-  box-shadow: 0 14px 30px rgba(0, 0, 0, .34);
+  box-shadow: 0 14px 30px rgba(74, 105, 126, .12);
 }
 
 .cluster,
 .clusterPanel {
-  color: #aebfd4;
-  background: #111a26;
-  border-color: #2b3b50;
-  box-shadow: 0 16px 38px rgba(0, 0, 0, .38);
+  color: #34516a;
+  background: #fffefa;
+  border-color: #d4e2e8;
+  box-shadow: 0 16px 38px rgba(74, 105, 126, .12);
 }
 
 .clusterPanel header {
-  color: #93a8c1;
+  color: #526f88;
 }
 
 .clusterPanel > button {
-  border-color: #223044;
+  border-color: #dbe6ea;
 }
 
 .overview {
-  background: #0d151f;
-  border-color: #253449;
+  background: #f1f6f8;
+  border-color: #d3e1e8;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, .02);
 }
 
@@ -152,37 +152,97 @@
 }
 
 .inspector {
-  background: #0e1621;
-  border-color: #243348;
+  background: #fffefa;
+  border-color: #d8e4e9;
 }
 
 .inspector span,
 .inspector button {
-  color: #91a8c3;
+  color: #52718b;
 }
 
 .editor {
-  background: #121c29;
-  border-color: #344860;
-  box-shadow: 0 18px 45px rgba(0, 0, 0, .46);
+  background: #fffefa;
+  border-color: #c6dbe6;
+  box-shadow: 0 18px 45px rgba(74, 105, 126, .12);
 }
 
 .editor label {
-  color: #9bacc1;
+  color: #526e84;
 }
 
 .editor input {
-  color: #d6e0ed;
-  background: #0b131e;
-  border-color: #33465e;
+  color: #304b62;
+  background: #f4f8fa;
+  border-color: #cadde7;
 }
 
 .previewBanner {
-  color: #aac3e4;
-  background: #142438;
-  border-color: #2b4767;
+  color: #315b7a;
+  background: #e9f3f8;
+  border-color: #c7dce8;
 }
 
 .previewBanner button {
-  color: #bcd4f3;
+  color: #35678d;
+}
+
+/*
+ * "还有 N 项没有日期"。
+ *
+ * 它贴在画布底部,不属于任何泳道 —— 它不是一个时间对象,而是对"这里为什么少了几项"
+ * 的说明。不这样处理的话,用户没有别的办法知道少了什么:任务视图里 11 项、时间线上
+ * 3 项,数不出来的人会以为计划就是那 3 项。
+ */
+.unscheduled {
+  position: absolute;
+  left: 20px;
+  right: 20px;
+  bottom: 10px;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  padding: 8px 12px;
+  border: 1px solid #d8e5ec;
+  border-radius: 8px;
+  background: #f4f8fa;
+  color: #4d6b84;
+  font-size: 10px;
+  line-height: 1.8;
+}
+
+.unscheduledLabel {
+  color: #315b7a;
+  font-weight: 500;
+}
+
+.unscheduledList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+}
+
+.unscheduledList button {
+  padding: 2px 8px;
+  border: 1px solid #cadde7;
+  border-radius: 10px;
+  background: #fff;
+  color: #35678d;
+  font-size: 10px;
+}
+
+.unscheduledList button:hover {
+  border-color: #6c9ec4;
+}
+
+.unscheduledHint {
+  margin-left: auto;
+  color: #7489a3;
+}
+
+/* 那条说明出现时,"这段时间暂无安排"要让位,否则两句叠在一起。 */
+.emptyWithNotice {
+  bottom: 100px;
 }

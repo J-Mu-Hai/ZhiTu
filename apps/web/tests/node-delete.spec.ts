@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { openDemoSpace, registerAccount } from './support/session';
 import { growthReducer } from '../src/features/growth/reducer';
 import { initialGrowth } from '../src/mock/growth-state';
 import type { GrowthState } from '../src/types/growth';
@@ -32,9 +33,19 @@ test('deleting a node removes all descendants and connected edges', () => {
   expect(next.edges.map(edge => edge.id)).toContain('keep-edge');
 });
 
+/*
+ * 这一条要一片"能挂到 research 底下的树叶"做靶子,而 research 本身只长在示例空间
+ * 那棵树上 —— 新账户的空间是空的,连分类都还没有。所以先登录再进示例空间。
+ *
+ * 进 research 这条路径要**双击**:单击是选中 + 打开节点编辑框,双击才 `enterSpace`
+ * (见 `PathView.tsx` 的 `onNodeClick` / `onNodeDoubleClick`)。只有真的进了子空间,
+ * `添加树叶` 才会出现 —— 根这一层加的是分类,按钮上写的是别的字。
+ */
 test('node trash appears on hover and deletes the node from its path', async ({ page }) => {
-  await page.goto('/workbench');
-  await page.locator('.react-flow__node[data-id="research"]').click();
+  await registerAccount(page, 'delete');
+  await openDemoSpace(page, '/workbench');
+  await page.locator('.react-flow__node[data-id="research"]').dblclick({ delay: 60 });
+  await expect(page.getByRole('button', { name: '添加树叶', exact: true })).toBeVisible();
 
   await page.getByRole('button', { name: '添加树叶', exact: true }).click();
   await page.getByLabel('树叶名称').fill('待删除方向');

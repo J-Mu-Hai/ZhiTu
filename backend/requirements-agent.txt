@@ -1,0 +1,22 @@
+# 可选的 Agent 编排层:openJiuwen Core。
+#
+# 为什么单独一份:
+#   openjiuwen 会带来 86 个依赖,包括 transformers / pymilvus / tiktoken / pyoxigraph /
+#   matplotlib / pdfplumber / sqlmodel / openai / anthropic / dashscope,数百 MB。
+#   其中 sqlmodel 对 sqlalchemy 有上限约束,和主 requirements.txt 共用环境时可能互相降级。
+#   所以后端主流程不依赖它:未安装时自动降级为直连模型,并在接口响应里如实标注
+#   degraded + degradedReason,绝不让用户以为在用 openJiuwen 编排。
+#
+# 安装(在已有的智能体开发环境里,或用独立环境):
+#   pip install -r backend/requirements-agent.txt
+#
+# 本机情况:conda 环境 easy-agent 已装 openjiuwen 0.1.18,项目环境 zhitu 由它克隆而来,
+# 因此本地无需重装。详见 docs/07-DEVELOPMENT.md。
+
+# 下限是**实测过的版本**,不是猜的:backend/agent/runtime/openjiuwen_runtime.py 里的
+# 调用路径(Workflow / WorkflowCard / Start / LLMComponent / End / LLMCompConfig /
+# ModelClientConfig / ModelRequestConfig / Runner.run_workflow)逐条在 0.1.18 上跑通过。
+# 上限卡在 0.2:这是早期 API,`outputs_schema` 的 `${...}` 引用语法、`End` 节点必须给
+# `inputs_schema` 这类形状在小版本间都可能变。放宽之前先跑
+# `pytest backend/tests/test_openjiuwen_adapter.py` 与一次真实调用。
+openjiuwen>=0.1.18,<0.2

@@ -1,0 +1,407 @@
+"""openJiuwen 适配器 —— 用它的 `Workflow` 跑单步规划,用它的 `Model` 客户端调 DeepSeek。
+
+## 这里的"使用 openJiuwen"具体指什么
+
+不是"仓库里有一个 `import openjiuwen`"。是一次规划请求实际经过了 openJiuwen 的这几层:
+
+- `Workflow(card=WorkflowCard(...))` + `Start` + `LLMComponent` + `End` 组成的那张图;
+- `LLMCompConfig` 里的 `ModelClientConfig(client_provider=ProviderType.DeepSeek, ...)`
+  —— **DeepSeek 是 openJiuwen 的一等 provider**,不是靠 OpenAI 兼容层绕过去的;
+- `Runner.run_workflow(flow, inputs)` 执行的这张图;
+- 模型输出由 openJiuwen 的 `OutputFormatter` 按我们声明的 `output_config` 抽成结构化字段。
+
+响应里的 `source` 因此写成 `openjiuwen`,界面显示"AI 规划 · openJiuwen"。
+
+## 三处刻意的设计决定
+
+### 一、`import openjiuwen` 绝不在这层之外发生,而且必须是懒的
+
+导入这个包会注册连接器池、文档解析器(milvus / chroma / PDF / Word / 图片……),
+实测要几秒并连带拖起一堆重量级依赖。放在模块顶端意味着**每次冷启动**都付这个代价,
+哪怕这次请求根本不走模型(比如读一次 `/plan`)。所以:
+
+- `available()` 用 `importlib.util.find_spec` 判断(不执行导入),结果缓存;
+- 真正的 `import` 发生在第一次调用模型时,发生在 `reason()` 内部。
+
+### 二、提示词**不经过** `PromptTemplate` 的插值,而是原样写进组件配置
+
+这是实测得出的结论,不是审美。`LLMCompConfig.template_content` 里的内容会被
+`PromptTemplate` 按 `{{...}}` 插值,而我们的提示词里有大量 JSON 花括号(节点表、
+`output_config` 的形状示例、用户自己写的 JSON 片段)。把那段文本塞进插值模板,
+轻则被无声吃掉几个片段,重则把用户数据当成占位符展开 —— 两类错误都不会报错。
+
+所以每一轮的 `LLMCompConfig` 是按这一轮的提示词**现构造**的,里面是字面量。
+代价是每次调用新建一个组件对象,但 `ModelClientConfig.use_shared_llm_http_client`
+默认为真是进程级的 —— 连接池没有被丢掉的,丢掉的只是一个数据类实例。
+
+### 三、`output_config` 声明 `brief` / `actions` 为 `required: False`
+
+openJiuwen 的 `_extract_configured_fields` 在字段缺失时看的是**原始 dict 里有没有写
+`required`**(`field_config.get("required", True)`),不写就是必填。而"模型这轮只是
+回答了一句话,没有提任何变更"是完全正常的一种回复 —— 把它当失败,用户会在每次
+闲聊之后看到一次"模型输出格式不对"。所以那两个字段显式写 `False`。
+
+## 失败一律降级,不抛
+
+`Reasoner` 的硬契约(见 `base.py`):网络超时、401、SDK 内部报错、输出不是 JSON ——
+全是可预期的上游失败,返回 `degraded=True`。这里因此把**所有** `Exception` 都收住,
+只留 `DegradedReason` 去区分"用户该看到什么 + 重试有没有用"。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import importlib
+import importlib.util
+import logging
+import time
+import uuid
+from typing import Any
+
+from backend.agent.prompts.planning import PROMPT_VERSION, SYSTEM_PROMPT
+from backend.agent.runtime.base import ReasoningResult, TurnContext
+from backend.agent.runtime.response import (
+    BRIEF_FIELD_ORDER,
+    PayloadInvalid,
+    payload_to_result,
+    render_turn,
+)
+from backend.core.config import Settings
+from backend.db.models.enums import DegradedReason, ModelSource
+
+logger = logging.getLogger(__name__)
+
+#: 这张图的 id。openJiuwen 用 (id, version) 生成工作流的注册键。
+WORKFLOW_ID = "zhitu_planning"
+WORKFLOW_VERSION = "1.0"
+
+#: brief 里每个字段长什么样。写进 description 而**不是**声明成嵌套的 `properties`,
+#: 原因是 SDK 的校验器只认六种具体类型(object / array / string / integer / boolean /
+#: number,**没有 any**,也不支持联合类型):`value` 在这六个字段里分别是字符串、
+#: ISO 日期字符串、整数分钟、字符串列表,声明其中任何一个都会把另外几个判成非法,
+#: 模型一次笔误就整轮失败。所以形状靠文字说清楚,类型校验只到"是个对象"为止,
+#: 真正的取值收敛仍然由 `response.py` 的 `clean_value` 负责(它才认识每个字段的语义)。
+_BRIEF_CLAIM_SHAPE = "形如 {value, source},source 取 user_stated 或 model_assumed"
+
+#: brief 六个字段各自给模型看的说明。
+_BRIEF_FIELD_DESCRIPTIONS: dict[str, str] = {
+    "goal": f"用户想达成的目标。{_BRIEF_CLAIM_SHAPE}",
+    "deadline": f"截止日期,ISO 格式 YYYY-MM-DD。{_BRIEF_CLAIM_SHAPE}",
+    "weekly_available_minutes": f"每周可投入的分钟数(整数,6 小时写 360)。{_BRIEF_CLAIM_SHAPE}",
+    "current_level": f"用户现在的基础。{_BRIEF_CLAIM_SHAPE}",
+    "success_criteria": f"怎样算成功。{_BRIEF_CLAIM_SHAPE}",
+    "constraints": f"现实限制,value 是字符串列表。{_BRIEF_CLAIM_SHAPE}",
+}
+
+#: 给模型看的输出形状。**它同时是给 SDK 的抽取声明**:
+#: 只有在这里列出的键会被带回来,模型多写的字段由 SDK 丢掉,
+#: 少写 `brief` / `actions` 不算失败(`required: False`,理由见模块开头)。
+#:
+#: brief 下面那六个 `properties` **不是为了校验,是为了保住数据**。
+#: `OutputFormatter._extract_configured_fields` 会把任何 dict 型已声明字段里
+#: 没列进 `properties` 的键逐个 pop 掉(只 pop 一层)。这里不列,模型辛苦读出来的
+#: 条件就会在落库前被清成 `{}`:实测模型原文里有完整的 goal / deadline /
+#: success_criteria,拿到的却是空对象,于是 scheduler 拿默认容量档案排了 46 场,
+#: 而不是用户亲口说的每周 6 小时 —— 那正好违反"不许替用户决定每周能投入多少"。
+#:
+#: 六个字段都**不设 `required`**:条件是分几轮问出来的,只有一条 goal 时也必须能存下来。
+#: 一旦设了 required,模型早问一句就会被判失败,整轮回复陪葬。
+OUTPUT_CONFIG: dict[str, Any] = {
+    "reply": {"type": "string", "required": True, "description": "给用户看的那句话"},
+    "brief": {
+        "type": "object",
+        "required": False,
+        "description": "从对话里读出的规划条件",
+        "properties": {
+            field: {"type": "object", "description": _BRIEF_FIELD_DESCRIPTIONS[field]}
+            for field in BRIEF_FIELD_ORDER
+        },
+    },
+    # actions **刻意不声明 `items`**:声明了 SDK 就会逐条严格校验,一条不合格
+    # 就让整轮失败。而这里的取舍相反 —— 十条里有一条不合法,应该留下另外九条,
+    # 把那条的错误码单独报给用户(见 `response.py` 的 `parse_actions`)。
+    "actions": {"type": "array", "required": False, "description": "提议的计划变更"},
+}
+
+#: 进程级的 Runner 启动状态。`Runner.resource_mgr` 是全局的,按请求重复 start
+#: 是生命周期 bug;而 `reason()` 可能在任何时候被第一个调用,所以这里自己做一次
+#: 幂等的启动,不要求调用方先 warm_up 过。
+_runner_lock = asyncio.Lock()
+_runner_started = False
+
+#: `find_spec` 的结果缓存。None 表示还没查过。
+_available: bool | None = None
+
+
+def available() -> bool:
+    """openJiuwen 装没装。**只查 spec,不执行导入。**
+
+    这个判断要便宜到可以在每次装配 reasoner 时调用 —— 它决定界面上那个徽标写
+    "AI 规划 · openJiuwen" 还是"直连模型"。为了它拖起几秒的导入不值得。
+    """
+    global _available
+    if _available is None:
+        try:
+            _available = importlib.util.find_spec("openjiuwen") is not None
+        except (ImportError, ValueError):
+            # `find_spec` 在父包损坏时抛 ImportError,在被当作命名空间包的一部分时抛
+            # ValueError。两者都意味着"用不了",不是"程序错了"。
+            _available = False
+    return _available
+
+
+def reset_availability_cache() -> None:
+    """把 `available()` 的缓存丢掉。测试用 —— 生产代码里没有理由调用它。"""
+    global _available
+    _available = None
+
+
+async def warm_up() -> bool:
+    """把 Runner 与 openJiuwen 的导入开销前置到启动阶段。
+
+    返回是否真的可用。**失败不抛**:openJiuwen 起不来是一件"这条路暂时走不通"的
+    事,不是"服务不能启动"的事 —— 产品还有直连那条路。
+    """
+    if not available():
+        return False
+    try:
+        module = importlib.import_module("openjiuwen.core.runner.runner")
+    except Exception:
+        logger.exception("openJiuwen 可用但导入失败,将不使用它")
+        return False
+    try:
+        await _ensure_runner_started(module.Runner)
+    except Exception:
+        logger.exception("openJiuwen Runner 启动失败,将不使用它")
+        return False
+    return True
+
+
+async def _ensure_runner_started(runner: Any) -> None:
+    global _runner_started
+    if _runner_started:
+        return
+    async with _runner_lock:
+        if _runner_started:
+            return
+        await runner.start()
+        _runner_started = True
+
+
+def reset_runner_state() -> None:
+    """把"Runner 已启动"这个标记清掉。测试用。"""
+    global _runner_started
+    _runner_started = False
+
+
+class OpenJiuwenReasoner:
+    """把一次规划请求交给 openJiuwen 的 Workflow 执行。"""
+
+    def __init__(self, settings: Settings) -> None:
+        self._settings = settings
+
+    async def reason(self, turn: TurnContext) -> ReasoningResult:
+        request_id = uuid.uuid4().hex
+        started = time.monotonic()
+
+        if not self._settings.llm_api_key:
+            return self._degraded(
+                DegradedReason.NO_API_KEY,
+                retryable=False,
+                request_id=request_id,
+                reply="还没有配置模型密钥,现在没法生成计划。",
+            )
+
+        if not available():
+            # 装配时查过一次,这里再查是为了"装配之后环境变了"这种情况 ——
+            # `available()` 是缓存过的,所以它不花钱。
+            return self._degraded(
+                DegradedReason.MODEL_UNAVAILABLE,
+                retryable=False,
+                request_id=request_id,
+                reply="openJiuwen 运行时不可用,这次没能生成计划。",
+            )
+
+        try:
+            flow, runner = self._build_flow(turn)
+            await _ensure_runner_started(runner)
+            output = await runner.run_workflow(flow, {})
+        except Exception as exc:
+            return self._failed(exc, request_id=request_id, started=started)
+
+        latency_ms = int((time.monotonic() - started) * 1000)
+        return self._parse(output, request_id=request_id, latency_ms=latency_ms)
+
+    # ---------------------------------------------------------------------------
+    def _build_flow(self, turn: TurnContext) -> tuple[Any, Any]:
+        """按这一轮的提示词现搭这张图,返回 (flow, Runner)。
+
+        openJiuwen 的导入就发生在这里 —— 见模块开头关于懒加载的说明。
+        """
+        workflow_module = importlib.import_module("openjiuwen.core.workflow")
+        llm_comp_module = importlib.import_module(
+            "openjiuwen.core.workflow.components.llm.llm_comp"
+        )
+        runner_module = importlib.import_module("openjiuwen.core.runner.runner")
+        llm_module = importlib.import_module("openjiuwen.core.foundation.llm")
+
+        settings = self._settings
+        config = llm_comp_module.LLMCompConfig(
+            model_client_config=llm_module.ModelClientConfig(
+                # DeepSeek 是 openJiuwen 的一等 provider,不需要借 OpenAI 兼容层。
+                client_provider="DeepSeek",
+                api_key=settings.llm_api_key,
+                api_base=settings.llm_base_url,
+                timeout=settings.llm_timeout_seconds,
+                verify_ssl=True,
+            ),
+            model_config=llm_module.ModelRequestConfig(
+                model_name=settings.llm_model,
+                temperature=0.4,
+                max_tokens=settings.agent_max_tokens,
+            ),
+            # 字面量,不是插值模板 —— 见模块开头的第二处设计决定。
+            template_content=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": render_turn(turn)},
+            ],
+            response_format={"type": "json"},
+            output_config=OUTPUT_CONFIG,
+        )
+
+        flow = workflow_module.Workflow(
+            card=workflow_module.WorkflowCard(
+                id=WORKFLOW_ID, name="知途规划", version=WORKFLOW_VERSION
+            )
+        )
+        flow.set_start_comp("start", workflow_module.Start())
+        flow.add_workflow_comp(
+            "planning",
+            workflow_module.LLMComponent(config),
+            # `${reply}` 是 openJiuwen 的引用语法,指的是**这个组件自己**输出字典里的
+            # 那个键。少了它,`End` 收到的是 None,而 `WorkflowOutput.result` 会安静地
+            # 变成 None —— 一次成功的模型调用就此消失,日志里什么异常都没有。
+            outputs_schema={
+                "reply": "${reply}",
+                "brief": "${brief}",
+                "actions": "${actions}",
+            },
+        )
+        flow.set_end_comp(
+            "end",
+            workflow_module.End(),
+            inputs_schema={
+                "reply": "${planning.reply}",
+                "brief": "${planning.brief}",
+                "actions": "${planning.actions}",
+            },
+        )
+        flow.add_connection("start", "planning")
+        flow.add_connection("planning", "end")
+        return flow, runner_module.Runner
+
+    def _parse(
+        self, output: Any, *, request_id: str, latency_ms: int
+    ) -> ReasoningResult:
+        """从 `WorkflowOutput` 里取出模型那个对象。"""
+        try:
+            payload = _payload_of(output)
+            return payload_to_result(
+                payload,
+                source=ModelSource.OPENJIUWEN,
+                request_id=request_id,
+                prompt_version=PROMPT_VERSION,
+                model_name=self._settings.llm_model,
+                latency_ms=latency_ms,
+            )
+        except PayloadInvalid as exc:
+            logger.warning("openJiuwen 那条路的输出无法解析: %s", exc)
+            return self._degraded(
+                DegradedReason.MODEL_OUTPUT_INVALID,
+                retryable=True,
+                request_id=request_id,
+                reply="模型这次的回答没能解析出结果,可以再试一次。",
+                latency_ms=latency_ms,
+            )
+
+    def _failed(
+        self, exc: Exception, *, request_id: str, started: float | None
+    ) -> ReasoningResult:
+        """把 SDK 抛出来的东西翻译成"用户该看到什么 + 重试有没有用"。
+
+        openJiuwen 把上游的 401 / 429 / 超时都包在它自己的 `BaseError` 里,类型分不出来,
+        所以这里按**文本**认一认常见的几种。认不出来就按"暂时不可用"归类 ——
+        宁可让用户点一次注定失败的重试,也不要把一次超时说成"密钥错了"。
+        """
+        text = f"{type(exc).__name__}: {exc}"
+        lowered = text.lower()
+        logger.warning("openJiuwen 调用失败: %s", text[:500])
+
+        if "401" in lowered or "unauthorized" in lowered or "api key" in lowered:
+            reason, retryable = DegradedReason.MODEL_AUTH_FAILED, False
+            reply = "模型密钥无效或已过期,请联系管理员。"
+        elif "429" in lowered or "rate limit" in lowered:
+            reason, retryable = DegradedReason.MODEL_RATE_LIMITED, True
+            reply = "模型服务限流了,过一会儿再试。"
+        elif "timeout" in lowered or "timed out" in lowered:
+            reason, retryable = DegradedReason.MODEL_TIMEOUT, True
+            reply = "这次响应太慢了,没能拿到结果。可以再试一次。"
+        else:
+            reason, retryable = DegradedReason.MODEL_UNAVAILABLE, True
+            reply = "模型服务暂时不可用,可以再试一次。"
+
+        return self._degraded(
+            reason, retryable=retryable, request_id=request_id, reply=reply, started=started
+        )
+
+    def _degraded(
+        self,
+        reason: DegradedReason,
+        *,
+        retryable: bool,
+        request_id: str,
+        reply: str,
+        started: float | None = None,
+        latency_ms: int | None = None,
+    ) -> ReasoningResult:
+        if latency_ms is None:
+            latency_ms = int((time.monotonic() - started) * 1000) if started else None
+        return ReasoningResult(
+            reply=reply,
+            source=ModelSource.UNAVAILABLE,
+            degraded=True,
+            degraded_reason=reason,
+            retryable=retryable,
+            request_id=request_id,
+            prompt_version=PROMPT_VERSION,
+            model_name=self._settings.llm_model,
+            latency_ms=latency_ms,
+        )
+
+
+def _payload_of(output: Any) -> Any:
+    """把 `WorkflowOutput` 剥到模型那个对象上。
+
+    实测的形状是 `WorkflowOutput(result={"output": {...}}, state=...)` —— 外面那层是
+    `End` 组件包的(它把收到的输入裹进一个 `output` 键)。这里逐层剥,并且**每一层都
+    容错**:SDK 的小版本换个包装方式,不该让整次调用变成"格式错误"。
+    """
+    result = getattr(output, "result", output)
+    if not isinstance(result, dict):
+        raise PayloadInvalid(f"工作流的输出不是一个对象: {type(result).__name__}")
+
+    inner = result.get("output", result)
+    if not isinstance(inner, dict):
+        raise PayloadInvalid(f"工作流输出的 output 不是一个对象: {type(inner).__name__}")
+    return inner
+
+
+__all__ = [
+    "OUTPUT_CONFIG",
+    "WORKFLOW_ID",
+    "OpenJiuwenReasoner",
+    "available",
+    "reset_availability_cache",
+    "reset_runner_state",
+    "warm_up",
+]

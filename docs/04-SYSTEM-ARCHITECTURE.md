@@ -60,9 +60,9 @@
 | 层 | 落点 |
 | --- | --- |
 | Experience | [apps/web/](../apps/web/)(Think & Plan)、[apps/mobile/](../apps/mobile/)(Act & Sense) |
-| Growth State | [shared/schemas/](../shared/schemas/) 是契约源;持久化在 PostgreSQL |
-| Intelligence | openJiuwen;包装层在 [backend/agent/](../backend/agent/) |
-| Infrastructure | [backend/api/](../backend/api/)、PostgreSQL、Redis |
+| Growth State | 契约权威在 [backend/contracts/](../backend/contracts/)(Pydantic),[shared/schemas/](../shared/schemas/) 是**由它生成**的 JSON Schema;持久化在 [backend/db/](../backend/db/) 定义的表里,本地 SQLite / 线上 PostgreSQL 同一套模型 |
+| Intelligence | openJiuwen;包装层在 [backend/agent/](../backend/agent/)(可选依赖,未安装时降级为直连模型并在响应里如实标注) |
+| Infrastructure | [backend/api/](../backend/api/)、SQLite 或 PostgreSQL。**没有 Redis** —— 登录限流与熔断是进程内实现,每个 worker 各一份 |
 
 ## 两个硬约束
 

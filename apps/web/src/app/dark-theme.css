@@ -21,6 +21,22 @@
   --shadow-panel: 0 18px 45px rgba(0, 0, 0, 0.34);
 }
 
+.spaces-page { max-width: 1180px; margin: 0 auto; padding: 52px 48px 70px; }
+.spaces-hero { display:flex; justify-content:space-between; gap:28px; align-items:flex-end; padding-bottom:32px; border-bottom:1px solid var(--line-soft); }
+.spaces-hero h1 { margin-top:12px; font-size:30px; letter-spacing:-.04em; }
+.spaces-hero p { margin-top:11px; color:#8b9aae; font-size:13px; }
+.space-stats { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin:25px 0 32px; }
+.space-stats>div { display:flex; align-items:center; gap:10px; padding:16px 18px; border:1px solid var(--line-soft); background:linear-gradient(135deg,#101926,#0d141e); border-radius:10px; color:#7fa8de; }
+.space-stats strong { color:#e9f2ff; font-size:20px; font-weight:550; }.space-stats span { color:#8190a5; font-size:11px; }
+.spaces-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px; }.space-card,.new-space-card { min-height:240px; padding:21px; border:1px solid var(--line-soft); border-radius:12px; background:linear-gradient(145deg,#121c29,#0d141e); text-align:left; }.space-card { display:flex; flex-direction:column; }.space-card-icon { width:36px; height:36px; display:grid; place-items:center; border-radius:9px; color:#8bb6f5; background:#182a40; margin-bottom:22px; }.space-card h2 { margin-top:9px; font-size:18px; }.space-card p { min-height:38px; margin-top:10px; color:#8b9aae; line-height:1.6; font-size:12px; }.space-card-meta { margin-top:auto; padding-top:18px; display:flex; justify-content:space-between; color:#71859d; font-size:10px; }.space-card>button { margin-top:18px; width:100%; display:flex; justify-content:space-between; align-items:center; padding:9px 0; border-top:1px solid var(--line-soft); color:#afcef5; font-size:12px; }.new-space-card { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:11px; color:#7e94ad; border-style:dashed; background:rgba(15,23,34,.45); }.new-space-card strong { color:#bccce0; font-size:13px; }.new-space-card span { font-size:11px; }.new-space-card:hover { border-color:#5279a9; background:#121e2e; }.workspace-switch { display:inline-flex; align-items:center; gap:5px; margin-right:10px; padding-right:12px; border-right:1px solid var(--line-soft); color:#7894b6; font-size:10px; }
+@media(max-width:800px){.spaces-page{padding:30px 22px}.spaces-hero{align-items:flex-start;flex-direction:column}.space-stats,.spaces-grid{grid-template-columns:1fr}.space-stats{gap:8px}}
+
+/* Bright planning workspace: warm paper, mist blue surfaces, restrained semantic accents. */
+:root{color-scheme:light;--bg:#f8f7f2;--sidebar:#fffefa;--surface:#ffffff;--line:#d9e3e9;--text:#23364c;--muted:#6f8293;--blue:#5e93c7;--academic:#6c9bd1;--research:#73a99c;--experience:#d99b62;--personal:#9a8ccb;--ink-0:#f8f7f2;--ink-1:#fffefa;--ink-2:#f2f7f8;--ink-3:#eaf2f6;--ink-4:#e1edf2;--line-soft:rgba(93,124,145,.18);--line-strong:rgba(93,124,145,.3);--shadow-panel:0 12px 30px rgba(76,101,119,.12)}
+html,body,.app-shell,.app-main,.workbench,.workbench-body{background:#f8f7f2;color:#23364c}body{background-image:radial-gradient(circle at 24% -15%,rgba(194,220,237,.68),transparent 36%),radial-gradient(circle at 90% 0,rgba(220,235,225,.55),transparent 29%)}
+.top-navigation,.space-topbar{background:rgba(255,254,250,.9);border-color:#dce6e8;box-shadow:0 5px 20px rgba(73,101,120,.08)}.top-brand,.space-breadcrumb button,.space-breadcrumb>span:last-child button{color:#29445f}.top-brand small,.top-goal,.top-navigation nav a,.space-breadcrumb>span{color:#688096}.top-navigation nav a:hover,.top-navigation nav a.active{color:#356693;background:#edf6fc}.top-profile{background:#edf6fc;border-color:#c8deeb;color:#376b96}.workspace{background-color:#fbfaf6;background-image:radial-gradient(#cddde3 .7px,transparent .7px);background-size:17px 17px}.space-floating-tools button,.focus-button{background:#fffefa;border-color:#d5e2e7;color:#4f6b83;box-shadow:0 6px 16px rgba(83,111,130,.08)}
+.growth-node{color:#31485e}.growth-node.goal{background:linear-gradient(145deg,#e4f1ff,#d3e9fc);border-color:#9bc6e7;box-shadow:0 12px 26px rgba(86,139,183,.16);color:#4a82b6}.growth-node.goal strong{color:#2b4d6e}.growth-node.goal span{color:#66849e}.growth-node.capability{background:#f8fbfb;background-image:none;border-color:color-mix(in srgb,var(--semantic) 42%,#dce8e7);box-shadow:0 7px 18px rgba(87,111,125,.08)}.growth-node.capability strong{color:#30475c}.growth-node.capability span,.leaf-summary{color:#728596}.growth-node.task,.growth-node.milestone{background:#fffefa;background-image:none;border-color:#d9e5e8;border-left-color:var(--semantic);box-shadow:0 5px 14px rgba(83,106,119,.08);color:#385066}.growth-node.is-selected{background:#eef7fc;border-color:#85b8dc;box-shadow:0 0 0 3px rgba(119,176,215,.17),0 8px 18px rgba(86,123,148,.1)}.node-bullet{color:var(--semantic);display:grid;place-items:center;width:15px;height:15px}.node-category-dot{width:9px;height:9px;border-radius:50%;background:var(--semantic);box-shadow:0 0 0 4px color-mix(in srgb,var(--semantic) 13%,transparent);flex-shrink:0}.node-enter{background:#eef6fb;border-color:#c3dce9;color:#4c80aa;box-shadow:0 4px 10px rgba(83,113,132,.12)}.node-delete{background:#fff4f0;border-color:#e6bdb2;color:#bd6d5d}.react-flow__minimap,.react-flow__controls-button{background:#fffefa!important;border-color:#d6e2e7!important}.react-flow__controls{border-color:#d6e2e7!important;box-shadow:0 6px 16px rgba(83,111,130,.1)!important}.react-flow__controls-button{fill:#56738d!important}.conversation-overlay{background:linear-gradient(90deg,transparent,rgba(244,250,250,.72))}.floating-conversation .conversation-panel{background:transparent}.floating-conversation .message{background:#fffefa;border:1px solid #d9e8ed;box-shadow:0 7px 20px rgba(79,106,123,.08)}.message-text,.floating-conversation .message-text{color:#395168}.composer{background:#fffefa;border-color:#cddfe7}.composer textarea{color:#2d465d}.demo-dialog{background:#fffefa;border-color:#d2e1e7;box-shadow:0 18px 48px rgba(73,99,117,.18)}.node-editor-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}.node-editor-grid label{min-width:0}.node-editor-grid input,.node-editor-grid select{width:100%}
+
 html,
 body {
   background-color: var(--ink-0);
@@ -392,8 +408,8 @@ select {
 }
 
 .inline-question-card > div {
-  background-color: #0c131e;
-  border-color: #2b3a4d;
+  background-color: #f3f8fa;
+  border-color: #d5e3e8;
 }
 
 .conversation-resize {
@@ -419,9 +435,8 @@ select {
 
 .task-view,
 .timeline-view {
-  color: #cbd6e4;
-  background-color: #0b1119;
-  background-image: linear-gradient(145deg, rgba(16, 24, 34, 0.96), rgba(8, 13, 20, 0.98));
+  color: #304b62;
+  background: #fbfaf6;
 }
 
 .task-row,
@@ -441,9 +456,9 @@ select {
 
 .filter-row button.active,
 .mode-options button.active {
-  color: #c8dcfa;
-  background-color: #192b43;
-  border-color: #33577e;
+  color: #315f87;
+  background-color: #e4f0f8;
+  border-color: #bfd6e5;
 }
 
 .timeline-tools,
@@ -721,5 +736,438 @@ select {
     background-color: rgba(7, 11, 17, 0.94);
     border-left: 1px solid var(--line-soft);
     backdrop-filter: blur(14px);
+  }
+}
+
+/* Final light-theme layer. Keep this at EOF so legacy dark rules cannot win. */
+:root {
+  color-scheme: light;
+  --bg: #f8f6ef;
+  --sidebar: #fffefa;
+  --surface: #ffffff;
+  --line: #d9e3e8;
+  --text: #24384d;
+  --muted: #708294;
+  --blue: #5f94c8;
+  --academic: #6f9fd2;
+  --research: #79aa9d;
+  --experience: #dfa36d;
+  --personal: #9b8dc8;
+  --ink-0: #f8f6ef;
+  --ink-1: #fffefa;
+  --ink-2: #f3f8fa;
+  --ink-3: #eaf2f5;
+  --ink-4: #dfecef;
+  --line-soft: rgba(87, 119, 143, 0.18);
+  --line-strong: rgba(87, 119, 143, 0.3);
+  --shadow-panel: 0 14px 34px rgba(72, 99, 117, 0.12);
+}
+
+html,
+body,
+.app-shell,
+.app-main,
+.workbench,
+.workbench-body,
+.editorial-page,
+.placeholder-page,
+.settings-page,
+.profile-page,
+.today-page,
+.journal-page,
+.conversation-hub {
+  color: #24384d;
+  background-color: #f8f6ef;
+  background-image: none;
+}
+
+body {
+  background-image:
+    radial-gradient(circle at 18% -12%, rgba(199, 221, 235, 0.72), transparent 35%),
+    radial-gradient(circle at 92% 4%, rgba(220, 235, 226, 0.55), transparent 30%);
+}
+
+.top-navigation,
+.top-profile-nav,
+.space-topbar {
+  color: #314a61;
+  background: rgba(255, 254, 250, 0.94);
+  border-color: #dbe5e8;
+  box-shadow: 0 5px 20px rgba(73, 101, 120, 0.08);
+}
+
+.top-brand,
+.space-breadcrumb button,
+.space-breadcrumb > span:last-child button {
+  color: #29465f;
+}
+
+.top-brand small,
+.top-goal,
+.top-navigation nav a,
+.top-profile-nav,
+.space-breadcrumb > span {
+  color: #687f93;
+}
+
+.top-navigation nav a:hover,
+.top-navigation nav a.active,
+.top-profile-nav a:hover,
+.top-profile-nav a.active {
+  color: #356591;
+  background-color: #eaf4fb;
+}
+
+.top-profile {
+  color: #376b95;
+  background-color: #edf6fb;
+  border-color: #c8dfe9;
+}
+
+.workspace {
+  background-color: #fbfaf6;
+  background-image: radial-gradient(#cad9df 0.7px, transparent 0.7px);
+  background-size: 18px 18px;
+}
+
+.space-topbar .view-tabs button { color: #667e92; }
+.space-topbar .view-tabs button:hover { background-color: #eef5f8; }
+.space-topbar .view-tabs .selected {
+  color: #356a98;
+  background-color: #e6f2fa;
+  border-color: #b9d5e7;
+  box-shadow: 0 4px 12px rgba(83, 135, 173, 0.08);
+}
+
+.space-floating-tools > span,
+.workspace-switch { color: #6d8192; }
+.space-floating-tools button,
+.focus-button {
+  color: #4f6b82;
+  background-color: #fffefa;
+  border-color: #d5e2e6;
+  box-shadow: 0 6px 16px rgba(83, 111, 130, 0.08);
+}
+
+.growth-node { color: #31485d; }
+.growth-node.goal {
+  color: #4b83b5;
+  background: linear-gradient(145deg, #e8f3fc, #d7ebf8);
+  border-color: #9fc7e3;
+  box-shadow: 0 12px 26px rgba(86, 139, 183, 0.16);
+}
+.growth-node.goal strong { color: #294d6c; }
+.growth-node.goal span { color: #68849c; }
+.growth-node.capability {
+  background: color-mix(in srgb, var(--semantic) 8%, #fffefa);
+  border-color: color-mix(in srgb, var(--semantic) 44%, #dce7e6);
+  box-shadow: 0 7px 18px rgba(87, 111, 125, 0.08);
+}
+.growth-node.capability strong { color: #30475b; }
+.growth-node.capability span,
+.leaf-summary { color: #738596; }
+.growth-node.task,
+.growth-node.milestone {
+  color: #385065;
+  background: #fffefa;
+  border-color: #d9e5e8;
+  border-left-color: var(--semantic);
+  box-shadow: 0 5px 14px rgba(83, 106, 119, 0.08);
+}
+.growth-node.is-selected {
+  background: #edf7fc;
+  border-color: #85b8da;
+  box-shadow: 0 0 0 3px rgba(119, 176, 215, 0.17), 0 8px 18px rgba(86, 123, 148, 0.1);
+}
+.node-enter { color: #4c80a9; background-color: #edf6fb; border-color: #c3dce8; box-shadow: 0 4px 10px rgba(83, 113, 132, 0.12); }
+.node-delete { color: #b96859; background-color: #fff3ef; border-color: #e6bdb2; }
+.node-file-count { color: #607b91; }
+
+.react-flow__minimap { background: rgba(255, 254, 250, 0.94) !important; border-color: #d6e2e6 !important; box-shadow: 0 8px 18px rgba(83, 111, 130, 0.1); }
+.react-flow__controls { border-color: #d6e2e6 !important; box-shadow: 0 8px 18px rgba(83, 111, 130, 0.1) !important; }
+.react-flow__controls-button { background: #fffefa !important; border-color: #d6e2e6 !important; fill: #56738b !important; }
+.react-flow__controls-button:hover { background: #edf5f8 !important; }
+
+.conversation-overlay { background: linear-gradient(90deg, transparent, rgba(239, 247, 247, 0.85)); }
+.floating-conversation .conversation-panel { background: transparent; }
+.floating-title,
+.floating-conversation .message,
+.inline-question-card,
+.composer,
+.proposal {
+  color: #30495f;
+  background: #fffefa;
+  border-color: #d7e5e9;
+  box-shadow: 0 7px 20px rgba(79, 106, 123, 0.08);
+}
+/* 提案里逐条列出"AI 想改什么"。摘要本身由服务端生成,这里只管排版:
+   最多显示 8 条,超出的折成一行"…还有 N 项" —— 一份 27 条的提议如果全展开,
+   卡片会高过整个对话面板,用户翻不到下面的确认按钮。 */
+.proposal-items {
+  margin: 6px 0 2px;
+  padding-left: 16px;
+  list-style: disc;
+  color: #4b6579;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.proposal-items li::marker { color: #a9c0cd; }
+.proposal-items li + li { margin-top: 2px; }
+.floating-conversation .message.user { background: #edf5fb; }
+.message-text,
+.floating-conversation .message-text,
+.message.user .message-text { color: #3a5267; }
+.message.user .message-text { background: transparent; border-color: transparent; }
+.message-byline { color: #557a9b; }
+.composer textarea,
+.journal-composer textarea,
+.hub-composer textarea,
+.hub-search input { color: #2e485f; }
+.context-hint,
+.composer-footnote { color: #718598; }
+.floating-conversation .composer,
+.floating-conversation .composer-area,
+.floating-conversation .inline-question-card {
+  color: #30495f;
+  background: #fffefa;
+  border-color: #d7e5e9;
+}
+.floating-conversation .composer textarea { color: #2e485f; }
+.floating-conversation .composer-actions > span,
+.floating-conversation .composer-footnote,
+.floating-conversation .context-hint { color: #718598; }
+.floating-conversation .inline-question-card input {
+  color: #304b62;
+  background: #f3f8fa;
+  border-color: #d5e3e8;
+}
+.floating-conversation .inline-question-card input::placeholder { color: #8193a2; }
+.floating-conversation .context-chip,
+.floating-conversation .context-hint {
+  color: #587086;
+  background: rgba(255, 254, 250, 0.84);
+  border-color: #d5e3e8;
+}
+
+/* 对话的四个以前没有的状态:来源徽标、等待、失败、空。 */
+.source-badge {
+  align-self: flex-start;
+  margin-top: 8px;
+  padding: 2px 8px;
+  color: #4a7ba6;
+  background: #eaf3f9;
+  border: 1px solid #cfe2ee;
+  border-radius: 999px;
+  font-size: 10px;
+  letter-spacing: 0.01em;
+}
+/* 降级不是错误页,但它必须是暖色 —— 用户要能一眼看出这句话不是模型说的。 */
+.source-badge.degraded {
+  color: #96603c;
+  background: #fdf3e9;
+  border-color: #efd9c2;
+}
+.message-note { margin-top: 7px; color: #7a8b99; font-size: 11px; }
+.message-note.failed { color: #a9603f; }
+.message.pending .message-text { opacity: 0.66; }
+.message.failed .message-text { box-shadow: inset 3px 0 0 #d8a184; }
+.turn-loading { padding: 14px 2px; color: #7a8b99; font-size: 12px; }
+.turn-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  color: #9c5334;
+  background: #fdf2ea;
+  border: 1px solid #f0d8c5;
+  border-radius: 9px;
+  font-size: 12px;
+}
+.turn-error > span { flex: 1; }
+.turn-error button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  color: #8a5a3c;
+  background: #fffefa;
+  border: 1px solid #e6c9b2;
+  border-radius: 7px;
+  font-size: 11px;
+}
+.turn-error button:disabled { color: #a9a2a0; border-color: #e2dcd8; background: #f7f4f1; cursor: not-allowed; }
+.conversation-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 26px 20px;
+  color: #6f8293;
+  text-align: center;
+}
+.conversation-empty strong { color: #344f68; font-size: 13px; }
+.conversation-empty p { font-size: 12px; line-height: 1.7; }
+.brief-missing {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 9px;
+  padding: 7px 11px;
+  color: #5c7b6f;
+  background: #eff6f2;
+  border: 1px solid #d3e6dc;
+  border-radius: 8px;
+  font-size: 11px;
+}
+
+.timeline-view,
+.task-view,
+.scroll-area { color: #2e455a; background-color: rgba(255, 254, 250, 0.7); }
+.timeline-tools,
+.timeline-grid,
+.month-row,
+.timeline-label,
+.timeline-category { color: #405b72; background-color: #f8faf8; border-color: #dbe5e8; }
+.timeline-row,
+.task-row,
+.stage-summary,
+.date-inspector { border-color: #dce6e9; background-color: transparent; }
+.timeline-track { background-image: linear-gradient(to right, #dce7eb 1px, transparent 1px); }
+.task-detail,
+.task-detail time,
+.section-heading h2,
+.stage-summary h3 { color: #354f66; }
+.task-row:hover,
+.selected-row { background-color: #edf5f8; }
+.task-view .stage-summary > strong { color: #426a8c; }
+.task-view .progress-track { background: #dfe9ed; }
+.task-view .task-check { background: #fffefa; border-color: #8da9b9; }
+.task-view .completed-row .task-check { background: #e2eee7; color: #397462; border-color: #83b19e; }
+.task-view .task-detail:hover { color: #254d71; }
+
+.spaces-page { color: #263e54; }
+.space-stats > div,
+.space-card,
+.new-space-card {
+  color: #345068;
+  background: linear-gradient(145deg, #fffefa, #f2f7f7);
+  border-color: #d8e4e7;
+  box-shadow: 0 8px 22px rgba(77, 103, 119, 0.07);
+}
+.space-stats strong,
+.space-card h2,
+.new-space-card strong { color: #29445d; }
+.space-stats span,
+.space-card p,
+.space-card-meta,
+.new-space-card span { color: #718395; }
+.space-card-icon { color: #4f86b5; background: #e8f3fa; }
+.space-card > button { color: #4d78a0; border-color: #dce6e9; }
+/* 空间页此前没有错误态 —— 因为它的数据是本地编的,编的数据不会失败。
+   现在数据来自后端,加载和创建都可能失败,失败必须看得见。 */
+.spaces-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 18px;
+  padding: 11px 14px;
+  color: #9c5334;
+  background: #fdf2ea;
+  border: 1px solid #f0d8c5;
+  border-radius: 9px;
+  font-size: 12px;
+}
+.spaces-error .text-button { margin-left: auto; padding: 0; color: #8a5a3c; text-decoration: underline; font-size: 12px; }
+
+.demo-dialog,
+.journal-composer,
+.hub-list,
+.hub-thread,
+.hub-composer,
+.today-aside,
+.profile-facts,
+.portrait,
+.settings-content section,
+.memory-row,
+.asset-summary,
+.asset-row,
+.report-body section {
+  color: #304a61;
+  background-color: #fffefa;
+  border-color: #d8e4e8;
+}
+.node-form input,
+.node-form select,
+.node-form textarea,
+.journal-options input,
+.journal-options select,
+.date-editor input {
+  color: #304b62;
+  background: #f8faf8;
+  border-color: #d4e1e5;
+  color-scheme: light;
+}
+.hub-item strong,
+.profile-facts strong,
+.portrait > p,
+.today-aside h2,
+.long-portrait h2,
+.memory-intro h2,
+.memory-row > p,
+.report-body section p { color: #314d64; }
+.hub-item.active { color: #3d6690; background: #eaf3f8; border-color: #bed4e1; }
+.hub-edit-button { color: #56758f; background: #f4f8f8; border-color: #d4e2e7; }
+.journal-insight,
+.insight-explanation,
+.attachment-chips > span { color: #58768d; background: #edf5f6; }
+.profile-avatar { color: #5b7c99; background: #edf4f7; border-color: #cfdee5; box-shadow: 0 10px 24px rgba(83, 109, 126, 0.09); }
+.stage-summary,
+.today-aside,
+.profile-facts,
+.portrait,
+.profile-links > a,
+.journal-entry,
+.journal-feed-header,
+.setting-row,
+.settings-content section,
+.memory-row,
+.asset-summary,
+.asset-row,
+.report-list > a,
+.behavior-stats,
+.report-body section,
+.hub-thread > header,
+.hub-linked { border-color: #dbe5e8; }
+
+::-webkit-scrollbar-thumb { background-color: #c7d7dd; }
+::-webkit-scrollbar-thumb:hover { background-color: #aebfc7; }
+
+/* 「我的」页头上的两个按钮,是这一层**唯一漏掉**的地方。
+   `.profile-action` 在 `auth.css` 里写死了 `background:#111a26`、`color:#a5b8cf`,
+   而 `dark-theme.css` 上面又用 `!important` 把它钉在深色上 —— 于是暖白的页面上
+   并排杵着两个近黑的按钮,像是从上一版主题里掉出来的。这里按邻居们同一套色板收回:
+   `#edf6fb` / `#4c80a9` 是 `.node-enter` 用的那一组。 */
+.profile-action {
+  color: #4c80a9 !important;
+  background: #edf6fb !important;
+  border-color: #c3dce8 !important;
+}
+.profile-action:hover {
+  color: #3c6b92 !important;
+  background: #e2eff7 !important;
+  border-color: #a9cde0 !important;
+}
+.profile-logout { color: #b96859; }
+.profile-saved {
+  color: #3f7f68;
+  border-color: rgba(85, 156, 132, 0.32);
+  background: #eef7f2;
+}
+.profile-edit-form { border-color: #dbe5e8; }
+
+@media (max-width: 720px) {
+  .conversation-overlay {
+    background-color: rgba(244, 249, 248, 0.95);
+    border-left-color: #d5e2e6;
   }
 }

@@ -1,0 +1,47 @@
+# 项目级 ruff 配置。
+#
+# 之前仓库里**没有任何 ruff 配置**,`ruff check backend` 的结论取决于运行者机器上的
+# 全局配置 —— 同一份代码在不同机器上得到不同结果,那就不算一道门禁。这里把规则集
+# 明确钉死,本地与 CI 才会一致。
+#
+# 取舍标准:只选**能抓到本项目真实犯过的错**的规则。不选 "ALL" —— 那会引入大量纯
+# 风格噪声,把真正的问题淹掉。
+
+target-version = "py313"
+line-length = 100
+
+[lint]
+select = [
+    "E",     # pycodestyle。含 E402:迁移与 conftest 里"先改 sys.path 再 import"是刚需
+    "F",     # pyflakes。真实抓到过 schedule.py 的三个死 import,以及假实现里的重复定义
+    "W",     # pycodestyle warnings
+    "I",     # isort
+    "UP",    # pyupgrade
+    "B",     # bugbear:可疑写法
+    "C4",    # 推导式写法
+    "SIM",   # 可简化写法
+    "RUF",   # ruff 自身规则
+    # 时间戳必须带时区。这是本项目的核心纪律之一("哪一天"绝不由时间戳推导),
+    # DTZ 抓到过 MainAgent 里裸用的 date.today()。
+    "DTZ",
+    "ASYNC", # 异步代码里的阻塞调用、忘了 await
+]
+
+ignore = [
+    "E501",   # 行宽交给 formatter,不用 lint 报
+    "B008",   # FastAPI 的 `x=Depends(...)` 默认值就是这个模式
+    "RUF001", # 全角标点是中文注释与文案的正常组成部分
+    "RUF002",
+    "RUF003",
+    # `class X(str, Enum)` 改成 `StrEnum` 会改变 `str(member)` 的结果
+    # ("X.MEMBER" -> "MEMBER"),进而静默影响 JSON 序列化。这不是纯风格改动,
+    # 必须由人判断,不能让 linter 自动改。
+    "UP042",
+]
+
+[lint.per-file-ignores]
+# Alembic 生成的迁移不参与 lint:它们由 script.py.mako 产出,手改会签入一份"与下次
+# 重新生成不一致"的文件。要改风格就改模板。
+"backend/migrations/versions/*" = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "RUF", "DTZ"]
+# 测试里 assert 就是断言手段。
+"backend/tests/*" = ["B011"]

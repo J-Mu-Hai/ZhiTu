@@ -8,13 +8,29 @@
   align-items: center;
   justify-content: center;
   gap: 12px;
-  color: #8fa8c7;
-  background: #080c12;
+  /* 这里原来是写死的深色(#080c12)。主题早就迁到暖白了,只有这块没跟上,
+     于是每次加载都会先闪一下近黑 —— 一个只在几百毫秒里出现的问题,
+     谁都没注意,但它对每个用户都发生。用主题变量,主题换它就换。 */
+  color: var(--muted);
+  background: var(--bg);
   font-size: 12px;
 }
 
 .boot-screen > svg:first-child {
-  color: #78a9f5;
+  color: var(--blue);
+}
+
+/* "有令牌,但这次没连上后端"的那一屏(见 AppShell)。默认的 .boot-screen 是一行
+   横向排布,这里要竖过来 —— 它承载的是一句话、一个原因和一个按钮。 */
+.boot-screen.is-blocked {
+  flex-direction: column;
+  text-align: center;
+  padding: 24px;
+}
+
+.boot-screen .boot-detail {
+  max-width: 34em;
+  color: var(--muted);
 }
 
 .auth-spinner {

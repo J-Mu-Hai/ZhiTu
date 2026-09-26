@@ -1,0 +1,268 @@
+/*
+ * 真实空间的新界面:「今天」、提醒条、对话里新加的行、节点编辑器里新加的字段提示。
+ *
+ * 单独一个文件,并且在 layout 里排在 dark-theme.css **之后**:那个文件的最后一层
+ * 是当前生效的暖白主题(它自己写着"Keep this at EOF so legacy dark rules cannot
+ * win"),所以任何新规则写在它前面都会被旧规则按顺序盖掉。
+ *
+ * 全部用 CSS 变量取色,不写死十六进制 —— 变量来自 dark-theme.css 的最后一层,
+ * 换主题时这里跟着走,不用改第二遍。
+ */
+
+/* ------------------------------------------------------ 表单字段下面那行提示 */
+/* 「预计工时(分钟)」下面必须有一行字说明这个数会被怎么理解 —— 尤其要在用户填了
+   一个会被忽略的值(0、负数)时说出来。不说的话他会以为系统记下了"这件事不要
+   时间",而实际上那个任务排不进任何一天。 */
+.node-form .field-hint {
+  font-size: 10px;
+  line-height: 1.7;
+  color: var(--muted);
+  margin-top: -3px;
+}
+
+/* ------------------------------------------------- 对话:更早的消息没取回来 */
+/* 一行说明,不是一条警告 —— 记录没丢,只是没一起取回来。用最轻的样式,
+   避免用户把它读成"出问题了"。 */
+.conversation-truncated {
+  font-size: 11px;
+  line-height: 1.8;
+  color: var(--muted);
+  text-align: center;
+  padding: 4px 0 18px;
+}
+
+/* ---------------------------------------------------------------- 提醒条 */
+.reminder-strip {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--experience);
+  border-radius: 6px;
+  padding: 14px 16px;
+  margin-bottom: 26px;
+  max-width: 1100px;
+}
+
+.reminder-strip.muted {
+  align-items: center;
+  border-left-color: var(--line-strong);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.8;
+}
+
+.reminder-strip.error {
+  border-left-color: #c2705f;
+  color: #a85341;
+  font-size: 12px;
+}
+
+.reminder-strip > svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--experience);
+}
+
+.reminder-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+  flex: 1;
+}
+
+.reminder strong {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.reminder p {
+  font-size: 12px;
+  line-height: 1.85;
+  color: var(--muted);
+  margin-top: 6px;
+}
+
+.reminder-actions {
+  display: flex;
+  gap: 14px;
+  margin-top: 10px;
+}
+
+.reminder-actions button {
+  font-size: 11px;
+  color: var(--blue);
+  padding: 0;
+}
+
+.reminder-actions button:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
+/* ---------------------------------------------------------------- 今天的一项 */
+.today-item {
+  padding: 4px 0 14px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.today-item-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.today-item-main > svg {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+
+.today-item-title {
+  flex: 1;
+  text-align: left;
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--text);
+  min-width: 0;
+}
+
+.today-item-title small {
+  display: block;
+  font-size: 10px;
+  line-height: 1.8;
+  color: var(--muted);
+  margin-top: 3px;
+}
+
+.today-item-meta {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 记录过的那一条整体降一档:它不再需要被注意。 */
+.today-item.recorded .today-item-title {
+  color: var(--muted);
+}
+
+.today-item-result {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  line-height: 1.8;
+  color: var(--research);
+  margin: 8px 0 0 33px;
+}
+
+.today-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 0 0 33px;
+}
+
+.today-item-actions .text-button {
+  font-size: 11px;
+}
+
+.today-item-saving {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.today-item-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 12px 0 4px 33px;
+  padding: 14px;
+  background: var(--ink-2);
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+}
+
+.today-item-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.today-item-form input,
+.today-item-form textarea {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 9px 10px;
+  color: var(--text);
+  font-size: 12px;
+  font-family: inherit;
+  resize: vertical;
+  min-width: 0;
+}
+
+.today-item-form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.today-item-form-actions button {
+  font-size: 11px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--muted);
+  background: var(--surface);
+}
+
+.today-item-form-actions button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.today-item-form-actions .primary-button {
+  border-color: var(--blue);
+  color: var(--blue);
+}
+
+/* ------------------------------------------------- 对话里的「按执行情况调整」 */
+.replan-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.replan-row .text-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--blue);
+  padding: 0;
+}
+
+.replan-row .text-button:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
+.replan-note {
+  font-size: 11px;
+  line-height: 1.85;
+  color: var(--muted);
+}
+
+/* 降级时要说的话和"看过之后没问题"不一样,颜色上就要看得出区别 ——
+   前者要用户重试,后者要用户放心。 */
+.replan-note.degraded {
+  color: #a85341;
+}

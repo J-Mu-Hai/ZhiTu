@@ -1,0 +1,63 @@
+# 知途 API 的 systemd 单元(腾讯云 CVM / 轻量应用服务器)。
+#
+# **这份文件没有在真实服务器上跑过** —— 本机没有 systemd 也没有 Docker,写完就验不了。
+# 把它当成一份"按这个代码库的实际情况写好的起点",不是"照抄就能上线"。上线时逐行看一遍。
+#
+# 安装:
+#   sudo cp scripts/deploy/zhitu-api.service /etc/systemd/system/zhitu-api.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now zhitu-api
+#   journalctl -u zhitu-api -f          # 看日志
+#
+# 部署新代码之后必须:
+#   sudo systemctl stop zhitu-api
+#   跑迁移(见 docs/08-DEPLOYMENT.md)
+#   sudo systemctl start zhitu-api
+# 顺序不能反:启动时会校验库的结构是不是这份代码要的那一份,落后就**拒绝启动**
+# (见 backend/db/health.py)。先起服务再跑迁移的话,服务会起不来,而且日志里会
+# 明说差在哪一版 —— 这是有意的,总好过带病运行。
+
+[Unit]
+Description=ZhiTu Growth Agent API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# 不用 root 跑。这个用户只需要读代码、写日志,不需要别的。
+User=zhitu
+Group=zhitu
+WorkingDirectory=/srv/zhitu
+
+# .env 里放着 LLM_API_KEY 与 DATABASE_URL。权限设成 600,属主 zhitu。
+# **不要把这些值写进这个单元文件** —— 单元文件在 /etc 下,通常比其他文件更容易被
+# 备份、被复制、被贴进 issue。
+EnvironmentFile=/srv/zhitu/.env
+
+# 只监听回环,Nginx 在前面做 TLS 与转发。直接把它暴露到公网的话,流量是明文,
+# 而登录请求里带着密码。
+#
+# --workers 1:进程内有两样按进程算的东西(登录限流、openJiuwen 运行时预热),
+# 多 worker 会让"每分钟最多几次登录"变成"每个 worker 各几次",而预热要每个进程
+# 各花几秒和几百 MB(openjiuwen 会拉起 transformers 那一串)。先 1 个 worker,
+# 真的扛不住了再加,并且同时接受限流窗口变成 N 倍。
+ExecStart=/srv/zhitu/.venv/bin/python -m uvicorn backend.api.main:app \
+    --host 127.0.0.1 --port 8000 --workers 1
+
+Restart=always
+RestartSec=3
+
+# 日志进 journald。应用自己用的是 logging.basicConfig,输出到 stdout/stderr。
+StandardOutput=journal
+StandardError=journal
+
+# 一点基本的收窄。ProtectSystem=full 让 /usr、/boot、/etc 只读 —— 注意
+# **不要**用 strict:应用要读 /etc/localtime 与 zoneinfo(时区是这个产品一切
+# 日期运算的起点,见 backend/db/base.py)。
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

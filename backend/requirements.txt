@@ -2,14 +2,26 @@ fastapi>=0.115
 uvicorn[standard]>=0.32
 pydantic>=2.9
 pydantic-settings>=2.6
-sqlalchemy[asyncio]>=2.0
+
+# ORM。本地开发用 SQLite,线上用 PostgreSQL,两者共用一套模型(见 backend/db/base.py)。
+sqlalchemy[asyncio]>=2.0,<2.1
 asyncpg>=0.30
+aiosqlite>=0.20
 alembic>=1.14
-redis>=5.2
-anthropic>=0.40
+
 httpx>=0.28
+
+# 时区数据库。Linux/macOS 用系统的(/usr/share/zoneinfo),Windows 没有 —— 不带这个包,
+# `ZoneInfo("Asia/Shanghai")` 在 Windows 上会抛 ZoneInfoNotFoundError,而"今天是哪一天"
+# 是这个产品一切日期运算的起点(见 backend/db/base.py 里那条"哪一天绝不由时间戳推导")。
+tzdata>=2024.1; sys_platform == "win32"
 
 # dev
 pytest>=8.3
 pytest-asyncio>=0.24
 ruff>=0.8
+
+# 说明:
+# - openjiuwen 不在这里。它是可选的编排层,依赖树很重(transformers/pymilvus/tiktoken 等),
+#   装上可能与上面这些包互相降级。见 backend/requirements-agent.txt。
+# - redis 与 anthropic 已移除:全仓库零 import,且 6379 没有服务在跑。

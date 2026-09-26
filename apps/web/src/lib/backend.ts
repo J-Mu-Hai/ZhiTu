@@ -1,0 +1,998 @@
+/**
+ * 后端接口的类型与调用。
+ *
+ * 字段名与后端契约逐字对应(后端用 `alias_generator=to_camel`,所以线上就是 camelCase)。
+ * 后端的请求模型是 `extra="forbid"`:**多传一个字段就是 422**。所以这些类型不是
+ * 注释,是硬边界 —— 前端对象不能整块丢进请求体,必须挑字段。
+ */
+
+import { apiFetch } from './api';
+
+// ---------------------------------------------------------------------------------
+// 身份
+// ---------------------------------------------------------------------------------
+
+export interface UserProfile {
+  id: string;
+  email: string;
+  displayName: string;
+  timezone: string;
+  school: string | null;
+  major: string | null;
+  year: string | null;
+  rank: number | null;
+  targetYear: number | null;
+  targetGoal: string | null;
+  bio: string | null;
+  createdAt: string;
+}
+
+export interface AuthResult {
+  token: string;
+  expiresAt: string;
+  absoluteExpiresAt: string;
+  user: UserProfile;
+}
+
+export interface RegisterPayload {
+  email: string;
+  password: string;
+  displayName: string;
+  timezone: string;
+}
+
+/** 浏览器所在时区。取不到就退回东八区 —— 与后端默认值一致。 */
+export function browserTimezone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai';
+  } catch {
+    return 'Asia/Shanghai';
+  }
+}
+
+export function register(payload: RegisterPayload): Promise<AuthResult> {
+  return apiFetch<AuthResult>('/api/auth/register', { method: 'POST', body: payload });
+}
+
+export function login(email: string, password: string): Promise<AuthResult> {
+  // 跳过全局 401 处理:这里 401 的含义是"密码不对",不是"登录状态过期了"。
+  // 让它去清令牌会把另一个标签页里正常的会话也踢掉。
+  return apiFetch<AuthResult>('/api/auth/login', {
+    method: 'POST',
+    body: { email, password },
+    skipUnauthorizedHandler: true,
+  });
+}
+
+export function logout(): Promise<void> {
+  // 令牌由 apiFetch 从存储里自动带上,不用传参。
+  // 后端**没有 Authorization 也返回 204**,所以"令牌早就失效了还想登出"不会变成报错 ——
+  // 要登出的对象已经登出了,目标已经达成。
+  return apiFetch<void>('/api/auth/logout', {
+    method: 'POST',
+    skipUnauthorizedHandler: true,
+  });
+}
+
+export function fetchMe(): Promise<UserProfile> {
+  return apiFetch<UserProfile>('/api/users/me');
+}
+
+export type ProfilePatch = Partial<
+  Pick<UserProfile, 'displayName' | 'school' | 'major' | 'year' | 'rank' | 'targetYear' | 'targetGoal' | 'bio'>
+>;
+
+export function updateMe(patch: ProfilePatch): Promise<UserProfile> {
+  return apiFetch<UserProfile>('/api/users/me', { method: 'PATCH', body: patch });
+}
+
+// ---------------------------------------------------------------------------------
+// 成长空间
+// ---------------------------------------------------------------------------------
+
+export interface WorkspaceSummary {
+  id: string;
+  title: string;
+  intent: string;
+  createdAt: string;
+}
+
+export interface WorkspaceCounts {
+  nodes: number;
+  conversations: number;
+  proposals: number;
+  scheduledSessions: number;
+}
+
+export interface WorkspaceDetail extends WorkspaceSummary {
+  status: 'active' | 'archived';
+  timezone: string;
+  currentRevisionVersion: number;
+  archivedAt: string | null;
+  updatedAt: string;
+  counts: WorkspaceCounts;
+}
+
+export interface RootNode {
+  id: string;
+  title: string;
+  nodeType: string;
+  status: string;
+  depth: number;
+  deadline: string | null;
+}
+
+export interface WorkspaceCreated {
+  workspace: WorkspaceDetail;
+  rootNode: RootNode;
+}
+
+export function listWorkspaces(includeArchived = false): Promise<WorkspaceSummary[]> {
+  return apiFetch<WorkspaceSummary[]>(
+    `/api/workspaces?includeArchived=${includeArchived ? 'true' : 'false'}`,
+  );
+}
+
+export function createWorkspace(payload: { title: string; intent?: string; goal?: string }) {
+  return apiFetch<WorkspaceCreated>('/api/workspaces', { method: 'POST', body: payload });
+}
+
+export function getWorkspace(id: string): Promise<WorkspaceDetail> {
+  return apiFetch<WorkspaceDetail>(`/api/workspaces/${id}`);
+}
+
+export function updateWorkspace(
+  id: string,
+  patch: { title?: string; intent?: string; status?: 'active' | 'archived' },
+): Promise<WorkspaceDetail> {
+  return apiFetch<WorkspaceDetail>(`/api/workspaces/${id}`, { method: 'PATCH', body: patch });
+}
+
+// ---------------------------------------------------------------------------------
+// 对话
+// ---------------------------------------------------------------------------------
+
+export type DegradedReason =
+  | 'OPENJIUWEN_NOT_INSTALLED'
+  | 'NO_API_KEY'
+  | 'MODEL_TIMEOUT'
+  | 'MODEL_OUTPUT_INVALID'
+  | 'MODEL_AUTH_FAILED'
+  | 'MODEL_RATE_LIMITED'
+  | 'MODEL_UNAVAILABLE'
+  | 'CIRCUIT_OPEN';
+
+export interface MessageView {
+  id: string;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  seq: number;
+  createdAt: string;
+  contextNodeId: string | null;
+  proposalId: string | null;
+  modelSource: 'openjiuwen' | 'direct_llm' | 'rule_fallback' | 'unavailable' | null;
+  degraded: boolean;
+  degradedReason: DegradedReason | null;
+}
+
+export interface BriefView {
+  version: number;
+  goal: string | null;
+  deadline: string | null;
+  weeklyAvailableMinutes: number | null;
+  currentLevel: string | null;
+  successCriteria: string | null;
+  constraints: string[];
+  /** 还缺哪些规划条件。由**服务端**算,不是前端猜的。 */
+  missing: string[];
+}
+
+export interface ConversationView {
+  id: string | null;
+  /** 最近的一批消息，按时间正序。更早的那些由 `truncated` 说明。 */
+  messages: MessageView[];
+  brief: BriefView;
+  /** 更早的消息没有一起返回。为真时界面要说出来，见 ConversationPanel。 */
+  truncated: boolean;
+}
+
+export interface SendMessageResponse {
+  userMessage: MessageView;
+  assistantMessage: MessageView;
+  reply: string;
+  source: 'openjiuwen' | 'direct_llm' | 'rule_fallback' | 'unavailable';
+  degraded: boolean;
+  degradedReason: DegradedReason | null;
+  retryable: boolean;
+  promptVersion: string;
+  modelName: string | null;
+  latencyMs: number | null;
+  brief: BriefView;
+  changedFields: string[];
+  replayed: boolean;
+
+  /**
+   * 这一轮 AI 提的变更。**需要用户点"确认"才会写进计划。**
+   *
+   * `null` 有两种含义,靠 `proposalErrors` 区分:
+   *   - `null` + 错误为空:模型这一轮没提变更(纯聊天或提问)。
+   *   - `null` + 有错误:它提了,但被校验挡下了。界面必须如实说出来。
+   * 把两者都显示成"什么都没有"的话,用户会以为 AI 没听懂,而其实它听懂了、
+   * 只是提的东西不合法。
+   */
+  proposal: ProposalView | null;
+  /** 校验失败的原因。空数组表示这次没有被拒绝的东西。 */
+  proposalErrors: { code: string; message: string; ordinal?: number }[];
+}
+
+export function getConversation(workspaceId: string): Promise<ConversationView> {
+  return apiFetch<ConversationView>(`/api/workspaces/${workspaceId}/messages`);
+}
+
+export function sendMessage(
+  workspaceId: string,
+  payload: {
+    content: string;
+    clientMessageId?: string;
+    contextNodeId?: string | null;
+    currentView?: string | null;
+  },
+): Promise<SendMessageResponse> {
+  return apiFetch<SendMessageResponse>(`/api/workspaces/${workspaceId}/messages`, {
+    method: 'POST',
+    body: payload,
+  });
+}
+
+// ---------------------------------------------------------------------------------
+// 计划
+// ---------------------------------------------------------------------------------
+
+/**
+ * 一个计划节点。**没有"开始日期/结束日期"** —— 那是排期,在 `sessions` 里(阶段 6)。
+ *
+ * 这里只有 `deadline`(截止时间),那是用户/模型定的意图,不是排出来的安排。
+ * 界面上把它画成一个点(截止于这天),不是一个区间 —— 把截止日当区间起点渲染,
+ * 等于替用户编了一个他没说过的开始时间。
+ */
+export interface PlanNodePayload {
+  id: string;
+  parentId: string | null;
+  title: string;
+  description: string | null;
+  acceptanceCriteria: string | null;
+  nodeType: 'goal' | 'capability' | 'stage' | 'task' | 'milestone';
+  status: 'pending' | 'doing' | 'completed' | 'archived';
+  priority: 'low' | 'medium' | 'high';
+  estimateMinutes: number | null;
+  deadline: string | null;
+  depth: number;
+  orderIndex: number;
+  origin: 'user' | 'ai';
+  completedAt: string | null;
+  createdAt: string;
+}
+
+export interface DependencyPayload {
+  id: string;
+  predecessorId: string;
+  successorId: string;
+  depType: string;
+  lagDays: number;
+}
+
+/**
+ * 一个排期场次 —— "哪天做"的**唯一**表示。
+ *
+ * 一个 8 小时的任务有 8 行这个,而计划里始终只有一行节点。这不是实现细节,是产品
+ * 规则:把「写文献综述」为了填满日历复制成 8 个同名任务,用户要勾 8 次完成。
+ *
+ * `startMinute` 为空是**一等状态**,不是缺失值:用户说过"每天大概两小时",没说过
+ * "我 19:00 开始"。凭空指定一个时钟时间会让他看到一份自己没同意过的时间表。
+ */
+export interface ScheduledSessionPayload {
+  id: string;
+  nodeId: string;
+  workspaceId: string;
+  nodeTitle: string;
+  scheduledDate: string;
+  plannedMinutes: number;
+  /** 缓冲也计入当天占用 —— "当天总量 ≤ 上限"这条不变量靠它才复核得出来。 */
+  bufferMinutes: number;
+  actualMinutes: number | null;
+  seq: number;
+  status: 'planned' | 'in_progress' | 'done' | 'skipped' | 'moved' | 'canceled';
+  locked: boolean;
+  lockReason: string | null;
+  origin: 'scheduler' | 'user' | 'ai';
+  startMinute: number | null;
+  endMinute: number | null;
+  completedAt: string | null;
+}
+
+export interface PlanPayload {
+  workspaceId: string;
+  revisionVersion: number;
+  nodes: PlanNodePayload[];
+  dependencies: DependencyPayload[];
+  brief: BriefView;
+  /**
+   * 排期场次。**已取消与已搬走的场次不在这里** —— 它们是墓碑,仍在库里,复盘时
+   * 查得到,但"我的计划是什么"这个问题里不该出现一个已经不存在的安排。
+   *
+   * 空数组的含义是"还没排过期",不是"没有安排" —— 排期之前每个节点仍可能带着
+   * 截止时间(那是意图,不是安排)。界面必须把两者分开说。
+   */
+  sessions: ScheduledSessionPayload[];
+  totalNodes: number;
+  completedNodes: number;
+}
+
+export interface NodeEditResult {
+  node: PlanNodePayload;
+  revisionVersion: number;
+  deletedCount: number;
+  removedDependencies: number;
+}
+
+export interface NodePatch {
+  title?: string;
+  description?: string | null;
+  acceptanceCriteria?: string | null;
+  nodeType?: string;
+  status?: string;
+  priority?: string;
+  estimateMinutes?: number | null;
+  deadline?: string | null;
+}
+
+export function getPlan(workspaceId: string): Promise<PlanPayload> {
+  return apiFetch<PlanPayload>(`/api/workspaces/${workspaceId}/plan`);
+}
+
+export function createNode(
+  workspaceId: string,
+  payload: {
+    parentId: string;
+    title: string;
+    nodeType?: string;
+    description?: string | null;
+    priority?: string;
+    estimateMinutes?: number | null;
+    deadline?: string | null;
+  },
+): Promise<NodeEditResult> {
+  return apiFetch<NodeEditResult>(`/api/workspaces/${workspaceId}/nodes`, {
+    method: 'POST',
+    body: payload,
+  });
+}
+
+export function updateNode(
+  workspaceId: string,
+  nodeId: string,
+  patch: NodePatch,
+): Promise<NodeEditResult> {
+  return apiFetch<NodeEditResult>(`/api/workspaces/${workspaceId}/nodes/${nodeId}`, {
+    method: 'PATCH',
+    body: patch,
+  });
+}
+
+export function deleteNode(workspaceId: string, nodeId: string): Promise<NodeEditResult> {
+  return apiFetch<NodeEditResult>(`/api/workspaces/${workspaceId}/nodes/${nodeId}`, {
+    method: 'DELETE',
+  });
+}
+
+export function addDependency(
+  workspaceId: string,
+  predecessorId: string,
+  successorId: string,
+): Promise<DependencyPayload> {
+  return apiFetch<DependencyPayload>(`/api/workspaces/${workspaceId}/dependencies`, {
+    method: 'POST',
+    body: { predecessorId, successorId },
+  });
+}
+
+export function removeDependency(
+  workspaceId: string,
+  predecessorId: string,
+  successorId: string,
+): Promise<void> {
+  return apiFetch<void>(
+    `/api/workspaces/${workspaceId}/dependencies?predecessorId=${predecessorId}&successorId=${successorId}`,
+    { method: 'DELETE' },
+  );
+}
+
+// ---------------------------------------------------------------------------------
+// 排期
+// ---------------------------------------------------------------------------------
+
+/** 排期算法希望存在的一场。`sessionId` 为空表示这一场是**新加的**。 */
+export interface PlannedSessionView {
+  sessionId: string | null;
+  nodeId: string;
+  workspaceId: string;
+  nodeTitle: string;
+  scheduledDate: string;
+  plannedMinutes: number;
+  bufferMinutes: number;
+  seq: number;
+  startMinute: number | null;
+  endMinute: number | null;
+  origin: string;
+  locked: boolean;
+}
+
+/**
+ * 排不进去的那部分。**结构化的事实,不是一句"排不下"。**
+ *
+ * `bindingConstraint` 是"哪一道闸门卡住的",用户能做的三件事各自对应一个取值 ——
+ * 给错约束的代价由用户承担(让他"少做点"而真正卡住的是锁定场次,他改完发现毫无变化)。
+ */
+export interface ScheduleGapView {
+  workspaceId: string | null;
+  nodeId: string | null;
+  nodeTitle: string;
+  unscheduledMinutes: number;
+  reasonCode: string;
+  bindingConstraint: string;
+  detail: Record<string, unknown>;
+}
+
+/** 一条出路。`resolvesGap` 是**重跑一遍算出来的**,不是断言的。 */
+export interface RecoveryOptionView {
+  kind: string;
+  label: string;
+  description: string;
+  resolvesGap: boolean;
+  remainingUnscheduledMinutes: number;
+  params: Record<string, unknown>;
+}
+
+export interface DailyLoadView {
+  date: string;
+  plannedMinutes: number;
+  capacityMinutes: number;
+  byWorkspace: Record<string, number>;
+}
+
+export interface ScheduleChurnView {
+  moved: number;
+  created: number;
+  canceled: number;
+  kept: number;
+  /** 服务端拼好的一句话。措辞是这个产品的一部分,前端不重拼。 */
+  description: string;
+}
+
+export interface SchedulePreviewResponse {
+  /** 把这份结果写进库时要带上的门票。 */
+  scheduleVersion: string;
+  today: string;
+  horizonDays: number;
+  /**
+   * 这次排期覆盖了哪些空间。**是"哪些"而不是"哪一个"** —— 时间池按人算,
+   * 一份排期天然横跨这个账户的全部活动空间。界面必须如实说出来,否则用户在另一个
+   * 空间里看到自己的任务被挪了日子,会以为系统乱动了他的计划。
+   */
+  scopeWorkspaceIds: string[];
+  weeklyBudgetMinutes: number;
+  sessions: PlannedSessionView[];
+  gaps: ScheduleGapView[];
+  options: RecoveryOptionView[];
+  dailyLoad: DailyLoadView[];
+  churn: ScheduleChurnView;
+  totalPlannedMinutes: number;
+  unscheduledMinutes: number;
+  /** 恒为 false。排不下的部分一定在 `gaps` 里,不会安静地消失。 */
+  truncated: boolean;
+}
+
+export interface ScheduleAppliedView {
+  created: number;
+  updated: number;
+  moved: number;
+  canceled: number;
+  kept: number;
+  workspaces: number;
+  unscheduledMinutes: number;
+}
+
+export interface ScheduleApplyResponse {
+  scheduleVersion: string;
+  applied: ScheduleAppliedView;
+  churn: ScheduleChurnView;
+  replayed: boolean;
+}
+
+/**
+ * 预览一份排期。**只读,一行都不写。**
+ *
+ * 路径是 workspace 级的(每个空间的界面都有那个按钮),但**效果是账号级的**:
+ * 池子按人算,所以它会排上这个账户所有活动空间里的任务。
+ *
+ * 用 POST 而不是 GET:它是一次依赖"今天"的计算,不是一次读取。
+ */
+export function previewSchedule(workspaceId: string): Promise<SchedulePreviewResponse> {
+  return apiFetch<SchedulePreviewResponse>(`/api/workspaces/${workspaceId}/schedule/preview`, {
+    method: 'POST',
+  });
+}
+
+/**
+ * 应用一份排期。
+ *
+ * `scheduleVersion` 必须是**用户刚刚预览过的那一份**的版本号。中间隔着一次点击和
+ * 一次往返,期间计划可能被改过(用户自己勾了完成、另一个标签页确认了一份提案)——
+ * 对不上时后端返回 409,让用户重新预览,而不是照样写入一份他没看过的安排。
+ *
+ * `idempotencyKey` 每份预览生成一次并**在重试时复用同一个**。换一个键就等于告诉
+ * 后端"这是另一次应用"。
+ */
+export function applySchedule(
+  workspaceId: string,
+  scheduleVersion: string,
+  idempotencyKey: string,
+): Promise<ScheduleApplyResponse> {
+  return apiFetch<ScheduleApplyResponse>(`/api/workspaces/${workspaceId}/schedule/apply`, {
+    method: 'POST',
+    body: { scheduleVersion, idempotencyKey },
+  });
+}
+
+// ---------------------------------------------------------------------------------
+// 执行反馈 · 今天 · 提醒 · 按执行情况调整
+// ---------------------------------------------------------------------------------
+
+/**
+ * 一次反馈的结果。闭集,四种对计划的含义**不一样**:
+ *
+ * - `completed` 这场完成
+ * - `partial`   还在进行,做了一部分
+ * - `skipped`   这场没做(冻结,排期不会再动它)
+ * - `failed`    做了但没成 —— 这件事仍然欠着,所以这场**不算完成**
+ */
+export type ExecutionResult = 'completed' | 'partial' | 'skipped' | 'failed';
+
+export interface RecordExecutionPayload {
+  result: ExecutionResult;
+  /** 调用方生成一次,**重试时复用同一个**。换键 = 告诉后端"这是另一次反馈"。 */
+  idempotencyKey: string;
+  startedAt?: string;
+  endedAt?: string;
+  actualMinutes?: number;
+  /** 0.0 ~ 1.0。部分完成时给出"做到哪儿了"。 */
+  completionRatio?: number;
+  /** 为什么没做完 / 没做。用户说得出原因,复盘才可能给出有用的调整。 */
+  delayReason?: string;
+  userFeedback?: string;
+}
+
+export interface ExecutionRecordView {
+  id: string;
+  sessionId: string | null;
+  nodeId: string;
+  workspaceId: string;
+  result: ExecutionResult;
+  actualMinutes: number | null;
+  completionRatio: number | null;
+  startedAt: string | null;
+  endedAt: string | null;
+  delayReason: string | null;
+  userFeedback: string | null;
+  createdAt: string;
+}
+
+export interface RecordExecutionResponse {
+  /**
+   * 这条记录有没有真的落库。**成功时也是显式的 true** —— 库写不进去时后端返回
+   * 503 + `saved: false`,不是静默切到内存。界面必须读它,不能只看状态码。
+   */
+  saved: boolean;
+  record: ExecutionRecordView;
+  /** 写完之后的**那一行场次**(库里的真相),不是客户端发上去的东西。 */
+  session: ScheduledSessionPayload | null;
+  replayed: boolean;
+  /** 这个节点还剩几场没过、几场已完成。给界面一句"还剩 2 次"。 */
+  nodeRemainingSessions: number;
+  nodeCompletedSessions: number;
+}
+
+export function recordExecution(
+  sessionId: string,
+  payload: RecordExecutionPayload,
+): Promise<RecordExecutionResponse> {
+  return apiFetch<RecordExecutionResponse>(`/api/sessions/${sessionId}/executions`, {
+    method: 'POST',
+    body: payload,
+  });
+}
+
+export interface TodayItemView {
+  sessionId: string;
+  nodeId: string;
+  workspaceId: string;
+  workspaceTitle: string;
+  nodeTitle: string;
+  plannedMinutes: number;
+  bufferMinutes: number;
+  seq: number;
+  /** `MINUTES_ONLY` 模式下为 null —— 那是"某天多少分钟",不是"几点到几点"。 */
+  startMinute: number | null;
+  endMinute: number | null;
+  status: string;
+  locked: boolean;
+  /** **`null` 表示没有任何记录,不表示没完成。** */
+  result: ExecutionResult | null;
+  actualMinutes: number | null;
+  delayReason: string | null;
+  /** 与 `result !== null` 同义,单独给出来是因为它更难被漏判成"假值 = 没做"。 */
+  recorded: boolean;
+}
+
+export interface TodayWorkspaceView {
+  workspaceId: string;
+  title: string;
+  items: TodayItemView[];
+}
+
+/** 一句**提问**,不是一句结论 —— 这场过去了而且我们不知道结果。 */
+export interface CheckInQuestion {
+  sessionId: string;
+  nodeId: string;
+  workspaceId: string;
+  nodeTitle: string;
+  scheduledDate: string;
+  daysAgo: number;
+  plannedMinutes: number;
+  question: string;
+}
+
+/**
+ * 跨空间的「今天」。**路径上没有 workspaceId** —— 用户问的是"我今天要做什么",
+ * 不是"我这个空间今天要做什么"。逐空间看会让"两个空间各排了 60 分钟"看起来
+ * 都来得及,而他只有两小时。
+ */
+export interface TodayResponse {
+  today: string;
+  timezone: string;
+  workspaces: TodayWorkspaceView[];
+  plannedMinutes: number;
+  /** 只统计**有记录**的那些场次 —— 把没记录的算成 0 会让"今天投入了多久"在下午变成假数字。 */
+  actualMinutes: number;
+  itemCount: number;
+  recordedCount: number;
+  checkInQuestions: CheckInQuestion[];
+  /** 服务端拼好的一句话,如实说明"没有记录"意味着什么。 */
+  note: string;
+}
+
+export function fetchToday(): Promise<TodayResponse> {
+  return apiFetch<TodayResponse>('/api/today');
+}
+
+export interface QuietHoursView {
+  active: boolean;
+  /** 当日分钟数。`fromMinute > toMinute` 表示这段跨过午夜(22:00 -> 08:00)。 */
+  fromMinute: number;
+  toMinute: number;
+  description: string;
+  source: string;
+}
+
+export interface ReminderView {
+  key: string;
+  /** `workspace_empty` / `plan_created` / `user_returned` / `repeated_skips` / `weekend` / `stage_completed`。 */
+  kind: string;
+  title: string;
+  body: string;
+  workspaceId: string | null;
+  forDate: string;
+}
+
+/**
+ * 当前该显示的提醒。**这是站内提醒,不是推送** —— 它只在用户打开界面时出现。
+ */
+export interface RemindersResponse {
+  reminders: ReminderView[];
+  quietHours: QuietHoursView;
+  /** 被免打扰时段压住的条数。**如实说出来** —— 用户不该把"现在没有提醒"读成"一切正常"。 */
+  suppressedCount: number;
+  note: string;
+}
+
+export interface ReminderStateView {
+  key: string;
+  dismissed: boolean;
+  snoozedUntil: string | null;
+}
+
+export function fetchReminders(): Promise<RemindersResponse> {
+  return apiFetch<RemindersResponse>('/api/reminders');
+}
+
+/** 键放在请求体里 —— 它不是一行资源的 id,而是 `weekend:2026-W39` 这种复合标识。 */
+export function dismissReminder(key: string): Promise<ReminderStateView> {
+  return apiFetch<ReminderStateView>('/api/reminders/dismiss', { method: 'POST', body: { key } });
+}
+
+/** "稍后"是一个真实的承诺:到点它会重新出现,而不是被软化成"关掉"。 */
+export function snoozeReminder(key: string, hours = 24): Promise<ReminderStateView> {
+  return apiFetch<ReminderStateView>('/api/reminders/snooze', {
+    method: 'POST',
+    body: { key, hours },
+  });
+}
+
+export interface DeviationView {
+  code: string;
+  workspaceId: string | null;
+  nodeId: string | null;
+  nodeTitle: string;
+  sessionId: string | null;
+  /** 服务端拼好的一句话,例如「周三那场 60 分钟的「变量与类型」还没有记录」。 */
+  detail: string;
+  /**
+   * 这是一句提问(`true`)还是一句结论(`false`)。
+   *
+   * `true` = 我们**不知道**发生了什么(那场没有记录),它可以被问,不能被算作偏差。
+   * `false` = 用户**说了**发生了什么(跳过/失败/部分),或者一件事客观上过期了。
+   */
+  isQuestion: boolean;
+  daysAgo: number | null;
+  facts: Record<string, unknown>;
+}
+
+export interface DeviationsResponse {
+  deviations: DeviationView[];
+  analyzedFor: string | null;
+  /** 其中有多少条是**提问**。两类在界面上的措辞必须不同。 */
+  questionCount: number;
+  note: string;
+}
+
+/** 只是偏差事实 —— 不请模型,不花钱,模型挂了也照样正确。 */
+export function fetchDeviations(workspaceId: string): Promise<DeviationsResponse> {
+  return apiFetch<DeviationsResponse>(`/api/workspaces/${workspaceId}/deviations`);
+}
+
+export interface ReplanResponse {
+  deviations: DeviationView[];
+  /** 这一轮有没有真的请模型看过。没有偏差时是 false。 */
+  consultedModel: boolean;
+  proposal: ProposalView | null;
+  /**
+   * 模型提了变更但没通过校验时,逐条的问题。和 `proposal === null` 一起读:
+   * 前者是"提了但不行",后者是"没提"。这两件事对用户意味着不同的东西。
+   */
+  proposalErrors: { code: string; message: string; ordinal?: number }[];
+  source: string | null;
+  degraded: boolean;
+  degradedReason: string | null;
+  retryable: boolean;
+  /** **降级时它必须如实说明"这次没能给出调整方案"** —— 空白不等于"不需要调整"。 */
+  message: string;
+  analyzedFor: string | null;
+}
+
+/**
+ * 按执行情况调整计划。
+ *
+ * 它走的是**和提案确认完全相同的路径** —— 校验、预览、确认事务一个都不少,返回的
+ * `proposal` 要用户点确认才会写进去。`degraded` 为真时不会有提案,那是"这次没能给出
+ * 方案",不是"系统认为不需要调整"。
+ */
+export function replan(workspaceId: string): Promise<ReplanResponse> {
+  return apiFetch<ReplanResponse>(`/api/workspaces/${workspaceId}/replan`, { method: 'POST' });
+}
+
+/**
+ * 约束 -> 中文名。取值来自后端 `scheduler/errors.py::BindingConstraint`,是个闭集。
+ *
+ * 界面必须点名"卡在哪",因为用户能做的三件事(少做点 / 延期 / 多投入)各自对应
+ * 不同的约束 —— 不说清楚的话他只会盲点"增加投入",而那可能一点用都没有。
+ *
+ * 兜底分支返回原值而不是空串:后端将来加了新约束时,界面上会显示一个英文枚举名,
+ * 那不好看,但比"什么都没说"强 —— 后者会让缺口看起来像系统的问题。
+ */
+export function bindingConstraintLabel(constraint: string): string {
+  switch (constraint) {
+    case 'DAILY_MAX':
+      return '每天的时间上限';
+    case 'WEEKLY_BUDGET':
+      return '每周时间预算';
+    case 'AVAILABILITY':
+      return '你标出的可用时段';
+    case 'DEADLINE':
+      return '截止时间';
+    case 'DEPENDENCY':
+      return '前置任务的完成时间';
+    case 'LOCKED_SESSIONS':
+      return '你锁定的安排';
+    case 'MIN_SESSION_SIZE':
+      return '单场的最短时长';
+    case 'NO_ESTIMATE':
+      return '缺预计工时';
+    case 'HORIZON':
+      return '排期能算到的范围';
+    default:
+      return constraint;
+  }
+}
+
+/** 缺口原因 -> 一句给人看的话。取值来自 `scheduler/errors.py::ScheduleErrorCode`。 */
+export function gapReasonLabel(reason: string): string {
+  switch (reason) {
+    case 'NO_CAPACITY_BEFORE_DEADLINE':
+      return '截止时间之前的日子都排满了';
+    case 'DEADLINE_ALREADY_PASSED':
+      return '截止时间已经过去';
+    case 'DEPENDENCY_CHAIN_UNSATISFIABLE':
+      return '前置任务排到了截止日之后';
+    case 'LOCKED_SESSION_CONFLICT':
+      return '和你锁定的安排撞上了';
+    case 'NO_ESTIMATE':
+      return '这件事没有填预计工时，不知道要做多久';
+    case 'BELOW_MIN_SESSION':
+      return '剩下的空隙放不下一场最小的安排';
+    case 'HORIZON_EXHAUSTED':
+      return '往后算的这段时间里没有空位了';
+    default:
+      return reason;
+  }
+}
+
+// ---------------------------------------------------------------------------------
+// 提案
+// ---------------------------------------------------------------------------------
+
+export interface ProposalItemView {
+  ordinal: number;
+  op: string;
+  summary: string;
+  /** `create_node` 这类新建的项,在提案内部用的临时名(`n1`)。 */
+  localId: string | null;
+  /** 改动指向的节点。服务端从 `localId` 映射回来的真 UUID。 */
+  targetNodeId: string | null;
+  targetTitle: string | null;
+  /** 将被写入的字段原样。界面上可以展开看。 */
+  payload: Record<string, unknown>;
+  /** `delete_node` 会连带删掉的子节点数量。 */
+  affectedChildren: number;
+}
+
+export interface ProposalView {
+  id: string;
+  status: 'validated' | 'pending_confirmation' | 'applied' | 'rejected' | 'stale' | 'failed';
+  baseRevisionVersion: number;
+  triggerType: string;
+  itemCount: number;
+  items: ProposalItemView[];
+  reasoning: string | null;
+  /** 生成时就算好的展示信息(每个 op 动了什么)。服务端生成,前端只显示。 */
+  changeSummary: Record<string, unknown>;
+  createdAt: string;
+  /** 过期时间。过了之后确认会被拒(`PROPOSAL_EXPIRED`)。 */
+  expiresAt: string | null;
+  decidedAt: string | null;
+}
+
+export interface AppliedChangeView {
+  nodesCreated: number;
+  nodesUpdated: number;
+  nodesDeleted: number;
+  dependenciesAdded: number;
+  dependenciesRemoved: number;
+  revisionVersion: number;
+}
+
+export interface ConfirmProposalResponse {
+  proposal: ProposalView;
+  applied: AppliedChangeView;
+  /** 这次响应是不是重放之前那一次的。用户双击"确认"时第二次是 true。 */
+  replayed: boolean;
+}
+
+/**
+ * 确认一份提案 —— 产品里最重的一次写入。
+ *
+ * `idempotencyKey` 由调用方生成一次并**在重试时复用同一个**。换一个键就等于告诉
+ * 后端"这是另一次确认",网络超时重发会变成写两遍。
+ */
+export function confirmProposal(
+  workspaceId: string,
+  proposalId: string,
+  idempotencyKey: string,
+): Promise<ConfirmProposalResponse> {
+  return apiFetch<ConfirmProposalResponse>(
+    `/api/workspaces/${workspaceId}/proposals/${proposalId}/confirm`,
+    { method: 'POST', body: { idempotencyKey } },
+  );
+}
+
+export function listProposals(workspaceId: string): Promise<ProposalView[]> {
+  return apiFetch<ProposalView[]>(`/api/workspaces/${workspaceId}/proposals`);
+}
+
+export function rejectProposal(
+  workspaceId: string,
+  proposalId: string,
+  reason?: string,
+): Promise<ProposalView> {
+  return apiFetch<ProposalView>(
+    `/api/workspaces/${workspaceId}/proposals/${proposalId}/reject`,
+    { method: 'POST', body: reason ? { reason } : {} },
+  );
+}
+
+// ---------------------------------------------------------------------------------
+// 展示用的文案
+// ---------------------------------------------------------------------------------
+
+/** 这一轮的回复是谁生成的。界面上必须显示出来 —— 见 backend/contracts/conversation.py。 */
+export function sourceLabel(source: string): string {
+  switch (source) {
+    case 'openjiuwen':
+      return 'AI 规划 · openJiuwen';
+    case 'direct_llm':
+      return 'AI 规划 · DeepSeek';
+    case 'rule_fallback':
+      return '本地规则 · 模型不可用';
+    default:
+      return '模型不可用';
+  }
+}
+
+/**
+ * 降级原因 -> 给用户看的一句话。
+ *
+ * 参数类型故意放宽成 `string | null`:后端将来加了新的 `DegradedReason`,
+ * 前端这里**不该因此编译不过** —— 那样最坏的结果是线上白屏,而不是少一句提示。
+ * 兜底分支返回空串,徽标退化成只显示"本地规则 · 模型不可用",信息量小但不错。
+ */
+export function degradedHint(reason: string | null | undefined): string {
+  switch (reason) {
+    case 'NO_API_KEY':
+      return '还没有配置模型密钥,现在只能回答固定问题。';
+    case 'OPENJIUWEN_NOT_INSTALLED':
+      return 'openJiuwen 未安装,当前回落到直连模型。';
+    case 'MODEL_TIMEOUT':
+      return '模型响应超时。';
+    case 'MODEL_OUTPUT_INVALID':
+      return '模型这次的回答没能解析出结果。';
+    case 'MODEL_AUTH_FAILED':
+      return '模型密钥无效或已过期。';
+    case 'MODEL_RATE_LIMITED':
+      return '模型服务限流了。';
+    case 'MODEL_UNAVAILABLE':
+      return '连不上模型服务。';
+    case 'CIRCUIT_OPEN':
+      return '连续失败次数过多,已暂时停止调用。';
+    default:
+      return '';
+  }
+}
+
+/** 简报字段 -> 中文名。用于"已记下:每周 4 小时"这类反馈。 */
+export function fieldLabel(field: string): string {
+  switch (field) {
+    case 'goal':
+      return '目标';
+    case 'deadline':
+      return '截止时间';
+    case 'weekly_available_minutes':
+      return '每周可投入';
+    case 'current_level':
+      return '当前水平';
+    case 'success_criteria':
+      return '验收标准';
+    case 'constraints':
+      return '约束';
+    default:
+      return field;
+  }
+}

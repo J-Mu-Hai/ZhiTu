@@ -17,11 +17,11 @@
 
 | 入口 | 落点 |
 | --- | --- |
-| Growth Space(Graph / Timeline / Plan) | `apps/web/src/app/features/growth` |
-| Conversation(AI Dock,非独立页面) | `apps/web/src/app/features/conversation` |
-| Journal | `apps/web/src/app/features/journal` |
+| Growth Space(Graph / Timeline / Plan) | `apps/web/src/features/growth` |
+| Conversation(AI Dock,非独立页面) | `apps/web/src/features/conversation` |
+| Journal | `apps/web/src/features/journal` |
 | Growth(长期报告) | 待定 —— 见下方问题 |
-| Me | `apps/web/src/app/features/profile` |
+| Me | `apps/web/src/features/profile` |
 
 ### Mobile
 

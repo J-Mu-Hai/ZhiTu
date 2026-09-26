@@ -33,6 +33,23 @@ export function growthReducer(state: GrowthState, action: PlanAction): GrowthSta
   };
   const node = state.nodes[action.nodeId];
   if (!node) return state;
+  if (action.type === 'UPDATE_NODE') {
+    // `patch.deadline` / `patch.estimateMinutes` 允许是 `null` —— 后端用 null 表示
+    // "把这一个清掉",而 `GrowthNode` 上没有 null 这一档。在这里归一成 `undefined`,
+    // 否则 `null` 会顺着 `...patch` 渗进整个视图模型,而所有 `node.deadline && ...`
+    // 这类判断仍然"碰巧"是对的 —— 于是它只在类型检查器里报错,在别处都看不出来。
+    //
+    // `estimateMinutes` 尤其不能漏:它是**分钟**,而视图模型里的 `estimatedHours` 是
+    // **小时**。一个 `estimateMinutes: null` 混进去之后,时间线上那张卡片会去读一个
+    // 不存在的字段,把工时显示成空 —— 而不是显示成"没填"。
+    const { deadline, estimateMinutes, ...rest } = action.patch;
+    const patch = {
+      ...rest,
+      ...(deadline == null ? {} : { deadline }),
+      ...(estimateMinutes == null ? {} : { estimateMinutes }),
+    };
+    return { ...state, nodes: { ...state.nodes, [node.id]: { ...node, ...patch } } };
+  }
   const updated = action.type === 'UPDATE_STATUS'
     ? { ...node, status: action.status }
     : { ...node, startDate: action.startDate, endDate: action.endDate,

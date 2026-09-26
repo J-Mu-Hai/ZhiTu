@@ -71,23 +71,34 @@ INFRASTRUCTURE  FastAPI / PostgreSQL / LLM API / Server
 - [05-DATA-MODEL.md](docs/05-DATA-MODEL.md) — 数据模型(EXPERIMENTAL)
 - [06-AGENT-DESIGN.md](docs/06-AGENT-DESIGN.md) — Agent 职责与输入输出
 - [07-DEVELOPMENT.md](docs/07-DEVELOPMENT.md) — 环境与开发流程
+- [08-DEPLOYMENT.md](docs/08-DEPLOYMENT.md) — 上线的操作手册（腾讯云 + Vercel）
 
 ## 快速开始
 
 ```bash
-cp .env.example .env     # 填入模型 API Key 等配置
-docker compose up -d     # 启动 Postgres / Redis / API
+cp .env.example .env                       # 至少填 LLM_API_KEY
+
+# 后端。必须用 conda 环境 zhitu —— 仓库里的 .venv 缺 aiosqlite,会在数据库那步失败
+conda activate zhitu
+python -m alembic -c backend/alembic.ini upgrade head    # 建本地 SQLite,无需装数据库
+uvicorn backend.api.main:app --port 8000
 ```
 
-当前可直接体验的 Web 产品位于 `apps/web/`：
-
 ```bash
+# 前端
 cd apps/web
 npm install
 npm run dev
 ```
 
-浏览器打开 <http://127.0.0.1:5173/workbench>。首次访问会进入登录页；可注册本地演示账户，每个账户的计划和个人资料分别保存在当前浏览器。正式身份认证、数据库与真实模型接入属于下一阶段。
+浏览器打开 <http://127.0.0.1:5173/workbench>。首次访问会进入登录页,注册后即可使用。
+
+**不需要 Docker,也不需要 Redis** —— 本地用仓库内的 SQLite(`data/zhitu_dev.db`),登录
+限流与熔断是进程内实现。Redis 已从依赖中移除。线上部署改用 PostgreSQL 只需改
+`DATABASE_URL`。
+
+`uvicorn` **没有 `--reload`**:改了 `backend/` 下的文件要手动重启。测试一律从仓库根跑
+(要靠 `backend.*` 这个包名导入),细节见 [07-DEVELOPMENT.md](docs/07-DEVELOPMENT.md)。
 
 分端启动方式见 [07-DEVELOPMENT.md](docs/07-DEVELOPMENT.md)。
 

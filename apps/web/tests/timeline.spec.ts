@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { demoDate, openDemoSpace, registerAccount } from './support/session';
 import { anchoredZoom, dateToX, dayNumber, getVisibleItems, layoutItems, timelineItems, timelineTicks, xToDate } from '../src/features/growth/timeline';
 import { initialGrowth } from '../src/mock/growth-state';
 
@@ -23,7 +24,11 @@ test('calendar mapping, cross-year ticks, semantic levels and dense layout', () 
 test('semantic zoom, pointer anchor, pan, overview, cards and chat proposal', async ({ page }) => {
   const errors: string[] = [];
   page.on('pageerror', e => errors.push(e.message));
-  await page.goto('/workbench?view=timeline');
+  // 时间线上的那些条(科研项目、课程作业)是示例空间里那份计划的排期,新账户没有。
+  // `view=timeline` 和 `workspace=primary` 一起给:前者是"打开哪个视图",
+  // 后者是"打开哪个空间",它们互不替代。
+  await registerAccount(page,'timeline');
+  await openDemoSpace(page,'/workbench',{view:'timeline'});
   await page.getByRole('button',{name:'收起对话'}).click();
   const timeline = page.getByTestId('timeline-view'), canvas = page.getByTestId('timeline-canvas');
   await expect(timeline).toHaveAttribute('data-zoom','month');
@@ -67,7 +72,11 @@ test('semantic zoom, pointer anchor, pan, overview, cards and chat proposal', as
   await page.getByRole('button',{name:'发送消息',exact:true}).click();
   await page.getByRole('button',{name:'查看影响'}).click();
   await expect(page.getByTestId('plan-ghost')).toHaveCount(1);
-  await expect(page.getByTestId('date-inspector')).toContainText('2026-10-18');
+  // 预览框里显示的是"这次改动之前"的那一段(提案的 `originalStart`),也就是科研项目
+  // 在种子数据里的起点 2026-10-18 —— 要经过 `demoDate` 换算(见它上面那段注释),
+  // 示例数据的日期会被整体平移到"今天"。
+  await expect(page.getByTestId('date-inspector')).toContainText(demoDate('2026-10-18'));
+  // 而 2027-02-01 是**演示里写死的目标日期**(提案本身要挪到的那天),不随"今天"平移。
   await expect(page.locator('[data-timeline-item="project"]')).toHaveAttribute('data-start-date','2027-02-01');
   await page.screenshot({path:'artifacts/timeline-preview.png'});
   await page.getByRole('button',{name:'接受调整'}).click();

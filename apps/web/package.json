@@ -8,6 +8,7 @@
     "start": "next start --hostname 127.0.0.1 --port 5173",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
+    "contracts:check": "node scripts/contracts-check.mjs",
     "test:e2e": "playwright test"
   },
   "dependencies": {

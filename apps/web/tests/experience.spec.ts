@@ -1,8 +1,18 @@
-import { test, expect } from '@playwright/test';
+import { expect, test } from '@playwright/test';
+import { openDemoSpace, registerAccount } from './support/session';
+
+/*
+ * 这两条验的是那份保研演示数据里的**空间嵌套**和**跨页共享**。
+ *
+ * 演示数据还在(`src/mock/`),但它现在只属于示例空间 —— 一个空间都没有的新账户
+ * 打开工作台会被送回空间页,不会再看到别人那份计划。所以每条都得先登录、再带上
+ * `?workspace=primary` 显式进示例空间(见 `support/session.ts` 里 `demoUrl` 那段)。
+ */
 
 test('recursive spaces keep nodes and files attached to their parent', async ({page})=>{
   const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));
-  await page.goto('/workbench');
+  await registerAccount(page,'nested');
+  await openDemoSpace(page,'/workbench');
   await expect(page.getByRole('tab', { name: '时间线', exact: true })).toBeVisible();
   await page.locator('.react-flow__node[data-id="research"]').dblclick({delay:100});
   await expect(page.locator('.space-breadcrumb')).toContainText('科研能力');
@@ -38,9 +48,17 @@ test('recursive spaces keep nodes and files attached to their parent', async ({p
   expect(errors).toEqual([]);
 });
 
+/*
+ * `slow()`:这条要在四个页面之间各走一趟(今天 → 随笔 → 对话 → 我的 → 报告),
+ * 每一次都是整页加载。实测 19 秒左右,离默认的 30 秒预算不远 —— 和 dark-theme
+ * 那条同一个道理:放宽的是**墙钟**,不是任何一条断言的上限。
+ */
 test('today, journal, conversation history and profile remain connected',async({page})=>{
+  // `slow()` 只能这样用 —— `test.slow('名字', fn)` 会让这条测试被静默丢掉。
+  test.slow();
   const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));
-  await page.goto('/today');
+  await registerAccount(page,'connected');
+  await openDemoSpace(page,'/today');
   await page.getByRole('button',{name:'开始专注'}).click();
   await expect(page.locator('.focus-timer')).toBeVisible({timeout:5000});
   await page.getByRole('button',{name:'完成学习'}).click();
@@ -48,7 +66,16 @@ test('today, journal, conversation history and profile remain connected',async({
   await page.getByRole('button',{name:'为什么这样安排？'}).click();
   await expect(page.locator('.insight-explanation')).toBeVisible();
   await page.screenshot({path:'artifacts/today.png'});
-  await page.getByRole('navigation').getByRole('link',{name:'随笔',exact:true}).click();
+  /*
+   * **跨页用显式地址,不点导航链接。**
+   *
+   * 六个主导航链接指向 `/journal`、`/conversations` 这样的裸地址,不带 `?workspace=`。
+   * 在示例空间里点它们会丢掉空间上下文,被 WorkspaceRouter 送回空间页;走回来也一样,
+   * 因为示例空间不像真实空间那样记在 `zhitu.active.workspace.<用户>` 里。
+   * 这条测试要验的是"几个页面共享同一份状态",所以直接用示例空间里的地址,
+   * 而不是绕一圈去验导航链接的 href。
+   */
+  await openDemoSpace(page,'/journal');
   await page.getByLabel('此刻的想法').fill('迈出了联系导师的第一步\n今天整理好了实验室资料。');
   await page.getByRole('button',{name:'关联计划',exact:true}).click();
   await page.getByLabel('标签', {exact:true}).fill('科研');
@@ -56,14 +83,15 @@ test('today, journal, conversation history and profile remain connected',async({
   await page.getByRole('button',{name:'发布',exact:true}).click();
   await expect(page.locator('.journal-entry').first()).toContainText('迈出了联系导师的第一步');
   await page.screenshot({path:'artifacts/journal.png'});
-  await page.getByRole('navigation').getByRole('link',{name:'对话',exact:true}).click();
+  await openDemoSpace(page,'/conversations');
   await page.getByRole('button',{name:/Transformer 学习/}).click();
   await expect(page.locator('.hub-messages')).toContainText('Query');
   await page.getByLabel('继续历史对话').fill('我已经理解了注意力分数');
   await page.getByRole('button',{name:'发送历史对话'}).click();
   await expect(page.locator('.hub-messages')).toContainText('我已经理解了注意力分数');
   await page.screenshot({path:'artifacts/conversations.png'});
-  await page.getByRole('navigation').getByRole('link',{name:'我的',exact:true}).click();
+  // 我的页不需要空间,用裸地址就行。
+  await page.goto('/me');
   await expect(page.locator('.profile-page')).toBeVisible();
   await page.screenshot({path:'artifacts/profile.png'});
   const slugs=['archive','profile','reports','assets','behavior','memory','settings'];
@@ -72,6 +100,10 @@ test('today, journal, conversation history and profile remain connected',async({
   await page.getByRole('switch',{name:'主动聊天'}).click();
   await expect(page.getByRole('switch',{name:'主动聊天'})).toHaveAttribute('aria-checked','false');
   await page.locator('.top-profile-nav a[href="/me/reports"]').click();
+  // 先等报告列表真的画出来再点进去。少了这一句,点"周报"有可能落在上一页
+  // (个人中心每一页的导航都是同一套链接,换页是客户端跳转)——
+  // 那是竞态,不是产品问题。
+  await expect(page.locator('.report-list')).toBeVisible();
   await page.getByRole('link',{name:/周报/}).click();
   await expect(page.locator('.report-body')).toBeVisible();
   await page.locator('.top-profile-nav a[href="/me/settings"]').click();
@@ -79,4 +111,3 @@ test('today, journal, conversation history and profile remain connected',async({
   await expect(page.getByRole('switch',{name:'主动聊天'})).toHaveAttribute('aria-checked','false');
   expect(errors).toEqual([]);
 });
-
