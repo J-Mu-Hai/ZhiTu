@@ -2,8 +2,8 @@
 import { Suspense, createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import type { AISettings, Conversation, FileAsset, GrowthNode, JournalEntry, Message, PlanAction } from '@/types/growth';
-import { todayInTimeZone } from './timeline';
-import { emptyGrowth, planToGrowth } from './planProjection';
+import { dayNumber, todayInTimeZone } from './timeline';
+import { PLACEHOLDER_ROOT_ID, emptyGrowth, planToGrowth } from './planProjection';
 import { useAuth } from '@/features/auth/provider';
 import type { AccountProfile } from '@/features/auth/types';
 import { workspaceStorageKey } from './workspaces';
@@ -199,6 +199,46 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
    */
   const currentSpaceId = growth.nodes[spaceId] ? spaceId : growth.goalId;
 
+  /**
+   * 画布子树的 `key`。**它和 `currentSpaceId` 只差一件事,而那一件事是刻意的。**
+   *
+   * `key` 的作用是"换一层就换一份状态":用户进了子空间,画布上那个还没提交的弹窗、
+   * ReactFlow 内部那份平移缩放,都不该跟着过去。这个隔离要留着。
+   *
+   * 但**哨兵值不算"换了一层"**。计划第一次到达之前,`currentSpaceId` 是
+   * `PLACEHOLDER_ROOT_ID`;计划一到位,它变成根节点的真实 UUID —— 那一刻画布子树被
+   * 重建一次,而用户什么都没做。今天这一下丢不掉东西(那时"新建节点"还是禁用的,
+   * 见 `PathView` 里的 `canCreate`),但它是**每一次打开工作台都要交的一笔账**:
+   * ReactFlow 内部的视口、以及将来会长在这棵子树上的正文编辑器,全都跟着重建。
+   *
+   * 所以:该换层级时照换(指针指向了别处),读数抖一下时不换(退回哨兵值)。
+   * 计划读失败时 `growth.goalId` 本身也会退回哨兵值,那时这里跟着退回 —— 那是同一层,
+   * 只是这一次没读到,不该被当成用户换了层级。
+   */
+  const canvasKey = spaceId === PLACEHOLDER_ROOT_ID ? growth.goalId : spaceId;
+
+  /**
+   * 每个层级各自的视口(平移 + 缩放),以及时间线自己那一份。
+   *
+   * **只活在内存里,按空间分开** —— 它在 Provider 里,而 Provider 的 `key` 是空间 id,
+   * 所以换空间天然拿不到上一个空间的那一份。
+   *
+   * 为什么不顺手也落 localStorage:`positions` 落盘是因为"我把这张图摆成什么样"
+   * 值得跨刷新留着;视口是**对当前画面的一瞥**,而节点集合一变(补了节点、删了子树),
+   * 上一次的视口就可能框住一片空白 —— 那种"打开是一张空图"比"重新 fit 一次"更难解释。
+   * 跨刷新、跨设备的那一份留给步骤 3 的后端 `scope_viewports`。
+   */
+  const [viewports, setViewports] = useState<Record<string, { x: number; y: number; zoom: number }>>({});
+  const setScopeViewport = useCallback((scopeId: string, viewport: { x: number; y: number; zoom: number }) => {
+    setViewports(old => (old[scopeId]?.x === viewport.x && old[scopeId]?.y === viewport.y && old[scopeId]?.zoom === viewport.zoom
+      ? old
+      : { ...old, [scopeId]: viewport }));
+  }, []);
+  // 时间线的那一份形状不同(`start` 是"从第几天开始看",`density` 是每天多少像素),
+  // 所以不塞进上面那个表。它的初始值以前算在 `TimelineView` 里,现在挪到这里 ——
+  // 不然切一次视图回去,时间线就跳回今天。
+  const [timelineViewport, setTimelineViewport] = useState(() => ({ start: dayNumber(todayInTimeZone()) - 25, density: 4 }));
+
   const [files, setFiles] = useState<FileAsset[]>([]);
   const objectUrls = useRef(new Set<string>());
   useEffect(() => () => { objectUrls.current.forEach(url => URL.revokeObjectURL(url)); }, []);
@@ -284,8 +324,14 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
   // 当前正在看哪一层。根目标 id 只在计划**第一次到达**时从 `goal` 变成真实 UUID,
   // 之后每次写入后的重新拉取都不会变 —— 所以这个 effect 不会把用户从他已经
   // 进入的那个阶段里弹出来。
+  //
+  // **哨兵值不算"用户换了层级"。** 计划读失败时 `growth.goalId` 会退回
+  // `PLACEHOLDER_ROOT_ID`,这里如果照跟,用户会从他正待着的子空间里被弹回根 ——
+  // 而"这一次没读到计划"根本不是他的操作。今天这条退回只发生在换空间/整页加载那
+  // 几种本来就会重建整棵子树的时刻,所以还看不出后果;等步骤 3 给计划加上重试,
+  // 它就会变成"每次后端抖一下,正在写的正文被弹走一次"。
   useEffect(() => {
-    if (growth.goalId) setSpaceId(growth.goalId);
+    if (growth.goalId && growth.goalId !== PLACEHOLDER_ROOT_ID) setSpaceId(growth.goalId);
   }, [growth.goalId]);
 
   const refreshProposals = useCallback(async () => {
@@ -630,7 +676,12 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     replan, replanState,
     // 对外给的是**算出来**的那个(见 `currentSpaceId`)。调用方拿它去
     // `growth.nodes[spaceId]` 是安全的,这是这个字段的契约。
-    spaceId: currentSpaceId, enterSpace, updateNode, setNodeStatus, addNode, deleteNode, files, addFiles, removeFile, journals, publishJournal, conversations, setConversations, settings, setSettings, focus, setFocus };
+    spaceId: currentSpaceId,
+    // 画布子树的 key。**与 `spaceId` 不是同一个东西**,别拿它去查节点 —— 见 `canvasKey`。
+    canvasKey,
+    // 视口(用户偏好,不落盘也不进版本账)。画布按层级存,时间线一份。
+    viewports, setScopeViewport, timelineViewport, setTimelineViewport,
+    enterSpace, updateNode, setNodeStatus, addNode, deleteNode, files, addFiles, removeFile, journals, publishJournal, conversations, setConversations, settings, setSettings, focus, setFocus };
 }
 const Context = createContext<ReturnType<typeof useWorkspaceState> | null>(null);
 

@@ -184,15 +184,24 @@ export function planToGrowth(plan: PlanPayload, title: string): GrowthState {
 }
 
 /**
+ * 占位根节点的 id。**它不是任何一个后端的 id,也永远不该被发回后端。**
+ *
+ * 单独取个名字,是因为它有两处对照物必须一致:下面 `emptyGrowth` 造出来的那棵树,
+ * 以及 Provider 里"计划读失败时不把用户从他待着的层级弹回根"的那条判断
+ * (见 `provider.tsx` 里同步 `spaceId` 的 effect)。
+ */
+export const PLACEHOLDER_ROOT_ID = 'goal';
+
+/**
  * 一个只有根目标的空间 —— 计划还没拉到 / 拉失败了时候的形状。
  *
- * 它**不代表任何后端事实**,所以 `id` 用的是 `goal` 这个哨兵值而不是 UUID:
- * 界面上任何"把当前节点发给后端"的地方都要靠 `UUID_RE` 把它挡掉。
+ * 它**不代表任何后端事实**,所以 `id` 用的是 `PLACEHOLDER_ROOT_ID` 这个哨兵值而不是
+ * UUID:界面上任何"把当前节点发给后端"的地方都要靠 `UUID_RE` 把它挡掉。
  * 阶段 5 之后,成功拉到计划时所有节点 id 都是真实的 UUID。
  */
 export function emptyGrowth(title: string, intent = ''): GrowthState {
   const goal: GrowthNode = {
-    id: 'goal',
+    id: PLACEHOLDER_ROOT_ID,
     title: title || '还没有选择成长空间',
     description: intent || undefined,
     type: 'goal',
@@ -202,8 +211,8 @@ export function emptyGrowth(title: string, intent = ''): GrowthState {
   return {
     id: 'growth-empty',
     title,
-    goalId: 'goal',
-    currentStageId: 'goal',
+    goalId: PLACEHOLDER_ROOT_ID,
+    currentStageId: PLACEHOLDER_ROOT_ID,
     nodes: { goal },
     edges: [],
   };

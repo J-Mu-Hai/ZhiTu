@@ -67,11 +67,20 @@ function cardNote(item: TimelineItem, viewportStart: number): string {
 type Gesture = { x: number; start: number };
 
 export function TimelineView() {
-  const { growth, selectedId, select, apply, updateNode, spaceId, isRealSpace, planError } = useDemo();
+  const { growth, selectedId, select, apply, updateNode, spaceId, isRealSpace, planError, timelineViewport: viewport, setTimelineViewport: setViewport } = useDemo();
   // 每次渲染重新算一次。它只在跨过午夜时才会变,而这个组件本来就会因为别的原因
   // 重渲染很多次 —— 为它加一个定时器是没必要的复杂度。
   const today = dayNumber(todayInTimeZone());
-  const [viewport, setViewport] = useState({ start: today - 25, density: 4 });
+  /*
+   * **"看到哪一段、放多大"存在 Provider 里,不在这里。**
+   *
+   * 它以前是一个 `useState`。而工作台的四个视图是一个三元表达式:切一下页签,这个组件
+   * 连同它的 state 一起没了 —— 于是从时间线切到排期再切回来,时间线跳回今天、缩放
+   * 回到默认。这不是"重新算一次"的问题,是**用户刚才的视角被丢掉了**。
+   * 存到 Provider(它的 key 是空间 id)之后:同一个空间里怎么切都在,
+   * 换空间才重新开始 —— 那正是该有的边界。
+   */
+
   const [size, setSize] = useState({ width: 760, height: 570 });
   const [measured, setMeasured] = useState(false);
   const [hovered, setHovered] = useState<string | null>(null);
@@ -125,7 +134,9 @@ export function TimelineView() {
     };
     element.addEventListener('wheel', wheel, { passive: false });
     return () => element.removeEventListener('wheel', wheel);
-  }, []);
+    // `setViewport` 现在是 Provider 里那个 `useState` 的 setter,身份稳定 ——
+    // 写进依赖数组不会让监听器重挂,只是把这件事说明白。
+  }, [setViewport]);
   // 这里原本还有一个 effect:打开一份"本地提案"时把视口框到它涉及的那几天。
   // 那份提案是示例空间在浏览器里编的,现在没有了 —— 后端的提案走的是下面
   // 那条"确认后重拉计划"的路,不需要预览框。
