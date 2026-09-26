@@ -97,8 +97,10 @@ Playwright 在 Windows 上会自动选择 Chrome 或 Edge；也可通过 `CHROME
 - **`npm run build` 通过**:打印出全部 12 条路由,写出 `.next/BUILD_ID`。`next dev`
   用的是 `.next-dev`(`next.config` 里的 `distDir`),所以构建和正在运行的 dev server
   不抢同一个目录 —— 构建之后 `/workbench` 仍然 200。
-- **`npm run test:accept` = 31 passed / 1 skipped / 0 failed**（提交 `1732227` 加当时的
-  工作区改动，2026-09-26 22:30 前后，`--workers=1`）。这是**正式验收**那条路：production
+- **`npm run test:accept` = 31 passed / 1 skipped / 0 failed**（提交 `1d6e30f`；跑的时候
+  那份代码还没提交，工作区里那 38 项改动就是该提交的全部内容，跑完原样提交，
+  之后 `git status --porcelain` 为空；2026-09-26 22:30 前后，`--workers=1`）。
+  这是**正式验收**那条路：production
   构建 + 独立 `next start`（5273）+ 隔离测试后端（8100，临时 SQLite，**没有模型 key**），
   不复用 5173 上的 `next dev`、也不碰 `data/zhitu_dev.db`。连跑三轮同一结果，再换一个
   **全新库**跑一次也是同一结果。

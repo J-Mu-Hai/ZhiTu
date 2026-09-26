@@ -161,9 +161,10 @@ Vercel 部署的是 `next build` 的产物；本地开发用的是 `next dev`，
   （这个 API 完全不用 cookie，凭据一律走 `Authorization` 头）。
 - `/health` 不查库、`/ready` 查库并在不可用时 503。
 - 后端全套测试：**348 条，347 通过 / 1 失败**（`PYTHONUTF8=1 python -m pytest backend/tests`，
-  conda 环境 `zhitu`，2026-09-26 22:38 本机；提交 `1732227` 加当时的工作区改动）。
-  `backend/` 与 `shared/` 这一轮**一行未改**（`git status --porcelain -- backend shared`
-  是空的），所以这一条红不是改出来的：
+  conda 环境 `zhitu`，2026-09-26 22:38 本机；被测代码 = 提交 `1d6e30f` —— 跑的时候那份代码
+  **还没提交**，工作区有 38 项改动正是那个提交的全部内容，跑完之后原样提交，之后
+  `git status --porcelain` 为空）。`backend/` 与 `shared/` 这一轮**一行未改**
+  （`git status --porcelain -- backend shared` 是空的），所以这一条红不是改出来的：
 
   - 红的是 `test_reminders.py::test_user_returned_after_a_gap`。跑它的这一刻落在
     **免打扰时段**里 —— `backend/services/reminder_service.py` 的
@@ -215,8 +216,9 @@ Vercel 部署的是 `next build` 的产物；本地开发用的是 `next dev`，
   了），不再逐条留在套件里。改写后的结果是下面这一条。
 - **当前基线（2026-09-26 22:30 前后实测）：`npm run test:accept`，生产构建 + 独立
   `next start`（5273）+ 隔离测试后端（8100，临时 SQLite，无模型 key），`--workers=1`，
-  提交 `1732227` 加当时的工作区改动 —— 连跑三轮 31 passed / 1 skipped / 0 failed，再加
-  一次**全新库**的完整运行同样是 31 passed / 1 skipped / 0 failed（每轮 1.1~1.4 分钟）。**
+  提交 `1d6e30f`（跑的时候那份代码还没提交，工作区 38 项改动即该提交的全部内容）
+  —— 连跑三轮 31 passed / 1 skipped / 0 failed，再加一次**全新库**的完整运行同样是
+  31 passed / 1 skipped / 0 failed（每轮 1.1~1.4 分钟）。**
 
   那 1 条 skipped 是 `experience.spec.ts` 里一个写明原因的 `test.fixme`（随笔只写内存、
   后端还没有随笔表，见下）。**它不是通过，也不该被读成通过。**
