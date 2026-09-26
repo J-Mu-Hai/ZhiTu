@@ -9,7 +9,8 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "contracts:check": "node scripts/contracts-check.mjs",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:accept": "node ../../scripts/dev/accept-e2e.mjs"
   },
   "dependencies": {
     "@xyflow/react": "^12.10.0",

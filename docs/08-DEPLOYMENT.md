@@ -160,14 +160,54 @@ Vercel 部署的是 `next build` 的产物；本地开发用的是 `next dev`，
 - CORS 只认 `CORS_ORIGINS` 里列出的来源，且 `allow_credentials=False`
   （这个 API 完全不用 cookie，凭据一律走 `Authorization` 头）。
 - `/health` 不查库、`/ready` 查库并在不可用时 503。
-- 后端全套测试：**343 条通过**（`pytest backend/tests`，82 秒），且**不需要任何模型
-  key** —— 假模型是依赖注入的注入点，conftest 里三个 autouse guard 保证没有一条测试
-  悄悄走了真实分支。
+- 后端全套测试：**348 条通过**（`PYTHONUTF8=1 python -m pytest backend/tests`，
+  conda 环境 `zhitu`，提交 `bb6a819`，2026-09-26 本机约 151 秒；348 passed / 0 failed /
+  0 skipped），且**不需要任何模型 key** —— 假模型是依赖注入的注入点，conftest 里三个
+  autouse guard 保证没有一条测试悄悄走了真实分支。
 - 前端 `npm run typecheck` / `npm run lint` / `npm run contracts:check` 全绿。
-- **Playwright 30 条全绿**（连续四轮，每轮 1.1~1.3 分钟，跑在本机真实的 `next dev`
-  + 真实后端上）。其中 `/plan` 载荷与画布节点数一致、无日期节点不从时间线消失、
-  建的任务真能排进日程并落库这几条，验的正是上面第 4、5 条要警惕的
-  "界面上有、库里没有"。
+- **Playwright 共 32 条（15 个文件）**，跑法分两种，**只有第二种是验收**：
+
+  | | 本地开发检查 | 正式验收 |
+  | --- | --- | --- |
+  | 命令 | `npm run test:e2e` | `npm run test:accept` |
+  | 应用 | 复用已在跑的 `next dev`（5173） | production 构建 + 独立 `next start`（5273） |
+  | 后端 | 复用开发后端（8000） | 隔离测试后端（8100）+ 临时 SQLite + 无模型 key |
+  | 并发 | `PLAYWRIGHT_WORKERS`（默认 1） | `--workers=1`（可显式覆盖） |
+
+  `npm run test:accept`（`scripts/dev/accept-e2e.mjs`）**不接受复用 5173 上的开发服务器**：
+  它自己 production 构建、在显式端口上起 `next start`、起一个只连临时库的测试后端，
+  跑完拆掉，碰不到用户的真实计划。`CI=1` 是必须的 —— 它让 `reuseExistingServer` 变成
+  false。开发模式复用 `next dev` 只适合快速自查，**不能拿来当验收结论**：同一个交互在
+  dev 上过、在 production 上不过，正是要查的那类问题。
+
+- **"30 条全绿"是历史记录，不是当前的保证。** 那是套件涨到 32 条之前、示例空间还是
+  默认入口时，在 `next dev` 上用多 worker 跑出来的结果（提交 `0719b90` 前后）。它不能
+  描述现在的状态，原因有两个，都是量出来的：套件已经涨到 32 条；而且**同一提交、
+  同一配置下串行连跑五轮，失败数在 4~6 之间摆动** —— `bb6a819`，生产模式、隔离库、
+  `workers=1`：6 / 4 / 6 / 6 / 4 失败。**"串行就一定稳"这个假设是错的**，串行只是基线
+  口径，不等于稳定。
+
+  当前状态是**已定位、未清零**：每轮必红的三条是 `leaf-path:21`、`leaf-path:40`、
+  `experience:12`；另外三条 `dark-theme:347`、`node-delete:44`、`workbench:12` 时红时绿。
+  六条原因**全部落在测试侧或测量侧，没有一条是功能回归**，也没有一条是页面加载超时或
+  接口失败。逐条现场（错误原文、失败截图、`trace.zip`）保存在 `apps/web/artifacts/`
+  的 `round-1/`、`round-2/`、`round-3/`、`round-5/`，每个失败用例一个目录：
+
+  | 用例 | 类别 | 原因 |
+  | --- | --- | --- |
+  | `leaf-path:21`、`experience:12` | 测试时序 | 点完「返回上级空间」立刻双击，画布还在重排，双击没落在节点上 |
+  | `workbench:12` | 测试时序 | 同一族：双击没落地 → `enterSpace` 没跑 → 提示语当然不变 |
+  | `node-delete:44` | 测试时序 | 同一族：`hover` 之后节点被重排移走，`opacity` 涨到 1 又掉回 0 |
+  | `leaf-path:40` | 断言过期 | 上一次提交把子空间布局由纵向改成横向，断言还按纵向写 |
+  | `dark-theme:347` | 测量对象失效 | 量到的元素已脱离文档（`isConnected = false`），取不到背景色 |
+
+  三条"测试时序"的修法是**等画布稳定**（等效果出现），不是放宽 `expect.timeout`、
+  也不是加重试 —— 那两者会把真实问题一起吞掉。按"示例空间测试只在功能确实移除后才
+  调整"的约定，这五条留到删除示例空间那一步一并改写。
+
+  真实空间那几条 —— `/plan` 载荷与画布节点数一致（`plan-projection.spec.ts:67`）、
+  无日期节点不从时间线消失（`:208`）、建的任务真能排进日程并落库（`live-loop.spec.ts:37`）
+  —— 不在上面六条里，五轮全绿，验的正是上面第 4、5 条要警惕的"界面上有、库里没有"。
 - **重启服务不会把在线用户登出**。这一条是修出来的：恢复登录状态的代码原来不分
   失败类型，一次被中断的 `GET /api/users/me` 就会删掉浏览器里的令牌 —— 正好在
   重启那一刻刷新页面的用户会"莫名其妙退出登录"，而且刷新也回不来。
