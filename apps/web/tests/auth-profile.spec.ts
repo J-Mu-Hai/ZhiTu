@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { artifactPath } from './support/artifacts';
 import { assertBackendRunning, clickUntilVisible, createWorkspace, registerAccount, TOKEN_KEY } from './support/session';
 
 /**
@@ -83,7 +84,7 @@ test('注册之后自己建空间、建节点，刷新后还在', async ({ page 
   // 没有令牌就没有空间可看 —— 工作台会把人送回登录页,而不是给他一份编出来的计划。
   await expect(page).toHaveURL(/\/login$/);
   await expect(page.getByRole('heading', { name: '继续你的旅程' })).toBeVisible();
-  await page.screenshot({ path: 'artifacts/login-account.png' });
+  await page.screenshot({ path: artifactPath('login-account.png') });
 
   await page.getByRole('button', { name: '还没有账户？注册' }).click();
   await fillRegisterForm(page, { ...wang, school: '北京邮电大学', major: '人工智能', target: '保研' });
@@ -137,7 +138,7 @@ test('个人资料可以编辑并持久化，而且只属于自己这个账户',
     page.getByRole('button', { name: '编辑个人资料' }),
     page.getByLabel('姓名'),
   );
-  await page.screenshot({ path: 'artifacts/profile-edit.png' });
+  await page.screenshot({ path: artifactPath('profile-edit.png') });
   // 没填过的目标年份必须是**空白**,不能是一个用户没输入过的 `0`(见下面的注释)。
   await expect(page.getByLabel('目标年份')).toHaveValue('');
   await page.getByLabel('姓名').fill('王小途同学');

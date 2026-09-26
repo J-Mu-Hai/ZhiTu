@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { artifactPath } from './support/artifacts';
 import { api, createWorkspace, registerAccount } from './support/session';
 
 test('品牌标识一致，长标题与正文完整排版，子空间沿用圆滑连线', async ({ page }) => {
@@ -45,7 +46,7 @@ test('品牌标识一致，长标题与正文完整排版，子空间沿用圆�
   })).toBe(true);
   await expect(page.locator('.react-flow__edge-branch')).toHaveCount(3);
   expect(await page.locator('.react-flow__edge-path').first().getAttribute('d')).toContain('Q');
-  await page.screenshot({ path: 'artifacts/canvas-polish.png' });
+  await page.screenshot({ path: artifactPath('canvas-polish.png') });
   await stage.getByRole('button', { name: `进入${longTitle}空间` }).click();
   await expect(page.locator('.react-flow__node')).toHaveCount(2);
   await expect(page.locator('.growth-node.task .node-task-box')).toBeVisible();
@@ -54,11 +55,11 @@ test('品牌标识一致，长标题与正文完整排版，子空间沿用圆�
     maxWidth: getComputedStyle(element).maxWidth,
   }))).toEqual({ align: 'left', maxWidth: 'none' });
   await expect(page.locator('.react-flow__edge-branch')).toHaveCount(1);
-  await page.screenshot({ path: 'artifacts/canvas-polish-subspace.png' });
+  await page.screenshot({ path: artifactPath('canvas-polish-subspace.png') });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/login');
   await page.evaluate(() => localStorage.clear());
   await page.goto('/login');
   await expect(page.locator('.auth-brand img')).toBeVisible();
-  await page.screenshot({ path: 'artifacts/brand-mobile.png' });
+  await page.screenshot({ path: artifactPath('brand-mobile.png') });
 });

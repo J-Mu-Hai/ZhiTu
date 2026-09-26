@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { defineConfig } from '@playwright/test';
+import { pinRunDir } from './tests/support/artifacts';
 
 /**
  * **每一次运行有自己的现场目录,上一次的不许被覆盖。**
@@ -11,26 +12,11 @@ import { defineConfig } from '@playwright/test';
  * 第四节记的那五轮里,第 4 轮的现场就是被后续按用例隔离复现的几次运行盖掉的,取不回来。
  * 那次没有补造截图,只在文档里如实留了说明 —— 现在修的是机制,不是那一份记录。
  *
- * 目录来源按优先级:
- *
- * 1. `ZHITU_RUN_DIR` —— 由 `scripts/dev/accept-e2e.mjs` 建好并传进来,里面同时放
- *    后端日志、构建日志、JSON 报告和这一次的结果摘要。**正式验收走这条。**
- * 2. 没设时自己按时间戳建一个,所以 `npm run test:e2e` 也不会盖掉别的运行。
- *    (它没有摘要文件 —— 摘要由验收脚本写,因为它才知道端口、提交和数据库在哪。)
+ * 目录怎么定、为什么要在 worker 起来之前就定下来,写在 `tests/support/artifacts.ts`。
+ * **测试自己存的那几张截图也从那里取路径** —— 它们原来是写死的 `artifacts/xxx.png`,
+ * 于是 trace 分轮、截图不分轮,一半的现场照样被盖。两处必须同一个来源。
  */
-function resolveRunDir(): string {
-  if (process.env.ZHITU_RUN_DIR) return process.env.ZHITU_RUN_DIR;
-  // 用**本机时间**而不是 UTC 做目录名:这个名字是给人看的("我刚才跑的那一轮在哪"),
-  // 而摘要文件里另有完整的 ISO 时间戳。
-  const now = new Date();
-  const pad = (value: number) => String(value).padStart(2, '0');
-  const stamp =
-    `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}` +
-    `-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
-  return join('artifacts', 'runs', `${stamp}-dev`);
-}
-
-const runDir = resolveRunDir();
+const runDir = pinRunDir();
 
 /**
  * 测试用的端口,**不能随便挑一个**。
