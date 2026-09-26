@@ -1163,7 +1163,41 @@ body {
   border-color: rgba(85, 156, 132, 0.32);
   background: #eef7f2;
 }
-.profile-edit-form { border-color: #dbe5e8; }
+/* 「我的」的资料编辑表单是这一层的**第二个漏网处**,比上面两个按钮漏得更彻底。
+   `auth.css` 给整块表单写死了深色:面板 `#0f1824`、标题 `#dce6f2`、标签 `#8fa2ba`、
+   输入框 `#0a121c`(#0c131c 是 disabled 态)、页脚分隔线 `#223044`,而这里只补了
+   `border-color` —— 于是打开编辑表单时,暖白的页面上会翻出一整块近黑的卡片。
+
+   **必须带 `!important`。** `auth.css` 在 `layout.tsx` 里排在 `dark-theme.css` **之后**
+   (11 行 vs 12 行),同特异度下后写的赢 —— 所以下面不带 `!important` 的
+   `border-color` 其实一直是空转的,面板边框到现在还是 `#2d4056`。
+   颜色取本层 743 行那组变量,不另外发明新值。 */
+.profile-edit-form {
+  border-color: var(--line) !important;
+  background: var(--surface) !important;
+  box-shadow: var(--shadow-panel) !important;
+}
+.profile-edit-form h2 { color: var(--text) !important; }
+.profile-form-grid label { color: var(--muted) !important; }
+.profile-form-grid input,
+.profile-form-grid select,
+.profile-form-grid textarea {
+  color: var(--text) !important;
+  border-color: var(--line) !important;
+  background: var(--surface) !important;
+}
+.profile-form-grid input:focus,
+.profile-form-grid select:focus,
+.profile-form-grid textarea:focus {
+  border-color: var(--blue) !important;
+  box-shadow: 0 0 0 3px rgba(95, 148, 200, 0.14) !important;
+}
+/* 手机号是登录标识,不可改,所以它是只读的 —— 但只读不等于"看起来坏了"。 */
+.profile-form-grid input:disabled {
+  color: var(--muted) !important;
+  background: var(--ink-2) !important;
+}
+.profile-edit-form > footer { border-top-color: var(--line) !important; }
 
 @media (max-width: 720px) {
   .conversation-overlay {

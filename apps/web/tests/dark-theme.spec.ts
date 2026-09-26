@@ -1,4 +1,5 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
+import { clickUntilVisible } from './support/session';
 
 /**
  * 视觉系统的一致性回归。
@@ -148,6 +149,33 @@ async function paintedSurface(locator: Locator, label: string): Promise<string> 
   return found!;
 }
 
+/**
+ * 扫一遍当前页面上所有**真正画了背景**的元素,挑出其中看起来是深色的那些。
+ *
+ * 判据是"暗"(`max(r,g,b) < 160`),不是"不是暖白" —— 所以 `--blue: #5f94c8`
+ * 这类彩色强调(最大通道 200)不会被误伤。
+ *
+ * 抽成函数是因为它现在有两个调用点:整页扫描,和"打开某个面板之后再扫一遍"。
+ * 后者才是真正抓得住漏网的地方 —— 只 `goto` 不点开的组件,整页扫描永远看不见。
+ */
+async function darkPaint(page: Page): Promise<string[]> {
+  return page.evaluate(() => {
+    const dark: string[] = [];
+    for (const node of document.querySelectorAll<HTMLElement>('body *')) {
+      const background = getComputedStyle(node).backgroundColor;
+      const numbers = background.match(/rgba?\(([^)]+)\)/);
+      if (!numbers) continue;
+      const [r, g, b, a = 1] = numbers[1].split(',').map(Number);
+      // 半透明的一层压在别的表面上,它的本色不代表最终看到的颜色。
+      if (a < 0.5) continue;
+      if (Math.max(r, g, b) < 160) {
+        dark.push(`${node.tagName.toLowerCase()}.${node.className.toString().trim().split(/\s+/)[0] ?? ''}=${background}`);
+      }
+    }
+    return [...new Set(dark)].slice(0, 6);
+  });
+}
+
 test('工作台使用统一的暖白视觉系统', async ({ page }) => {
   const token = await signIn(page);
   await seedSpace(page, token, {
@@ -277,23 +305,42 @@ test('核心页面没有任何一处深色涂装', async ({ page }) => {
     await expect(page.locator('main')).toBeVisible();
     await page.waitForTimeout(600);
 
-    const result = await page.evaluate(() => {
-      const dark: string[] = [];
-      for (const node of document.querySelectorAll<HTMLElement>('body *')) {
-        const background = getComputedStyle(node).backgroundColor;
-        const numbers = background.match(/rgba?\(([^)]+)\)/);
-        if (!numbers) continue;
-        const [r, g, b, a = 1] = numbers[1].split(',').map(Number);
-        // 半透明的一层压在别的表面上,它的本色不代表最终看到的颜色。
-        if (a < 0.5) continue;
-        if (Math.max(r, g, b) < 160) {
-          dark.push(`${node.tagName.toLowerCase()}.${node.className.toString().trim().split(/\s+/)[0] ?? ''}=${background}`);
-        }
-      }
-      return { path: location.pathname, dark: [...new Set(dark)].slice(0, 6) };
-    });
+    expect(await darkPaint(page), `${path} 上有深色涂装`).toEqual([]);
+  }
+});
 
-    expect(result.dark, `${path} 上有深色涂装`).toEqual([]);
+/**
+ * 「我的」的资料编辑表单 —— 上面那条整页扫描**看不见它**。
+ *
+ * 整页扫描只 `goto` 六个页面,而这块表单是点击"编辑个人资料"之后才挂上来的。
+ * 于是它成了这一层最久的漏网:面板 `#0f1824`、输入框 `#0a121c`,全在 `auth.css` 里
+ * 写死,而 `auth.css` 排在 `dark-theme.css` **之后**(`layout.tsx:11` vs `:12`),
+ * 同特异度下后写的赢 —— 所以 `dark-theme.css` 里那条不带 `!important` 的
+ * `border-color` 一直是空转的。
+ *
+ * 断言分两层:整块表单不能有深色,以及输入框得是**亮的输入框**而不是亮底上的深色凹陷。
+ */
+test('资料编辑表单在暖白主题下不是一块黑色卡片', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/me');
+  await clickUntilVisible(
+    page,
+    page.getByRole('button', { name: '编辑个人资料' }),
+    page.getByLabel('姓名'),
+  );
+  await page.waitForTimeout(400);
+
+  await expect(page.locator('.profile-edit-form')).toBeVisible();
+  expect(await darkPaint(page), '/me 的资料编辑表单里有深色涂装').toEqual([]);
+
+  // 输入框自己也得亮 —— 上面那条只看"不是深色",而 `#f8f6ef` 上的 `#0a121c`
+  // 已经在整页扫描里被抓到过,这里再钉一次"填字的地方是白的"。
+  for (const label of ['姓名', '专业排名', '个人介绍'] as const) {
+    const field = page.getByLabel(label);
+    expectLightSurface(
+      await field.evaluate((element) => getComputedStyle(element).backgroundColor),
+      `资料表单的「${label}」输入框`,
+    );
   }
 });
 
