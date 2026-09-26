@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import {
   assertBackendRunning,
+  clickUntilVisible,
   createNode,
   createWorkspace,
   getPlan,
@@ -113,8 +114,28 @@ test('随笔:发布的日期按本地算，关联的是这个空间真实的节�
   // 新空间的随笔是**空的** —— 没有那两篇别人写的。
   await expect(page.locator('.journal-entry')).toHaveCount(0);
 
+  /*
+   * **顺序是有意的:先点开「标签」,再写正文。**
+   *
+   * `page.goto` 之后,服务端渲染出来的输入框**立刻就在 DOM 里**,而 React 还没接管它。
+   * 那一刻 `fill` 写进去的字只在 DOM 里,组件里那个 state 还是空的;等水合完成,
+   * React 按 state 重画一次,这段字就没了 —— 表现成"正文空着、发布按钮一直是灰的",
+   * 看起来像产品坏了,其实是**这一枪打早了**。
+   *
+   * 实测撞到过一次(2026-09-27 01:03 那一轮,现场 `artifacts/runs/20260927-010324-551a8da/`),
+   * 而且现场能证明原因:同一页里,之后才填的「标签」和「关联计划」两个控件**都留着值**,
+   * 只有最先填的那个正文框是空的。
+   *
+   * 所以先点「标签」——这一下同时是"这一页已经醒过来"的证据:点不中效果就再点一次
+   * (见 `clickUntilVisible`)。等这个下拉露出来,React 一定已经接管了这一页,再写正文
+   * 就打得中。断言没有因此变松:发布之后下面那几条该对的还是要对。
+   */
+  await clickUntilVisible(
+    page,
+    page.getByRole('button', { name: '标签', exact: true }),
+    page.getByLabel('关联计划', { exact: true }),
+  );
   await page.getByLabel('此刻的想法').fill('迈出了第一步\n今天整理好了实验室资料。');
-  await page.getByRole('button', { name: '标签', exact: true }).click();
   await page.getByLabel('标签', { exact: true }).fill('科研');
   // 关联计划的下拉里是这个空间**真实的节点**,不是示例数据里写死的那几个。
   await page.getByLabel('关联计划', { exact: true }).selectOption(linked);
