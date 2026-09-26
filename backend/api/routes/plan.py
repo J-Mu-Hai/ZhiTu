@@ -31,11 +31,16 @@ from backend.api.dependencies.workspace import get_workspace_context
 from backend.contracts.plan import (
     CreateDependencyRequest,
     CreateNodeRequest,
+    CreateRelationRequest,
     DependencyPayload,
+    LayoutPayload,
     NodeEditResponse,
     PlanNodePayload,
     PlanPayload,
+    PutLayoutRequest,
+    RelationPayload,
     UpdateNodeRequest,
+    UpdateRelationRequest,
 )
 from backend.contracts.proposal import (
     ConfirmProposalRequest,
@@ -44,7 +49,7 @@ from backend.contracts.proposal import (
     RejectProposalRequest,
 )
 from backend.db.session import get_db
-from backend.services import node_service, plan_service, proposal_service
+from backend.services import layout_service, node_service, plan_service, proposal_service
 from backend.services.context import WorkspaceContext
 
 router = APIRouter()
@@ -176,6 +181,110 @@ async def delete_dependency(
         db, ctx, predecessor_id=predecessor_id, successor_id=successor_id
     )
     return Response(status_code=204)
+
+
+# ---------------------------------------------------------------------------------
+# 画布上的关系
+#
+# 三种类型(`depends_on` / `related_to` / `influences`)共用这一组路径和同一个响应
+# 形状,因为对用户来说它们都是"一条边"。存在两张表里是存储层的选择,不该漏到接口上 ——
+# 前端要是得先知道"这条边在哪个表",那它就得跟着这张表一起改。
+# ---------------------------------------------------------------------------------
+@router.post(
+    "/{workspace_id}/relations",
+    response_model=RelationPayload,
+    status_code=201,
+    summary="连一条关系",
+)
+async def create_relation(
+    payload: CreateRelationRequest,
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+) -> RelationPayload:
+    """连一条边。**默认由前端决定类型,服务端不猜。**
+
+    `depends_on` 走的是排期那条路(有环检测),会成环就 409 `DEPENDENCY_CYCLE`;
+    `related_to` / `influences` 允许成环。同一条边连两次是幂等的,不报错。
+    """
+    row = await node_service.add_relation(
+        db,
+        ctx,
+        source_id=payload.source_id,
+        target_id=payload.target_id,
+        relation_type=payload.relation_type,
+        note=payload.note,
+    )
+    return RelationPayload.model_validate(plan_service.relation_of(row))
+
+
+@router.patch(
+    "/{workspace_id}/relations/{relation_id}",
+    response_model=RelationPayload,
+    summary="改一条关系",
+)
+async def update_relation(
+    relation_id: uuid.UUID,
+    payload: UpdateRelationRequest,
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+) -> RelationPayload:
+    """改类型或说明。`related_to` <-> `influences` 之间可以换。
+
+    换成/换出 `depends_on` 返回 400 `RELATION_TYPE_CHANGE_UNSUPPORTED` —— 那会跨表,
+    而 `dependencies` 没有说明列,搬过去用户写的解释就没了。理由写在
+    `services/node_service.py::update_relation`。
+    """
+    relation = await node_service.update_relation(
+        db, ctx, relation_id, payload.model_dump(exclude_unset=True)
+    )
+    return RelationPayload.model_validate(plan_service.relation_to_dict(relation))
+
+
+@router.delete(
+    "/{workspace_id}/relations/{relation_id}", status_code=204, summary="去掉一条关系"
+)
+async def delete_relation(
+    relation_id: uuid.UUID,
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """去掉一条边。**不删节点** —— 边没了,两端的节点都还在。
+
+    不存在的关系返回 404(而不是 204):这个接口收的是 id,不是"一对节点",
+    所以"它已经没了"和"它从来没在过"是同一件事 —— 这里没有"目标已经达成"的语义。
+    """
+    await node_service.remove_relation(db, ctx, relation_id)
+    return Response(status_code=204)
+
+
+# ---------------------------------------------------------------------------------
+# 布局
+#
+# 与上面两组写入的**根本区别**:它不写 `plan_revisions`、不发 `domain_events`。
+# 位置和视口是用户偏好,不是计划的一部分 —— 理由写在 `services/layout_service.py`
+# 的开头。谁要是往这里加一个版本记录,那个文件的第一段就是给他看的。
+# ---------------------------------------------------------------------------------
+@router.get("/{workspace_id}/layout", response_model=LayoutPayload, summary="取布局")
+async def read_layout(
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+) -> LayoutPayload:
+    """这个用户在这个空间里的全部位置与视口。**按用户取** —— 别人怎么摆不影响你。"""
+    return await layout_service.load_layout(db, ctx)
+
+
+@router.put("/{workspace_id}/layout", response_model=LayoutPayload, summary="存布局")
+async def write_layout(
+    payload: PutLayoutRequest,
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+) -> LayoutPayload:
+    """整份提交布局。幂等,而且**不删除**没提交的行(见 `PutLayoutRequest` 的注释)。
+
+    返回的是提交之后的完整布局,不是"成功"两个字 —— 客户端因此不必猜"到底存进去
+    的是什么",尤其是在它同时提交了十几个节点的时候。
+    """
+    return await layout_service.put_layout(db, ctx, payload)
 
 
 def _edit_response(result: node_service.EditResult) -> NodeEditResponse:

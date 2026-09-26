@@ -40,13 +40,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.contracts.plan import (
+    DEPENDS_ON,
     BriefView,
     DependencyPayload,
     PlanNodePayload,
     PlanPayload,
+    RelationPayload,
     SessionPayload,
 )
-from backend.db.models import Dependency, PlanNode, ScheduledSession
+from backend.db.models import Dependency, NodeRelation, PlanNode, ScheduledSession
 from backend.db.models.enums import NodeStatus, ScheduledSessionStatus
 from backend.services import brief_service
 from backend.services.context import WorkspaceContext
@@ -73,6 +75,7 @@ def node_to_dict(node: PlanNode) -> dict[str, object]:
         "origin": node.origin.value,
         "completed_at": node.completed_at,
         "created_at": node.created_at,
+        "content_version": node.content_version,
     }
 
 
@@ -84,6 +87,52 @@ def dependency_to_dict(dep: Dependency) -> dict[str, object]:
         "dep_type": dep.dep_type.value,
         "lag_days": dep.lag_days,
     }
+
+
+def relation_to_dict(relation: NodeRelation) -> dict[str, object]:
+    """`node_relations` 的一行 -> 画布上的一条边。"""
+    return {
+        "id": relation.id,
+        "relation_type": relation.relation_type.value,
+        "source_id": relation.source_node_id,
+        "target_id": relation.target_node_id,
+        "note": relation.note,
+        "origin": relation.origin.value,
+        "lag_days": None,
+    }
+
+
+def dependency_to_relation_dict(dep: Dependency) -> dict[str, object]:
+    """`dependencies` 的一行 -> 画布上的一条边。
+
+    **方向原样传,不做任何反转**:`predecessor -> successor` 就是"前置 -> 后续",
+    和数据库里存的行同向,也和 `DependencyPayload` 同向。任何一层做反转都会让
+    "箭头的方向"变成三个地方各说各话。
+
+    `note` 与 `origin` 是 None,不是空串 —— `dependencies` 表没有这两列。补一个
+    "user" 会让 AI 提案加的前置看起来像用户自己连的(见 `ModelSource` 那条纪律)。
+    """
+    return {
+        "id": dep.id,
+        "relation_type": DEPENDS_ON,
+        "source_id": dep.predecessor_id,
+        "target_id": dep.successor_id,
+        "note": None,
+        "origin": None,
+        "lag_days": dep.lag_days,
+    }
+
+
+def relation_of(row: NodeRelation | Dependency) -> dict[str, object]:
+    """两种表的行 -> 同一种边。**这是那条分支的唯一一处。**
+
+    写在投影层而不是服务层:服务层不该知道接口的形状,而"哪种类型存在哪里"是投影
+    的知识。前端因此不必 join 两张表,也就不必知道这个区别 —— 它只会在某天变成
+    "前端漏了一种"。这里多一个 `isinstance`,那边少一整张对应表。
+    """
+    if isinstance(row, Dependency):
+        return dependency_to_relation_dict(row)
+    return relation_to_dict(row)
 
 
 def session_to_dict(session: ScheduledSession, node_title: str) -> dict[str, object]:
@@ -148,6 +197,30 @@ async def load_all_dependencies(
     return list(result.scalars())
 
 
+async def load_all_node_relations(
+    db: AsyncSession, workspace_id: uuid.UUID
+) -> list[NodeRelation]:
+    """两端都还活着的 `related_to` / `influences` 关系。
+
+    与 `load_all_dependencies` 同一条纪律:节点是**软删除**的,外键的 CASCADE 不会
+    触发,所以"两端都活着"必须显式过滤 —— 否则画布上会出现一条连向不存在节点的线,
+    而它会一直画在那里,除非有人去查数据库。
+    """
+    live = select(PlanNode.id).where(
+        PlanNode.workspace_id == workspace_id, PlanNode.deleted_at.is_(None)
+    )
+    result = await db.execute(
+        select(NodeRelation)
+        .where(
+            NodeRelation.workspace_id == workspace_id,
+            NodeRelation.source_node_id.in_(live),
+            NodeRelation.target_node_id.in_(live),
+        )
+        .order_by(NodeRelation.created_at.asc())
+    )
+    return list(result.scalars())
+
+
 async def load_all_sessions(
     db: AsyncSession, workspace_id: uuid.UUID
 ) -> list[ScheduledSession]:
@@ -176,6 +249,7 @@ async def build_plan(db: AsyncSession, ctx: WorkspaceContext) -> PlanPayload:
     nodes = await load_all_nodes(db, ctx.id)
     dependencies = await load_all_dependencies(db, ctx.id)
     sessions = await load_all_sessions(db, ctx.id)
+    relations = await load_all_node_relations(db, ctx.id)
     brief = await brief_service.load_brief(db, ctx.id)
 
     titles = {node.id: node.title for node in nodes}
@@ -186,6 +260,12 @@ async def build_plan(db: AsyncSession, ctx: WorkspaceContext) -> PlanPayload:
         nodes=[PlanNodePayload.model_validate(node_to_dict(node)) for node in nodes],
         dependencies=[
             DependencyPayload.model_validate(dependency_to_dict(dep)) for dep in dependencies
+        ],
+        # 三条线在画布上是同一种东西,所以合成一份发过去。`dependencies` 那一份
+        # 仍然单独发 —— 它是**排期读的那份**,不是"画的那份"。
+        relations=[
+            RelationPayload.model_validate(relation_of(row))
+            for row in (*dependencies, *relations)
         ],
         brief=BriefView.model_validate(brief_service.known_summary(brief)),
         sessions=[
@@ -209,10 +289,15 @@ async def snapshot_payload(db: AsyncSession, workspace_id: uuid.UUID) -> dict[st
     nodes = await load_all_nodes(db, workspace_id)
     dependencies = await load_all_dependencies(db, workspace_id)
     sessions = await load_all_sessions(db, workspace_id)
+    relations = await load_all_node_relations(db, workspace_id)
     titles = {node.id: node.title for node in nodes}
     return {
         "nodes": [_jsonable(node_to_dict(node)) for node in nodes],
         "dependencies": [_jsonable(dependency_to_dict(dep)) for dep in dependencies],
+        # 用户自己画的关系也要进快照,理由与场次相同:它是计划的一部分。
+        # 少存这一半不会有任何东西报错,只会在有人想对比两个版本时才发现 ——
+        # 而那时已经补不回来了。
+        "relations": [_jsonable(relation_to_dict(relation)) for relation in relations],
         "sessions": [
             _jsonable(session_to_dict(session, titles.get(session.node_id, "")))
             for session in sessions
@@ -241,10 +326,14 @@ def _jsonable(payload: dict[str, object]) -> dict[str, object]:
 __all__ = [
     "build_plan",
     "dependency_to_dict",
+    "dependency_to_relation_dict",
     "load_all_dependencies",
+    "load_all_node_relations",
     "load_all_nodes",
     "load_all_sessions",
     "node_to_dict",
+    "relation_of",
+    "relation_to_dict",
     "session_to_dict",
     "snapshot_payload",
 ]

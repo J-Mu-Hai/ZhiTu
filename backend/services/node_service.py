@@ -51,12 +51,21 @@ from datetime import date
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.contracts.plan import DEPENDS_ON
 from backend.db.base import utcnow
 from backend.db.locking import lock_workspace
-from backend.db.models import Dependency, DomainEvent, PlanNode, PlanRevision, Workspace
+from backend.db.models import (
+    Dependency,
+    DomainEvent,
+    NodeRelation,
+    PlanNode,
+    PlanRevision,
+    Workspace,
+)
 from backend.db.models.enums import (
     DependencyType,
     NodeOrigin,
+    NodeRelationType,
     NodeStatus,
     NodeType,
     Priority,
@@ -69,6 +78,8 @@ from backend.services.errors import (
     DependencyRejected,
     InvalidInput,
     NodeNotFound,
+    RelationNotFound,
+    RelationRejected,
     RootNodeProtected,
 )
 from backend.services.proposal_validation import find_cycle
@@ -381,6 +392,263 @@ async def remove_dependency(
 
 
 # ---------------------------------------------------------------------------------
+# 关系(related_to / influences)
+#
+# 与上面的 `add_dependency` 分工:**`depends_on` 走那一组,另外两种走这一组。**
+# 两者共用同一个 `_each_change`(锁 + 版本 + 事件),因为对用户来说它们都是"我改了计划";
+# 但**不共用同一张表** —— 那边是排期的输入,这边不是。理由见
+# `db/models/enums.py::NodeRelationType`。
+#
+# 接口层把三种边投影成同一个形状(`contracts/plan.py::RelationPayload`),那条分支
+# 在 `plan_service.relation_of` 里,**只有那一处**。
+# ---------------------------------------------------------------------------------
+#: 能写进 `node_relations` 的类型。
+_RELATION_TYPES: dict[str, NodeRelationType] = {
+    NodeRelationType.RELATED_TO.value: NodeRelationType.RELATED_TO,
+    NodeRelationType.INFLUENCES.value: NodeRelationType.INFLUENCES,
+}
+
+#: 三种类型合起来的全部取值。用在报错信息里 —— 用户填错了要能看到全部合法值,
+#: 包括他其实该用的那个 `depends_on`。
+ALL_RELATION_TYPES = frozenset({*_RELATION_TYPES, DEPENDS_ON})
+
+#: 写进 `plan_revisions.trigger_detail` 的那句话里用的动词。
+_RELATION_VERB: dict[NodeRelationType, str] = {
+    NodeRelationType.RELATED_TO: "关联了",
+    NodeRelationType.INFLUENCES: "会影响",
+}
+
+
+def _relation_kind(value: str) -> NodeRelationType:
+    """接口上的类型 -> 存储层的类型。**只接受 `node_relations` 里的那两种。**
+
+    `depends_on` 传进来也是 400,但调用方应当先自己把它分派给 `add_dependency` ——
+    走到这里说明调用方漏了那一步,那是代码问题,所以这句报错是给开发看的。
+    """
+    kind = _RELATION_TYPES.get(value)
+    if kind is None:
+        raise InvalidInput(
+            f"关系类型只能是 {' / '.join(sorted(ALL_RELATION_TYPES))},收到的是「{value}」。"
+        )
+    return kind
+
+
+def _endpoints(kind: NodeRelationType, source: uuid.UUID, target: uuid.UUID) -> tuple[
+    uuid.UUID, uuid.UUID
+]:
+    """这一对节点该按什么顺序存。
+
+    `related_to` 是**无向**的:用户从 A 拖到 B 和从 B 拖到 A 是同一条边。按 UUID 的
+    整数序排成固定顺序,两种画法才会落到同一行上 —— 否则唯一约束只能拦住"同一方向
+    连两次",而同一对节点会并存两行,画布上就是两条重叠的虚线。
+
+    `influences` 有向,原样存。
+
+    按 `int` 而不是按字符串排:UUID 的序就是它的整数序,字符串序是实现细节。
+    """
+    if kind is NodeRelationType.INFLUENCES:
+        return source, target
+    return tuple(sorted((source, target), key=lambda value: value.int))  # type: ignore[return-value]
+
+
+async def add_relation(
+    db: AsyncSession,
+    ctx: WorkspaceContext,
+    *,
+    source_id: uuid.UUID,
+    target_id: uuid.UUID,
+    relation_type: str,
+    note: str | None = None,
+) -> NodeRelation | Dependency:
+    """连一条边。
+
+    `depends_on` 在这里转给 `add_dependency` —— 环检测、幂等、排期语义都在那条路径上,
+    不复制一份。另外两种写 `node_relations`。
+
+    返回的是**两种表里的行之一**,投影成统一的接口形状是 `plan_service.relation_of`
+    的事:服务层不该知道接口长什么样。
+    """
+    if source_id == target_id:
+        raise InvalidInput("一个节点不能和自己连关系。")
+
+    if relation_type == DEPENDS_ON:
+        if (note or "").strip():
+            # `dependencies` 没有说明列。静默丢掉用户刚写的一段话,比拒绝这次请求糟得多。
+            raise InvalidInput(
+                "前置关系没有说明这一栏,写在这里会丢掉。要记录解释,请另连一条"
+                "「相关」或「影响」。"
+            )
+        return await add_dependency(
+            db, ctx, predecessor_id=source_id, successor_id=target_id
+        )
+
+    kind = _relation_kind(relation_type)
+
+    async with _each_change(db, ctx, trigger_detail="") as change:
+        source = await load_node(db, ctx, source_id)
+        target = await load_node(db, ctx, target_id)
+        first, second = _endpoints(kind, source.id, target.id)
+
+        existing = await db.scalar(
+            select(NodeRelation).where(
+                NodeRelation.workspace_id == ctx.id,
+                NodeRelation.source_node_id == first,
+                NodeRelation.target_node_id == second,
+                NodeRelation.relation_type == kind,
+            )
+        )
+        if existing is not None:
+            # 幂等:这条边本来就在,不报错也不重复插。**也不覆盖说明** ——
+            # 第二次没写说明时,第一次写的那句应该还在。
+            return existing
+
+        change.detail = f"「{source.title}」{_RELATION_VERB[kind]}「{target.title}」"
+        relation = NodeRelation(
+            workspace_id=ctx.id,
+            source_node_id=first,
+            target_node_id=second,
+            relation_type=kind,
+            note=(note or None),
+            origin=NodeOrigin.USER,
+        )
+        db.add(relation)
+        await db.flush()
+        change.record(
+            kind="relation_added",
+            node_id=second,
+            payload={"sourceId": str(first), "relationType": kind.value},
+        )
+        return relation
+
+
+async def load_relation(
+    db: AsyncSession, ctx: WorkspaceContext, relation_id: uuid.UUID
+) -> NodeRelation | Dependency:
+    """按 id 找一条边,**两张表都找**。
+
+    接口上三种边共用一个 id 空间(见 `RelationPayload`),所以按 id 删/改的时候,
+    服务端得知道这个 id 属于哪张表。两张表的 id 都是 UUID,不会撞车。
+
+    查不到就是 `RelationNotFound` —— 与节点、空间同一条纪律:**不存在**和
+    **属于别人**返回同一个错误,否则拿 id 逐个试就能测出别人空间里有什么。
+    """
+    relation = await db.scalar(
+        select(NodeRelation).where(
+            NodeRelation.id == relation_id, NodeRelation.workspace_id == ctx.id
+        )
+    )
+    if relation is not None:
+        return relation
+    dependency = await db.scalar(
+        select(Dependency).where(
+            Dependency.id == relation_id, Dependency.workspace_id == ctx.id
+        )
+    )
+    if dependency is not None:
+        return dependency
+    raise RelationNotFound("这条关系不在当前空间里。")
+
+
+async def update_relation(
+    db: AsyncSession, ctx: WorkspaceContext, relation_id: uuid.UUID, values: dict[str, object]
+) -> NodeRelation:
+    """改一条边:换类型(`related_to` <-> `influences`)或改说明。
+
+    **换不成 `depends_on`,这一版明确拒绝。** 那意味着把这一行搬进 `dependencies`
+    表 —— 它会开始参与排期,而那张表**没有说明列**,搬过去用户刚写的那段解释就没了。
+    宁可不做,也不要静默丢掉别人写的东西。(搬家的另一半代价是环检测:一条 `related_to`
+    可以成环,变成前置就必须先查环。)
+
+    前置关系这里也改不了,理由同上 —— 它连说明都没有,能被改的只有 `lag_days`,
+    而那是排期参数,不该出现在画布的关系编辑器里。
+    """
+    note = values.get("note")
+    if isinstance(note, str):
+        note = note.strip() or None
+
+    relation = await load_relation(db, ctx, relation_id)
+    if isinstance(relation, Dependency):
+        raise RelationRejected(
+            "前置关系不能在画布上改 —— 它决定排期,而且没有说明这一栏。"
+            "想去掉它就在边上点删除;想留一段解释,另连一条「相关」或「影响」。"
+        )
+
+    next_type = values.get("relation_type")
+    if next_type == DEPENDS_ON:
+        raise RelationRejected(
+            "这一版不支持把一条关系改成前置关系 —— 那会改变排期,而前置关系没有说明"
+            "这一栏,现在写在这条边上的解释会丢掉。要去掉它再重新连一条前置。"
+        )
+    if next_type is not None and next_type == relation.relation_type.value:
+        # 类型没变,不是错误,也别让它进下面的"换类型"分支去查重。
+        next_type = None
+
+    async with _each_change(db, ctx, trigger_detail="改了关系的说明") as change:
+        if next_type is not None:
+            kind = _relation_kind(str(next_type))
+            first, second = _endpoints(kind, relation.source_node_id, relation.target_node_id)
+            # 换完之后唯一约束可能撞上一条已经存在的边(比如 A 和 B 之间既有「相关」
+            # 又有「影响」,把「影响」也改成「相关」)。**在写之前查** ——
+            # 让唯一约束在 commit 时抛错的话,用户看到的是一句和关系毫无关系的数据库异常。
+            clash = await db.scalar(
+                select(NodeRelation.id).where(
+                    NodeRelation.workspace_id == ctx.id,
+                    NodeRelation.source_node_id == first,
+                    NodeRelation.target_node_id == second,
+                    NodeRelation.relation_type == kind,
+                    NodeRelation.id != relation.id,
+                )
+            )
+            if clash is not None:
+                raise InvalidInput("这两个节点之间已经有一条同样的关系了。")
+            relation.source_node_id = first
+            relation.target_node_id = second
+            relation.relation_type = kind
+            change.detail = "把一条关系换成了另一种"
+
+        if "note" in values:
+            relation.note = note  # type: ignore[assignment]
+
+        await db.flush()
+        change.record(
+            kind="relation_updated",
+            node_id=relation.target_node_id,
+            payload={"sourceId": str(relation.source_node_id)},
+        )
+        return relation
+
+
+async def remove_relation(db: AsyncSession, ctx: WorkspaceContext, relation_id: uuid.UUID) -> bool:
+    """删一条边。**不删节点。**
+
+    前置关系转给 `remove_dependency`(那一条已经有"不存在的依赖不算错"的语义),
+    另外两种从 `node_relations` 删。
+    """
+    relation = await load_relation(db, ctx, relation_id)
+    if isinstance(relation, Dependency):
+        await remove_dependency(
+            db, ctx, predecessor_id=relation.predecessor_id, successor_id=relation.successor_id
+        )
+        return True
+
+    target_id = relation.target_node_id
+    source_id = relation.source_node_id
+    async with _each_change(db, ctx, trigger_detail="去掉了一条关系") as change:
+        result = await db.execute(
+            delete(NodeRelation)
+            .where(NodeRelation.id == relation.id, NodeRelation.workspace_id == ctx.id)
+            .execution_options(synchronize_session=False)
+        )
+        if int(result.rowcount or 0):
+            change.record(
+                kind="relation_removed",
+                node_id=target_id,
+                payload={"sourceId": str(source_id)},
+            )
+        return bool(result.rowcount or 0)
+
+
+# ---------------------------------------------------------------------------------
 # 版本记账
 # ---------------------------------------------------------------------------------
 class _Change:
@@ -569,14 +837,19 @@ async def _current_revision_version(db: AsyncSession, workspace_id: uuid.UUID) -
 
 
 __all__ = [
+    "ALL_RELATION_TYPES",
     "EDITABLE_FIELDS",
     "EditResult",
     "add_dependency",
+    "add_relation",
     "create_node",
     "delete_node",
     "load_dependencies",
     "load_live_nodes",
     "load_node",
+    "load_relation",
     "remove_dependency",
+    "remove_relation",
     "update_node",
+    "update_relation",
 ]

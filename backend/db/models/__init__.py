@@ -17,6 +17,7 @@ from backend.db.models.enums import (
     MessageRole,
     ModelSource,
     NodeOrigin,
+    NodeRelationType,
     NodeStatus,
     NodeType,
     Priority,
@@ -29,7 +30,8 @@ from backend.db.models.enums import (
     WorkspaceStatus,
 )
 from backend.db.models.event import DomainEvent
-from backend.db.models.plan import Dependency, PlanNode, PlanRevision
+from backend.db.models.layout import NodePosition, ScopeViewport
+from backend.db.models.plan import Dependency, NodeRelation, PlanNode, PlanRevision
 from backend.db.models.proposal import Proposal, ProposalDecision, ProposalItem
 from backend.db.models.reminder import ReminderState
 from backend.db.models.schedule import ExecutionRecord, ScheduleApplication, ScheduledSession
@@ -64,6 +66,9 @@ __all__ = [
     "MessageRole",
     "ModelSource",
     "NodeOrigin",
+    "NodePosition",
+    "NodeRelation",
+    "NodeRelationType",
     "NodeStatus",
     "NodeType",
     "PlanNode",
@@ -82,6 +87,7 @@ __all__ = [
     "ScheduledSession",
     "ScheduledSessionOrigin",
     "ScheduledSessionStatus",
+    "ScopeViewport",
     "User",
     "UserCapacityProfile",
     "Workspace",

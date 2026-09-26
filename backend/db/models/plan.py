@@ -27,12 +27,14 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
+from sqlalchemy import text as sql_text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.db.base import Base, JsonDict, TimestampMixin, UtcDateTime, UuidPk, enum_type
 from backend.db.models.enums import (
     DependencyType,
     NodeOrigin,
+    NodeRelationType,
     NodeStatus,
     NodeType,
     Priority,
@@ -57,6 +59,22 @@ class PlanNode(UuidPk, TimestampMixin, Base):
     description: Mapped[str | None] = mapped_column(Text)
     # 验收标准。用户判断"这片树叶做完了没有"的依据,不是给 AI 看的。
     acceptance_criteria: Mapped[str | None] = mapped_column(Text)
+
+    # 节点正文的乐观锁。**只被正文的保存路径使用。**
+    #
+    # 正文是长文本,而长文本的编辑是"打开 -> 写十分钟 -> 保存"—— 中间隔着足够长的时间,
+    # 长到"另一个标签页也改了同一段"完全可能发生。没有这一列时,后保存的那次会静默
+    # 覆盖前一次,而用户看到的是"保存成功"。
+    #
+    # 为什么不复用 `current_revision_version`:那是**整个空间**的版本号。拿它做正文的
+    # 冲突检测,会让"我在另一个标签页勾掉了一个任务"变成"我的正文保存失败",而这两件事
+    # 根本没有冲突。冲突检测的范围要和冲突的范围一样大,这一列就是那个范围。
+    #
+    # server_default 与 `User.token_version` 同理:SQLite 的 ADD COLUMN 不接受
+    # "NOT NULL 且无默认值",给了常量默认值,两个后端才是同一条 ALTER。
+    content_version: Mapped[int] = mapped_column(
+        Integer, default=1, server_default=sql_text("1"), nullable=False
+    )
 
     node_type: Mapped[NodeType] = mapped_column(
         enum_type(NodeType, "node_type"), default=NodeType.TASK, nullable=False
@@ -133,6 +151,63 @@ class Dependency(UuidPk, TimestampMixin, Base):
         ),
         CheckConstraint("predecessor_id <> successor_id", name="no_self_dependency"),
         Index("ix_dependencies_workspace_id_successor_id", "workspace_id", "successor_id"),
+    )
+
+
+class NodeRelation(UuidPk, TimestampMixin, Base):
+    """用户自己画的、除"前置"之外的关系。
+
+    **为什么另起一张表,而不是往 `dependencies` 里加类型。** `dependencies` 是排期的
+    输入:排期器读它算最早能排到哪天。往里加一种"不参与排期"的类型,就得让排期器
+    开始挑类型 —— 而那正是"排期结果取决于一条不该影响它的边"的来源。分开存之后,
+    排期链路一行代码都不用改,这是这个决定的全部价值。
+
+    三种关系的统一视图在接口层(`contracts/plan.py` 的 `RelationType`),它把这张表
+    的行和 `dependencies` 的行投影成同一个形状给画布。**投影不是第二份存储。**
+
+    ## 无向的 `related_to` 怎么去重
+
+    唯一约束是那张表上的 `(source, target, type)`。`related_to` 是无向的,如果按用户
+    画的顺序存,A→B 和 B→A 会是两行,同一条边在画布上画两遍。所以写入前把两端按
+    UUID 排成固定顺序(见 `node_service.add_relation`),让"A 关联 B"和"B 关联 A"
+    落到同一行上。约束只守最后一道,规范化在服务层。
+    """
+
+    __tablename__ = "node_relations"
+
+    #: 冗余 workspace_id,同 `dependencies` 的理由:按空间取整张图时不用 JOIN plan_nodes。
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    source_node_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("plan_nodes.id", ondelete="CASCADE"), nullable=False
+    )
+    target_node_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("plan_nodes.id", ondelete="CASCADE"), nullable=False
+    )
+    relation_type: Mapped[NodeRelationType] = mapped_column(
+        enum_type(NodeRelationType, "node_relation_type"), nullable=False
+    )
+    #: 这条边是什么意思。用户自己写的说明 —— 与节点正文一样,是给人看的,不是排期输入。
+    note: Mapped[str | None] = mapped_column(Text)
+    #: 谁画的。复用 `NodeOrigin`(`user` / `ai`):边和节点一样,要能分辨
+    #: "这是我连的"还是"AI 建议的"。`dependencies` 没有这一列 —— 它的历史在
+    #: `plan_revisions.diff` 里,不是新加的,这里不去动它。
+    origin: Mapped[NodeOrigin] = mapped_column(
+        enum_type(NodeOrigin, "node_origin"), default=NodeOrigin.USER, nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "source_node_id",
+            "target_node_id",
+            "relation_type",
+            name="uq_node_relations_source_node_id_target_node_id_relation_type",
+        ),
+        CheckConstraint("source_node_id <> target_node_id", name="no_self_relation"),
+        Index("ix_node_relations_workspace_id", "workspace_id"),
+        Index("ix_node_relations_source_node_id", "source_node_id"),
+        Index("ix_node_relations_target_node_id", "target_node_id"),
     )
 
 

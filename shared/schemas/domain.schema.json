@@ -572,6 +572,45 @@
       "title": "CreateNodeRequest",
       "type": "object"
     },
+    "CreateRelationRequest": {
+      "additionalProperties": false,
+      "description": "连一条边。\n\n**默认类型由前端决定,服务端不做\"没写就是前置\"的猜测。** `relation_type` 必填:\n把用户随手拖的一条线解释成\"任务前置\"会改变排期结果,那是产品里最不该由默认值\n决定的一件事。",
+      "properties": {
+        "note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Note"
+        },
+        "relationType": {
+          "title": "Relationtype",
+          "type": "string"
+        },
+        "sourceId": {
+          "format": "uuid",
+          "title": "Sourceid",
+          "type": "string"
+        },
+        "targetId": {
+          "format": "uuid",
+          "title": "Targetid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sourceId",
+        "targetId",
+        "relationType"
+      ],
+      "title": "CreateRelationRequest",
+      "type": "object"
+    },
     "CreateWorkspaceRequest": {
       "additionalProperties": false,
       "properties": {
@@ -1046,6 +1085,54 @@
       "title": "IssuedToken",
       "type": "object"
     },
+    "LayoutPayload": {
+      "additionalProperties": false,
+      "description": "这个用户在这个空间里的全部布局。**按用户取,不按空间共享。**",
+      "properties": {
+        "positions": {
+          "items": {
+            "$ref": "#/$defs/LayoutPositionPayload"
+          },
+          "title": "Positions",
+          "type": "array"
+        },
+        "viewports": {
+          "items": {
+            "$ref": "#/$defs/ScopeViewportPayload"
+          },
+          "title": "Viewports",
+          "type": "array"
+        }
+      },
+      "title": "LayoutPayload",
+      "type": "object"
+    },
+    "LayoutPositionPayload": {
+      "additionalProperties": false,
+      "description": "一个节点在画布上的位置。单位是画布坐标,不是屏幕像素。",
+      "properties": {
+        "nodeId": {
+          "format": "uuid",
+          "title": "Nodeid",
+          "type": "string"
+        },
+        "x": {
+          "title": "X",
+          "type": "number"
+        },
+        "y": {
+          "title": "Y",
+          "type": "number"
+        }
+      },
+      "required": [
+        "nodeId",
+        "x",
+        "y"
+      ],
+      "title": "LayoutPositionPayload",
+      "type": "object"
+    },
     "LoginRequest": {
       "additionalProperties": false,
       "properties": {
@@ -1235,6 +1322,11 @@
           "default": null,
           "title": "Completedat"
         },
+        "contentVersion": {
+          "default": 1,
+          "title": "Contentversion",
+          "type": "integer"
+        },
         "createdAt": {
           "format": "date-time",
           "title": "Createdat",
@@ -1362,6 +1454,13 @@
             "$ref": "#/$defs/PlanNodePayload"
           },
           "title": "Nodes",
+          "type": "array"
+        },
+        "relations": {
+          "items": {
+            "$ref": "#/$defs/RelationPayload"
+          },
+          "title": "Relations",
           "type": "array"
         },
         "revisionVersion": {
@@ -1660,6 +1759,28 @@
       "title": "ProposalView",
       "type": "object"
     },
+    "PutLayoutRequest": {
+      "additionalProperties": false,
+      "description": "把这一次看到的布局整体提交上来。\n\n## 为什么是\"整份提交\"而不是逐条 PATCH\n\n拖动一个节点会连续产生几十个中间位置,逐条发请求意味着几十次写入和几十个\n并发冲突。整份提交让\"最后一次赢\"成为语义本身,不需要按时间戳做仲裁 ——\n而按时间戳仲裁在客户端时钟不准时是错的。\n\n## 它**不删除**没出现在这份请求里的位置\n\n\"整 scope 覆盖\"听起来像\"没提交的就是不要了\",但位置是按 `(用户, 空间, 节点)`\n存的,不按 scope 分。前端在某个子空间里只能看到那一层的节点,如果这里做\n全量替换,提交一次就会**删掉其他所有层级的位置** —— 而它看起来完全正常,\n直到用户返回上一层发现节点全叠在一起了。",
+      "properties": {
+        "positions": {
+          "items": {
+            "$ref": "#/$defs/LayoutPositionPayload"
+          },
+          "title": "Positions",
+          "type": "array"
+        },
+        "viewports": {
+          "items": {
+            "$ref": "#/$defs/ScopeViewportPayload"
+          },
+          "title": "Viewports",
+          "type": "array"
+        }
+      },
+      "title": "PutLayoutRequest",
+      "type": "object"
+    },
     "QuietHoursView": {
       "additionalProperties": false,
       "description": "当前的免打扰时段,以及此刻是不是正处在里面。",
@@ -1946,6 +2067,75 @@
         }
       },
       "title": "RejectProposalRequest",
+      "type": "object"
+    },
+    "RelationPayload": {
+      "additionalProperties": false,
+      "description": "画布上的一条边。**三种类型共用一个形状。**\n\n## 这是一份投影,不是第二份存储\n\n`depends_on` 来自 `dependencies` 表(它就是那张表的行),`related_to` 与\n`influences` 来自 `node_relations` 表。在这里合并成一种形状,是因为画布只需要\n\"有哪些边、连的是谁、是什么类型\" —— 让前端自己去 join 两张表,等于把\"哪种类型\n存在哪里\"这个知识复制到前端,而它是会变的。\n\n存储层**不合并**(见 `db/models/enums.py::NodeRelationType`):`depends_on` 参与\n排期,另外两种不参与。投影可以合并,规则不可以。\n\n## 方向\n\n`source_id -> target_id`。对 `depends_on` 来说就是**前置 -> 后续**,与\n`DependencyPayload.predecessor_id -> successor_id` 同向,也与数据库里存的\n`dependencies` 行列同向 —— **全仓只有这一个方向约定,任何一层都不做反转**。\n\n`related_to` 是**无向**的:它存哪一头在前是按 UUID 排的,不代表方向。前端画虚线\n无箭头,不要去解释 `source` 是\"主语\"。",
+      "properties": {
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "lagDays": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Lagdays"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Note"
+        },
+        "origin": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Origin"
+        },
+        "relationType": {
+          "title": "Relationtype",
+          "type": "string"
+        },
+        "sourceId": {
+          "format": "uuid",
+          "title": "Sourceid",
+          "type": "string"
+        },
+        "targetId": {
+          "format": "uuid",
+          "title": "Targetid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "relationType",
+        "sourceId",
+        "targetId"
+      ],
+      "title": "RelationPayload",
       "type": "object"
     },
     "ReminderStateView": {
@@ -2464,6 +2654,37 @@
         "today"
       ],
       "title": "SchedulePreviewResponse",
+      "type": "object"
+    },
+    "ScopeViewportPayload": {
+      "additionalProperties": false,
+      "description": "一个层级(总空间或某个子空间)的平移与缩放。",
+      "properties": {
+        "panX": {
+          "title": "Panx",
+          "type": "number"
+        },
+        "panY": {
+          "title": "Pany",
+          "type": "number"
+        },
+        "scopeNodeId": {
+          "format": "uuid",
+          "title": "Scopenodeid",
+          "type": "string"
+        },
+        "zoom": {
+          "title": "Zoom",
+          "type": "number"
+        }
+      },
+      "required": [
+        "scopeNodeId",
+        "zoom",
+        "panX",
+        "panY"
+      ],
+      "title": "ScopeViewportPayload",
       "type": "object"
     },
     "SendMessageRequest": {
@@ -3394,6 +3615,38 @@
         }
       },
       "title": "UpdateProfileRequest",
+      "type": "object"
+    },
+    "UpdateRelationRequest": {
+      "additionalProperties": false,
+      "description": "改一条边。**\"没传\"与\"传了 null\"是两件事**,同 `UpdateNodeRequest`。\n\n`relation_type` 只能在 `related_to` 与 `influences` 之间换 —— 换成/换出\n`depends_on` 会跨表(那是排期输入),这一版拒绝并给出明确原因,不静默丢说明。",
+      "properties": {
+        "note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Note"
+        },
+        "relationType": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Relationtype"
+        }
+      },
+      "title": "UpdateRelationRequest",
       "type": "object"
     },
     "UpdateWorkspaceRequest": {

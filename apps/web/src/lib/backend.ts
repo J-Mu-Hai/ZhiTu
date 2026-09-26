@@ -271,6 +271,14 @@ export interface PlanNodePayload {
   origin: 'user' | 'ai';
   completedAt: string | null;
   createdAt: string;
+  /**
+   * 节点**正文**的乐观锁版本号。改一次正文加一。
+   *
+   * 它和 `PlanPayload.revisionVersion` 是**两件事**:那个是整个空间的计划版本
+   * (别人勾了一个任务它就会前进),这个只说"这一条正文被人改过没有"。用空间级版本号
+   * 去挡正文保存的话,"另一个标签页勾掉了一个任务"会让正在写正文的人保存失败。
+   */
+  contentVersion: number;
 }
 
 export interface DependencyPayload {
@@ -279,6 +287,48 @@ export interface DependencyPayload {
   successorId: string;
   depType: string;
   lagDays: number;
+}
+
+/**
+ * 画布上的一条边。**三种关系共用这一个形状。**
+ *
+ * `depends_on` 存在 `dependencies` 表里(它决定排期),另外两种存在 `node_relations`
+ * 里。那是存储层的分叉,不该漏到这里来 —— 前端要是得先知道"这条边在哪个表",
+ * 那它就得跟着那张表一起改。
+ *
+ * 方向一律是 `sourceId → targetId`(前置 → 后续),**任何一层都不反转**。
+ */
+export interface RelationPayload {
+  id: string;
+  relationType: 'depends_on' | 'related_to' | 'influences';
+  sourceId: string;
+  targetId: string;
+  /** 用户写在这条边上的解释。`depends_on` 恒为 null —— 那张表没有这一列。 */
+  note: string | null;
+  /**
+   * 这条边是谁建的。`depends_on` 恒为 null(同样是没有那一列),
+   * **不要在前端补一个 'user'** —— 那会让 AI 连的前置看起来像用户自己连的。
+   */
+  origin: 'user' | 'ai' | null;
+  /** 只有 `depends_on` 有;另外两种恒为 null。 */
+  lagDays: number | null;
+}
+
+export interface CreateRelationRequest {
+  sourceId: string;
+  targetId: string;
+  /**
+   * **必填,服务端不猜。** 拖一条线默认连的是「相关」,绝不擅自解释成任务前置 ——
+   * 那会改变排期,而用户只是把两个东西拖到一起。
+   */
+  relationType: string;
+  note?: string | null;
+}
+
+export interface UpdateRelationRequest {
+  relationType?: string;
+  /** 传 null 是"清空说明",不传是"不改说明"。两者必须分得开。 */
+  note?: string | null;
 }
 
 /**
@@ -315,6 +365,14 @@ export interface PlanPayload {
   revisionVersion: number;
   nodes: PlanNodePayload[];
   dependencies: DependencyPayload[];
+  /**
+   * 画布上要画的**全部**边,三种关系合在一起。
+   *
+   * 与 `dependencies` 并存不是重复:`dependencies` 是**排期读的那份**,这里是
+   * **画的那份**。少了这一份,前端就得自己把两种边 join 起来,而"漏了一种"这件事
+   * 没有任何东西会报错 —— 画布上只是少了几条线。
+   */
+  relations: RelationPayload[];
   brief: BriefView;
   /**
    * 排期场次。**已取消与已搬走的场次不在这里** —— 它们是墓碑,仍在库里,复盘时
@@ -405,6 +463,96 @@ export function removeDependency(
     `/api/workspaces/${workspaceId}/dependencies?predecessorId=${predecessorId}&successorId=${successorId}`,
     { method: 'DELETE' },
   );
+}
+
+// ---------------------------------------------------------------------------------
+// 画布上的关系与布局
+//
+// 关系那四个接口收的都是 `relation_id`,**不是一对节点** —— 三种边共用一个 id 空间,
+// 前端不必记住"这条边在哪个表里"。依赖那两条(`addDependency`/`removeDependency`)
+// 收的是一对节点,是排期那条路径的旧形状,新代码应当走这里。
+// ---------------------------------------------------------------------------------
+export function createRelation(
+  workspaceId: string,
+  payload: CreateRelationRequest,
+): Promise<RelationPayload> {
+  return apiFetch<RelationPayload>(`/api/workspaces/${workspaceId}/relations`, {
+    method: 'POST',
+    body: payload,
+  });
+}
+
+export function updateRelation(
+  workspaceId: string,
+  relationId: string,
+  patch: UpdateRelationRequest,
+): Promise<RelationPayload> {
+  return apiFetch<RelationPayload>(`/api/workspaces/${workspaceId}/relations/${relationId}`, {
+    method: 'PATCH',
+    body: patch,
+  });
+}
+
+/** **删边不删节点。** 两端都还在,只是这条线没了。 */
+export function removeRelation(workspaceId: string, relationId: string): Promise<void> {
+  return apiFetch<void>(`/api/workspaces/${workspaceId}/relations/${relationId}`, {
+    method: 'DELETE',
+  });
+}
+
+/** 一个节点在画布上的位置。单位是画布坐标,不是屏幕像素 —— 不做任何换算。 */
+export interface LayoutPositionPayload {
+  nodeId: string;
+  x: number;
+  y: number;
+}
+
+/** 一个层级(总空间或某个子空间)的平移与缩放。`scopeNodeId` 就是那个层级的根节点。 */
+export interface ScopeViewportPayload {
+  scopeNodeId: string;
+  zoom: number;
+  panX: number;
+  panY: number;
+}
+
+/**
+ * 整份提交这一次看到的布局。
+ *
+ * **整份而不是逐条**:拖动一个节点会连续产生几十个中间位置,逐条发意味着几十次写入
+ * 和几十个并发冲突。整份提交让"最后一次赢"成为语义本身,不必按时间戳仲裁。
+ *
+ * **它不删除没提交的行。** 位置按 (用户, 空间, 节点) 存,不按层级分;在某个子空间里
+ * 做全量替换会删掉其他所有层级的位置,而界面看起来完全正常,直到用户返回上一层
+ * 发现节点全叠在一起。
+ */
+export interface PutLayoutRequest {
+  positions: LayoutPositionPayload[];
+  viewports: ScopeViewportPayload[];
+}
+
+/**
+ * 一个用户在一个空间里的全部布局。**按用户取,不按空间共享。**
+ *
+ * 保存布局**不产生计划版本** —— 位置是用户偏好,不是计划的一部分。复盘时"V7 改了什么
+ * 把我的排期挪走了"这个问题,不该被几百次拖动淹没。
+ */
+export interface LayoutPayload {
+  positions: LayoutPositionPayload[];
+  viewports: ScopeViewportPayload[];
+}
+
+export function getLayout(workspaceId: string): Promise<LayoutPayload> {
+  return apiFetch<LayoutPayload>(`/api/workspaces/${workspaceId}/layout`);
+}
+
+export function putLayout(
+  workspaceId: string,
+  payload: PutLayoutRequest,
+): Promise<LayoutPayload> {
+  return apiFetch<LayoutPayload>(`/api/workspaces/${workspaceId}/layout`, {
+    method: 'PUT',
+    body: payload,
+  });
 }
 
 // ---------------------------------------------------------------------------------

@@ -27,6 +27,11 @@ EXPECTED_TABLES = {
     "domain_events",
     "execution_records",
     "messages",
+    # 画布上的关系与用户偏好。三张都是**加法**:`dependencies` 与 `plan_nodes` 一行
+    # 都没改,排期那条链路不受影响。这张清单是"库里有哪些表"的唯一出处,新表忘了
+    # 登记会让这条测试红 —— 那正是它该做的。
+    "node_positions",
+    "node_relations",
     "plan_nodes",
     "plan_revisions",
     "planning_briefs",
@@ -38,6 +43,7 @@ EXPECTED_TABLES = {
     "reminder_states",
     "schedule_applications",
     "scheduled_sessions",
+    "scope_viewports",
     "user_capacity_profiles",
     "users",
     "workspaces",

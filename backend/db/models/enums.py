@@ -52,6 +52,30 @@ class DependencyType(StrEnum):
     FINISH_TO_START = "finish_to_start"
 
 
+class NodeRelationType(StrEnum):
+    """画布上除"前置"之外的关系类型。
+
+    **与 `DependencyType` 并列,不合并成一个枚举。** 两者看起来都是"节点之间的边",
+    差别却是实质性的:
+
+    - `finish_to_start` 是**排期算法的输入** —— 排期器要用它算"这个任务最早能排到哪天";
+      这两个类型不参与排期,一条 `influences` 不该让任何任务往后挪。
+    - `dependencies` 还有 `lag_days`(前置完成后要等几天),这两个没有。
+    - 两者存在**两张表**里,唯一约束的形状也不同:前置按有向的
+      `(predecessor, successor)` 去重,`related_to` 是无向的。
+
+    合并的后果是排期代码里开始出现"哪种类型才算前置"的分支,而那是把已经分开的
+    两件事重新搅在一起。接口层有一份统一的三类型视图(见 `contracts/plan.py` 的
+    `RelationType`),但那是**投影**,不是存储。
+    """
+
+    #: 只是相关。**无向** —— A 关联 B 和 B 关联 A 是同一条边,写入前会规范化。
+    RELATED_TO = "related_to"
+    #: A 影响 B。有向,但**不参与排期**:它表达"这件事做得好不好会影响那件事",
+    #: 而不是"必须先做 A"。
+    INFLUENCES = "influences"
+
+
 class ScheduledSessionStatus(StrEnum):
     PLANNED = "planned"
     IN_PROGRESS = "in_progress"

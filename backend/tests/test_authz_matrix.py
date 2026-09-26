@@ -58,6 +58,11 @@ AUTHENTICATED_ROUTES = {
     ("DELETE", "/api/workspaces/{workspace_id}/nodes/{node_id}"),
     ("POST", "/api/workspaces/{workspace_id}/dependencies"),
     ("DELETE", "/api/workspaces/{workspace_id}/dependencies"),
+    ("POST", "/api/workspaces/{workspace_id}/relations"),
+    ("PATCH", "/api/workspaces/{workspace_id}/relations/{relation_id}"),
+    ("DELETE", "/api/workspaces/{workspace_id}/relations/{relation_id}"),
+    ("GET", "/api/workspaces/{workspace_id}/layout"),
+    ("PUT", "/api/workspaces/{workspace_id}/layout"),
     ("GET", "/api/workspaces/{workspace_id}/proposals"),
     ("POST", "/api/workspaces/{workspace_id}/proposals/{proposal_id}/confirm"),
     ("POST", "/api/workspaces/{workspace_id}/proposals/{proposal_id}/reject"),
@@ -91,8 +96,20 @@ CROSS_ACCOUNT_ROUTES = {
     # 模型之前就返回了,所以反向断言拿到的是 200 而不是一次真实的模型调用。
     ("GET", "/api/workspaces/{workspace_id}/deviations"): "workspace_id",
     ("POST", "/api/workspaces/{workspace_id}/replan"): "workspace_id",
+    # 布局两条都进得来,而且**两条都必须进**:位置是按用户存的,很容易顺手写成
+    # "只按 user_id 查"—— 那样 B 拿 A 的空间 id 去读,会读到一份空布局并返回 200,
+    # 看起来完全正常。这里要求 404,因为空间本身就不是 B 的。
+    # 反向断言也成立:A 自己读自己的一定是 200,提交一份空布局同样 200。
+    ("GET", "/api/workspaces/{workspace_id}/layout"): "workspace_id",
+    ("PUT", "/api/workspaces/{workspace_id}/layout"): "workspace_id",
     ("DELETE", "/api/auth/sessions/{session_id}"): "session_id",
 }
+
+# 而 `POST/PATCH/DELETE /relations` 三条**不能**进这张表:前缀只有空间 id 的那条
+# (POST)请求体里还需要两个**真实存在**的节点,反向断言才成立;另外两条收的是
+# `{relation_id}`,拿一个假的 id 时 A 自己也是 404。它们的归属校验由
+# `test_relations_are_scoped_to_the_workspace` 单独覆盖:A 先真的连出一条边,
+# 再让 B 拿那个 id 去改去删。
 
 # 执行反馈那两条(`/api/sessions/{session_id}/executions`)**不能进上面这张表**:
 # 路径里的 `{session_id}` 在这里指的是**排期场次**,而 `_fill` 那个占位符已经被
@@ -130,6 +147,16 @@ _BODIES: dict[tuple[str, str], dict] = {
         "predecessorId": "00000000-0000-4000-8000-000000000002",
         "successorId": "00000000-0000-4000-8000-000000000003",
     },
+    # `relationType` 是必填的(服务端不替用户猜类型),所以这里必须给一个合法值,
+    # 否则匿名那条用例拿到的是 422 而不是 401 —— 那测的就是请求体校验了。
+    ("POST", "/api/workspaces/{workspace_id}/relations"): {
+        "sourceId": "00000000-0000-4000-8000-000000000002",
+        "targetId": "00000000-0000-4000-8000-000000000003",
+        "relationType": "related_to",
+    },
+    # 空数组是合法的:它表示"这一次没有要提交的位置"。跨账号那条用例因此拿得到
+    # A 自己的 200(反向断言),而 B 仍然在触到布局之前就被空间归属挡下。
+    ("PUT", "/api/workspaces/{workspace_id}/layout"): {},
     ("POST", "/api/workspaces/{workspace_id}/proposals/{proposal_id}/confirm"): {
         "idempotencyKey": "anon-probe-key"
     },
@@ -149,13 +176,14 @@ _BODIES: dict[tuple[str, str], dict] = {
     ("POST", "/api/reminders/snooze"): {"key": "anon-probe", "hours": 24},
 }
 
-#: 路径里的 `{proposal_id}` / `{node_id}` 用什么填。
+#: 路径里的 `{proposal_id}` / `{node_id}` / `{relation_id}` 用什么填。
 #:
 #: 匿名与跨账号两条用例都在**触到那个资源之前**就返回了(401 / 空间不属于你),所以
 #: 这里只需要一个格式合法的 UUID —— 形状不对会在路径解析时变成 422,那测的就不是
 #: 鉴权了。
 _ANY_PROPOSAL_ID = "00000000-0000-4000-8000-000000000001"
 _ANY_NODE_ID = "00000000-0000-4000-8000-000000000002"
+_ANY_RELATION_ID = "00000000-0000-4000-8000-000000000004"
 
 
 def _routes_from_openapi() -> set[tuple[str, str]]:
@@ -279,6 +307,7 @@ def _fill(template: str, account: Account) -> str:
         .replace("{session_id}", account.session_id)
         .replace("{proposal_id}", _ANY_PROPOSAL_ID)
         .replace("{node_id}", _ANY_NODE_ID)
+        .replace("{relation_id}", _ANY_RELATION_ID)
     )
 
 

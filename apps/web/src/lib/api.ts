@@ -85,7 +85,9 @@ export function setUnauthorizedHandler(handler: (() => void) | null): void {
 // ---------------------------------------------------------------------------------
 
 interface RequestOptions {
-  method?: 'GET' | 'POST' | 'PATCH' | 'DELETE';
+  // `PUT` 只有布局那一条用它,而且它是**幂等的整份提交** —— 这正是 PUT 的语义
+  // ("把我看到的那一份存成现在这样"),不是 PATCH 的逐条修改。
+  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   body?: unknown;
   /** 关掉 401 的全局处理。登录接口自己需要:密码错就是密码错,不该把别的会话踢掉。 */
   skipUnauthorizedHandler?: boolean;

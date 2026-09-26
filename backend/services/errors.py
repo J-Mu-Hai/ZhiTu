@@ -253,6 +253,32 @@ class DependencyRejected(DomainError):
     http_status = 409
 
 
+class RelationNotFound(DomainError):
+    """这条关系不存在,或者不在你能碰的空间里。
+
+    与 `NodeNotFound` / `WorkspaceNotFound` 同一条纪律:两种情况返回同一个错误与同一个
+    状态码,否则拿 id 逐个试就能测绘出别人空间里有哪些边。
+    """
+
+    code = "RELATION_NOT_FOUND"
+    http_status = 404
+
+
+class RelationRejected(DomainError):
+    """这条边现在不能这么改。
+
+    目前只有一个来源:**把一条边改成前置关系(或把前置关系改成别的)**。那意味着在
+    `node_relations` 与 `dependencies` 两张表之间搬家,而后者没有说明列 —— 搬过去,
+    用户写在这条边上的解释就没了。宁可不做,也不要静默丢掉别人写的东西。
+
+    用 400 而不是 409:它不是"此刻做不了"(换个时间也不行),而是"这个请求本身
+    在这里没有意义"。客户端按 code 分支,把这条渲染成"这一版不支持"。
+    """
+
+    code = "RELATION_TYPE_CHANGE_UNSUPPORTED"
+    http_status = 400
+
+
 class IdempotencyKeyReused(DomainError):
     """同一个幂等键配了不同的请求体。
 

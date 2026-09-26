@@ -25,6 +25,15 @@ from pydantic import Field
 
 from backend.contracts.common import ApiModel
 
+#: 画布上"前置"这个类型的名字 —— **接口上的名字,不是库里的名字**。
+#: 库里它是 `DependencyType.FINISH_TO_START`,存在 `dependencies` 表;而
+#: `related_to` / `influences` 存在 `node_relations` 表。三种类型在接口上共用一个
+#: `relationType` 字段,所以"这个字符串对应哪张表"这件事必须有**一处**定义。
+#:
+#: 定义在契约层而不是某个服务里,是因为 `node_service` 与 `plan_service` 都要用它,
+#: 而让其中一个 import 另一个会形成循环(写与读互相依赖)。
+DEPENDS_ON = "depends_on"
+
 
 class PlanNodePayload(ApiModel):
     """一个计划节点。**不含任何排期字段** —— "哪天做"在 sessions 里。"""
@@ -45,6 +54,12 @@ class PlanNodePayload(ApiModel):
     origin: str
     completed_at: datetime | None = None
     created_at: datetime
+    #: 正文的版本号。客户端保存正文时把它原样带回来,对不上就是 409
+    #: `CONCURRENCY_CONFLICT` —— 说明另一个标签页改过同一段正文。
+    #:
+    #: 它是**节点级**的,不是空间级(`revision_version` 是空间级)。用空间版本号做
+    #: 正文冲突检测,会让"另一个标签页勾掉了一个任务"变成"我的正文保存失败"。
+    content_version: int = 1
 
 
 class SessionPayload(ApiModel):
@@ -89,6 +104,115 @@ class DependencyPayload(ApiModel):
     lag_days: int = 0
 
 
+class RelationPayload(ApiModel):
+    """画布上的一条边。**三种类型共用一个形状。**
+
+    ## 这是一份投影,不是第二份存储
+
+    `depends_on` 来自 `dependencies` 表(它就是那张表的行),`related_to` 与
+    `influences` 来自 `node_relations` 表。在这里合并成一种形状,是因为画布只需要
+    "有哪些边、连的是谁、是什么类型" —— 让前端自己去 join 两张表,等于把"哪种类型
+    存在哪里"这个知识复制到前端,而它是会变的。
+
+    存储层**不合并**(见 `db/models/enums.py::NodeRelationType`):`depends_on` 参与
+    排期,另外两种不参与。投影可以合并,规则不可以。
+
+    ## 方向
+
+    `source_id -> target_id`。对 `depends_on` 来说就是**前置 -> 后续**,与
+    `DependencyPayload.predecessor_id -> successor_id` 同向,也与数据库里存的
+    `dependencies` 行列同向 —— **全仓只有这一个方向约定,任何一层都不做反转**。
+
+    `related_to` 是**无向**的:它存哪一头在前是按 UUID 排的,不代表方向。前端画虚线
+    无箭头,不要去解释 `source` 是"主语"。
+    """
+
+    id: uuid.UUID
+    relation_type: str
+    source_id: uuid.UUID
+    target_id: uuid.UUID
+    #: 用户写在这条边上的说明。`depends_on` 恒为 None —— `dependencies` 表没有说明
+    #: 列,而"补一个空串"会让界面上出现一条看不出是"没写"还是"写了空"的边。
+    note: str | None = None
+    #: 谁连的。**`depends_on` 恒为 None**:`dependencies` 表没有 `origin` 列。
+    #: 猜一个 "user" 会让 AI 提案加的依赖看起来像用户自己连的 —— 而这正是
+    #: `NodeOrigin` 这个枚举存在的理由(见 `ModelSource` 的注释,同一条纪律)。
+    origin: str | None = None
+    #: 只有 `depends_on` 有:前置完成后还要等几天。另外两种恒为 None。
+    lag_days: int | None = None
+
+
+class CreateRelationRequest(ApiModel):
+    """连一条边。
+
+    **默认类型由前端决定,服务端不做"没写就是前置"的猜测。** `relation_type` 必填:
+    把用户随手拖的一条线解释成"任务前置"会改变排期结果,那是产品里最不该由默认值
+    决定的一件事。
+    """
+
+    source_id: uuid.UUID
+    target_id: uuid.UUID
+    relation_type: str
+    note: str | None = None
+
+
+class UpdateRelationRequest(ApiModel):
+    """改一条边。**"没传"与"传了 null"是两件事**,同 `UpdateNodeRequest`。
+
+    `relation_type` 只能在 `related_to` 与 `influences` 之间换 —— 换成/换出
+    `depends_on` 会跨表(那是排期输入),这一版拒绝并给出明确原因,不静默丢说明。
+    """
+
+    relation_type: str | None = None
+    #: 传 null 是"把说明清空",不传是"不改说明"。
+    note: str | None = None
+
+
+class LayoutPositionPayload(ApiModel):
+    """一个节点在画布上的位置。单位是画布坐标,不是屏幕像素。"""
+
+    node_id: uuid.UUID
+    x: float
+    y: float
+
+
+class ScopeViewportPayload(ApiModel):
+    """一个层级(总空间或某个子空间)的平移与缩放。"""
+
+    scope_node_id: uuid.UUID
+    zoom: float
+    pan_x: float
+    pan_y: float
+
+
+class PutLayoutRequest(ApiModel):
+    """把这一次看到的布局整体提交上来。
+
+    ## 为什么是"整份提交"而不是逐条 PATCH
+
+    拖动一个节点会连续产生几十个中间位置,逐条发请求意味着几十次写入和几十个
+    并发冲突。整份提交让"最后一次赢"成为语义本身,不需要按时间戳做仲裁 ——
+    而按时间戳仲裁在客户端时钟不准时是错的。
+
+    ## 它**不删除**没出现在这份请求里的位置
+
+    "整 scope 覆盖"听起来像"没提交的就是不要了",但位置是按 `(用户, 空间, 节点)`
+    存的,不按 scope 分。前端在某个子空间里只能看到那一层的节点,如果这里做
+    全量替换,提交一次就会**删掉其他所有层级的位置** —— 而它看起来完全正常,
+    直到用户返回上一层发现节点全叠在一起了。
+    """
+
+    positions: list[LayoutPositionPayload] = Field(default_factory=list)
+    viewports: list[ScopeViewportPayload] = Field(default_factory=list)
+
+
+class LayoutPayload(ApiModel):
+    """这个用户在这个空间里的全部布局。**按用户取,不按空间共享。**"""
+
+    positions: list[LayoutPositionPayload] = Field(default_factory=list)
+    viewports: list[ScopeViewportPayload] = Field(default_factory=list)
+
+
 class BriefView(ApiModel):
     """当前已知的规划条件。
 
@@ -116,6 +240,10 @@ class PlanPayload(ApiModel):
     revision_version: int
     nodes: list[PlanNodePayload] = Field(default_factory=list)
     dependencies: list[DependencyPayload] = Field(default_factory=list)
+    #: 画布上所有的边,三种类型一起(见 `RelationPayload`)。它**包含**
+    #: `dependencies` 的那一份 —— 前者是"画什么",后者是"排期读什么"。
+    #: 一次请求拿全,是因为画布在一次渲染里就要用到全部三种线。
+    relations: list[RelationPayload] = Field(default_factory=list)
     brief: BriefView = Field(default_factory=BriefView)
 
     #: 排期场次。**已取消与已搬走的场次不在这里** —— 它们是墓碑,仍在库里,复盘时
@@ -187,10 +315,17 @@ __all__ = [
     "BriefView",
     "CreateDependencyRequest",
     "CreateNodeRequest",
+    "CreateRelationRequest",
     "DependencyPayload",
+    "LayoutPayload",
+    "LayoutPositionPayload",
     "NodeEditResponse",
     "PlanNodePayload",
     "PlanPayload",
+    "PutLayoutRequest",
+    "RelationPayload",
+    "ScopeViewportPayload",
     "SessionPayload",
     "UpdateNodeRequest",
+    "UpdateRelationRequest",
 ]
