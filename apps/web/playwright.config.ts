@@ -1,5 +1,36 @@
 import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { defineConfig } from '@playwright/test';
+
+/**
+ * **每一次运行有自己的现场目录,上一次的不许被覆盖。**
+ *
+ * 这里以前写死 `outputDir: './artifacts/test-results'`。后果不是"有点乱":同一台机器上
+ * 连跑几轮,后一轮的截图和 trace 会**无声地**盖掉前一轮的 —— 而"上一轮到底失败在哪"
+ * 恰恰是失败之后第一个要问的问题。这件事已经真实发生过一次:`docs/08-DEPLOYMENT.md`
+ * 第四节记的那五轮里,第 4 轮的现场就是被后续按用例隔离复现的几次运行盖掉的,取不回来。
+ * 那次没有补造截图,只在文档里如实留了说明 —— 现在修的是机制,不是那一份记录。
+ *
+ * 目录来源按优先级:
+ *
+ * 1. `ZHITU_RUN_DIR` —— 由 `scripts/dev/accept-e2e.mjs` 建好并传进来,里面同时放
+ *    后端日志、构建日志、JSON 报告和这一次的结果摘要。**正式验收走这条。**
+ * 2. 没设时自己按时间戳建一个,所以 `npm run test:e2e` 也不会盖掉别的运行。
+ *    (它没有摘要文件 —— 摘要由验收脚本写,因为它才知道端口、提交和数据库在哪。)
+ */
+function resolveRunDir(): string {
+  if (process.env.ZHITU_RUN_DIR) return process.env.ZHITU_RUN_DIR;
+  // 用**本机时间**而不是 UTC 做目录名:这个名字是给人看的("我刚才跑的那一轮在哪"),
+  // 而摘要文件里另有完整的 ISO 时间戳。
+  const now = new Date();
+  const pad = (value: number) => String(value).padStart(2, '0');
+  const stamp =
+    `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}` +
+    `-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  return join('artifacts', 'runs', `${stamp}-dev`);
+}
+
+const runDir = resolveRunDir();
 
 /**
  * 测试用的端口,**不能随便挑一个**。
@@ -81,7 +112,20 @@ export default defineConfig({
    * 报错,而是把那条测试**静默丢掉** —— 整套从 30 条变成 28 条。)
    */
   workers: Number(process.env.PLAYWRIGHT_WORKERS ?? 1),
-  outputDir: './artifacts/test-results',
+  // 一次运行一个目录(见上面 `resolveRunDir`)。截图、trace、以及每条测试自己的
+  // 输出都落在 `test-results/` 里,不会被下一轮盖掉。
+  outputDir: join(runDir, 'test-results'),
+  /*
+   * 报告分两份,职责不同:
+   *
+   * - `list` 是给人**当场看**的,一直开着。
+   * - `json` 是给**记录**用的,只在 `PLAYWRIGHT_JSON_OUTPUT` 有值时开 —— 验收脚本
+   *     用它写这一次的摘要。不设时(本地 `npm run test:e2e`)它不出现,免得往控制台
+   *     上吐一大段 JSON,把真正要看的失败信息淹掉。
+   */
+  reporter: process.env.PLAYWRIGHT_JSON_OUTPUT
+    ? [['list'], ['json', { outputFile: process.env.PLAYWRIGHT_JSON_OUTPUT }]]
+    : [['list']],
   // 断言超时从默认 5 秒放宽到 20 秒:复用 `next dev` 时,页面首次访问要现场编译,
   // 工作台那一个包(ReactFlow + 画布)冷编译会超过 5 秒。放宽的是**等待**上限,
   // 不是判断标准 —— 20 秒还没出现就是真的没出现。
