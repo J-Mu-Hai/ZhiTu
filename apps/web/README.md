@@ -75,10 +75,19 @@ Playwright 在 Windows 上会自动选择 Chrome 或 Edge；也可通过 `CHROME
 - **`localStorage` 里还剩什么。** 只剩三样，都不是业务主存储：令牌
   （`src/lib/api.ts`）、当前选中的空间 id、**画布上的节点位置**（按账户 + 空间分键）。
   **计划、对话、随笔的正本都在后端**。`grep localStorage` 仍然是最快的答案。
-  - **视口不在里面 —— 它哪儿都没存。** 画布的视口只活在 React Flow 内部，时间线另有自己
-    的一份 `viewport` state（`TimelineView.tsx`），两者都不落盘，也没有 `/layout` 接口。
-    所以画布一重建、或者切一下视图，平移与缩放就回到默认（见 `docs/10-NEXT-BATCH-SCOPE.md`
-    第 4 节）。
+  - **视口也不在里面 —— 它在 Provider 的内存里**（2026-09-27 改，提交 `c65959e`）。
+    画布的平移缩放按层级存在 `provider.tsx` 的 `viewports`，时间线的"看到哪一段/放多大"
+    存在 `timelineViewport`。都不落盘：节点集合一变，上一次的视口就可能框住一片空白，
+    而"打开是一张空图"比"重新 fit 一次"更难解释。Provider 的 key 是空间 id，
+    所以换空间天然拿不到上一个空间那一份。跨刷新那一份留给步骤 3 的 `scope_viewports`。
+    在这之前它哪儿都没存，于是**切一下视图回来，画面就跳回原处** —— 见
+    `docs/10-NEXT-BATCH-SCOPE.md` 第 4 节（那一节现在是已修的记录）。
+  - **画布上还没提交的输入住在 `features/growth/drafts.ts`**（同一提交）。它是个**模块级
+    Map**，键是 `${workspaceId}:${scopeId}`，只在内存里：工作台的四个视图是一个三元表达式，
+    切一下页签整棵画布子树就卸载（ReactFlow 的视口、弹窗那一组 state 全跟着没），
+    所以这些输入不能住在组件里。只活在内存是有意的 —— 跨一次整页刷新把一份"用户早就离开、
+    可能不想要"的输入重新摆到他面前，他看到的东西会和记忆里对不上。
+    **只有用户明确关掉弹窗（× / Esc）才丢**，卸载不丢。
 - **已知的内存态缺口（未修，但已经排进下一批）**：随笔（`publishJournal`）与空间文件
   （`addFiles`）目前**只写前端内存**——后端还没有随笔表、随笔接口和资源上传接口。刷新
   之后新写的随笔会消失，附件也只是浏览器会话里的对象地址。`tests/experience.spec.ts`
@@ -124,6 +133,13 @@ Playwright 在 Windows 上会自动选择 Chrome 或 Edge；也可通过 `CHROME
     同一结果。它的 `summary.txt` 里写着当时工作区有 3 项未提交改动 —— 那 3 项就是被验的
     那三份代码，跑完原样提交为 **`cf4ee81`**，不是"在别的代码上跑出来的绿"。
     （那个提交里还有一份本文件，是这一轮之后才改的纯文档。）
+  - **当前基线（2026-09-27 00:24 实测）**：`npm run test:accept` = **35 passed / 1 skipped
+    / 0 failed**（**36 条**，15 个文件，89.5s，`--workers=1`）。运行编号
+    `20260927-002457-c65959e`，现场在 `apps/web/artifacts/runs/20260927-002457-c65959e/`。
+    这一轮的 `summary.txt` 里写着**工作区：干净** —— 被测代码就是提交 `c65959e`
+    本身，不是"在别的代码上跑出来的绿"。条数从 32 涨到 36 是因为新增了
+    `tests/canvas-stability.spec.ts` 的 4 条（读法见上面"数据边界"那一段）。
+    那 1 条 skipped 仍然是 `experience.spec.ts` 里写明原因的那条 `test.fixme`。
 - **每一次验收留下自己的现场**（2026-09-26 补上，提交 `cf4ee81`）：
   `apps/web/artifacts/runs/<本机时间戳>-<提交号>/`
   里是这一次的 `summary.txt`（提交、**工作区是否干净**、命令、端口、耗时、失败清单）、
@@ -131,9 +147,13 @@ Playwright 在 Windows 上会自动选择 Chrome 或 Edge；也可通过 `CHROME
   快照。以前 `outputDir` 是写死的路径，跑两轮就互相覆盖 —— `docs/08-DEPLOYMENT.md` 第四节
   记的第 4 轮现场就是这么丢的。`npm run test:e2e`（开发模式）也会自建一个目录，但它没有
   `summary.txt` —— 摘要由验收脚本写。
-  - **还没跟着走的**：`auth-profile.spec.ts` 和 `canvas-polish.spec.ts` 里几条"记录用"
-    截图仍写在固定的 `artifacts/*.png` 路径上，跑一次盖一次。它们不是失败现场（失败现场
-    走 `test-results/`，那部分已经是按运行隔离的），但这一条没有按运行隔离。
+  - **2026-09-27 补上（提交 `b2e8b13`）：那 5 张"记录用"截图也按轮落目录了。**
+    它们原来是写死的 `artifacts/*.png`，跑一次盖一次 —— trace 分轮、截图不分轮，
+    等于现场只留住一半。现在测试从 `tests/support/artifacts.ts` 的 `artifactPath(name)`
+    取路径，配置在**任何 worker 起来之前**用 `pinRunDir()` 把目录写进 `process.env`
+    （worker 是 fork 出来的、继承那一刻的环境；不写的话主进程与 worker 会各算一个
+    时间戳，截图落进另一个同样像"这一轮"的目录）。
+    实测：`20260927-002457-c65959e/` 里 5 张 PNG 与它自己的 `test-results/` 并排。
 - **"Playwright 30 条全绿"是历史记录**（提交 `0719b90` 前后、示例空间还是默认入口时，
   在 `next dev` 上多 worker 跑的），不代表现在，也不代表这一版。它之后有一段更该被记住的
   实测：同一提交串行连跑五轮，失败数在 4~6 之间摆动（见 `docs/08-DEPLOYMENT.md` 第四节）。
