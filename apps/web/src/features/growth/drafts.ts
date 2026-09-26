@@ -134,6 +134,23 @@ export function writeDraft(key: string, patch: Partial<CanvasDraft>): CanvasDraf
 }
 
 /**
+ * 丢掉**全部**草稿。账户换了的时候调它(退出登录、令牌失效、登进另一个账户)。
+ *
+ * 键里带空间 id,而两个账户的空间 id 是不同的 UUID —— 所以正常情况下串不到一起。
+ * 但"没有打开任何空间"这个状态的 id 是**所有账户共用的哨兵值** `'none'`
+ * (见 `provider.tsx` 的 `NO_SPACE`),层级那半也一样(`'goal'`,见 `planProjection`
+ * 的 `emptyGrowth`):两份合起来就是 `none:goal` 这个**谁都会读到**的键。
+ * 于是"A 在没进空间的工作台上写了一半、退出、B 登进来"这一条路上,B 会看到 A 打的字。
+ * 比这更常见的后果是另一个:**没有人清,这个 Map 会一直涨**。
+ *
+ * 所以账户一换就整份清掉。它只活一次页面运行(见文件头),清掉不违反那条边界 ——
+ * 换个人就是新的一次。
+ */
+export function clearDrafts(): void {
+  drafts.clear();
+}
+
+/**
  * 把这份草稿接到一个组件上。
  *
  * 组件重挂载之后 `useState` 会重新执行一次初始化,所以"卸载了再回来"这一步不需要

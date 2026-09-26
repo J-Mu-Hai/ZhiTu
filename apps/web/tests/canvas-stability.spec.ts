@@ -5,6 +5,7 @@ import {
   createWorkspace,
   getPlan,
   registerAccount,
+  renderedNodeIds,
   waitForRealPlan,
 } from './support/session';
 
@@ -41,6 +42,12 @@ import {
  *   否则"回来了"可能只是因为画布压根没走,那是一组自己骗自己的绿;
  * - 视口的 `transform` —— 直接读 React Flow 画出来的那个值,**与产品自己存了什么无关**,
  *   所以"我存了"和"它真的用上了"是两件事,这里验的是后者。
+ *
+ * ## 最后一条是另一个方向:这些东西**也不许活得比账户长**
+ *
+ * 草稿存的是模块级的 Map,它不跟着组件走 —— 上面四条说的都是"卸载不该丢",
+ * 那第五条要问的是反面:登出、换个人登进来之后,它**必须**已经清了。
+ * 机制与为什么这么清写在 `features/auth/provider.tsx` 里那段 effect 上。
  */
 
 test.beforeAll(async ({ request }) => {
@@ -59,6 +66,16 @@ async function canvasMounts(page: Page): Promise<string[]> {
     () => (window as unknown as { __zhituCanvasLifecycle?: string[] }).__zhituCanvasLifecycle ?? [],
   );
 }
+
+/**
+ * 这个数组**封了顶**(`PathView` 里的 `CANVAS_LIFECYCLE_LIMIT`,50 条;理由见那段说明)。
+ *
+ * 封顶对"涨了没有"这类断言没影响,但**会让"没涨"变成恒真**:数到上限之后再怎么重挂载
+ * 长度都不变。所以下面那条"不许重挂载"的用例要先确认没数到上限 —— 数到上限时,
+ * 它就该以"这条断言失去意义"红掉,而不是安静地绿。
+ * (这个数在 `PathView.tsx` 里,改那边要顺手改这里。)
+ */
+const LIFECYCLE_LIMIT = 50;
 
 /** React Flow 此刻的平移与缩放。**从 DOM 里读**,与产品自己存了什么无关。 */
 async function canvasTransform(page: Page): Promise<string> {
@@ -236,6 +253,89 @@ test('一次真实的计划写入之后，画布不重建、视口不被打回�
   const after = await getPlan(page, token, workspaceId);
   expect(after.nodes.map((node) => node.title)).not.toContain(doomed);
 
+  // 先确认没数到上限:数到上限的话,"长度没变"这句话恒真,下面那条断言就没有意义了。
+  expect(mountsBefore.length, '挂载记录已经封顶,下面那条"没有重挂载"会变成恒真的断言').toBeLessThan(
+    LIFECYCLE_LIMIT,
+  );
   expect((await canvasMounts(page)).length, '计划重取把画布整棵子树重建了').toBe(mountsBefore.length);
   expect(await canvasTransform(page), '计划重取把视口打回了初始位置').toBe(panned);
+});
+
+test('换个人登进来，上一个人没提交的输入不跟过来', async ({ page }) => {
+  // 两个账户:甲是现在这个浏览器上登录的,乙只在后端存在(`signIn: false`)。
+  // 两个人都要有一个空间 —— 理由见下面那段"为什么非得站在还没到的画布上"。
+  const jia = await registerAccount(page, 'draft-iso-a');
+  const jiaSpace = await createWorkspace(page, jia.token, '草稿隔离甲空间', '甲的空间');
+  const yi = await registerAccount(page, 'draft-iso-b', { signIn: false });
+  await createWorkspace(page, yi.token, '草稿隔离乙空间', '乙的空间');
+  const marker = '甲写了一半的东西';
+
+  /**
+   * 把"读空间详情"这一个请求**挂住不答**。
+   *
+   * 于是 provider 停在 `kind: 'none'` 上:画布是那棵只有根目标的占位树,而
+   * **"新建节点"是可点的** —— `canCreate` 只跟 `planLoading` 有关,占位空间没有
+   * 计划要读,所以它是 true。这正是用户点"进入工作台"之后那几百毫秒的样子
+   * (空间详情还在路上),这里只是把这扇窗拉长到能打字。**不是造一个走不到的状态。**
+   *
+   * 为什么非要停在这儿:草稿的键是 `空间:层级`,真实空间那一半是各自的 UUID,
+   * 两个账户串不到一起;唯一**所有账户共用**的是"还没进空间"那一份 ——
+   * `'none'`(见 `provider.tsx` 的 `NO_SPACE`)配层级哨兵 `'goal'`,也就是
+   * `none:goal`。不站到这个键上,这条测试就没有能失败的地方,那样的绿是自己骗自己。
+   */
+  const detailRequest = /\/api\/workspaces\/[0-9a-fA-F-]{36}$/;
+  const holdSpaceLookup = () => page.route(detailRequest, () => new Promise<void>(() => {}));
+
+  // 先把会话立起来(这一步是整页加载,那一刻草稿还是空的 —— 换账户之前
+  // 唯一允许的刷新就是这一次)。
+  await page.goto('/spaces');
+  await expect(page.locator('.space-card', { hasText: '草稿隔离甲空间' })).toBeVisible();
+
+  await holdSpaceLookup();
+  await page.locator('.space-card', { hasText: '草稿隔离甲空间' }).getByRole('button', { name: '进入工作台' }).click();
+  // 等画布真的画出来。用节点数而不是工具栏那个按钮:下面乙的那一处会用同一个
+  // 按钮名,而到时候多出来的第二个正是要抓的东西 —— 闸门不能建在待测的东西上。
+  await expect(page.locator('.react-flow__node'), '画布没渲染出来').toHaveCount(1);
+  // 前提:这里真的是一棵占位树(根还是哨兵值 `'goal'`),不是"甲那个空间"的画布。
+  // 少了这一条,断言挂在哪个键上就没人知道了 —— 而这条测试的全部意义就在那个键上。
+  expect(await renderedNodeIds(page), '画布不是占位树,这条测试的前提没成立').toEqual(['goal']);
+
+  await page.getByRole('button', { name: '新建节点' }).click();
+  await titleField(page).fill(marker);
+  await expect(titleField(page)).toHaveValue(marker);
+
+  // 从这里到"乙看到画布"**全程软导航,一次整页刷新都没有**:草稿活在模块里,
+  // 整页刷新会把那个 Map 一起清掉 —— 那样这条测试验的就成了"刷新清空了它",
+  // 跟换不换账户没有关系。
+  //
+  // 弹窗是模态的,页面上的按钮点不动(见文件头),所以先用浏览器自己的后退离开
+  // 工作台 —— 它不受模态限制,而且草稿按设计不跟着走。
+  // (这一步也必须走界面上的软导航:上一次写成 `page.goto` 时,浏览器用
+  // 往返缓存把**当时还没登录**的那个 /login 文档原样端了回来,于是测试卡在
+  // 登录页 —— 失败长得像"登出坏了",其实是历史里挑错了入口。)
+  await page.goBack();
+  await expect(page).toHaveURL(/\/spaces$/);
+  await page.locator('.top-profile').click();
+  await expect(page).toHaveURL(/\/me$/);
+  await page.getByRole('button', { name: '退出当前账户' }).click();
+
+  await expect(page.getByLabel('手机号 / 邮箱')).toBeVisible();
+  await page.getByLabel('手机号 / 邮箱').fill(yi.email);
+  await page.getByLabel('密码').fill(yi.password);
+  await page.getByRole('button', { name: '登录知途' }).click();
+  await expect(page).toHaveURL(/\/spaces$/);
+
+  // 乙也站到同一个 `none:goal` 上:上面那条挂住规则**一直有效**,所以她的空间
+  // 详情同样到不了。(代价是空间页上那几个统计数字会停在"—"——它读的也是这个接口。
+  // 卡片本身来自列表接口,不受影响。)
+
+  await page.locator('.space-card', { hasText: '草稿隔离乙空间' }).getByRole('button', { name: '进入工作台' }).click();
+  await expect(page.locator('.react-flow__node'), '画布没渲染出来').toHaveCount(1);
+  expect(await renderedNodeIds(page), '画布不是占位树,这条测试的前提没成立').toEqual(['goal']);
+
+  // 甲的东西一样都不许出现。**先看弹窗**:草稿里记着 `dialog: 'node'`,没清掉的话
+  // 它会自己开着站在乙面前 —— 那是用户最先看到的东西,也是这条测试变红时该报的那一句。
+  await expect(page.getByRole('dialog'), '换账户之后,甲那边开着的新建弹窗跟着过来了').toHaveCount(0);
+  await page.getByRole('button', { name: '新建节点' }).click();
+  await expect(titleField(page), '乙的新建弹窗里带着甲打的字').toHaveValue('');
 });

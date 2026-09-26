@@ -200,6 +200,14 @@ function RelationEdge(props: EdgeProps) {
 
 const edgeTypes = { branch: BranchEdge, relation: RelationEdge };
 
+/**
+ * `__zhituCanvasLifecycle` 最多留多少条。理由见 `Canvas` 里那个 effect 的说明。
+ *
+ * 它是**给测试看的**,所以这个数只对测试有意义;`canvas-stability.spec.ts` 里那条
+ * "不许重挂载"的用例会检查"没数到上限"(数到上限那条断言就恒真了)。
+ * 改这里的话,顺手看一眼那个用例里写着的同一个数。
+ */
+const CANVAS_LIFECYCLE_LIMIT = 50;
 function Canvas() {
   const {
     growth, selectedId, select, positions, setPositions, spaceId, workspaceId, canvasKey, viewports, setScopeViewport,
@@ -219,10 +227,24 @@ function Canvas() {
    * 会分不清是选择器写错了、还是真的重挂了。
    *
    * 记在 `window` 上而不是组件里:**重挂载会把组件里的一切清掉,包括用来记数的 ref。**
+   *
+   * ## 它**封顶**(2026-09-27 补)
+   *
+   * 这是写在全局对象上的一根数组,而**正常使用里每切一次视图就会往上加一条** ——
+   * 一个整天开着工作台、来回切视图的人会得到一个一直涨、谁也不清的数组。
+   * 留最后 `CANVAS_LIFECYCLE_LIMIT` 条就够测试用了:那些断言问的是"这中间**又**挂了没有",
+   * 不是"一共挂过几次"。上限比任何一条用例的过程大一个量级,而
+   * `canvas-stability.spec.ts` 里"不许重挂载"那条会另看一眼有没有数到上限(数到上限,
+   * 它就成了恒真的断言)。**要改成"只在测试模式记录"的话,得让测试能提前告诉这个页面
+   * 一声** —— 那要过 `localStorage` 或构建期环境变量,会让"跑开发模式"和"跑验收"
+   * 两套路径不一致,收益只有一点点内存,不值当。
    */
   useEffect(() => {
     const holder = window as unknown as { __zhituCanvasLifecycle?: string[] };
-    holder.__zhituCanvasLifecycle = [...(holder.__zhituCanvasLifecycle ?? []), canvasKey];
+    // 就地 push,不每次复制一份新数组:切视图很频繁,复制是 O(n²)。
+    const log = holder.__zhituCanvasLifecycle ?? (holder.__zhituCanvasLifecycle = []);
+    log.push(canvasKey);
+    if (log.length > CANVAS_LIFECYCLE_LIMIT) log.splice(0, log.length - CANVAS_LIFECYCLE_LIMIT);
     // `canvasKey` 故意不进依赖数组:进了的话,同一个组件实例里换层级也会记一笔,
     // "挂载过几次"这个问题就被答错了。
     // eslint-disable-next-line react-hooks/exhaustive-deps

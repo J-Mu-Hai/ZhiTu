@@ -3,6 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ApiError, clearToken, getToken, setToken, setUnauthorizedHandler } from '@/lib/api';
 import * as backend from '@/lib/backend';
+import { clearDrafts } from '@/features/growth/drafts';
 import { toAccountProfile, type AccountProfile, type EditableProfile, type RegisterAccountInput } from './types';
 
 /**
@@ -103,6 +104,42 @@ function useAuthState() {
   useEffect(() => {
     void restore();
   }, [restore]);
+
+  /**
+   * 换个人就把画布上**没提交的输入**整份清掉(退出登录、令牌失效、登进另一个账户)。
+   *
+   * 那些输入住在 `features/growth/drafts.ts` 的模块级 Map 里,而模块级状态**不跟着
+   * 组件走** —— 退出登录只是把 `user` 置空,那一年里打的字谁也不认识它该走了。
+   * 正常情况下键里的空间 id 是各自的 UUID,串不到一起;但"没有打开任何空间"这件事
+   * 的 id 是**所有账户共用的哨兵值**(`NO_SPACE.id === 'none'`,层级那半是 `'goal'`),
+   * 于是 `none:goal` 是 A 和 B 都会读到的那一个键。比串号更平常的后果是没人清、一直涨。
+   *
+   * ## 清在哪些迁移上,以及为什么多清的那几次不要紧
+   *
+   * 记的是**上一个身份**,`undefined` 表示"还没记过"(这辈子第一次跑),`null` 是"已登出"。
+   * 两个已记过的身份之间**只要不一样就清**,所以真正生效的有三种迁移:
+   *
+   * - 登出(`A` → `null`):这是主落点。另一个账户要接管这个屏幕,只能从登出这里过来,
+   *   所以这一清就堵死了串号;
+   * - 登入(`null` → `B`):与上一句重复,但它是**兜底** —— `user` 被置空的路不止登出
+   *   一条(401 回调里也有一处),那里不经过 `logout()`;
+   * - 恢复会话(`null` → 真实 id):这一次清**什么也没清掉**。页面刚打开,
+   *   模块级那个 Map 本来就是空的(它只活一次页面运行,见 `drafts.ts` 的文件头)。
+   *
+   * 反过来,`undefined` 那道判断是为了"第一次跑"这一帧:那一刻没有上一个身份可比,
+   * 拿它去比就会凭空多清一次。
+   *
+   * 依赖只写 `user?.id`:同一个账户改个昵称、传个头像都会换掉 `user` 对象,
+   * 而那不是换人 —— 草稿得留着。
+   */
+  const lastAccountId = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    const accountId = user?.id ?? null;
+    const previous = lastAccountId.current;
+    lastAccountId.current = accountId;
+    if (previous === undefined || previous === accountId) return;
+    clearDrafts();
+  }, [user?.id]);
 
   const login = useCallback(async (email: string, password: string) => {
     const result = await backend.login(email, password);

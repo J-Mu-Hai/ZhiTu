@@ -61,11 +61,15 @@ export async function assertBackendRunning(request: APIRequestContext): Promise<
  *
  * 邮箱带时间戳:测试会往开发库 `data/zhitu_dev.db` 里真的写一行用户,用一个固定
  * 邮箱的话第二次跑就是"这个邮箱已经注册过了"。
+ *
+ * `signIn: false` 只建账户、**不碰这个浏览器** —— 给"同一个浏览器里换账户"那类
+ * 测试备一个人:那边要的是一个真实存在于后端的第二个账户,而这台机器上现在
+ * 登录的必须还是第一个人。写令牌和注册本身是两件事,只是以前默认捆在一起。
  */
 export async function registerAccount(
   page: Page,
   prefix = 'e2e',
-  options: { navigate?: boolean } = {},
+  options: { navigate?: boolean; signIn?: boolean } = {},
 ): Promise<TestAccount> {
   const email = `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@zhitu.test`;
   const password = 'playwright-password';
@@ -74,6 +78,8 @@ export async function registerAccount(
   });
   if (!response.ok()) throw new Error(`注册失败:${response.status()} ${await response.text()}`);
   const body = (await response.json()) as { token: string; user: { id: string } };
+  const account = { token: body.token, userId: body.user.id, email, password };
+  if (options.signIn === false) return account;
   // localStorage 是**按来源**分家的:不在应用的来源上就写不进去。新开的页面还停在
   // `about:blank`,所以默认先打开 `/login` 再写令牌。浏览器已经在应用里时(测试中途
   // 换账户)那一次加载是白跑的,传 `navigate:false` 省掉它。
@@ -82,7 +88,7 @@ export async function registerAccount(
     ([key, value]) => localStorage.setItem(key, value),
     [TOKEN_KEY, body.token] as const,
   );
-  return { token: body.token, userId: body.user.id, email, password };
+  return account;
 }
 
 /**
