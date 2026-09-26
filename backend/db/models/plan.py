@@ -105,6 +105,15 @@ class PlanNode(UuidPk, TimestampMixin, Base):
     completed_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
     # 软删除。历史版本里的快照仍要能引用到它。
     deleted_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
+    # "这一次删除不可恢复"的那一笔。**归档与彻底删除都打 `deleted_at`**,两者的区别
+    # 只在这里:归档留空(可恢复),彻底删除打上(恢复入口据此拒绝)。
+    #
+    # 为什么不是再加一个布尔列:时间戳顺手回答了"什么时候彻底删的",而布尔列会在
+    # 某次排查里被发现"没有时间,只剩一个 true"。
+    #
+    # 为什么彻底删除也要留行:`plan_revisions.snapshot` 里引用着这些 id,物理删除会让
+    # 历史版本指向空气。"彻底"指的是不可恢复,不是从历史里抹掉。
+    purged_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
 
     workspace: Mapped[Workspace] = relationship()  # noqa: F821
     parent: Mapped[PlanNode | None] = relationship(

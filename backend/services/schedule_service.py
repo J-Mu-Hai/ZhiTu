@@ -25,7 +25,7 @@
 `user_capacity_profiles` 是这件事的正典位置,但它**目前没有任何代码写它**(注册时刻意
 不建,理由见 `auth_service`)。所以真正生效的数字来自用户自己说过的那一句,记在
 `planning_briefs.weekly_available_minutes` 上 —— 那一列在用户亲口说出一个数字之前恒为
-NULL,这正是 `brief_service` 存在的理由。三档优先级与多空间合并规则写在 `_capacity_profile`。
+NULL,这正是 `brief_service` 存在的理由。三档优先级与多空间合并规则写在 `capacity_profile`。
 
 ## `apply` 不写 `plan_revisions`,也不推版本号
 
@@ -199,7 +199,7 @@ async def load_schedule(db: AsyncSession, ctx: WorkspaceContext) -> LoadedSchedu
             request=ScheduleRequest(
                 today=today,
                 horizon_days=DEFAULT_HORIZON_DAYS,
-                profile=await _capacity_profile(db, user_id, ()),
+                profile=await capacity_profile(db, user_id, ()),
                 plan_revision=ctx.workspace.current_revision_version,
             ),
             workspace_ids=(),
@@ -231,11 +231,17 @@ async def load_schedule(db: AsyncSession, ctx: WorkspaceContext) -> LoadedSchedu
         if row.predecessor_id in live_ids and row.successor_id in live_ids
     ]
 
-    sessions = list(
-        await db.scalars(
+    sessions = [
+        row
+        for row in await db.scalars(
             select(ScheduledSession).where(ScheduledSession.workspace_id.in_(workspace_ids))
         )
-    )
+        # 挂在**归档节点**上的场次不算数。与上面依赖那条过滤同一个理由,只是后果更安静:
+        # 依赖不过滤会让 `simulate` 抛错(看得见),场次不过滤只是让归档掉的那件事继续
+        # 占着这个人的时间池 —— 用户看到的是"我明明归档了,却还是排不下",
+        # 而屏幕上没有任何一处说得出那几分钟被谁占着。
+        if row.node_id in live_ids
+    ]
     executions = list(
         await db.scalars(
             select(ExecutionRecord).where(ExecutionRecord.workspace_id.in_(workspace_ids))
@@ -279,7 +285,7 @@ async def load_schedule(db: AsyncSession, ctx: WorkspaceContext) -> LoadedSchedu
         request=ScheduleRequest(
             today=today,
             horizon_days=horizon_days,
-            profile=await _capacity_profile(db, user_id, workspace_ids),
+            profile=await capacity_profile(db, user_id, workspace_ids),
             nodes=tuple(
                 # `parents` 里的是"有孩子的那些节点的 id",所以查的是 node.id。
                 _schedule_node(node, has_children=node.id in parents)
@@ -316,7 +322,7 @@ async def load_schedule(db: AsyncSession, ctx: WorkspaceContext) -> LoadedSchedu
     )
 
 
-async def _capacity_profile(
+async def capacity_profile(
     db: AsyncSession, user_id: uuid.UUID, workspace_ids: tuple[uuid.UUID, ...]
 ) -> CapacityProfile:
     """这个人的时间预算。三档,按优先级:
@@ -329,6 +335,11 @@ async def _capacity_profile(
 
     回落到默认值时会记一条日志。用户看到一份"每周 8 小时"的计划而他从没说过 8 小时,
     日志是唯一能解释这件事的地方 —— 界面上看不出任何区别。
+
+    **公开(没有下划线)是给恢复报告用的**(`node_service.restore_node` 要按同一套
+    优先级判断"恢复回来的那几场有没有挤爆某一天")。那边自己再写一遍三档回落的话,
+    两处对"这个人一天到底有多少分钟"给出不同答案 —— 而用户看到的是"排期说排得下、
+    恢复报告说超了"。
     """
     row = await db.scalar(
         select(UserCapacityProfile).where(UserCapacityProfile.user_id == user_id)

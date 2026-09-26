@@ -152,3 +152,42 @@
 @media (max-width: 600px) {
   .path-canvas .growth-node { max-width: 270px; }
 }
+
+/* ---------------------------------------------------------------------------
+   归档与恢复(步骤 3C)
+   ---------------------------------------------------------------------------
+   这两个弹窗里全是**数字**,而它们的用处就是让用户在按下去之前看清代价 ——
+   所以排版的目标是"一眼能读完",不是好看:
+
+   - `.archive-impact` 是一个短列表(后代 / 边 / 排期),用项目符号排开;
+   - `.archive-list` 是归档列表,每一行自己带一个"恢复"按钮;
+   - 被挡住的那些行整体压暗一档,并且**照样列出来**(藏起来会让用户以为它被删了)。
+
+   配色沿用暖白这一套(`.demo-dialog` 已经给了底色),不引入新色 —— 见
+   `dark-theme.css` 最后那一层以及 `tests/dark-theme.spec.ts` 扫整页的那条断言。
+--------------------------------------------------------------------------- */
+.archive-panel { display: flex; flex-direction: column; gap: 10px; }
+.archive-hint { margin: 0; color: #5d7a92; font-size: 12px; line-height: 1.7; }
+.archive-impact { margin: 0; padding-left: 18px; color: #3d5a75; font-size: 12px; line-height: 1.9; }
+.archive-impact b { color: #24506f; }
+.archive-warn { color: #a85341; }
+.archive-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.archive-note {
+  display: flex; align-items: flex-start; gap: 8px; margin: 0;
+  padding: 8px 10px; border: 1px solid #cfe0d6; border-left-width: 2px; border-radius: 0 4px 4px 0;
+  background: #f2f8f4; color: #3f6b52; font-size: 12px; line-height: 1.7;
+}
+.archive-dismiss { flex-shrink: 0; background: #fff; color: #3f6b52; border-color: #cfe0d6; }
+.archive-list { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; max-height: 46vh; overflow-y: auto; }
+.archive-list li {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 9px 11px; border: 1px solid #d9e5e8; border-radius: 6px; background: #fffefa;
+}
+/* 被挡住的那些**不隐藏**,只是压暗:它们确实还在归档里。 */
+.archive-list li.is-blocked { background: #f6f4ee; border-style: dashed; }
+.archive-row-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.archive-row-head strong { color: #2f4b64; font-size: 13px; }
+.archive-row-head small { color: #7b8fa1; font-size: 11px; }
+.archive-row-meta { margin: 0; color: #6f8497; font-size: 11px; }
+.archive-blocked { margin: 0; color: #8a7a63; font-size: 11px; line-height: 1.6; }
+.archive-list li > button { align-self: flex-start; }

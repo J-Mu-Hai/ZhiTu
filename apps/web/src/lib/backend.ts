@@ -391,6 +391,13 @@ export interface NodeEditResult {
   revisionVersion: number;
   deletedCount: number;
   removedDependencies: number;
+  /**
+   * 这一次删除**能不能拿回来**。
+   *
+   * 默认的 `DELETE /nodes/{id}` 是**归档**(可恢复),`?mode=delete` 才是彻底删除。
+   * 界面必须按它说话:对一次彻底删除显示"删掉了,可以恢复"是一句错误的承诺。
+   */
+  restorable: boolean;
 }
 
 export interface NodePatch {
@@ -437,10 +444,127 @@ export function updateNode(
   });
 }
 
-export function deleteNode(workspaceId: string, nodeId: string): Promise<NodeEditResult> {
-  return apiFetch<NodeEditResult>(`/api/workspaces/${workspaceId}/nodes/${nodeId}`, {
-    method: 'DELETE',
+/**
+ * 删一个节点**及其整棵子树**。默认是**归档**。
+ *
+ * ## 两个模式的区别只有一句话:以后能不能拿回来
+ *
+ * - `archive`(默认):用户点垃圾桶的那一下。边的行一行不动,`restoreNode` 能把这一支
+ *   原样拿回来(连依赖、关系、排期一起)。
+ * - `delete`:彻底删除,顺手物理删掉挂在上面的边,并且**不再接受恢复**。
+ *
+ * 名字刻意不叫 `softDelete` / `hardDelete`:两者在库里都是软删除(行都留着),
+ * 区别只在 `purged_at` 那一列(见 `backend/services/node_service.py` 的那张表)。
+ *
+ * ## `removedDependencies` 在归档时恒为 0,而那不代表"什么都没删"
+ *
+ * 归档不动边,所以这个数字为 0 是**对的** —— 界面不要拿它当作"删干净了"的证据,
+ * 判断删干净没有要看 `/plan` 里那个节点还在不在。
+ */
+export function deleteNode(
+  workspaceId: string,
+  nodeId: string,
+  mode: 'archive' | 'delete' = 'archive',
+): Promise<NodeEditResult> {
+  return apiFetch<NodeEditResult>(
+    `/api/workspaces/${workspaceId}/nodes/${nodeId}?mode=${mode}`,
+    { method: 'DELETE' },
+  );
+}
+
+/**
+ * 归档(或彻底删除)**之前**,这一下会带走什么。
+ *
+ * 由后端算,不由前端拿本地那份计划推:手里那份可能是几分钟前的,而用户在确认框里
+ * 看到的数字和实际发生的事对不上,比不给数字更糟 —— 他会照着那个数字做决定。
+ */
+export interface ArchiveImpact {
+  nodeId: string;
+  title: string;
+  /** 会一起被收起来的后代数(不含自己)。 */
+  descendants: number;
+  /** 会从画布上消失的 `related_to` / `influences` 关系条数。 */
+  relations: number;
+  /** 会从画布上消失的「前置 → 后续」依赖条数。 */
+  dependencies: number;
+  /** 挂在这一支上的排期场次与分钟数。归档后它们不再出现在计划里,恢复时会原样回来。 */
+  sessions: number;
+  sessionMinutes: number;
+  /** 其中日期已过、还标着"待做"的那几场 —— 恢复之后需要用户自己处理。 */
+  overdueSessions: number;
+}
+
+export function getArchiveImpact(workspaceId: string, nodeId: string): Promise<ArchiveImpact> {
+  return apiFetch<ArchiveImpact>(
+    `/api/workspaces/${workspaceId}/nodes/${nodeId}/archive-impact`,
+  );
+}
+
+/** 恢复之后超了每日上限的那一天。 */
+export interface OverbookedDay {
+  day: string;
+  plannedMinutes: number;
+  dailyCap: number;
+  overBy: number;
+}
+
+/**
+ * 一次恢复的结果。**排期那几个数字不是锦上添花。**
+ *
+ * 恢复会把归档期间冻结的场次一次性放回日历:它们可能已经过期,也可能和归档之后
+ * 新排的挤在同一天。界面必须把"回来几场、过期几场、哪几天超了"说出来 ——
+ * 静默恢复等于替用户交了一份他没看过的日程。
+ */
+export interface RestoreResult {
+  node: PlanNodePayload;
+  revisionVersion: number;
+  restoredCount: number;
+  restoredSessions: number;
+  restoredMinutes: number;
+  overdueSessions: number;
+  overbookedDays: OverbookedDay[];
+  /**
+   * 跟着回来的关系与依赖条数。它们**没有被归档删掉过**(归档一行边都不动),
+   * 所以这里说的是"重新可见",不是"重新创建" —— 界面用它解释"为什么线也回来了"。
+   */
+  relationsVisible: number;
+}
+
+/**
+ * 把一个归档的节点**连同当时一起被归档的那一支**恢复回来。
+ *
+ * 三种失败各自有明确的话,界面要分开说(用户能做的事不一样):
+ * `NODE_PURGED`(被彻底删除过,拿不回来了)、`PARENT_ARCHIVED`(先把上层恢复出来)、
+ * `DEPENDENCY_CYCLE`(恢复之后会出现环,所以整体没有恢复)。
+ */
+export function restoreNode(workspaceId: string, nodeId: string): Promise<RestoreResult> {
+  return apiFetch<RestoreResult>(`/api/workspaces/${workspaceId}/nodes/${nodeId}/restore`, {
+    method: 'POST',
   });
+}
+
+/** 归档列表里的一行。 */
+export interface ArchivedNode {
+  node: PlanNodePayload;
+  archivedAt: string;
+  /** 这一次归档带走的子孙数。 */
+  descendants: number;
+  sessions: number;
+  /** 能不能恢复。`false` 时原因在 `blockedReason` 里。 */
+  restorable: boolean;
+  /** `PARENT_ARCHIVED`(先恢复上层)或 `PARENT_PURGED`(上层被彻底删除了,回不来)。 */
+  blockedReason: string | null;
+}
+
+/**
+ * 这个空间里归档过什么,新的在前。
+ *
+ * **只列每一次归档的根** —— 同一批被带走的子孙不单独出现(点那一行的"恢复"会把它们
+ * 一起带回来)。父节点在另一次归档里的那些仍然列出来,但 `restorable` 是 `false`,
+ * 界面据此把按钮置灰并写明原因,而不是让用户点一下撞一句错误。
+ */
+export function listArchive(workspaceId: string): Promise<ArchivedNode[]> {
+  return apiFetch<ArchivedNode[]>(`/api/workspaces/${workspaceId}/archive`);
 }
 
 export function addDependency(

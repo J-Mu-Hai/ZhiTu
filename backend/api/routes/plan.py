@@ -29,16 +29,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.dependencies.workspace import get_workspace_context
 from backend.contracts.plan import (
+    ArchiveImpactPayload,
+    ArchivedNodePayload,
     CreateDependencyRequest,
     CreateNodeRequest,
     CreateRelationRequest,
     DependencyPayload,
     LayoutPayload,
     NodeEditResponse,
+    OverbookedDayPayload,
     PlanNodePayload,
     PlanPayload,
     PutLayoutRequest,
     RelationPayload,
+    RestoreResponse,
     UpdateNodeRequest,
     UpdateRelationRequest,
 )
@@ -130,16 +134,127 @@ async def update_node(
 )
 async def delete_node(
     node_id: uuid.UUID,
+    mode: str = Query(
+        default=node_service.ARCHIVE_MODE,
+        pattern="^(archive|delete)$",
+        description="archive(默认,可恢复)或 delete(彻底删除,不可恢复)",
+    ),
     ctx: WorkspaceContext = Depends(get_workspace_context),
     db: AsyncSession = Depends(get_db),
 ) -> NodeEditResponse:
-    """软删除一个节点**及其整棵子树**。根目标删不掉(409)。
+    """删掉一个节点**及其整棵子树**。根目标删不掉(409)。
+
+    **默认是归档**(`mode=archive`):边的行一行不动,`POST /nodes/{id}/restore` 能把
+    这一支原样拿回来。`mode=delete` 才是彻底删除 —— 它顺手物理删掉挂在上面的边,
+    并且不再接受恢复。两者的区别在响应里的 `restorable` 上能直接读出来。
 
     `deletedCount` 会大于 1 —— 返回它是因为用户需要知道"我删的是这一条,
-    还是它下面那一串也一起没了"。界面上要据此说清楚。
+    还是它下面那一串也一起没了"。界面上要据此说清楚;而"这一下会带走什么"要在
+    **点之前**从 `GET /nodes/{id}/archive-impact` 拿到。
     """
-    result = await node_service.delete_node(db, ctx, node_id)
+    result = await node_service.delete_node(db, ctx, node_id, mode=mode)
     return _edit_response(result)
+
+
+@router.get(
+    "/{workspace_id}/nodes/{node_id}/archive-impact",
+    response_model=ArchiveImpactPayload,
+    summary="归档前的影响范围",
+)
+async def read_archive_impact(
+    node_id: uuid.UUID,
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+) -> ArchiveImpactPayload:
+    """这一下会带走什么:后代、关系、依赖、场次。
+
+    **只读,而且不加锁。** 它是给"你确定吗"那个对话框用的,而为了画一个对话框去抢
+    工作区锁,会让"两个人在同一秒里删不同的东西"变成其中一个看到一句莫名其妙的等待
+    超时。代价是这份数字可能比真正执行的那一刻早几秒 —— 界面上的措辞因此是
+    "会带走",而不是"已经带走"。
+    """
+    impact = await node_service.archive_impact(db, ctx, node_id)
+    return ArchiveImpactPayload(
+        node_id=impact.node_id,
+        title=impact.title,
+        descendants=impact.descendants,
+        relations=impact.relations,
+        dependencies=impact.dependencies,
+        sessions=impact.sessions,
+        session_minutes=impact.session_minutes,
+        overdue_sessions=impact.overdue_sessions,
+    )
+
+
+@router.post(
+    "/{workspace_id}/nodes/{node_id}/restore",
+    response_model=RestoreResponse,
+    summary="恢复归档的节点",
+)
+async def restore_node(
+    node_id: uuid.UUID,
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+) -> RestoreResponse:
+    """把归档的节点**连同当时一起被归档的那一支**恢复回来。
+
+    三种失败各自有明确的话,因为用户能做的事不一样:
+
+    - `NODE_PURGED`(409):它是被彻底删除的,**没有**拿回来的办法。
+    - `PARENT_ARCHIVED`(409):上层还在归档里,先恢复上层。
+    - `DEPENDENCY_CYCLE`(409):恢复之后会出现环,所以整体没有恢复(什么都没变)。
+
+    返回里带着排期报告(回来几场、过期几场、哪几天超了上限)。**恢复不重排、不丢弃
+    任何场次** —— 静默重排等于替用户改计划。
+    """
+    result = await node_service.restore_node(db, ctx, node_id)
+    return RestoreResponse(
+        node=PlanNodePayload.model_validate(plan_service.node_to_dict(result.node)),
+        revision_version=result.revision_version,
+        restored_count=result.restored_count,
+        restored_sessions=result.restored_sessions,
+        restored_minutes=result.restored_minutes,
+        overdue_sessions=result.overdue_sessions,
+        overbooked_days=[
+            OverbookedDayPayload(
+                day=day.day,
+                planned_minutes=day.planned_minutes,
+                daily_cap=day.daily_cap,
+                over_by=day.over_by,
+            )
+            for day in result.overbooked_days
+        ],
+        relations_visible=result.relations_visible,
+    )
+
+
+@router.get(
+    "/{workspace_id}/archive",
+    response_model=list[ArchivedNodePayload],
+    summary="归档列表",
+)
+async def list_archive(
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+) -> list[ArchivedNodePayload]:
+    """这个空间里归档过什么。新的在前。
+
+    只列**每一次归档的根**:同一批被带走的子孙不单独出现,点那一行的"恢复"会把它们
+    一起带回来。父节点在另一次归档里的那些仍然列出来,但标成 `restorable=false`
+    并给出原因 —— 它们确实还在归档里,藏起来会让用户以为它被删了。
+    """
+    entries = await node_service.list_archive(db, ctx)
+    return [
+        ArchivedNodePayload(
+            node=PlanNodePayload.model_validate(plan_service.node_to_dict(entry.node)),
+            archived_at=entry.archived_at,
+            descendants=entry.descendants,
+            sessions=entry.sessions,
+            restorable=entry.restorable,
+            blocked_reason=entry.blocked_reason,
+        )
+        for entry in entries
+    ]
 
 
 @router.post(
@@ -293,6 +408,10 @@ def _edit_response(result: node_service.EditResult) -> NodeEditResponse:
         revision_version=result.revision_version,
         deleted_count=result.deleted_count,
         removed_dependencies=result.removed_dependencies,
+        # 漏掉这一个字段的后果是**默认值静默生效**:`restorable` 的默认是 `True`,
+        # 于是 `?mode=delete`(彻底删除)也会在响应里报"可以恢复",而客户端据此
+        # 显示的是一句错误的承诺。它由 `test_archive_restore.py` 钉住。
+        restorable=result.restorable,
     )
 
 

@@ -241,6 +241,33 @@ class RootNodeProtected(DomainError):
     http_status = 409
 
 
+class NodePurged(DomainError):
+    """这个节点是被**彻底删除**的,恢复不了。
+
+    与"上层还在归档里"(`ParentArchived`)分开成两个错误,因为用户能做的事不一样:
+    这一条没有别的办法(要拿回来只能重新建);那一条可以先把上层恢复出来再试。
+    合成一个"恢复失败"会让界面只能给一句没法照做的提示。
+    """
+
+    code = "NODE_PURGED"
+    http_status = 409
+
+
+class ParentArchived(DomainError):
+    """要恢复的这个节点,它的父节点还在归档里 —— 先恢复上面那一支。
+
+    为什么这不是"顺手把父亲也恢复了":用户点的是这一行的"恢复",父亲的归档是另一次
+    操作、可能带走了另一片东西。替他做决定的结果是他以为只回来了一项,
+    实际上回来了一片 —— 而那一片里可能有他当时特意归档掉的东西。
+
+    不拒绝的后果更糟:一个活节点挂在归档节点下面,在**任何界面上都不可达**
+    (父节点不出现,子节点就没人能导航到),它真的存在却永远找不到入口。
+    """
+
+    code = "PARENT_ARCHIVED"
+    http_status = 409
+
+
 class DependencyRejected(DomainError):
     """手工加一条依赖,但这条边会让计划出现环。
 

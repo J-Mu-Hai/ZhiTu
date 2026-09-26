@@ -308,10 +308,93 @@ class NodeEditResponse(ApiModel):
     revision_version: int
     #: 只对删除有意义:这次一共删掉了几个节点(含子树)、几条依赖。
     deleted_count: int = 0
+    #: **只有彻底删除才会大于 0。** 归档一行边都不动(`?mode=archive`),所以这个数字
+    #: 为 0 不代表"什么都没删"。客户端不要拿它当"删干净了"的证据。
     removed_dependencies: int = 0
+    #: 这一次删除能不能用 `POST /nodes/{id}/restore` 拿回来。
+    restorable: bool = True
+
+
+class ArchiveImpactPayload(ApiModel):
+    """归档/彻底删除**之前**的影响范围。给确认框用的那一份数字。
+
+    由后端算而不是前端拿本地计划推:前端手里那份可能是几分钟前的。用户在确认框里
+    看到的数字和实际发生的事对不上,比不给数字更糟 —— 他会照着那个数字做决定。
+    """
+
+    node_id: uuid.UUID
+    title: str
+    #: 会一起被归档的后代节点数(不含自己)。
+    descendants: int
+    #: 会从画布上消失的 `related_to` / `influences` 关系条数。
+    relations: int
+    #: 会从画布上消失的「前置 → 后续」依赖条数。
+    dependencies: int
+    #: 挂在这一支上的排期场次条数与分钟数。归档之后它们不再出现在计划里
+    #: (恢复时会原样回来)。
+    sessions: int
+    session_minutes: int
+    #: 其中已经过了日期、还标着"待做"的那几场 —— 恢复之后它们需要用户自己处理。
+    overdue_sessions: int
+
+
+class OverbookedDayPayload(ApiModel):
+    """恢复之后,哪一天超了每日上限。"""
+
+    day: date
+    planned_minutes: int
+    daily_cap: int
+    over_by: int
+
+
+class RestoreResponse(ApiModel):
+    """一次恢复的结果。
+
+    **排期那几个数字不是锦上添花。** 恢复会把归档期间冻结的场次一次性放回日历,
+    它们可能已经过期、也可能和归档之后新排的挤在同一天。这份报告就是"不许静默恢复"
+    的那一半:界面必须把"回来几场、过期几场、哪几天超了"说出来。
+    """
+
+    node: PlanNodePayload
+    revision_version: int
+    #: 一共恢复回来几个节点(含子树)。
+    restored_count: int
+    restored_sessions: int
+    restored_minutes: int
+    #: 其中日期已过、状态仍是"待做/进行中"的场次。
+    overdue_sessions: int
+    #: 恢复之后超了每日上限的那些天。**这一栏比的是每日上限,没有重跑可用时段** ——
+    #: 用户那天本来就没有可用时段时会少报(见 `node_service._restore_schedule_report`)。
+    overbooked_days: list[OverbookedDayPayload] = []
+    #: 跟着一起回来的关系与依赖条数。它们**没有**被归档删掉过,所以这里说的是
+    #: "重新可见",不是"重新创建"。给界面用来解释"为什么边也回来了"。
+    relations_visible: int = 0
+
+
+class ArchivedNodePayload(ApiModel):
+    """归档列表里的一行。
+
+    列表里只出现**一次归档的根**:同一批被带走的子孙不单独列(点那一行的"恢复"
+    就会把它们一起带回来)。父节点在**另一次**归档里的时候,它仍然单独列出来 ——
+    那时点它会得到一句"先恢复上层",而不是从列表里凭空消失。
+    """
+
+    node: PlanNodePayload
+    archived_at: datetime
+    #: 这一次归档带走的子孙数。
+    descendants: int
+    #: 跟着一起收起来的场次数。
+    sessions: int
+    #: 能不能恢复。`false` 时原因在 `blocked_reason` 里 —— 界面据此把那一条的按钮
+    #: 置灰并写明原因,而不是让用户点一下撞一句错误。
+    restorable: bool = True
+    #: `PARENT_ARCHIVED`(先恢复上层)或 `PARENT_PURGED`(上层被彻底删除了,回不来)。
+    blocked_reason: str | None = None
 
 
 __all__ = [
+    "ArchiveImpactPayload",
+    "ArchivedNodePayload",
     "BriefView",
     "CreateDependencyRequest",
     "CreateNodeRequest",
@@ -320,10 +403,12 @@ __all__ = [
     "LayoutPayload",
     "LayoutPositionPayload",
     "NodeEditResponse",
+    "OverbookedDayPayload",
     "PlanNodePayload",
     "PlanPayload",
     "PutLayoutRequest",
     "RelationPayload",
+    "RestoreResponse",
     "ScopeViewportPayload",
     "SessionPayload",
     "UpdateNodeRequest",

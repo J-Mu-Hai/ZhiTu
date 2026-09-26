@@ -102,6 +102,104 @@
       "title": "AppliedChangeView",
       "type": "object"
     },
+    "ArchiveImpactPayload": {
+      "additionalProperties": false,
+      "description": "归档/彻底删除**之前**的影响范围。给确认框用的那一份数字。\n\n由后端算而不是前端拿本地计划推:前端手里那份可能是几分钟前的。用户在确认框里\n看到的数字和实际发生的事对不上,比不给数字更糟 —— 他会照着那个数字做决定。",
+      "properties": {
+        "dependencies": {
+          "title": "Dependencies",
+          "type": "integer"
+        },
+        "descendants": {
+          "title": "Descendants",
+          "type": "integer"
+        },
+        "nodeId": {
+          "format": "uuid",
+          "title": "Nodeid",
+          "type": "string"
+        },
+        "overdueSessions": {
+          "title": "Overduesessions",
+          "type": "integer"
+        },
+        "relations": {
+          "title": "Relations",
+          "type": "integer"
+        },
+        "sessionMinutes": {
+          "title": "Sessionminutes",
+          "type": "integer"
+        },
+        "sessions": {
+          "title": "Sessions",
+          "type": "integer"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "nodeId",
+        "title",
+        "descendants",
+        "relations",
+        "dependencies",
+        "sessions",
+        "sessionMinutes",
+        "overdueSessions"
+      ],
+      "title": "ArchiveImpactPayload",
+      "type": "object"
+    },
+    "ArchivedNodePayload": {
+      "additionalProperties": false,
+      "description": "归档列表里的一行。\n\n列表里只出现**一次归档的根**:同一批被带走的子孙不单独列(点那一行的\"恢复\"\n就会把它们一起带回来)。父节点在**另一次**归档里的时候,它仍然单独列出来 ——\n那时点它会得到一句\"先恢复上层\",而不是从列表里凭空消失。",
+      "properties": {
+        "archivedAt": {
+          "format": "date-time",
+          "title": "Archivedat",
+          "type": "string"
+        },
+        "blockedReason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Blockedreason"
+        },
+        "descendants": {
+          "title": "Descendants",
+          "type": "integer"
+        },
+        "node": {
+          "$ref": "#/$defs/PlanNodePayload"
+        },
+        "restorable": {
+          "default": true,
+          "title": "Restorable",
+          "type": "boolean"
+        },
+        "sessions": {
+          "title": "Sessions",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "node",
+        "archivedAt",
+        "descendants",
+        "sessions"
+      ],
+      "title": "ArchivedNodePayload",
+      "type": "object"
+    },
     "AuthResult": {
       "additionalProperties": false,
       "properties": {
@@ -1260,6 +1358,11 @@
           "title": "Removeddependencies",
           "type": "integer"
         },
+        "restorable": {
+          "default": true,
+          "title": "Restorable",
+          "type": "boolean"
+        },
         "revisionVersion": {
           "title": "Revisionversion",
           "type": "integer"
@@ -1292,6 +1395,37 @@
       ],
       "title": "NodeType",
       "type": "string"
+    },
+    "OverbookedDayPayload": {
+      "additionalProperties": false,
+      "description": "恢复之后,哪一天超了每日上限。",
+      "properties": {
+        "dailyCap": {
+          "title": "Dailycap",
+          "type": "integer"
+        },
+        "day": {
+          "format": "date",
+          "title": "Day",
+          "type": "string"
+        },
+        "overBy": {
+          "title": "Overby",
+          "type": "integer"
+        },
+        "plannedMinutes": {
+          "title": "Plannedminutes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "day",
+        "plannedMinutes",
+        "dailyCap",
+        "overBy"
+      ],
+      "title": "OverbookedDayPayload",
+      "type": "object"
     },
     "PlanNodePayload": {
       "additionalProperties": false,
@@ -2335,6 +2469,58 @@
         }
       },
       "title": "ReplanResponse",
+      "type": "object"
+    },
+    "RestoreResponse": {
+      "additionalProperties": false,
+      "description": "一次恢复的结果。\n\n**排期那几个数字不是锦上添花。** 恢复会把归档期间冻结的场次一次性放回日历,\n它们可能已经过期、也可能和归档之后新排的挤在同一天。这份报告就是\"不许静默恢复\"\n的那一半:界面必须把\"回来几场、过期几场、哪几天超了\"说出来。",
+      "properties": {
+        "node": {
+          "$ref": "#/$defs/PlanNodePayload"
+        },
+        "overbookedDays": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/OverbookedDayPayload"
+          },
+          "title": "Overbookeddays",
+          "type": "array"
+        },
+        "overdueSessions": {
+          "title": "Overduesessions",
+          "type": "integer"
+        },
+        "relationsVisible": {
+          "default": 0,
+          "title": "Relationsvisible",
+          "type": "integer"
+        },
+        "restoredCount": {
+          "title": "Restoredcount",
+          "type": "integer"
+        },
+        "restoredMinutes": {
+          "title": "Restoredminutes",
+          "type": "integer"
+        },
+        "restoredSessions": {
+          "title": "Restoredsessions",
+          "type": "integer"
+        },
+        "revisionVersion": {
+          "title": "Revisionversion",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "node",
+        "revisionVersion",
+        "restoredCount",
+        "restoredSessions",
+        "restoredMinutes",
+        "overdueSessions"
+      ],
+      "title": "RestoreResponse",
       "type": "object"
     },
     "RootNode": {

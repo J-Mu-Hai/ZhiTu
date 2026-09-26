@@ -38,6 +38,27 @@ lock_workspace  ->  新版本号  ->  plan_revisions 一行  ->  domain_events �
 "V3 里这个阶段叫什么"变成一条指向空气的记录。删除会**连带整棵子树** ——
 父节点没了之后,它的子节点在界面上永远不可达,留着它们只会让用户在某处
 看到一个自己找不到入口的任务。
+
+## 归档与彻底删除:两件事,库里分得开
+
+用户点一下垃圾桶,产品上那一下是**归档**(收起来,以后还能拿回来),而"删除"是
+它的加强版。两者在库里都只是软删除,区别是 `purged_at` 那一列:
+
+| | `archive`(默认) | `delete` |
+| --- | --- | --- |
+| `deleted_at` / `purged_at` | 打 / 留空 | 打 / 打 |
+| 挂在上面的边 | **一行不动** | 物理删掉 |
+| 场次 | 一行不动 | 一行不动 |
+| 恢复 | 可以(`restore_node`) | 拒绝 |
+
+归档**不动边**这一条是这一节存在的理由。以前这里无条件物理删掉挂在上面的
+`dependencies` 行,而恢复入口一出现,那样做的后果就变成了"恢复回来的是一个一条前置
+都没有的节点"—— 排期正是按前置算的,而用户不会知道自己拿到的是残的。
+读路径本来就把"两端都活着"写进了 WHERE(见 `plan_service`),所以留着那些行不会让
+界面上多出任何一条连线。
+
+完整规则(节点与后代、三道恢复前校验、排期、界面)写在
+`docs/10-NEXT-BATCH-SCOPE.md` 第 5 节。
 """
 
 from __future__ import annotations
@@ -46,7 +67,7 @@ import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -60,6 +81,7 @@ from backend.db.models import (
     NodeRelation,
     PlanNode,
     PlanRevision,
+    ScheduledSession,
     Workspace,
 )
 from backend.db.models.enums import (
@@ -71,18 +93,24 @@ from backend.db.models.enums import (
     Priority,
     RevisionActor,
     RevisionTrigger,
+    ScheduledSessionStatus,
+    WorkspaceStatus,
 )
-from backend.services import plan_service
+from backend.scheduler.calendar import daily_cap
+from backend.services import plan_service, schedule_service
 from backend.services.context import WorkspaceContext
 from backend.services.errors import (
     DependencyRejected,
     InvalidInput,
     NodeNotFound,
+    NodePurged,
+    ParentArchived,
     RelationNotFound,
     RelationRejected,
     RootNodeProtected,
 )
 from backend.services.proposal_validation import find_cycle
+from backend.services.timeutil import today_in
 
 #: 用户能直接改的字段。**白名单,不是黑名单** —— 黑名单的漏网之鱼是"用户改到了
 #: 不该改的列",而白名单的漏网之鱼只是"某个字段暂时改不了",前者要修数据。
@@ -125,8 +153,81 @@ class EditResult:
     revision_version: int
     #: 被删掉的节点数(含子树)。新增/修改时为 0。
     deleted_count: int = 0
-    #: 连带删掉的依赖条数。
+    #: 连带**物理**删掉的依赖条数。只有 `mode=delete`(彻底删除)会大于 0 ——
+    #: 归档不动边,所以那个数字在归档时恒为 0,而这不是"什么都没删"的意思。
     removed_dependencies: int = 0
+    #: 这一次删除是不是可恢复的。
+    restorable: bool = True
+
+
+#: `DELETE /nodes/{id}?mode=` 的两个取值。**默认 `archive`。**
+#:
+#: 命名上刻意用两个词而不是"软删/硬删":`archive` 是用户做的事(收起来,以后还能拿回来),
+#: `delete` 是"不可恢复";两者在库里都是**软删除**(都打 `deleted_at`,行都留着),
+#: 区别只在 `purged_at` 那一列。用"软/硬"命名会让人以为 `archive` 是不写库的,
+#: 或者以为 `delete` 会物理删行 —— 两个都是错的。
+ARCHIVE_MODE = "archive"
+PURGE_MODE = "delete"
+MODES = (ARCHIVE_MODE, PURGE_MODE)
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveImpact:
+    """归档(或彻底删除)一个节点之前,先算清楚这一下会带走什么。
+
+    数字由后端算,不由前端从它手上那份计划里推:前端手里那份可能是几分钟前的,
+    而这份是"此刻"的。用户在确认框里看到的数字和实际发生的事对不上,
+    比不给数字更糟 —— 他会照着那个数字做决定。
+    """
+
+    node_id: uuid.UUID
+    title: str
+    #: 后代节点数(不含自己)。
+    descendants: int
+    #: 会跟着消失的 `related_to` / `influences` 关系条数。
+    relations: int
+    #: 会跟着消失的「前置 → 后续」依赖条数。
+    dependencies: int
+    #: 挂在被归档子树上的场次条数与分钟数。
+    sessions: int
+    session_minutes: int
+    #: 还有几场在今天之前(归档再恢复的话,那几场已经过期了)。
+    overdue_sessions: int
+
+
+@dataclass(frozen=True, slots=True)
+class OverbookedDay:
+    """恢复之后某一天超了上限。"""
+
+    day: date
+    planned_minutes: int
+    daily_cap: int
+
+    @property
+    def over_by(self) -> int:
+        return max(0, self.planned_minutes - self.daily_cap)
+
+
+@dataclass(frozen=True, slots=True)
+class RestoreResult:
+    """一次恢复的结果。
+
+    **带排期报告是必须的,不是锦上添花。** 恢复会把归档期间冻结的场次一次性放回日历:
+    它们可能已经过期,也可能和归档之后新排的挤在同一天。静默恢复等于替用户交了一份
+    他自己没有看过的日程 —— 所以这里把"回来几场、过期几场、哪几天超了"如实带出去,
+    由界面说清楚,让用户决定要不要重排。
+    """
+
+    node: PlanNode
+    revision_version: int
+    restored_count: int
+    restored_sessions: int
+    restored_minutes: int
+    overdue_sessions: int
+    overbooked_days: tuple[OverbookedDay, ...]
+    #: 跟着重新可见的关系与依赖条数。它们**没有**被归档删掉过(归档一行边都不动),
+    #: 所以这里说的是"重新可见",不是"重新创建" —— 界面拿它解释"为什么边也回来了"。
+    relations_visible: int = 0
 
 
 # ---------------------------------------------------------------------------------
@@ -272,13 +373,39 @@ async def update_node(
         return EditResult(node=node, revision_version=change.version)
 
 
-async def delete_node(db: AsyncSession, ctx: WorkspaceContext, node_id: uuid.UUID) -> EditResult:
-    """软删除一个节点**及其整棵子树**。
+async def delete_node(
+    db: AsyncSession,
+    ctx: WorkspaceContext,
+    node_id: uuid.UUID,
+    *,
+    mode: str = ARCHIVE_MODE,
+) -> EditResult:
+    """删除一个节点**及其整棵子树**。默认是**归档**(可恢复),`mode="delete"` 是彻底删除。
 
     子树是在 Python 侧用已加载的活节点走出来的,不用递归 CTE。理由是那一句 SQL 在
     SQLite 和 PostgreSQL 上写法不同,而这个仓库的可移植性红线明确要求两端都能跑;
     一个空间的节点数是几十到几百,一次全量加载的代价远小于维护两套 SQL。
+
+    ## 归档**不动边**,彻底删除才动
+
+    这里原来无条件物理删掉挂在被删节点上的 `dependencies` 行,注释给的理由是"不清就会
+    留下指向软删除节点的边,投影时被过滤掉,于是库里有界面没有"。**那个理由不成立**:
+    `plan_service.load_all_dependencies` / `load_all_node_relations` 本来就把"两端都活着"
+    写进了 WHERE,界面上从来就看不到那些边。那一段硬删唯一的实际效果是**让恢复拿不回
+    依赖** —— 用户点"恢复"之后拿到的是一个一条前置都没有的节点,而排期正是按前置算的。
+    所以归档改成一行不动,彻底删除那条路照旧物理删(它本来就不给恢复)。
+
+    场次同理:归档一行不碰(见 `plan_service.load_all_sessions` 那侧的过滤),
+    彻底删除也不碰 —— 它是历史,不该从复盘里消失。
+
+    为什么彻底删除也**不物理删行**:`plan_revisions.snapshot` 里引用着这些 id,
+    物理删除会让历史版本指向空气。"彻底"指的是不可恢复,不是从历史里抹掉。
     """
+    if mode not in MODES:
+        raise InvalidInput(f"删除方式只能是 {ARCHIVE_MODE} 或 {PURGE_MODE}。")
+
+    purging = mode == PURGE_MODE
+
     async with _each_change(db, ctx, trigger_detail="") as change:
         root = await load_node(db, ctx, node_id)
         if root.parent_id is None:
@@ -289,39 +416,378 @@ async def delete_node(db: AsyncSession, ctx: WorkspaceContext, node_id: uuid.UUI
         # 用户找不到任何入口去处理它。
         nodes = await load_live_nodes(db, ctx)
         subtree = _collect_subtree(nodes, root.id)
-        change.detail = f"删除了「{root.title}」及其下面的 {len(subtree) - 1} 项"
+        change.detail = (
+            f"彻底删除了「{root.title}」及其下面的 {len(subtree) - 1} 项"
+            if purging
+            else f"归档了「{root.title}」及其下面的 {len(subtree) - 1} 项(可以恢复)"
+        )
         now = utcnow()
 
+        values: dict[str, object] = {"deleted_at": now}
+        if purging:
+            values["purged_at"] = now
         await db.execute(
             update(PlanNode)
             .where(PlanNode.id.in_(subtree), PlanNode.workspace_id == ctx.id)
-            .values(deleted_at=now)
+            .values(**values)
             .execution_options(synchronize_session=False)
         )
 
-        # 连带清掉挂在被删节点上的依赖。提案那条路径**不**这么做,因为它是在内存快照上
-        # 校验的、本来就不会把死边算进去;这里直接改库,不清就会留下指向软删除节点的
-        # 边 —— 投影时会被过滤掉(见 plan_service),于是"库里有、界面没有",
-        # 排查时看到的是两个都说得通的事实。让它和界面一致。
-        removed = await db.execute(
-            delete(Dependency)
-            .where(
-                Dependency.workspace_id == ctx.id,
-                (Dependency.predecessor_id.in_(subtree)) | (Dependency.successor_id.in_(subtree)),
+        removed_count = 0
+        if purging:
+            # 只有这一条路上才真的删边。`NodeRelation` 一起删,理由和 `Dependency` 一样 ——
+            # 归档那条路都不删,是因为它们还可能被恢复;这条路上没有"以后"。
+            removed = await db.execute(
+                delete(Dependency)
+                .where(
+                    Dependency.workspace_id == ctx.id,
+                    (Dependency.predecessor_id.in_(subtree))
+                    | (Dependency.successor_id.in_(subtree)),
+                )
+                .execution_options(synchronize_session=False)
             )
-            .execution_options(synchronize_session=False)
-        )
+            await db.execute(
+                delete(NodeRelation)
+                .where(
+                    NodeRelation.workspace_id == ctx.id,
+                    (NodeRelation.source_node_id.in_(subtree))
+                    | (NodeRelation.target_node_id.in_(subtree)),
+                )
+                .execution_options(synchronize_session=False)
+            )
+            removed_count = int(removed.rowcount or 0)
 
+        # 事件名仍然是 `node_deleted`(它确实是一次删除),两种删除的区别放进 payload ——
+        # 下游按 kind 过滤的地方不会因为多了一个 kind 而漏掉这一类事件。
         change.record(
             kind="node_deleted",
             node_id=root.id,
-            payload={"deleted": [str(item) for item in subtree]},
+            payload={
+                "deleted": [str(item) for item in subtree],
+                "restorable": not purging,
+            },
         )
         return EditResult(
             node=root,
             revision_version=change.version,
             deleted_count=len(subtree),
-            removed_dependencies=int(removed.rowcount or 0),
+            removed_dependencies=removed_count,
+            restorable=not purging,
+        )
+
+
+async def load_archived_node(
+    db: AsyncSession, ctx: WorkspaceContext, node_id: uuid.UUID
+) -> PlanNode:
+    """取一个**已被归档**的节点。`load_node` 的反面。
+
+    归属条件同样写进 WHERE(理由见 `load_node`)。查不到一律 `NodeNotFound` ——
+    "这个节点不是你的"和"它没被归档过"返回同一个错误,不给拿 id 试探的人当路标。
+    """
+    node = await db.scalar(
+        select(PlanNode).where(
+            PlanNode.id == node_id,
+            PlanNode.workspace_id == ctx.id,
+            PlanNode.deleted_at.is_not(None),
+        )
+    )
+    if node is None:
+        raise NodeNotFound("这个节点不在当前空间里,或者它没有被归档过。")
+    return node
+
+
+async def archive_impact(
+    db: AsyncSession, ctx: WorkspaceContext, node_id: uuid.UUID
+) -> ArchiveImpact:
+    """这一下会带走什么。**只读,不加锁。**
+
+    不加锁是刻意的:它是给"你确定吗"那个对话框用的,而为了画一个对话框去抢工作区锁,
+    会让"两个人在同一秒里删不同的东西"变成其中一个人看到一句莫名其妙的等待超时。
+    代价是这份数字可能比真正执行的那一刻早几秒 —— 界面上的措辞因此是"会带走",
+    而不是"已经带走"。
+    """
+    root = await load_node(db, ctx, node_id)
+    nodes = await load_live_nodes(db, ctx)
+    subtree = _collect_subtree(nodes, root.id)
+
+    dependency_count = await _count_edges(db, ctx, subtree, relation=False)
+    relation_count = await _count_edges(db, ctx, subtree, relation=True)
+    sessions = list(
+        await db.scalars(
+            select(ScheduledSession).where(
+                ScheduledSession.workspace_id == ctx.id,
+                ScheduledSession.node_id.in_(subtree),
+                ScheduledSession.status.not_in(plan_service.TOMBSTONE_SESSION_STATUSES),
+            )
+        )
+    )
+    today = today_in(ctx.timezone)
+    return ArchiveImpact(
+        node_id=root.id,
+        title=root.title,
+        descendants=len(subtree) - 1,
+        relations=relation_count,
+        dependencies=dependency_count,
+        sessions=len(sessions),
+        session_minutes=sum(session.planned_minutes for session in sessions),
+        overdue_sessions=sum(1 for session in sessions if session.scheduled_date < today),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ArchivedEntry:
+    """归档列表里的一行。"""
+
+    node: PlanNode
+    archived_at: datetime
+    descendants: int
+    sessions: int
+    #: 能不能恢复。父节点在**另一次**归档里、或者父节点被彻底删除过,都会挡住它 ——
+    #: 界面据此把那一条的按钮置灰并写明原因,而不是让用户点一下撞一句错误。
+    restorable: bool
+    blocked_reason: str | None
+
+
+async def list_archive(db: AsyncSession, ctx: WorkspaceContext) -> list[ArchivedEntry]:
+    """这个空间里归档过什么。新的在前。
+
+    只列**每一次归档的根**:同一批被带走的子孙不单独出现(点那一行的"恢复"会把它们
+    一起带回来,列出来只会让用户以为要一个一个恢复)。
+
+    父节点在另一次归档里的那些仍然列出来,但标成不可恢复(见 `ArchivedEntry`)——
+    它们确实还在归档里,从列表里藏起来的话,用户会以为它被删了。
+    """
+    archived = list(
+        await db.scalars(
+            select(PlanNode).where(
+                PlanNode.workspace_id == ctx.id,
+                PlanNode.deleted_at.is_not(None),
+                # 彻底删除过的不进这个列表:它没有"恢复"这个动作可言。
+                PlanNode.purged_at.is_(None),
+            )
+        )
+    )
+    by_id = {node.id: node for node in archived}
+    by_batch: dict[datetime, list[PlanNode]] = {}
+    for node in archived:
+        by_batch.setdefault(node.deleted_at, []).append(node)
+
+    # 父亲不在归档里的那些,要单独查一次才分得清"父亲活着"(不挡)和"父亲被彻底
+    # 删除了"(挡住,而且**没有**"先恢复父亲"这条路可走)。一次查询,不做 N+1。
+    outside_ids = {
+        node.parent_id for node in archived if node.parent_id is not None
+    } - set(by_id)
+    outside: dict[uuid.UUID, PlanNode] = {}
+    if outside_ids:
+        outside = {
+            row.id: row
+            for row in await db.scalars(
+                select(PlanNode).where(
+                    PlanNode.id.in_(outside_ids), PlanNode.workspace_id == ctx.id
+                )
+            )
+        }
+
+    session_counts = await _session_counts(db, ctx, set(by_id))
+    entries: list[ArchivedEntry] = []
+    for node in archived:
+        parent = by_id.get(node.parent_id) if node.parent_id is not None else None
+        if parent is not None and parent.deleted_at == node.deleted_at:
+            # 和它同一批走的,列的是那一批的根。
+            continue
+        blocked = None
+        if node.parent_id is not None:
+            if parent is not None:
+                blocked = "PARENT_ARCHIVED"
+            else:
+                outer = outside.get(node.parent_id)
+                if outer is None or outer.deleted_at is not None:
+                    blocked = (
+                        "PARENT_PURGED"
+                        if outer is not None and outer.purged_at is not None
+                        else "PARENT_ARCHIVED"
+                    )
+        subtree = _collect_subtree(by_batch[node.deleted_at], node.id)
+        entries.append(
+            ArchivedEntry(
+                node=node,
+                archived_at=node.deleted_at,
+                descendants=len(subtree) - 1,
+                sessions=sum(session_counts.get(item, 0) for item in subtree),
+                restorable=blocked is None,
+                blocked_reason=blocked,
+            )
+        )
+    entries.sort(key=lambda entry: (entry.archived_at, entry.node.title), reverse=True)
+    return entries
+
+
+async def _session_counts(
+    db: AsyncSession, ctx: WorkspaceContext, node_ids: set[uuid.UUID]
+) -> dict[uuid.UUID, int]:
+    """这些节点各挂着几场还没作废的排期。一次查询数完,不按节点逐条查。"""
+    if not node_ids:
+        return {}
+    rows = await db.execute(
+        select(ScheduledSession.node_id, func.count())
+        .where(
+            ScheduledSession.workspace_id == ctx.id,
+            ScheduledSession.node_id.in_(node_ids),
+            ScheduledSession.status.not_in(plan_service.TOMBSTONE_SESSION_STATUSES),
+        )
+        .group_by(ScheduledSession.node_id)
+    )
+    return {row[0]: int(row[1]) for row in rows}
+
+
+async def _count_edges(
+    db: AsyncSession, ctx: WorkspaceContext, subtree: set[uuid.UUID], *, relation: bool
+) -> int:
+    """挂在子树上的边有几条。依赖与用户画的关系各数一遍(它们在不同的表里)。"""
+    if relation:
+        condition = (NodeRelation.source_node_id.in_(subtree)) | (
+            NodeRelation.target_node_id.in_(subtree)
+        )
+        table = NodeRelation
+    else:
+        condition = (Dependency.predecessor_id.in_(subtree)) | (
+            Dependency.successor_id.in_(subtree)
+        )
+        table = Dependency
+    count = await db.scalar(
+        select(func.count()).select_from(table).where(table.workspace_id == ctx.id, condition)
+    )
+    return int(count or 0)
+
+
+async def restore_node(
+    db: AsyncSession, ctx: WorkspaceContext, node_id: uuid.UUID
+) -> RestoreResult:
+    """把一个归档的节点恢复回来 —— **连同当时一起被归档的那一支**。
+
+    ## 认人的依据是时间戳,不是"整棵子树"
+
+    一次归档给整棵子树上的是**同一个** `deleted_at`。恢复据此把"这一次带走的"认出来,
+    而不是无条件地把现在这棵子树都清掉:那样会把**更早以前单独归档过**的子孙一起复活,
+    而用户点的是这一行 —— 他以为只回来了一项,实际回来了一片,那一片里可能有他当时
+    特意收起来的东西。
+
+    ## 三道校验,一道都不许静默通过
+
+    1. 彻底删除过的不给恢复(`NodePurged`)—— 见 `delete_node` 的说明。
+    2. 父节点还在归档里不给恢复(`ParentArchived`)—— 一个活节点挂在归档节点下面,
+       在界面上永远不可达:父节点不出现,子节点就没人能导航到。
+    3. 恢复之后重新验环。按现在的写入规则这**不该发生**(归档期间两端都不可见,
+       加不了边),所以它是"万一发生了,不许静默"的断言,不是预期路径。
+
+    ## 排期不自动改
+
+    场次跟着回来(行一行没动),代价是那几场可能已经过期、或者和归档之后新排的挤在
+    同一天。这里**只报不改**:静默重排等于替用户改计划,而他看到的会是"我恢复了一下,
+    怎么别的安排也跟着动了"。
+    """
+    async with _each_change(db, ctx, trigger_detail="") as change:
+        root = await load_archived_node(db, ctx, node_id)
+        if root.purged_at is not None:
+            raise NodePurged(f"「{root.title}」是被彻底删除的,恢复不了。")
+
+        if root.parent_id is not None:
+            parent = await db.scalar(
+                select(PlanNode).where(
+                    PlanNode.id == root.parent_id, PlanNode.workspace_id == ctx.id
+                )
+            )
+            if parent is not None and parent.purged_at is not None:
+                # 上层被**彻底删除**了 —— 这一项没有"先恢复父亲"那条路可走。
+                # 报 `ParentArchived` 会给出一个用户照做不了的提示。
+                raise NodePurged(
+                    f"「{parent.title}」是被彻底删除的,它下面的这一项也回不来了。"
+                )
+            if parent is None or parent.deleted_at is not None:
+                # 父行没了(理论上不该发生:RESTRICT 挡住级联,节点从不物理删)时,
+                # 报"上层还在归档里"仍然是**可照做**的那句话;报内部错误不是。
+                title = parent.title if parent is not None else "上层"
+                raise ParentArchived(f"「{title}」还在归档里,先恢复它,再恢复这一项。")
+
+        archived = list(
+            await db.scalars(
+                select(PlanNode).where(
+                    PlanNode.workspace_id == ctx.id, PlanNode.deleted_at.is_not(None)
+                )
+            )
+        )
+        # 同一批(同一个时间戳)且**不是被彻底删除的**那些。遍历只在这批里做:
+        # 同一批的后代一定也在这一批里(见上面"认人的依据")。
+        batch = [
+            node
+            for node in archived
+            if node.deleted_at == root.deleted_at and node.purged_at is None
+        ]
+        restore_ids = _collect_subtree(batch, root.id)
+        restore_ids.add(root.id)
+
+        # 环检测用的边集合 = 恢复**之后**活着的那些边。恢复的边一直都在库里
+        # (归档没有删它们),所以判据就是"两端都在(活 ∪ 要恢复)"。
+        live_nodes = await load_live_nodes(db, ctx)
+        alive_after = {node.id for node in live_nodes} | restore_ids
+        edges = {
+            (row[0], row[1])
+            for row in await db.execute(
+                select(Dependency.predecessor_id, Dependency.successor_id).where(
+                    Dependency.workspace_id == ctx.id
+                )
+            )
+            if row[0] in alive_after and row[1] in alive_after
+        }
+        cycle = find_cycle(edges)
+        if cycle is not None:
+            titles = {node.id: node.title for node in (*live_nodes, *archived)}
+            chain = " → ".join(f"「{titles.get(item, item)}」" for item in cycle)
+            raise DependencyRejected(
+                f"恢复之后计划里会出现环({chain}),所以这一项没有恢复。"
+                "请先调整相关的依赖,再试一次。"
+            )
+
+        await db.execute(
+            update(PlanNode)
+            .where(PlanNode.id.in_(restore_ids), PlanNode.workspace_id == ctx.id)
+            .values(deleted_at=None)
+            .execution_options(synchronize_session=False)
+        )
+
+        report = await _restore_schedule_report(db, ctx, restore_ids)
+        # 挂在恢复范围上的边,恢复之前不可能"两端都活着",所以它们就是跟着重新可见的
+        # 那些 —— 归档没有删过它们,这里说的是"重新可见"而不是"重新创建"。
+        relations_visible = await _count_edges(db, ctx, restore_ids, relation=True) + (
+            await _count_edges(db, ctx, restore_ids, relation=False)
+        )
+        change.detail = (
+            f"恢复了「{root.title}」及其下面的 {len(restore_ids) - 1} 项"
+            if len(restore_ids) > 1
+            else f"恢复了「{root.title}」"
+        )
+        change.record(
+            kind="node_restored",
+            node_id=root.id,
+            payload={
+                "restored": [str(item) for item in restore_ids],
+                "sessions": report.restored_sessions,
+                "overdue": report.overdue_sessions,
+            },
+        )
+        # 返回的那个节点要反映**恢复之后**的状态。用 `root` 对象本身不行:上面的
+        # `update()` 走的是 SQL,这个 ORM 实例还带着 `deleted_at` —— 响应里会带着一个
+        # 早已过期的删除时间(`synchronize_session=False` 就是为了不惊动会话里的对象)。
+        root.deleted_at = None
+        return RestoreResult(
+            node=root,
+            revision_version=change.version,
+            restored_count=len(restore_ids),
+            restored_sessions=report.restored_sessions,
+            restored_minutes=report.restored_minutes,
+            overdue_sessions=report.overdue_sessions,
+            overbooked_days=report.overbooked_days,
+            relations_visible=relations_visible,
         )
 
 
@@ -761,6 +1227,88 @@ async def _each_change(
 # ---------------------------------------------------------------------------------
 # 辅助
 # ---------------------------------------------------------------------------------
+@dataclass(frozen=True, slots=True)
+class _ScheduleReport:
+    """恢复报告的排期那一半。放在私有类型里,是因为它是 `RestoreResult` 的中间产物。"""
+
+    restored_sessions: int
+    restored_minutes: int
+    overdue_sessions: int
+    overbooked_days: tuple[OverbookedDay, ...]
+
+
+async def _restore_schedule_report(
+    db: AsyncSession, ctx: WorkspaceContext, restore_ids: set[uuid.UUID]
+) -> _ScheduleReport:
+    """恢复之后排期那边会变成什么样。**只读,一行都不改。**
+
+    两件事各算一遍,而它们的口径不同,这不是笔误:
+
+    - **过期**:只看被恢复的这些场次自己。一场安排在昨天的"待做"是用户恢复之后
+      必须自己处理的东西(要么补做,要么挪走)。
+    - **超上限**:要**按人**重算。容量不是按空间的(见 `schedule_service` 开头:
+      两个空间争的是同一个晚上),所以那一天超没超,得把这个人的全部活动空间里
+      那一天的场次加起来看。只算被恢复的那几天,不是全量重排。
+
+    一句实话:**这一栏比的是每日上限(`daily_cap`),没有重跑可用时段那一段。**
+    用户那天本来就没有可用时段(比如请了假)时,这里会**少报**。宁可少报也不假装
+    自己重排过一遍 —— 真排不下的那天,排期器下次预览时会自己说出来。
+    """
+    today = today_in(ctx.timezone)
+    sessions = list(
+        await db.scalars(
+            select(ScheduledSession).where(
+                ScheduledSession.workspace_id == ctx.id,
+                ScheduledSession.node_id.in_(restore_ids),
+                ScheduledSession.status.not_in(plan_service.TOMBSTONE_SESSION_STATUSES),
+            )
+        )
+    )
+    overdue = sum(
+        1
+        for session in sessions
+        if session.scheduled_date < today
+        and session.status
+        in (ScheduledSessionStatus.PLANNED, ScheduledSessionStatus.IN_PROGRESS)
+    )
+    minutes = sum(session.planned_minutes for session in sessions)
+
+    upcoming = sorted({session.scheduled_date for session in sessions if session.scheduled_date >= today})
+    if not upcoming:
+        return _ScheduleReport(len(sessions), minutes, overdue, ())
+
+    rows = await db.execute(
+        select(ScheduledSession.scheduled_date, func.sum(ScheduledSession.planned_minutes))
+        .join(PlanNode, PlanNode.id == ScheduledSession.node_id)
+        .join(Workspace, Workspace.id == ScheduledSession.workspace_id)
+        .where(
+            ScheduledSession.user_id == ctx.user.user_id,
+            ScheduledSession.scheduled_date.in_(upcoming),
+            ScheduledSession.status.not_in(plan_service.TOMBSTONE_SESSION_STATUSES),
+            PlanNode.deleted_at.is_(None),
+            Workspace.status == WorkspaceStatus.ACTIVE,
+        )
+        .group_by(ScheduledSession.scheduled_date)
+    )
+    active_workspaces = tuple(
+        await db.scalars(
+            select(Workspace.id).where(
+                Workspace.owner_id == ctx.user.user_id,
+                Workspace.status == WorkspaceStatus.ACTIVE,
+            )
+        )
+    )
+    cap = daily_cap(
+        await schedule_service.capacity_profile(db, ctx.user.user_id, active_workspaces)
+    )
+    overbooked = tuple(
+        OverbookedDay(day=row[0], planned_minutes=int(row[1] or 0), daily_cap=cap)
+        for row in rows
+        if int(row[1] or 0) > cap
+    )
+    return _ScheduleReport(len(sessions), minutes, overdue, overbooked)
+
+
 def _collect_subtree(nodes: list[PlanNode], root_id: uuid.UUID) -> set[uuid.UUID]:
     """从 `root_id` 出发收集整棵子树。
 

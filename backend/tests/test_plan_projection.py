@@ -290,17 +290,20 @@ async def test_a_deleted_node_disappears_along_with_its_dangling_edges(
     assert live == 3, "删掉的是子树,库里应该还剩 3 个活节点"
     assert total == 5, "被删的两行必须还在库里,只是被标记了"
 
-    # 而**依赖行是物理删掉的**,与节点不同。这不是随手写的:节点有 `deleted_at`
-    # 可以打标记,`dependencies` 表**没有这一列** —— 一条依赖的全部意义就是"这两个
-    # 活节点之间的先后关系",端点被软删之后这个关系就不再存在,没有"半死"的中间态
-    # 可表达。快照里那份是 JSON 副本,不受影响。
+    # 而**依赖行留着**(2026-09-27 改,提交见 `docs/10-NEXT-BATCH-SCOPE.md` 第 5 节)。
+    # 这里原来断言的是反面:"指向已删除节点的依赖行必须清掉",理由是"不清掉的话,
+    # `POST /dependencies` 的幂等检查会返回一条悬空的行"。**那个理由不成立**:
+    # `add_dependency` 是先用 `load_node` 取两端、再查有没有重复的,归档的那一端根本
+    # 取不出来,幂等检查到不了那条悬空的行。
     #
-    # 不清掉的话,`POST /dependencies` 的幂等检查会返回一条悬空的行:接口说"已经
-    # 有了",而投影把它过滤掉了,界面上什么也没发生。
+    # 而"清掉"的代价很大:删除默认是**归档**(可恢复),恢复时那条边要原样回来 ——
+    # 行被物理删掉之后,恢复拿到的是一个一条前置都没有的节点,排期正是按前置算的。
+    # 所以现在归档不动行,界面上看不到它靠的是投影那侧"两端都活着"的过滤
+    # (上面那半条断言已经钉住了这一点)。
     rows = await db.execute(
         select(Dependency).where(Dependency.workspace_id == uuid.UUID(account.workspace_id))
     )
-    assert list(rows.scalars()) == [], "指向已删除节点的依赖行必须清掉"
+    assert len(list(rows.scalars())) == 1, "归档不动边:那一行要留着,恢复时它还得回来"
 
 
 async def test_completed_nodes_are_counted_by_the_server(

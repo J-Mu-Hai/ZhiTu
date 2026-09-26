@@ -56,6 +56,9 @@ AUTHENTICATED_ROUTES = {
     ("POST", "/api/workspaces/{workspace_id}/nodes"),
     ("PATCH", "/api/workspaces/{workspace_id}/nodes/{node_id}"),
     ("DELETE", "/api/workspaces/{workspace_id}/nodes/{node_id}"),
+    ("GET", "/api/workspaces/{workspace_id}/nodes/{node_id}/archive-impact"),
+    ("POST", "/api/workspaces/{workspace_id}/nodes/{node_id}/restore"),
+    ("GET", "/api/workspaces/{workspace_id}/archive"),
     ("POST", "/api/workspaces/{workspace_id}/dependencies"),
     ("DELETE", "/api/workspaces/{workspace_id}/dependencies"),
     ("POST", "/api/workspaces/{workspace_id}/relations"),
@@ -102,6 +105,12 @@ CROSS_ACCOUNT_ROUTES = {
     # 反向断言也成立:A 自己读自己的一定是 200,提交一份空布局同样 200。
     ("GET", "/api/workspaces/{workspace_id}/layout"): "workspace_id",
     ("PUT", "/api/workspaces/{workspace_id}/layout"): "workspace_id",
+    # 归档列表进得来:A 自己那个空间必然是 200(空列表也是列表),反向断言成立。
+    # 恢复与影响范围那两条**进不来**:它们路径里带 `{node_id}`,而这张表的反向断言
+    # 要求"A 用同一个路径必须成功" —— 那需要一个**已经被归档**的节点,而这个夹具里
+    # 没有。它们的归属校验由 `test_archive_restore.py` 单独覆盖(B 拿 A 的节点 id
+    # 去恢复 -> 404),与 `/relations` 那三条的处理方式一致。
+    ("GET", "/api/workspaces/{workspace_id}/archive"): "workspace_id",
     ("DELETE", "/api/auth/sessions/{session_id}"): "session_id",
 }
 

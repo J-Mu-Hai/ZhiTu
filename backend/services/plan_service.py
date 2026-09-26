@@ -54,7 +54,11 @@ from backend.services import brief_service
 from backend.services.context import WorkspaceContext
 
 #: 只作为历史存在的场次状态。它们仍在库里(复盘要查),但不再是"计划的一部分"。
-_TOMBSTONE_STATUSES = (ScheduledSessionStatus.CANCELED, ScheduledSessionStatus.MOVED)
+#:
+#: 公开(没有下划线)是因为**恢复报告**也要按同一套判断"哪些场次还算数"
+#: (见 `node_service.restore_node`)。各写一份的后果是两处对"已搬走的场次算不算
+#: 占用"给出不同答案,而用户看到的是"计划里没有它、容量里算了它"。
+TOMBSTONE_SESSION_STATUSES = (ScheduledSessionStatus.CANCELED, ScheduledSessionStatus.MOVED)
 
 
 def node_to_dict(node: PlanNode) -> dict[str, object]:
@@ -224,12 +228,25 @@ async def load_all_node_relations(
 async def load_all_sessions(
     db: AsyncSession, workspace_id: uuid.UUID
 ) -> list[ScheduledSession]:
-    """这个空间里的排期场次,按日期与次序排好。**墓碑不在其中。**"""
+    """这个空间里、**挂在活节点上**的排期场次。墓碑不在其中。
+
+    "节点还活着"这一条是 2026-09-27 补的(规则见 `docs/10-NEXT-BATCH-SCOPE.md` 第 5 节),
+    补之前这里只按空间取 —— 归档一个节点之后它的场次仍然留在 `/plan` 里,标题是空的
+    (`build_plan` 用 `titles.get(node_id, "")` 兜住了 KeyError,兜不住"画面上多出一场
+    没有名字的安排")。节点是软删除的、外键级联不会触发,所以和 `load_all_dependencies`
+    一样,这个过滤必须显式写出来。
+
+    归档 ≠ 删除:行留在库里(恢复之后它还要回来),只是不再属于"计划的那一份"。
+    """
+    live = select(PlanNode.id).where(
+        PlanNode.workspace_id == workspace_id, PlanNode.deleted_at.is_(None)
+    )
     result = await db.execute(
         select(ScheduledSession)
         .where(
             ScheduledSession.workspace_id == workspace_id,
-            ScheduledSession.status.not_in(_TOMBSTONE_STATUSES),
+            ScheduledSession.node_id.in_(live),
+            ScheduledSession.status.not_in(TOMBSTONE_SESSION_STATUSES),
         )
         .order_by(
             ScheduledSession.scheduled_date.asc(),

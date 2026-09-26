@@ -746,14 +746,87 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     return removed !== null;
   }
 
-  function deleteNode(nodeId: string) {
+  // ---------------------------------------------------------------------------------
+  // 归档与恢复(步骤 3C)
+  //
+  // 垃圾桶那一下**不再直接写库**。用户点它之前要先看到"这一下会带走什么",点之后
+  // 也要能看到"东西还在,可以拿回来" —— 所以这里分成三件事:
+  //
+  // 1. `askArchive`:只**读**一次影响范围,把确认框撑起来。没有它就没有"点之前知道代价"。
+  // 2. `confirmArchive`:那一次真的写入(默认归档)。
+  // 3. `refreshArchive` / `restoreArchived`:归档列表与恢复。
+  //
+  // ## 为什么这三个弹窗的状态**不**进 `drafts.ts`
+  //
+  // 草稿存储装的是"用户打了一半的输入"(见那个文件的头)。这三样里一个字都没有:
+  // 影响范围是后端算的只读数字,列表是后端的状态,确认框上只有两个按钮。把它们塞进
+  // 草稿反而有害 —— 那份数字会被当成"用户的东西"跨视图留着,而它已经旧了。
+  // 切一次视图回来重新问一次后端,拿到的才是对的。
+  //
+  // ## 影响范围**取不到就不给归档**
+  //
+  // 退路是"照删,不显示数字" —— 那正是这一批要消灭的东西:用户在不知道代价的情况下
+  // 按下去,而这批的全部意义就是"点之前知道"。所以取不到就把话说明白、留一个重试,
+  // 归档那一下按不动。
+  const [archiveConfirm, setArchiveConfirm] = useState<{
+    nodeId: string;
+    title: string;
+    impact: backend.ArchiveImpact | null;
+    loading: boolean;
+    error: string | null;
+  } | null>(null);
+  const [archiveOpen, setArchiveOpen] = useState(false);
+  const [archived, setArchived] = useState<backend.ArchivedNode[]>([]);
+  const [archiveListError, setArchiveListError] = useState<string | null>(null);
+  const [archiveNote, setArchiveNote] = useState<string | null>(null);
+  /** 正在恢复哪一行(按钮转圈用),以及有没有一个恢复请求在飞。 */
+  const [restoringId, setRestoringId] = useState<string | null>(null);
+
+  const refreshArchive = useCallback(async () => {
+    if (!isReal) { setArchived([]); return; }
+    try {
+      setArchived(await backend.listArchive(space.id));
+      setArchiveListError(null);
+    } catch (cause) {
+      setArchiveListError(cause instanceof ApiError ? cause.message : '读不到归档列表。');
+    }
+  }, [isReal, space.id]);
+
+  // 挂载与换空间时读一次:工具栏上那个数字不能等到用户点开才准。
+  useEffect(() => { void refreshArchive(); }, [refreshArchive]);
+
+  async function askArchive(nodeId: string) {
     const node = growth.nodes[nodeId];
-    if (!node || nodeId === growth.goalId) return;
+    if (!node || nodeId === growth.goalId || !isReal) return;
+    setArchiveNote(null);
+    setArchiveConfirm({ nodeId, title: node.title, impact: null, loading: true, error: null });
+    try {
+      const impact = await backend.getArchiveImpact(space.id, nodeId);
+      // 读回来的时候用户可能已经关掉它、或者点了另一个节点。只认当前这一个。
+      setArchiveConfirm(current =>
+        current && current.nodeId === nodeId
+          ? { ...current, impact, loading: false }
+          : current,
+      );
+    } catch (cause) {
+      const message = cause instanceof ApiError ? cause.message : '算不出这一下会带走什么。';
+      setArchiveConfirm(current =>
+        current && current.nodeId === nodeId
+          ? { ...current, loading: false, error: message }
+          : current,
+      );
+    }
+  }
 
-    if (!isReal) return;
+  function closeArchiveConfirm() { setArchiveConfirm(null); }
 
+  async function confirmArchive() {
+    const target = archiveConfirm;
+    if (!target?.impact) return;
+    const nodeId = target.nodeId;
+    setArchiveConfirm(null);
     // 本地的选中态与画布位置可以立刻清掉:它们不依赖后端是否成功,而且
-    // 保留一个指向"正在被删的节点"的选中态会让详情面板闪一下空白。
+    // 保留一个指向"正在被归档的节点"的选中态会让详情面板闪一下空白。
     // **计划本身不动** —— 以 `refreshPlan` 回来的那份为准。
     if (selectedId === nodeId) select(null);
     // 这一下走**原始 setter**,不排保存。两个理由:
@@ -762,11 +835,43 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     //    本地的,没有要告诉后端的东西。
     // 2. 排了反而危险:删除请求刚发出去、计划还没重取回来那一刻,本地这份计划里
     //    **还有**这个节点,于是那次保存会把它的位置一起提交上去 —— 而 `put_layout`
-    //    对不认识的 id 是整批拒绝的,用户会收到一行和"删除"看不出关系的保存失败。
+    //    对不认识的 id 是整批拒绝的,用户会收到一行和"归档"看不出关系的保存失败。
     const remaining = Object.fromEntries(Object.entries(positionsRef.current).filter(([key]) => !key.endsWith(`:${nodeId}`)));
     positionsRef.current = remaining;
     setPositionsRaw(remaining);
-    void mutatePlan(() => backend.deleteNode(space.id, nodeId));
+    const result = await mutatePlan(() => backend.deleteNode(space.id, nodeId, 'archive'));
+    if (result) {
+      setArchiveNote(
+        `已归档「${target.title}」${target.impact.descendants > 0 ? `及其下面的 ${target.impact.descendants} 项` : ''},` +
+        '可以在这里恢复。',
+      );
+      await refreshArchive();
+    }
+  }
+
+  /** 把一条归档恢复回来,并**如实报告**排期那边会怎么样(回来几场、过期几场、哪天超了)。 */
+  async function restoreArchived(nodeId: string): Promise<boolean> {
+    if (!isReal || restoringId) return false;
+    setRestoringId(nodeId);
+    setArchiveNote(null);
+    const result = await mutatePlan(() => backend.restoreNode(space.id, nodeId));
+    setRestoringId(null);
+    if (!result) return false;
+    await refreshArchive();
+    const lines = [`已恢复「${result.node.title}」${result.restoredCount > 1 ? `及其下面的 ${result.restoredCount - 1} 项` : ''}。`];
+    if (result.relationsVisible > 0) lines.push(`${result.relationsVisible} 条线跟着回来了。`);
+    if (result.restoredSessions > 0) {
+      lines.push(`回来 ${result.restoredSessions} 场排期(共 ${result.restoredMinutes} 分钟)。`);
+    }
+    if (result.overdueSessions > 0) {
+      lines.push(`其中 ${result.overdueSessions} 场已经过期,需要你自己安排。`);
+    }
+    // **没有自动重排。** 所以这里要说清"哪一天超了",而不是替用户挪走那几场。
+    for (const day of result.overbookedDays) {
+      lines.push(`${day.day} 排了 ${day.plannedMinutes} 分钟,超过每天 ${day.dailyCap} 分钟的上限。`);
+    }
+    setArchiveNote(lines.join(' '));
+    return true;
   }
   function addFiles(ownerId: string, incoming: File[]) {
     const assets = incoming.map(file => { const url = URL.createObjectURL(file); objectUrls.current.add(url); return { id: crypto.randomUUID(), ownerId, name: file.name, size: file.size, mime: file.type, url, file }; });
@@ -982,7 +1087,13 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     // 布局落库的那三样。`layoutReady` 是"后端那份问过了",自动 fit 要等它;
     // `layoutError` 与 `retryLayoutSave` 是保存失败时界面上那一行和那个按钮。
     layoutReady, layoutError, retryLayoutSave,
-    enterSpace, updateNode, setNodeStatus, addNode, deleteNode,
+    enterSpace, updateNode, setNodeStatus, addNode,
+    // 归档与恢复。`deleteNode` 那个直接写库的入口**改名成了 `askArchive`** ——
+    // 名字换掉是有意的:它的语义从"删"变成了"先问一句",留着旧名字会让下一个改动
+    // 的人以为它还是原来那件事。
+    askArchive, archiveConfirm, closeArchiveConfirm, confirmArchive,
+    archiveOpen, setArchiveOpen, archived, archiveListError, archiveNote, setArchiveNote,
+    restoreArchived, restoringId, refreshArchive,
     // 关系。三种边共用这三个入口(后端也是同一组)—— 分成 dependsOn / relatedTo
     // 两套 API 会让调用方先知道"这条边在哪个表里",而那正是接口层要挡掉的事。
     addRelation, updateRelation, removeRelation,

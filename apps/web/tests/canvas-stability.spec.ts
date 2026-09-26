@@ -233,7 +233,7 @@ test('一次真实的计划写入之后，画布不重建、视口不被打回�
   const workspaceId = await createWorkspace(page, token, '重取计划验收空间', '写一次计划,看视口');
   const plan = await getPlan(page, token, workspaceId);
   const root = plan.nodes[0];
-  const doomed = '这一条会被删掉';
+  const doomed = '这一条会被收起来';
   await createNode(page, token, workspaceId, { parentId: root.id, title: doomed });
 
   await page.goto(`/workbench?workspace=${workspaceId}`);
@@ -241,12 +241,17 @@ test('一次真实的计划写入之后，画布不重建、视口不被打回�
   const panned = await panAway(page);
   const mountsBefore = await canvasMounts(page);
 
-  // 真的写一次计划:删节点会让后端推进版本号,界面随后**重取整份 /plan**。
+  // 真的写一次计划:收走一个节点会让后端推进版本号,界面随后**重取整份 /plan**。
+  //
+  // 两下,不是一下 —— 垃圾桶现在只**问**,真正写库的是确认框里那个按钮(步骤 3C:
+  // 按下去之前先让你看到会带走什么)。这条用例验的是"写完之后画布不重建",所以
+  // 那两下都得走完,否则它测的是一次空点击。
   await page
     .locator('.react-flow__node')
     .filter({ hasText: doomed })
-    .getByRole('button', { name: `删除${doomed}及其子节点` })
+    .getByRole('button', { name: `归档${doomed}及其子节点` })
     .click();
+  await page.getByRole('dialog').getByRole('button', { name: '归档' }).click();
   await expect(page.locator('.react-flow__node')).toHaveCount(1);
 
   // 库里那一条真的没了 —— 不然上面那个"只剩根节点"可能只是画布少画了一个。

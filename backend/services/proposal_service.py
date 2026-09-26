@@ -734,9 +734,23 @@ def _handles_to_ids(handles: tuple[tuple[str, str], ...]) -> dict[str, uuid.UUID
 async def _load_dependency_pairs(
     db: AsyncSession, workspace_id: uuid.UUID
 ) -> set[tuple[uuid.UUID, uuid.UUID]]:
+    """这个空间里**两端都还活着**的依赖边。校验环时用的就是它。
+
+    "两端都活着"这一条是 2026-09-27 补的(规则见 `docs/10-NEXT-BATCH-SCOPE.md` 第 5 节)。
+    补之前这里是"整个空间的依赖行",而删除节点**不再**物理删边(`node_service` 里那一段
+    硬删已经去掉,理由见那里的注释)—— 于是归档节点留下的边会混进校验集合,让一份本来
+    合法的提案撞上一条**穿过已归档节点**的环,报出来的链上还带着一个用户已经删掉的节点。
+
+    这就是 `plan_service.load_all_dependencies` 那条纪律的同一份,写在提案这一侧。
+    """
+    live = select(PlanNode.id).where(
+        PlanNode.workspace_id == workspace_id, PlanNode.deleted_at.is_(None)
+    )
     result = await db.execute(
         select(Dependency.predecessor_id, Dependency.successor_id).where(
-            Dependency.workspace_id == workspace_id
+            Dependency.workspace_id == workspace_id,
+            Dependency.predecessor_id.in_(live),
+            Dependency.successor_id.in_(live),
         )
     )
     return {(row[0], row[1]) for row in result.all()}

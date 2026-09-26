@@ -21,6 +21,7 @@ import {
   type NodeProps,
 } from '@xyflow/react';
 import {
+  Archive,
   ArrowUpRight,
   CheckSquare,
   FileText,
@@ -29,6 +30,7 @@ import {
   FolderOpen,
   GitBranch,
   Plus,
+  RotateCcw,
   Trash2,
 } from 'lucide-react';
 import { Dialog } from '@/components/ui/Dialog';
@@ -57,7 +59,7 @@ function GrowthNodeComponent({ data, selected }: NodeProps<FlowNode>) {
   // 处理 —— 原因见那边 `pendingOpen` 的注释:编辑器弹窗会在第一次点击后就盖住画布,
   // 双击的第二次点击落在弹窗遮罩上,节点上的 `dblclick` 永远不会触发。两边都挂的话,
   // 看似双保险,实际是两条路径抢同一次操作。
-  const { enterSpace, deleteNode } = useDemo();
+  const { enterSpace, askArchive } = useDemo();
   const node = data.object;
   const sourcePosition = data.vertical ? Position.Bottom : Position.Right;
   const targetPosition = data.vertical ? Position.Top : Position.Left;
@@ -80,11 +82,13 @@ function GrowthNodeComponent({ data, selected }: NodeProps<FlowNode>) {
       {!data.root && (
         <button
           className="node-delete nodrag nopan"
-          aria-label={`删除${node.title}及其子节点`}
-          title={data.children > 0 ? `删除该节点及 ${data.children} 个直接子节点` : '删除该节点'}
+          aria-label={`归档${node.title}及其子节点`}
+          title={data.children > 0 ? `归档该节点及 ${data.children} 个直接子节点(可以恢复)` : '归档该节点(可以恢复)'}
           onClick={(event) => {
             event.stopPropagation();
-            deleteNode(node.id);
+            // **不直接删。** 先问一句"这一下会带走什么" —— 后代、关系、依赖、场次。
+            // 那些数字由后端算(见 `askArchive`),不是从画布上这份计划里数的。
+            askArchive(node.id);
           }}
         >
           <Trash2 size={12} />
@@ -214,6 +218,9 @@ function Canvas() {
     enterSpace, addNode, updateNode, addRelation, updateRelation, removeRelation,
     files, isRealSpace, planSaving, planLoading, planError, setPlanError,
     layoutReady, layoutError, retryLayoutSave,
+    archiveConfirm, closeArchiveConfirm, confirmArchive,
+    archiveOpen, setArchiveOpen, archived, archiveListError, archiveNote, setArchiveNote,
+    restoreArchived, restoringId,
   } = useDemo();
   const { fitView, setViewport } = useReactFlow();
   const nodesInitialized = useNodesInitialized();
@@ -660,6 +667,20 @@ function Canvas() {
           <FolderOpen size={15} />
           空间文件 <small>{files.filter((file) => file.ownerId === spaceId).length || ''}</small>
         </button>
+        {/* 归档的入口。**它不是一个"回收站图标"就够了的按钮**:用户点垃圾桶归档之后,
+            要有一个明确的地方能找回来,而且要在那里看到"东西还在"。数字用徽标露出来,
+            这样"我归档过东西"这件事不靠记忆。 */}
+        <button
+          // 这里**不清** `archiveNote`:归档那一下的结果("已归档「X」及其下面的 N 项,
+          // 可以在这里恢复")就是在归档之后写的,而那时列表还没开 —— 清掉的话那句话
+          // 永远没有出现过的一刻。留着它,点开列表的人第一眼看到的才是刚才做了什么。
+          // 一条过期的提示由它自己的「知道了」和下一次归档/恢复清掉。
+          onClick={() => setArchiveOpen(true)}
+          title="看看这个空间归档过什么,把想留的恢复回来"
+        >
+          <Archive size={15} />
+          归档 <small>{archived.length || ''}</small>
+        </button>
         {/* 布局没存上。**拖动是可以悄悄失败的操作** —— 画面上节点就停在你放手的地方,
             而库里没有,刷新之后它回到原处,中间没有任何东西提示过你。所以这一行必须
             看得见,而且带一个**有用的**重试:载荷是点的那一刻现拼的,网络回来了、
@@ -983,6 +1004,117 @@ function Canvas() {
             {isRealSpace && planError && <p className="form-error" role="alert">{planError}</p>}
             <button className="primary-button" disabled={!detailTitle.trim() || planSaving}>{planSaving ? '保存中…' : '保存节点'}</button>
           </form>
+        </Dialog>
+      )}
+      {/* 归档确认。**先给数字,再给按钮。**
+          这一张是这一批的核心:在这之前,用户点垃圾桶的那一下会直接毁掉一整支,
+          而他在按下去之前看不到"会带走什么",按完之后也没有任何地方能把东西拿回来。
+          数字来自 `GET /archive-impact`,由后端算 —— 不是从画布上这份计划里数的。 */}
+      {archiveConfirm && (
+        <Dialog title={`归档「${archiveConfirm.title}」？`} onClose={closeArchiveConfirm}>
+          <div className="archive-panel">
+            {archiveConfirm.loading && <p className="archive-hint">正在算这一下会带走什么…</p>}
+            {archiveConfirm.error && (
+              <>
+                <p className="form-error" role="alert">
+                  {archiveConfirm.error}
+                </p>
+                <p className="archive-hint">
+                  {/* 不给"照样删"这条退路:这一批的全部意义就是"点之前知道代价"。
+                      取不到数字还让按下去,等于又回到"闭着眼睛删"。 */}
+                  数字取不到就先不归档 —— 少了它,你按下去的时候是不知道会带走什么的。
+                </p>
+              </>
+            )}
+            {archiveConfirm.impact && (
+              <>
+                <p className="archive-hint">
+                  归档之后这一支从计划里消失,但<b>可以</b>在「归档」里恢复。
+                </p>
+                <ul className="archive-impact">
+                  <li>
+                    后代 <b>{archiveConfirm.impact.descendants}</b> 个
+                    {archiveConfirm.impact.descendants === 0 && '（它自己没有下级）'}
+                  </li>
+                  <li>
+                    关系 <b>{archiveConfirm.impact.relations}</b> 条、前置 <b>{archiveConfirm.impact.dependencies}</b> 条
+                  </li>
+                  <li>
+                    排期 <b>{archiveConfirm.impact.sessions}</b> 场（共 {archiveConfirm.impact.sessionMinutes} 分钟）
+                    {archiveConfirm.impact.overdueSessions > 0 && (
+                      <span className="archive-warn">，其中 {archiveConfirm.impact.overdueSessions} 场已经过期</span>
+                    )}
+                  </li>
+                </ul>
+                <p className="archive-hint">
+                  恢复时那几场会<b>原样</b>放回日历,不重排 —— 已经过期的那几场需要你自己安排。
+                </p>
+                <div className="archive-actions">
+                  <button type="button" onClick={closeArchiveConfirm}>
+                    取消
+                  </button>
+                  <button className="primary-button" type="button" disabled={planSaving} onClick={() => void confirmArchive()}>
+                    {planSaving ? '归档中…' : '归档'}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </Dialog>
+      )}
+      {/* 归档列表。**恢复的入口就在这里** —— 没有它,"可恢复"只是一句空话:
+          用户归档之后找不到任何地方能把东西拿回来。
+          父节点还在另一次归档里的那几行**仍然列出来**,但按钮置灰并写明原因 ——
+          藏起来会让用户以为它被删了,而他其实还能先恢复上层。 */}
+      {archiveOpen && (
+        <Dialog title={`${spaceTitle} · 归档`} onClose={() => setArchiveOpen(false)}>
+          <div className="archive-panel">
+            {archiveNote && (
+              <p className="archive-note" role="status">
+                {archiveNote}
+                <button type="button" className="archive-dismiss" onClick={() => setArchiveNote(null)}>
+                  知道了
+                </button>
+              </p>
+            )}
+            {archiveListError && <p className="form-error" role="alert">{archiveListError}</p>}
+            {!archiveListError && archived.length === 0 && (
+              <p className="archive-hint">这个空间里还没有归档过东西。删掉一个节点时它会被收进这里,而不是消失。</p>
+            )}
+            <ul className="archive-list">
+              {archived.map((entry) => (
+                <li key={entry.node.id} className={entry.restorable ? '' : 'is-blocked'}>
+                  <div className="archive-row-head">
+                    <strong>{entry.node.title}</strong>
+                    <small>{entry.archivedAt.slice(0, 10)} 归档</small>
+                  </div>
+                  <p className="archive-row-meta">
+                    {entry.descendants > 0 && `后代 ${entry.descendants} 个 · `}
+                    {entry.sessions > 0 ? `排期 ${entry.sessions} 场 · ` : ''}
+                    连着的线会一起回来
+                  </p>
+                  {entry.restorable ? (
+                    <button
+                      type="button"
+                      disabled={restoringId !== null}
+                      onClick={() => void restoreArchived(entry.node.id)}
+                    >
+                      <RotateCcw size={13} />
+                      {restoringId === entry.node.id ? '恢复中…' : '恢复'}
+                    </button>
+                  ) : (
+                    <p className="archive-blocked">
+                      {/* 两种挡的原因给的是两句不同的话,因为用户能做的事不一样:
+                          一种是"先恢复上层",一种是"没有别的办法"。 */}
+                      {entry.blockedReason === 'PARENT_PURGED'
+                        ? '它的上层被彻底删除了,这一项恢复不了。'
+                        : '它的上层还在归档里,先把上层恢复出来。'}
+                    </p>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
         </Dialog>
       )}
     </div>

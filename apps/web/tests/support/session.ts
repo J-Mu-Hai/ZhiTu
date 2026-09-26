@@ -197,6 +197,30 @@ export async function addDependency(
 }
 
 /**
+ * 连一条 `related_to`(普通关联,不参与排期)。
+ *
+ * 和 `addDependency` 同一个理由:**给别的测试搭场景用**。验"界面上画不画得出这条线"
+ * 的测试要走 `PathView` 的拖线或"建立关系"表单(见 `tests/relations.spec.ts`),
+ * 否则测的是"接口能写"而不是"用户能连"。
+ *
+ * `relationType` 是**必填**的,服务端不做"没写就是前置"的猜测(见
+ * `contracts/plan.py::CreateRelationRequest`)—— 所以这里也不给它默认值。
+ */
+export async function addRelation(
+  page: Page,
+  token: string,
+  workspaceId: string,
+  sourceId: string,
+  targetId: string,
+  relationType: 'related_to' | 'influences' = 'related_to',
+): Promise<void> {
+  await api(page, token, `/api/workspaces/${workspaceId}/relations`, {
+    method: 'POST',
+    data: { sourceId, targetId, relationType },
+  });
+}
+
+/**
  * 拿**接口**建一个节点,返回它的 id。
  *
  * 为什么用接口而不是点界面:凡是要验"后端有什么、界面画不画得出来"的测试,
