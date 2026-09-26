@@ -35,6 +35,8 @@ os.environ["DB_ECHO"] = "0"
 # 连不上库时不允许带病继续 —— 测试里要能看见启动失败。
 os.environ["ALLOW_DEGRADED_DB"] = "0"
 
+from datetime import datetime  # noqa: E402
+
 import httpx  # noqa: E402
 import pytest  # noqa: E402
 from sqlalchemy import func, select, text  # noqa: E402
@@ -338,6 +340,28 @@ def use_reasoner(app_client: httpx.AsyncClient):
     app.dependency_overrides.pop(get_reasoner, None)
 
 
+@pytest.fixture
+def use_clock(app_client: httpx.AsyncClient):
+    """把 `get_now` 钉在给定的**绝对时刻**上,测试结束后撤掉。
+
+    免打扰时段(22:00–08:00)会把一部分提醒压住,于是"读提醒"的结果取决于跑它的
+    那一刻。拿真实时钟当输入的话,测的就不是规则,而是"我们碰巧在哪个钟点跑的"。
+    这里换掉的是**钟**,不是规则 —— 该压的照样压(见
+    `api/dependencies/clock.py` 与 `services/reminder_service.py` 的 `_STATE_KINDS`)。
+
+    传进来的是带时区的时刻;用户的时区仍然从 `user.timezone` 取,两者是两件事。
+    """
+    from backend.api.dependencies.clock import get_now
+    from backend.api.main import app
+
+    def _use(moment: datetime) -> datetime:
+        app.dependency_overrides[get_now] = lambda: moment
+        return moment
+
+    yield _use
+    app.dependency_overrides.pop(get_now, None)
+
+
 DEFAULT_PASSWORD = "correct-horse-battery"
 
 
@@ -357,10 +381,19 @@ def make_account(app_client: httpx.AsyncClient):
         *,
         workspace_title: str = "Python 学习",
         create_workspace: bool = True,
+        timezone: str = "Asia/Shanghai",
     ) -> Account:
         response = await app_client.post(
             "/api/auth/register",
-            json={"email": email, "password": password, "displayName": display_name},
+            json={
+                "email": email,
+                "password": password,
+                "displayName": display_name,
+                # 时区在这里是**账号的属性**,不是测试的开关:免打扰窗口按用户的
+                # 当地时间算,所以"同一个绝对时刻,两个时区的用户一个在免打扰里、
+                # 一个不在"是产品行为,得能验。
+                "timezone": timezone,
+            },
         )
         assert response.status_code == 201, response.text
         body = response.json()

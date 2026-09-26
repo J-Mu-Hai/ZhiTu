@@ -23,10 +23,13 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.dependencies.auth import AuthContext, get_auth_context
+from backend.api.dependencies.clock import get_now
 from backend.contracts.reminder import (
     DismissReminderRequest,
     RemindersResponse,
@@ -43,6 +46,7 @@ router = APIRouter()
 async def list_reminders(
     auth: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_db),
+    now: datetime = Depends(get_now),
 ) -> RemindersResponse:
     """这个账号此刻该看到的提醒。**只读,不创建任何行。**
 
@@ -51,8 +55,11 @@ async def list_reminders(
     `quietHours` 一并返回:用户需要知道"现在没有提醒"是因为真的没有,还是因为处在
     免打扰时段而被压住了。这两件事在界面上长得一模一样,含义却相反,所以
     `suppressedCount` 会如实报出被压住的条数。
+
+    `get_now` 是一个**可替换的依赖**(见 `api/dependencies/clock.py`)。它换掉的是
+    "此刻是几点",不是免打扰这条规则 —— 22:00–08:00 该怎么压还是怎么压。
     """
-    return await reminder_service.load(db, auth.user)
+    return await reminder_service.load(db, auth.user, now=now)
 
 
 @router.post("/dismiss", response_model=ReminderStateView, summary="关掉一条提醒")
@@ -77,10 +84,16 @@ async def snooze_reminder(
     payload: SnoozeReminderRequest,
     auth: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_db),
+    now: datetime = Depends(get_now),
 ) -> ReminderStateView:
     """**"稍后"是一个真实的承诺。**
 
     到点之后它会重新出现,而不是被软化成"关掉"。这也是 `snoozedUntil` 必须落库的
     原因:只在内存里记一笔的话,刷新页面它就立刻回来了,用户会以为按钮坏了。
+
+    `get_now` 与 `list_reminders` 用的是**同一个**依赖:落库的到期时刻和之后拿它比
+    大小的"此刻"必须是同一个钟,否则"稍后 24 小时"会在两边各算一次。
     """
-    return await reminder_service.snooze(db, auth.user, payload.key, hours=payload.hours)
+    return await reminder_service.snooze(
+        db, auth.user, payload.key, hours=payload.hours, now=now
+    )

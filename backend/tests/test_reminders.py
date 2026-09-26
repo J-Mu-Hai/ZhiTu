@@ -12,24 +12,28 @@
    当成"没做到"。这里用一个"先断言不出现、再记录两次、再断言出现"的两段式来钉它 ——
    只断言后者的话,一个"凡是有过去的场次就提醒"的错误实现也能通过。
 
-时间在这里是要被控制的:`now_in` 被打桩,因为免打扰的"此刻"和周末判断都依赖它。
-`today_in` **不打桩** —— 那会让"过去几天"的窗口跟着漂,而本文件里那些场次是按真实
-的今天排出来的。
+时间在这里是要被**指定**的:`use_clock` 把 `get_now`(见 `api/dependencies/clock.py`)
+钉在一个固定的绝对时刻上。因为免打扰的"此刻"和周末判断都依赖钟点,拿真实时钟当输入
+的话,测的就不是规则,而是"我们碰巧在哪个钟点跑的它" —— 22:00–08:00 之间跑,安静的
+用例必红;换个钟点跑,压制的用例必红。两边都是确定的,只是判据挂在墙上。
+
+注入的是**绝对时刻**,不是本地时间:用户的时区仍然是账号自己的属性(`user.timezone`),
+"同一个瞬间,两个时区的用户一个在免打扰里、一个不在"是产品行为,得能验。
+
+行的时间戳则**相对于被注入的那一刻**来造(比如"把这句话挪到那一刻的 5 天前"),而不是
+相对于真实此刻 —— 两者差几小时,`(now - last).days` 就会在 4 和 5 之间跳。
 """
 
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import httpx
 from sqlalchemy import select, update
 
-from backend.db.base import utcnow
-from backend.db.models import AvailabilityRule, Message, PlanNode, ReminderState, ScheduledSession
-from backend.db.models.enums import NodeStatus
-from backend.services import reminder_service
-from backend.services.timeutil import now_in, today_in
+from backend.db.models import AvailabilityRule, Message, ReminderState, ScheduledSession
+from backend.services.timeutil import resolve_zone
 from backend.tests.conftest import FakeReasoner
 
 PLAN_ACTIONS = (
@@ -111,19 +115,21 @@ async def _planned_sessions(client: httpx.AsyncClient, account) -> list[dict]:
     return sessions
 
 
-def _next_weekend_at(hour: int) -> datetime:
-    """下一个周六的这个钟点。
+def _next_day_at(hour: int, minute: int = 0, *, tz: str = "Asia/Shanghai") -> datetime:
+    """明天这个钟点,按给定时区。**这就是被注入的"此刻"。**
 
-    挑周六是因为周末提醒只在周六周日触发;用"下一个"而不是"上一个",是为了让这个
-    时刻**晚于**刚刚建出来的那些行 —— 一个早于它们的"此刻"会让"这周刚更新过"这类
-    窗口判断出现负的时间差,而那不是真实会发生的状态。
+    两个"不用"值得记下来:
+
+    - **不用固定的日历时刻**(比如硬写 `2026-03-10 12:00`)。库里的行是**刚刚**建出来的,
+      一个早于它们的"此刻"会让 `now - created_at` 变成负数 —— 那不是真实会发生的状态,
+      在它上面做断言等于在验一个不存在的世界。
+    - **不用真实现在的小时数**。那样这些用例验的是"跑测试的钟点",而不是免打扰规则。
+
+    "明天"同时满足这两条:它严格晚于刚写进库的那些行,而钟点完全由参数决定。
     """
-    now = now_in("Asia/Shanghai")
-    ahead = (5 - now.weekday()) % 7
-    if ahead == 0 and now.hour >= hour:
-        ahead = 7
-    return (now + timedelta(days=ahead)).replace(
-        hour=hour, minute=0, second=0, microsecond=0
+    zone = resolve_zone(tz)
+    return (datetime.now(zone) + timedelta(days=1)).replace(
+        hour=hour, minute=minute, second=0, microsecond=0
     )
 
 
@@ -170,14 +176,23 @@ async def test_empty_workspace_reminder_can_be_dismissed_permanently(
 # 2. "稍后"是一个真实的承诺
 # ---------------------------------------------------------------------------------
 async def test_snooze_hides_it_until_the_promised_time(
-    app_client: httpx.AsyncClient, make_account, db
+    app_client: httpx.AsyncClient, make_account, use_clock
 ) -> None:
     """稍后 24 小时 -> 现在不出现;到点之后**重新出现**。
 
     "到点重新出现"这一半才是重点。把稍后实现成"软性关掉"最省事,也最伤:用户点
     "稍后"的意思是"过会儿再跟我说",不是"这事别再提了"。
+
+    时间在这里是**走过去的**,不是把库里的到期时刻改到过去:注入的"此刻"往前挪
+    24 小时零 1 分,被压住的那条就该回来。这样这个用例同时钉住了另一件事 ——
+    **落库的到期时刻和之后拿它比大小的"此刻"来自同一个钟**:点"稍后"的那一次请求
+    和读提醒的这几次请求,两边都由 `get_now` 决定。各取各的钟的话,24 小时会凭空
+    变成"已经过期"或者"永远不到期",而下面两条断言都会红。
     """
     account = await make_account()
+    noon = _next_day_at(12)
+    use_clock(noon)
+
     before = await _reminders(app_client, account)
     key = next(item["key"] for item in before["reminders"] if item["kind"] == "workspace_empty")
 
@@ -187,18 +202,18 @@ async def test_snooze_hides_it_until_the_promised_time(
     assert snoozed.status_code == 200, snoozed.text
     until = snoozed.json()["snoozedUntil"]
     assert until is not None
+    assert datetime.fromisoformat(until) == noon + timedelta(hours=24), (
+        "到期时刻不是从被注入的那一刻算的 —— 那说明这条写入路径自己在取真实时钟"
+    )
 
     assert "workspace_empty" not in _kinds(await _reminders(app_client, account))
 
-    # 让时间走过去。**不睡 24 小时** —— 直接把那个时刻改到过去,这是"到点了"在库里
-    # 唯一的样子。
-    await db.execute(
-        update(ReminderState)
-        .where(ReminderState.reminder_key == key)
-        .values(snoozed_until=utcnow() - timedelta(minutes=1))
-    )
-    await db.commit()
+    # 还差一分钟:仍然安静。
+    use_clock(noon + timedelta(hours=23, minutes=59))
+    assert "workspace_empty" not in _kinds(await _reminders(app_client, account))
 
+    # 过了那一刻:回来。**不睡 24 小时** —— 挪的是钟。
+    use_clock(noon + timedelta(hours=24, minutes=1))
     assert "workspace_empty" in _kinds(await _reminders(app_client, account)), (
         "稍后到点了却没有回来"
     )
@@ -245,47 +260,59 @@ async def test_quiet_hours_are_derived_from_availability(
 # 4. 免打扰只压住催促
 # ---------------------------------------------------------------------------------
 async def test_quiet_hours_suppress_nudges_but_not_pending_things(
-    app_client: httpx.AsyncClient, make_account, use_reasoner, db, monkeypatch
+    app_client: httpx.AsyncClient, make_account, use_reasoner, db, use_clock
 ) -> None:
-    """深夜:催人的那条被压住并如实报数,而"有计划在等你"照常显示。
+    """深夜:催人的那条被压住并如实报数,而"有事情在等你"照常显示。
 
     这两类提醒的区别是这里要验的全部内容。如果一律压住,一个只在深夜有时间规划的用户
-    永远看不到自己的提醒;如果一律不压,用户会在凌晨被"你这周有 3 场没记录"叫住。
-    """
-    account = await _account_with_schedule(app_client, make_account, use_reasoner)
+    永远看不到自己的提醒;如果一律不压,用户会在凌晨被"你已经 5 天没来了"叫住。
 
-    plan = (
-        await app_client.get(
-            f"/api/workspaces/{account.workspace_id}/plan", headers=account.headers
-        )
-    ).json()
-    stage = next(node for node in plan["nodes"] if node["nodeType"] == "stage")
+    这个账号是**故意**造得这么素的:一句话说过、一个空空间。于是"这一刻会有哪些候选"
+    是确定的 —— 一条催促(`user_returned`)、一条陈述(`workspace_empty`),没有周末提醒
+    (从没排过场次),也没有计划更新。用例要断言的是**压制的边界**,输入越少越好。
+    """
+    account = await make_account()
+    use_reasoner(FakeReasoner())
+    posted = await app_client.post(
+        f"/api/workspaces/{account.workspace_id}/messages",
+        json={"content": "我回来了,先看看"},
+        headers=account.headers,
+    )
+    assert posted.status_code == 200, posted.text
+
+    day = _next_day_at(0)
+    night = day.replace(hour=23)
+    noon = day.replace(hour=12)
+
+    # 把用户说过的那句话挪到**被注入那一刻的 5 天前** —— 这是"确实离开了几天"在库里
+    # 唯一的样子。相对注入的时刻算,而不是相对真实此刻:两个钟点差几小时,`.days`
+    # 就会在 4 和 5 之间跳。
     await db.execute(
-        update(PlanNode)
-        .where(PlanNode.id == uuid.UUID(stage["id"]))
-        .values(status=NodeStatus.COMPLETED, completed_at=utcnow())
+        update(Message)
+        .where(Message.workspace_id == uuid.UUID(account.workspace_id))
+        .values(created_at=night.astimezone(UTC) - timedelta(days=5))
     )
     await db.commit()
 
-    # 周末深夜 23:00:周末提醒("这周有 N 场没记录")该被压住,阶段完成不该被压住。
-    monkeypatch.setattr(reminder_service, "now_in", lambda _tz: _next_weekend_at(23))
-
-    night = await _reminders(app_client, account)
-    assert night["quietHours"]["active"] is True, night["quietHours"]
-    assert "weekend" not in _kinds(night), "深夜不该催「这周还有几场没记录」"
-    assert "stage_completed" in _kinds(night), "有事情在等你,不该被免打扰吞掉"
-    assert night["suppressedCount"] >= 1
-    assert "免打扰" in night["note"], (
+    use_clock(night)
+    deep_night = await _reminders(app_client, account)
+    assert deep_night["quietHours"]["active"] is True, deep_night["quietHours"]
+    assert "user_returned" not in _kinds(deep_night), "深夜不该催「你已经几天没来了」"
+    assert "workspace_empty" in _kinds(deep_night), (
+        "「有事情在等你」不该被免打扰吞掉 —— 否则一个只在深夜有时间规划的用户"
+        "永远看不到自己的提醒"
+    )
+    assert deep_night["suppressedCount"] == 1, deep_night
+    assert "免打扰" in deep_night["note"], (
         "被压住的条数必须说出来 —— 否则用户会把「现在没有提醒」读成「系统认为一切正常」"
     )
 
-    # 同一个周末的白天:免打扰不生效,那条催促就出现了。
-    monkeypatch.setattr(reminder_service, "now_in", lambda _tz: _next_weekend_at(12))
-
-    day = await _reminders(app_client, account)
-    assert day["quietHours"]["active"] is False, day["quietHours"]
-    assert "weekend" in _kinds(day), day
-    assert day["suppressedCount"] == 0
+    # 同一个账号、同一句话,换成白天:免打扰不生效,那条催促就出现了。
+    use_clock(noon)
+    daytime = await _reminders(app_client, account)
+    assert daytime["quietHours"]["active"] is False, daytime["quietHours"]
+    assert "user_returned" in _kinds(daytime), daytime
+    assert daytime["suppressedCount"] == 0, daytime
 
 
 # ---------------------------------------------------------------------------------
@@ -328,22 +355,31 @@ async def test_repeated_skips_needs_recorded_results(
 # 6. 隔了几天没来
 # ---------------------------------------------------------------------------------
 async def test_user_returned_after_a_gap(
-    app_client: httpx.AsyncClient, make_account, use_reasoner, db
+    app_client: httpx.AsyncClient, make_account, use_reasoner, db, use_clock
 ) -> None:
-    """新建账号不提醒"你回来了";说过话又隔了五天,才提醒。
+    """说过话但还很近 -> 不提醒;同一句话挪到五天前 -> 提醒,而且说的是 5 天。
 
     "没有可回来的过去"与"确实离开了几天"是两件事。一个刚注册的用户收到"有 5 天没有
     你的消息了"会立刻失去对整套提醒的信任。
+
+    钟点由 `use_clock` 指定,不是真实此刻:这条提醒属于会被免打扰压住的那一类,所以
+    它在 22:00–08:00 之间必红 —— 而它**是规则对**,不是代码错。要验规则,就得能指定
+    那一刻。
     """
     account = await _account_with_schedule(app_client, make_account, use_reasoner)
+
+    noon = _next_day_at(12)
+    use_clock(noon)
 
     fresh = await _reminders(app_client, account)
     assert "user_returned" not in _kinds(fresh), fresh
 
+    # 挪到**被注入那一刻的 5 天前**。相对真实此刻算的话,两个钟点差几小时,
+    # `(now - last).days` 会在 4 和 5 之间跳,而下面断言的是"5 天"。
     await db.execute(
         update(Message)
         .where(Message.workspace_id == uuid.UUID(account.workspace_id))
-        .values(created_at=utcnow() - timedelta(days=5))
+        .values(created_at=noon.astimezone(UTC) - timedelta(days=5))
     )
     await db.commit()
 
@@ -351,7 +387,59 @@ async def test_user_returned_after_a_gap(
     assert "user_returned" in _kinds(back), back
     reminder = next(item for item in back["reminders"] if item["kind"] == "user_returned")
     assert "5 天" in reminder["title"]
-    assert reminder["forDate"] == today_in("Asia/Shanghai").isoformat()
+    assert reminder["forDate"] == noon.date().isoformat()
+
+
+async def test_quiet_hours_boundaries(
+    app_client: httpx.AsyncClient, make_account, use_clock
+) -> None:
+    """边界:21:59 不算免打扰、22:00 算,07:59 算、08:00 不算。
+
+    这四个值里,22:00 与 08:00 就是那个最容易写错的地方 —— 判据写成
+    `minute > start or minute < end` 的话,整点那一分钟会漏掉,而它恰恰是用户说的
+    "该休息了"。手工点界面几乎撞不上这一分钟,所以这里逐个钉住。
+
+    这个用例只看 `quietHours`,所以用一个空账号就够 —— 不需要任何提醒真的出现。
+    """
+    account = await make_account()
+    afternoon = _next_day_at(21, 59)
+
+    for moment, expected in (
+        (afternoon, False),
+        (afternoon.replace(hour=22, minute=0), True),
+        (afternoon.replace(hour=7, minute=59), True),
+        (afternoon.replace(hour=8, minute=0), False),
+    ):
+        use_clock(moment)
+        quiet = (await _reminders(app_client, account))["quietHours"]
+        assert quiet["active"] is expected, f"{moment:%H:%M} 的免打扰判断反了:{quiet}"
+
+
+async def test_quiet_hours_follow_the_users_own_timezone(
+    app_client: httpx.AsyncClient, make_account, use_clock
+) -> None:
+    """同一个绝对时刻,两个时区的账号:一个在免打扰里,一个不在。
+
+    免打扰说的是**用户那边的晚上**。拿服务器时间(或 UTC)去比的话,东八区的用户会在
+    下午被免打扰、在半夜被提醒 —— 而界面上没有任何东西会显示这件事,用户只会觉得
+    "这软件有时提醒我有时不提醒"。
+
+    两个账号拿到的**窗口是同一个**("22:00–08:00"),差别全部来自 `user.timezone`。
+    这半句断言是刻意的:否则一个"窗口也跟着用户漂"的实现也能让上面两条通过。
+    """
+    shanghai = await make_account()
+    utc = await make_account(email="utc@example.com", timezone="UTC")
+
+    # 东八区的 23:00 就是 UTC 的 15:00 —— 同一个瞬间。
+    night_in_china = _next_day_at(23, tz="Asia/Shanghai")
+    use_clock(night_in_china)
+
+    sh = (await _reminders(app_client, shanghai))["quietHours"]
+    other = (await _reminders(app_client, utc))["quietHours"]
+    assert sh["active"] is True, sh
+    assert other["active"] is False, other
+    assert sh["description"] == other["description"], (sh, other)
+    assert sh["fromMinute"] == other["fromMinute"], (sh, other)
 
 
 async def test_scheduled_sessions_are_not_touched_by_reminders(

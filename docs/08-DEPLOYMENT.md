@@ -160,22 +160,38 @@ Vercel 部署的是 `next build` 的产物；本地开发用的是 `next dev`，
 - CORS 只认 `CORS_ORIGINS` 里列出的来源，且 `allow_credentials=False`
   （这个 API 完全不用 cookie，凭据一律走 `Authorization` 头）。
 - `/health` 不查库、`/ready` 查库并在不可用时 503。
-- 后端全套测试：**348 条，347 通过 / 1 失败**（`PYTHONUTF8=1 python -m pytest backend/tests`，
-  conda 环境 `zhitu`，2026-09-26 22:38 本机；被测代码 = 提交 `1d6e30f` —— 跑的时候那份代码
-  **还没提交**，工作区有 38 项改动正是那个提交的全部内容，跑完之后原样提交，之后
-  `git status --porcelain` 为空）。`backend/` 与 `shared/` 这一轮**一行未改**
-  （`git status --porcelain -- backend shared` 是空的），所以这一条红不是改出来的：
+- 后端全套测试：**350 条全部通过**（`PYTHONUTF8=1 python -m pytest backend/tests`，
+  conda 环境 `zhitu`，2026-09-26 **22:53** 本机）。这个钟点**落在免打扰时段（22:00–08:00）
+  里** —— 正是上一版必红的那个钟点。被测代码 = 本次提交（`backend/` + 文档），跑的时候
+  工作区是脏的，跑完原样提交。
 
-  - 红的是 `test_reminders.py::test_user_returned_after_a_gap`。跑它的这一刻落在
-    **免打扰时段**里 —— `backend/services/reminder_service.py` 的
-    `DEFAULT_QUIET_FROM/TO` 是 22:00–08:00，而 `user_returned` 不在 `_STATE_KINDS`
-    里，会被压住，接口的 `note` 也明说了「现在是免打扰时段(22:00–08:00)，有 2 条提醒
-    先不打扰你」。**它按钟点红**：本机 22:38 跑必红，08:00 之后跑必绿。
-  - 这不是"重跑一次就过"的那种偶发：它是**确定的**，只是判据挂在钟点上。测试自己
-    拿 `utcnow()` 造"五天前的消息"，而被测的接口用的是 `now_in(user.timezone)` ——
-    两边没有同一个时间锚。要修就得让这条测试能控制"现在是几点"，不是放宽断言。
-  - **上一条"348 passed / 0 failed"是历史记录**（提交 `bb6a819`，2026-09-26 白天跑
-    的，那时不在这个时段里），不代表现在这个钟点跑也是全绿。
+  这是"上一条红**被修好了**"，不是"重跑一次它就绿了"。过程留在这里：
+
+  - 上一版（提交 `1d6e30f`，同日 22:38 跑）是 **348 条 / 347 通过 / 1 失败**，红的是
+    `test_reminders.py::test_user_returned_after_a_gap`。那**不是改出来的**：`backend/`
+    与 `shared/` 当时一行未改（`git status --porcelain -- backend shared` 是空的）。
+  - 它**按钟点红**，不是偶发：`reminder_service` 的 `DEFAULT_QUIET_FROM/TO` 是 22:00–08:00，
+    `user_returned` 不在 `_STATE_KINDS` 里，会被压住 —— 本机 22:38 跑必红，08:00 之后跑
+    必绿。测试自己拿 `utcnow()` 造"五天前的消息"，而被测接口用的是 `now_in(user.timezone)`，
+    两边没有同一个时间锚。所以这个用例当时验的不是规则，是"我们碰巧在哪个钟点跑的它"。
+  - 修法是给"此刻"加一个**可替换的依赖**：`backend/api/dependencies/clock.py` 的 `get_now`，
+    与 `get_reasoner` 同一个做法（`app.dependency_overrides`）。换掉的是**钟**，不是规则：
+    22:00–08:00 该压的照样压，生产路径上没有任何为测试让路的分支。
+    `list_reminders`（读）与 `snooze_reminder`（写）**用的是同一个依赖** —— 落库的到期时刻
+    和之后拿它比大小的"此刻"必须是同一个钟，一个请求里只能有一个"此刻"。
+  - 产品语义就此定下：**"用户回归"这条提示遵守免打扰时段**（它和"这周有 N 场没记录"
+    同属"催人"那一类），**不为了测试通过而绕开规则**。想改这条语义，改的是
+    `_STATE_KINDS`，而它会立刻让 `test_quiet_hours_suppress_nudges_but_not_pending_things`
+    变红 —— 那正是它待在那里的理由。
+  - `test_reminders.py`（9 条）现在用**指定的绝对时刻**验五件事：非免打扰时段能生成提示；
+    免打扰时段被抑制且 `suppressedCount` / `note` 如实报数；时段边界（21:59 / 22:00 /
+    07:59 / 08:00）；同一个瞬间在两个时区的账号上一个在免打扰里、一个不在；"稍后 24 小时"
+    跨过承诺那一刻才回来（时间是被**挪动**的，不是把库里的到期时刻改到过去）。
+  - 其中 4 条断言做过**反向验证**：把规则一行改坏（`user_returned` 加进 `_STATE_KINDS`、
+    `>=` 改成 `>`、时区换成默认值、`snooze` 自己取真实时钟）→ 对应用例变红 → 改回 → 全绿。
+    它们是能失败的断言，不是"怎么写都会过"的那种。
+  - **再往前那两条是历史记录**：`1d6e30f` 的 "348 / 1 失败"（22:38，免打扰时段内）与
+    `bb6a819` 的 "348 / 0 失败"（同日白天，碰巧不在这个时段内）。两条都不代表现在。
 - 另外：**不需要任何模型 key** —— 假模型是依赖注入的注入点，conftest 里三个
   autouse guard 保证没有一条测试悄悄走了真实分支。
 - 前端 `npm run typecheck` / `npm run lint` / `npm run contracts:check` 全绿。

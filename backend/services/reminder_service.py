@@ -67,7 +67,7 @@ from backend.db.models.enums import (
     ScheduledSessionStatus,
     WorkspaceStatus,
 )
-from backend.services.timeutil import now_in, today_in
+from backend.services.timeutil import resolve_zone
 
 logger = logging.getLogger(__name__)
 
@@ -120,10 +120,20 @@ class Reminder:
         )
 
 
-async def load(db: AsyncSession, user: CurrentUser) -> RemindersResponse:
-    """这个用户此刻该看到的提醒。**只读,不创建任何行。**"""
-    today = today_in(user.timezone)
-    now = now_in(user.timezone)
+async def load(db: AsyncSession, user: CurrentUser, *, now: datetime) -> RemindersResponse:
+    """这个用户此刻该看到的提醒。**只读,不创建任何行。**
+
+    `now` 是"此刻"这个**绝对时刻**,由调用方给(路由走 `Depends(get_now)`,见
+    `api/dependencies/clock.py`)。它**必填**,没有"不传就是现在"的默认值 —— 这个函数
+    里有两处判据挂在钟点上(免打扰窗口、周末),一个可以省略的 `now` 会让测试里那一条
+    悄悄退回真实时钟,而它照样是绿的。
+
+    传进来的那一刻按**用户自己的时区**换算:免打扰窗口说的是用户那边的晚上,不是
+    服务器的。`user.timezone` 是账号属性,和"此刻"是两件事,不从这里推。
+    """
+    local = now.astimezone(resolve_zone(user.timezone))
+    today = local.date()
+    now = local
 
     candidates = await _collect(db, user, today=today, now=now)
     states = await _load_states(db, user.user_id, [item.key for item in candidates])
@@ -527,16 +537,21 @@ async def dismiss(db: AsyncSession, user: CurrentUser, key: str) -> ReminderStat
 
 
 async def snooze(
-    db: AsyncSession, user: CurrentUser, key: str, *, hours: int
+    db: AsyncSession, user: CurrentUser, key: str, *, hours: int, now: datetime
 ) -> ReminderStateView:
     """让一条提醒过一会儿再说。
 
     **"稍后"是一个真实的承诺。** 到点之后它会重新出现,而不是被软化成"关掉" ——
     这也是为什么 `snoozed_until` 必须落库:只在内存里记一笔的话,刷新页面它就
     立刻回来了,用户会以为按钮坏了。
+
+    `now` 与 `load` 的同一个来源(路由的 `Depends(get_now)`)。这里**不能**自己去
+    取时间:`snoozed_until` 会被 `load` 拿去和"此刻"比大小,两边要是各取各的钟,
+    "稍后 24 小时"就可能在一注入时钟的测试里凭空变成"已经过期"或者"永远不到期"。
+    一个请求里的"此刻"只能有一个。
     """
-    now = now_in(user.timezone)
-    until = (now + timedelta(hours=hours)).astimezone(now.tzinfo)
+    local = now.astimezone(resolve_zone(user.timezone))
+    until = local + timedelta(hours=hours)
     state = await _upsert_state(db, user.user_id, key, workspace_id=None)
     # 稍后与被关掉是互斥的两种处置:已经关掉的提醒不会因为"稍后"又冒出来。
     state.snoozed_until = until
