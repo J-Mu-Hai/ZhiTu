@@ -193,8 +193,36 @@ Vercel 部署的是 `next build` 的产物；本地开发用的是 `next dev`，
     它们是能失败的断言，不是"怎么写都会过"的那种。
   - **再往前那两条是历史记录**：`1d6e30f` 的 "348 / 1 失败"（22:38，免打扰时段内）与
     `bb6a819` 的 "348 / 0 失败"（同日白天，碰巧不在这个时段内）。两条都不代表现在。
+- 后端全套测试（**步骤 2 之后**）：**396 条全部通过 / 0 失败 / 0 跳过**
+  （`PYTHONUTF8=1 python -m pytest backend/tests -rs`，conda 环境 `zhitu`，
+  2026-09-26 **23:30** 本机）。被测代码 = 提交 `6c47a62`，跑之前 `git status --porcelain`
+  **为空**；这是**干净工作区**的跑法，与上一条（`858c653`，350 条，脏工作区）不同。
+  22:53 → 23:30 两次都落在免打扰时段里，但那个钟点**已经不再是结论的一部分**了 ——
+  上一条把它修掉了，这一次只是又一次正好赶在夜里。
+
+  - 比上一条多出的 46 条里，39 条是新文件 `backend/tests/test_relations_and_layout.py`，
+    7 条是权限矩阵里为 5 个新路由补的匿名/跨账号探针（矩阵现在 58 条）。
+  - **迁移跑过两遍真库**（不是只跑对拍测试），都在**临时库**上，没有碰开发库。
+    命令是 `DATABASE_URL=sqlite+aiosqlite:///<临时文件> python -m alembic -c backend/alembic.ini upgrade <目标>`：
+    - 空库：`upgrade head` → 从 `3afc2912841f` 依次经过 5 个版本升到 `eab5fc18adde`，
+      24 张表，`alembic_version` 里就是 `eab5fc18adde`。
+    - 旧库：先 `upgrade 8b3ec72e4d24`，插一行 `plan_nodes`，再 `upgrade head` ——
+      那一行的 `content_version` 被 server_default 回填成 1，其余字段原样。
+      （这条验的是"现有用户数据不受影响"，对拍测试验不了它。）
+  - 写测试时发现了一个真 bug 并修掉：一次 `PUT /layout` 里同一个节点出现两次（前端节流
+    保存时会这么发）时，服务端会给它插两行，唯一约束到 flush 才炸 —— 用户看到的是一句
+    和拖动毫无关系的 500。修法是按"后面的赢"去重。**这条做过反向验证**：把去重去掉，
+    `test_layout_positions_are_counted_per_row_not_per_request` 复现
+    `UNIQUE constraint failed: node_positions.user_id, ...`，改回后全绿。
+  - `ruff check backend/`、`npm run typecheck`、`npm run lint`、`npm run contracts:check`
+    全绿（契约检查 46 个 interface 逐字段比对）。
+  - **前端 Playwright 这一轮没有重跑**，这是有意的：步骤 2 只加了后端接口与
+    `src/lib/backend.ts` / `api.ts` 里的类型（新增 interface、把 `'PUT'` 加进
+    `api.ts` 的方法联合），没有碰任何渲染路径 —— 画布还画不出线，那是步骤 3。
+    类型层面的改动由 `typecheck` + `contracts:check` 覆盖。所以 Playwright 的
+    "31/1/0" 记录仍停在上一个提交，**没有**在步骤 2 上重新验过。
 - 另外：**不需要任何模型 key** —— 假模型是依赖注入的注入点，conftest 里三个
-  autouse guard 保证没有一条测试悄悄走了真实分支。
+  autouse guard 保证没有一条测试悄悄走了真实分支。步骤 2 也**完全不调模型**。
 - 前端 `npm run typecheck` / `npm run lint` / `npm run contracts:check` 全绿。
 - **Playwright 共 32 条（14 个文件）**，跑法分两种，**只有第二种是验收**：
 
