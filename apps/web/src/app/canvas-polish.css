@@ -102,7 +102,27 @@
   -webkit-line-clamp: unset;
 }
 .path-canvas .growth-node.is-complete .node-title { text-decoration: line-through; }
-.path-canvas .growth-node .react-flow__handle { opacity: 0; pointer-events: none; }
+/* -------------------------------------------------- 连接点(拖线的入口) */
+/* 这里原来写的是 `opacity: 0; pointer-events: none` —— 那时画布上是不能连线的
+   (`nodesConnectable={false}`),那两个小圆点纯粹是噪声。现在**它们就是唯一的拖线入口**
+   (见 `PathView.tsx` 的 `onConnect`),藏起来等于把这个功能藏起来:用户拖了半天
+   只是把节点挪了个位置,而没有任何东西告诉他"这里本来能拖出一条线"。
+
+   默认是半透明的小圆点、鼠标进到节点上或选中时变清楚 —— 触屏没有 hover,
+   所以它**默认就得有可点的面积**(`pointer-events: all`),不能靠悬停才出现。 */
+.path-canvas .growth-node .react-flow__handle {
+  width: 9px;
+  height: 9px;
+  opacity: .5;
+  pointer-events: all;
+  border: 1px solid #fff;
+  background: var(--semantic, #7c9dd0);
+  transition: opacity .15s;
+}
+.path-canvas .growth-node:hover .react-flow__handle,
+.path-canvas .growth-node.is-selected .react-flow__handle,
+.path-canvas .growth-node .react-flow__handle.connectingfrom { opacity: 1; }
+.path-canvas .growth-node .react-flow__handle:hover { opacity: 1; box-shadow: 0 0 0 4px color-mix(in srgb, var(--semantic, #7c9dd0) 20%, transparent); }
 .path-canvas .react-flow__edge-path { stroke-linecap: round; stroke-linejoin: round; }
 .path-canvas .growth-node .node-enter { right: -10px; bottom: -10px; }
 .path-canvas .growth-node .node-delete { right: -10px; top: -10px; }

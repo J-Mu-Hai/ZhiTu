@@ -266,3 +266,59 @@
 .replan-note.degraded {
   color: #a85341;
 }
+
+/* ------------------------------------------------- 表单里的错误与危险操作 */
+/* **错误以前没有任何样式**:它继承 `.node-form p`(11px、灰蓝色),于是
+   "循环依赖,不能这样连"和"双击节点可进入其子路径"长得一模一样 —— 用户点了保存、
+   屏幕上什么都没变,而失败原因一直在那里,只是看起来像一句提示。 */
+.node-form .form-error {
+  font-size: 11px;
+  line-height: 1.8;
+  color: #a85341;
+  background: #fdf4f1;
+  border-left: 2px solid #d9a795;
+  padding: 9px 11px;
+  border-radius: 0 4px 4px 0;
+}
+
+/* 关系编辑器顶上那句"这条线是什么方向"。它是要紧信息(尤其依赖的"前置 → 后续"),
+   所以比普通的提示行重一点,但不能重到像报错。 */
+.node-form .relation-direction {
+  font-size: 12px;
+  line-height: 1.8;
+  color: var(--text);
+  background: var(--ink-3);
+  border-radius: 5px;
+  padding: 10px 12px;
+}
+
+/* 保存与删除并排。删除必须**看得见但不能长得像主操作** —— 它不可撤销,
+   而"保存关系"是常用动作。 */
+.relation-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.node-form .danger-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  padding: 10px 13px;
+  border: 1px solid #e6bdb2;
+  border-radius: 5px;
+  background: #fff4f0;
+  color: #bd6d5d;
+}
+
+.node-form .danger-button:hover {
+  background: #fbe8e2;
+}
+
+.node-form .danger-button:disabled {
+  color: var(--muted);
+  background: var(--ink-2);
+  border-color: var(--line);
+}

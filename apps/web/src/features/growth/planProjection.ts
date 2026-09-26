@@ -174,11 +174,23 @@ export function planToGrowth(plan: PlanPayload, title: string): GrowthState {
     goalId,
     currentStageId: goalId,
     nodes,
-    edges: plan.dependencies.map((dep) => ({
-      id: dep.id,
-      source: dep.predecessorId,
-      target: dep.successorId,
-      type: 'dependency' as const,
+    /*
+     * 边一律从 `relations` 来,**不要改成 `dependencies`**。
+     *
+     * `relations` 三种类型一起给(后端 `build_plan` 把两张表的行合并成一种形状,
+     * 见 `RelationPayload`),`dependencies` 是其中 `depends_on` 那一份的旧视图。
+     * 两份一起读的话,画布上每条前置关系都会画两遍 —— 而且两条重叠的线看起来
+     * 和一条更粗的线差不多,不会有人发现。
+     *
+     * 方向也不在这里翻:后端 `source -> target` 就是前置 -> 后续。
+     */
+    edges: plan.relations.map((relation) => ({
+      id: relation.id,
+      source: relation.sourceId,
+      target: relation.targetId,
+      type: relation.relationType,
+      note: relation.note ?? undefined,
+      lagDays: relation.lagDays ?? undefined,
     })),
   };
 }

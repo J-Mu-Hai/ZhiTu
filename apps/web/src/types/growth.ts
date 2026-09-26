@@ -65,7 +65,37 @@ export interface GrowthNode {
 }
 export type Task = GrowthNode & { type: 'task' };
 export type Milestone = GrowthNode & { type: 'milestone' };
-export interface GrowthEdge { id: string; source: string; target: string; type: 'dependency' | 'support' }
+/**
+ * 画布上的一条边。**三种关系共用这一个形状** —— 它对应后端的 `RelationPayload`,
+ * 而不是某一张表。
+ *
+ * `depends_on` 存在 `dependencies` 表里(它参与排期),`related_to` 与 `influences`
+ * 存在 `node_relations` 表里。这个区分**不往上传**:画布只需要"有哪些线、连的是谁、
+ * 什么类型、写了什么说明"。要判断"这条边会不会改变排期"的地方,判的是 `type`。
+ */
+export type GrowthRelationType = 'depends_on' | 'related_to' | 'influences';
+
+export interface GrowthEdge {
+  id: string;
+  /**
+   * 方向是 `source -> target`。对 `depends_on` 来说就是**前置 -> 后续**,与后端
+   * `DependencyPayload.predecessor_id -> successor_id` 同向 —— 全仓只有这一个方向
+   * 约定,前端不做反转(见 `planProjection.ts`)。
+   */
+  source: string;
+  target: string;
+  type: GrowthRelationType;
+  /**
+   * 用户写在这条边上的说明。
+   *
+   * `depends_on` 恒为 `undefined` —— `dependencies` 表没有说明列,后端会在带说明
+   * 创建前置关系时直接拒绝(而不是把那句话丢掉)。所以界面上"给前置关系写说明"
+   * 应当是不可用的,不是一个存不进去的输入框。
+   */
+  note?: string;
+  /** 只有 `depends_on` 有:前置完成后还要等几天。 */
+  lagDays?: number;
+}
 export interface GrowthState {
   id: string;
   title: string;

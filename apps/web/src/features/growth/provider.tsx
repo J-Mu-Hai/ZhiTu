@@ -1,13 +1,14 @@
 'use client';
 import { Suspense, createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
-import type { AISettings, Conversation, FileAsset, GrowthNode, JournalEntry, Message, PlanAction } from '@/types/growth';
+import type { AISettings, Conversation, FileAsset, GrowthNode, GrowthRelationType, JournalEntry, Message, PlanAction } from '@/types/growth';
 import { dayNumber, todayInTimeZone } from './timeline';
 import { PLACEHOLDER_ROOT_ID, emptyGrowth, planToGrowth } from './planProjection';
 import { useAuth } from '@/features/auth/provider';
 import type { AccountProfile } from '@/features/auth/types';
 import { workspaceStorageKey } from './workspaces';
 import * as backend from '@/lib/backend';
+import type { RelationPayload } from '@/lib/backend';
 import { ApiError } from '@/lib/api';
 
 /**
@@ -457,6 +458,43 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     return created !== null;
   }
 
+  /**
+   * 连一条边。**返回后端真正存下来的那一条**(失败是 `null`)。
+   *
+   * 为什么不返回 boolean:后端会把 `related_to` 的两端按 UUID 排序归一(它是无向的,
+   * 存哪一头在前由 id 决定,不由用户拖动的方向决定),而且同一条边连两次是**幂等**
+   * 的 —— 回来的是既有那一条。所以"库里现在这条边的 id 和类型是什么"只有后端知道,
+   * 而调用方紧接着就要用这个 id 打开关系编辑器。
+   */
+  async function addRelation(
+    sourceId: string,
+    targetId: string,
+    type: GrowthRelationType,
+    note?: string,
+  ): Promise<RelationPayload | null> {
+    if (!isReal) return null;
+    return await mutatePlan(() => backend.createRelation(space.id, {
+      sourceId, targetId, relationType: type, note: note?.trim() || null,
+    }));
+  }
+
+  /** 改一条边的类型或说明。**只传要改的字段** —— 后端按"没传"与"传了 null"区分。 */
+  async function updateRelation(
+    relationId: string,
+    patch: { relationType?: GrowthRelationType; note?: string | null },
+  ): Promise<boolean> {
+    if (!isReal) return false;
+    const updated = await mutatePlan(() => backend.updateRelation(space.id, relationId, patch));
+    return updated !== null;
+  }
+
+  /** 删一条边。**它不碰任何节点** —— 节点是节点,线是线。 */
+  async function removeRelation(relationId: string): Promise<boolean> {
+    if (!isReal) return false;
+    const removed = await mutatePlan(() => backend.removeRelation(space.id, relationId));
+    return removed !== null;
+  }
+
   function deleteNode(nodeId: string) {
     const node = growth.nodes[nodeId];
     if (!node || nodeId === growth.goalId) return;
@@ -681,7 +719,11 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     canvasKey,
     // 视口(用户偏好,不落盘也不进版本账)。画布按层级存,时间线一份。
     viewports, setScopeViewport, timelineViewport, setTimelineViewport,
-    enterSpace, updateNode, setNodeStatus, addNode, deleteNode, files, addFiles, removeFile, journals, publishJournal, conversations, setConversations, settings, setSettings, focus, setFocus };
+    enterSpace, updateNode, setNodeStatus, addNode, deleteNode,
+    // 关系。三种边共用这三个入口(后端也是同一组)—— 分成 dependsOn / relatedTo
+    // 两套 API 会让调用方先知道"这条边在哪个表里",而那正是接口层要挡掉的事。
+    addRelation, updateRelation, removeRelation,
+    files, addFiles, removeFile, journals, publishJournal, conversations, setConversations, settings, setSettings, focus, setFocus };
 }
 const Context = createContext<ReturnType<typeof useWorkspaceState> | null>(null);
 

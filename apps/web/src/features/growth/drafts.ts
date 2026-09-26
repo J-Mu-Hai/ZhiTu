@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import type { GrowthNode } from '@/types/growth';
+import type { GrowthNode, GrowthRelationType } from '@/types/growth';
 
 /**
  * 画布上**还没提交的输入**。
@@ -45,7 +45,7 @@ import type { GrowthNode } from '@/types/growth';
 /** 一次编辑会话里全部还没提交的输入。字段与画布上那几个弹窗一一对应。 */
 export interface CanvasDraft {
   /** 现在开着哪个弹窗。`null` 是都没开。**它也要留住** —— "误关编辑器"指的是关掉这个,不是关掉输入框。 */
-  dialog: 'node' | 'files' | null;
+  dialog: 'node' | 'files' | 'relation' | null;
   /** 新建节点表单。 */
   title: string;
   description: string;
@@ -61,6 +61,21 @@ export interface CanvasDraft {
   detailEstimate: string;
   detailStart: string;
   detailEnd: string;
+  /**
+   * 关系编辑器。**两种模式共用这一组字段**,靠 `relationId` 区分:
+   *
+   * - `relationId` 为空 = 「建立关系」表单:起点、终点、类型都是**还没提交**的选择,
+   *   提交前库里什么都没有。
+   * - `relationId` 非空 = 编辑一条已存在的边:改的是类型与说明。
+   *
+   * 合成一组而不是两组,是因为它们在界面上同一个弹窗、同一时刻只会有一个开着;
+   * 分成两组的话"关掉它"要清两遍,而漏清一遍就是下一次打开时残留一个幽灵终点。
+   */
+  relationId: string | null;
+  relationType: GrowthRelationType;
+  relationNote: string;
+  relationSource: string;
+  relationTarget: string;
 }
 
 /**
@@ -83,6 +98,11 @@ export const EMPTY_DRAFT: CanvasDraft = Object.freeze({
   detailEstimate: '',
   detailStart: '',
   detailEnd: '',
+  relationId: null,
+  relationType: 'related_to',
+  relationNote: '',
+  relationSource: '',
+  relationTarget: '',
 });
 
 const drafts = new Map<string, CanvasDraft>();

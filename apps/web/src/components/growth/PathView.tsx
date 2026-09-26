@@ -6,12 +6,14 @@ import {
   BaseEdge,
   Controls,
   Handle,
+  MarkerType,
   MiniMap,
   Position,
   ReactFlow,
   ReactFlowProvider,
   useReactFlow,
   useNodesInitialized,
+  getBezierPath,
   getSmoothStepPath,
   type Edge,
   type EdgeProps,
@@ -25,13 +27,14 @@ import {
   Flag,
   Focus,
   FolderOpen,
+  GitBranch,
   Plus,
   Trash2,
 } from 'lucide-react';
 import { Dialog } from '@/components/ui/Dialog';
 import { useCanvasDraft } from '@/features/growth/drafts';
 import { useDemo } from '@/features/growth/provider';
-import type { GrowthNode } from '@/types/growth';
+import type { GrowthEdge, GrowthNode, GrowthRelationType } from '@/types/growth';
 import { SpaceFiles } from './SpaceFiles';
 
 type FlowNode = Node<{
@@ -129,12 +132,79 @@ function BranchEdge(props: EdgeProps) {
     : path;
   return <BaseEdge id={props.id} path={renderedPath} style={props.style} />;
 }
-const edgeTypes = { branch: BranchEdge };
+/**
+ * 一条关系边怎么画。**三种类型必须一眼分得开,而且不能只靠颜色深浅。**
+ *
+ * 这里画的不是装饰:`depends_on` 会真的改变排期(它让后续任务不能早于前置),
+ * 另外两种不会。用户看着一条线要能回答"我画的这条会不会让某个任务被推迟"。
+ * 所以除了颜色,线型和箭头也各不相同 —— 色觉障碍者、投影仪、截图压缩都还在。
+ *
+ * | 类型 | 画法 | 有向吗 |
+ * | --- | --- | --- |
+ * | `depends_on` 前置 → 后续 | 实线、最粗、带箭头 | 有向,箭头从**前置**指向**后续** |
+ * | `related_to` 相关 | 虚线、无箭头 | **无向** —— 库里按 UUID 排过序,source 是哪一头不代表方向 |
+ * | `influences` 影响 | 点线、带箭头 | 有向 |
+ *
+ * 颜色只从节点已经在用的那四个里取(`colors`),不引入新色。`related_to` 特意用
+ * 紫色而不是蓝色:真实空间里**每一条父子连线都是蓝色**(真实节点没有 `category`,
+ * 见 `planProjection`),再拿蓝色画关系线,两种线在画布上就分不开了。
+ */
+const relationLook: Record<GrowthRelationType, {
+  color: string; dash?: string; width: number; arrow: boolean; label: string;
+}> = {
+  depends_on: { color: colors.research, width: 2, arrow: true, label: '前置' },
+  related_to: { color: colors.personal, dash: '6 5', width: 1.6, arrow: false, label: '相关' },
+  influences: { color: colors.experience, dash: '2 4', width: 1.6, arrow: true, label: '影响' },
+};
+
+function RelationEdge(props: EdgeProps) {
+  const kind = (props.data?.kind as GrowthRelationType) ?? 'related_to';
+  const note = (props.data?.note as string | undefined) ?? '';
+  const look = relationLook[kind] ?? relationLook.related_to;
+  const [path, labelX, labelY] = getBezierPath({
+    sourceX: props.sourceX, sourceY: props.sourceY, sourcePosition: props.sourcePosition,
+    targetX: props.targetX, targetY: props.targetY, targetPosition: props.targetPosition,
+    curvature: 0.32,
+  });
+  return (
+    <BaseEdge
+      id={props.id}
+      path={path}
+      // 点得中比好看要紧:线只有一两像素宽,而"点这条线"是打开关系编辑器的入口。
+      interactionWidth={24}
+      style={{
+        stroke: look.color,
+        strokeWidth: props.selected ? look.width + 1 : look.width,
+        strokeDasharray: look.dash,
+        opacity: props.selected ? 1 : 0.9,
+      }}
+      // 箭头**不能在这里现场造**:`<marker>` 的定义由 ReactFlow 按
+      // **边对象上的 `markerEnd`** 生成,再把这个 `url(...)` 字符串传进来
+      // (见 `EdgeWrapper` 的 `markerEndUrl`)。自定义边里传一个对象是没有出路的
+      // —— 类型上就不接受,渲染出来也指向一个不存在的 marker。所以箭头在下面
+      // 那个 memo 里挂在边对象上,这里只把它转交出去。
+      markerEnd={props.markerEnd}
+      // 说明直接印在线上,而不是藏进编辑器里 —— 用户写了"这条为什么存在",
+      // 下一个人(以及三个月后的他自己)应该在图上一眼看到它。
+      label={note ? (note.length > 16 ? `${note.slice(0, 16)}…` : note) : undefined}
+      labelX={labelX}
+      labelY={labelY}
+      labelShowBg
+      labelBgStyle={{ fill: 'rgba(248, 246, 239, .92)' }}
+      labelBgPadding={[4, 2]}
+      labelBgBorderRadius={6}
+      labelStyle={{ fontSize: 11, fill: look.color }}
+    />
+  );
+}
+
+const edgeTypes = { branch: BranchEdge, relation: RelationEdge };
 
 function Canvas() {
   const {
     growth, selectedId, select, positions, setPositions, spaceId, workspaceId, canvasKey, viewports, setScopeViewport,
-    enterSpace, addNode, updateNode, files, isRealSpace, planSaving, planLoading, planError, setPlanError,
+    enterSpace, addNode, updateNode, addRelation, updateRelation, removeRelation,
+    files, isRealSpace, planSaving, planLoading, planError, setPlanError,
   } = useDemo();
   const { fitView, setViewport } = useReactFlow();
   const nodesInitialized = useNodesInitialized();
@@ -176,6 +246,14 @@ function Canvas() {
   const [measurements, setMeasurements] = useState<Record<string, { width: number; height: number }>>({});
   const [dragging, setDragging] = useState<Record<string, { x: number; y: number }>>({});
   const [submitting, setSubmitting] = useState(false);
+  /**
+   * 当前选中的**边**。与节点的 `selectedId` 是两回事:`selectedId` 决定"聚焦所选"
+   * 和节点高亮,这个只决定哪条线是加粗的。
+   *
+   * 它不进草稿存储:选中态不是"用户打了一半的输入",卸载丢掉没有任何损失 ——
+   * 和 `selectedId` 一个待遇。
+   */
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
 
   /**
    * 弹窗与编辑器里**还没提交的输入**。它们住在组件外面 —— 见 `drafts.ts` 的文件头。
@@ -192,6 +270,7 @@ function Canvas() {
   const {
     dialog, title, description, type, estimate,
     detailNodeId, detailTitle, detailDescription, detailPriority, detailDeadline, detailEstimate, detailStart, detailEnd,
+    relationId, relationType, relationNote, relationSource, relationTarget,
   } = draft;
 
   /**
@@ -207,6 +286,16 @@ function Canvas() {
   const closeDetailEditor = () => patchDraft({
     detailNodeId: null, detailTitle: '', detailDescription: '', detailPriority: 'medium',
     detailDeadline: '', detailEstimate: '', detailStart: '', detailEnd: '',
+  });
+  /**
+   * 关掉关系编辑器,并丢掉它那一组输入。
+   *
+   * `relationId` 一起清掉是要紧的:留着它的话下次点「建立关系」会以"编辑那条边"
+   * 的身份打开,而用户以为自己在新建。
+   */
+  const closeRelationDialog = () => patchDraft({
+    dialog: null, relationId: null, relationType: 'related_to', relationNote: '',
+    relationSource: '', relationTarget: '',
   });
 
   /**
@@ -315,17 +404,33 @@ function Canvas() {
     const rootCenter = centers.length ? (centers[0] + centers[centers.length - 1]) / 2 : 90;
     add(root, 0, rootCenter - height(root) / 2, true);
 
+    /*
+     * 关系边。**只画两头都在场的那一条。**
+     *
+     * 关系可以连同一空间里任意两个节点,而这一层画出来的只有"根 + 直接子节点"
+     * (根层多几个能力节点的后代)。连到别的层级去的边在这里有一头不在场,画出来
+     * 会是一条通向画布外的线 —— 那不如不画。见「建立关系」表单里为什么只列这一层
+     * 的节点:建了却看不见、点不到的一条边,比"建不了"更让人困惑。
+     */
+    const inScope = new Set(nextNodes.map((node) => node.id));
     growth.edges.forEach((edge) => {
-      if (nextNodes.some((node) => node.id === edge.source) && nextNodes.some((node) => node.id === edge.target)) {
-        nextEdges.push({
-          ...edge,
-          type: 'default',
-          style: { stroke: '#78a89a', strokeDasharray: '4 5', opacity: 0.45 },
-        });
-      }
+      if (!inScope.has(edge.source) || !inScope.has(edge.target)) return;
+      const look = relationLook[edge.type] ?? relationLook.related_to;
+      nextEdges.push({
+        id: edge.id,
+        source: edge.source,
+        target: edge.target,
+        type: 'relation',
+        data: { kind: edge.type, note: edge.note },
+        selected: selectedEdgeId === edge.id,
+        // 箭头挂在这里,不在 `RelationEdge` 里 —— 见那边的注释。
+        markerEnd: look.arrow
+          ? { type: MarkerType.ArrowClosed, color: look.color, width: 15, height: 15 }
+          : undefined,
+      });
     });
     return { nodes: nextNodes, edges: nextEdges };
-  }, [growth, spaceId, isRootSpace, selectedId, positions, dragging, files, measurements]);
+  }, [growth, spaceId, isRootSpace, selectedId, selectedEdgeId, positions, dragging, files, measurements]);
 
   // Initial fit must wait for wrapped text to be measured and layout to settle.
   // Do not re-fit while the user drags or edits an already opened scope.
@@ -387,13 +492,141 @@ function Canvas() {
     });
   }
 
+  /**
+   * 这一层能连的节点 —— **就是画布上看得见的那些**,不是这个空间里的全部节点。
+   *
+   * 见画边那里的注释:连到别的层级去的边在当前这一层看不见(有一头不在场)。
+   * 让用户在表单里选中一个画布上没有的节点,得到的是"我建了,但图上找不到" ——
+   * 不如把选择范围收成与眼睛看到的一致。跨层关系是步骤 4 的事(那时每层都能看到
+   * 挂在自己下面的东西),这一批不含。
+   */
+  const relationCandidates = nodes.map((node) => node.data.object);
+  const nodeLabel = (id: string) => growth.nodes[id]?.title || '（已删除的节点）';
+
+  /** 一条关系用一句话说清方向。**依赖必须写成「前置 → 后续」**,别处也照这个说法。 */
+  function relationSentence(kind: GrowthRelationType, from: string, to: string): string {
+    // 还没选齐两端时说"请选",不拿空 id 去拼一句「先做「（已删除的节点）」」——
+    // 那是一句看起来像数据坏了的话,而实际只是还没选。
+    if (!from || !to) return '请选择两端的节点。';
+    if (kind === 'depends_on') return `前置 → 后续：先做「${nodeLabel(from)}」，才轮得到「${nodeLabel(to)}」。`;
+    if (kind === 'influences') return `影响方向：「${nodeLabel(from)}」影响「${nodeLabel(to)}」。`;
+    return `无向关联：「${nodeLabel(from)}」和「${nodeLabel(to)}」是对等的，谁先谁后都一样。`;
+  }
+
+  /**
+   * 打开「建立关系」表单。
+   *
+   * 工具栏那个按钮不带参数:起点默认拿当前选中的那个,终点**不给默认** —— 用户多半是
+   * "选中一个,再给它连一个",但终点猜错就是一条他马上要删掉的边。两个下拉里都写着
+   * "请选择…",选齐之前那个按钮是禁用的,这就是这一屏的全部引导。
+   *
+   * 拖线进来时(`connectNodes`)两个端点都是他刚拖出来的,**直接预填** —— 那不是猜的。
+   * 注意:工具栏上必须写成 `onClick={() => openRelationForm()}`,不能直接传这个函数,
+   * 否则点击事件会被当成 `from`。
+   */
+  function openRelationForm(from?: string, to = '') {
+    setPlanError(null);
+    const source = from ?? relationCandidates.find((node) => node.id === selectedId)?.id ?? '';
+    patchDraft({
+      dialog: 'relation', relationId: null, relationType: 'related_to', relationNote: '',
+      relationSource: source, relationTarget: to,
+    });
+  }
+
+  function openRelationEditor(edge: GrowthEdge) {
+    setPlanError(null);
+    setSelectedEdgeId(edge.id);
+    patchDraft({
+      dialog: 'relation', relationId: edge.id, relationType: edge.type,
+      relationNote: edge.note ?? '', relationSource: edge.source, relationTarget: edge.target,
+    });
+  }
+
+  /** 表单建边。 */
+  async function submitRelationCreate() {
+    if (!relationSource || !relationTarget || relationSource === relationTarget || submitting) return;
+    setSubmitting(true);
+    // 前置关系不带说明:后端那张表没有说明列,带过去会被**拒绝**(不是静默丢掉)。
+    // 界面上那个输入框在这种类型下是禁用的,这里是第二道 —— 两道都要有,因为类型
+    // 可以在写好说明之后再改。
+    const created = await addRelation(
+      relationSource, relationTarget, relationType,
+      relationType === 'depends_on' ? undefined : relationNote,
+    );
+    setSubmitting(false);
+    // 失败就**不关弹窗**:原因显示在下面那行红字里,他得看得见才谈得上重试。
+    if (!created) return;
+    closeRelationDialog();
+    setSelectedEdgeId(created.id);
+  }
+
+  /** 改一条已经存在的边。 */
+  async function submitRelationEdit() {
+    if (!relationId || submitting) return;
+    setSubmitting(true);
+    const saved = await updateRelation(relationId, {
+      relationType,
+      // 前置关系没有说明栏:不传这个字段,而不是传个空串去"清空"一个不存在的东西。
+      ...(relationType === 'depends_on' ? {} : { note: relationNote.trim() || null }),
+    });
+    setSubmitting(false);
+    if (!saved) return;
+    closeRelationDialog();
+  }
+
+  /** 删边。**不删节点** —— 线和点是两件事,这里只发一条 DELETE /relations/{id}。 */
+  async function deleteRelation() {
+    if (!relationId) return;
+    const removed = await removeRelation(relationId);
+    if (!removed) return;
+    setSelectedEdgeId(null);
+    closeRelationDialog();
+  }
+
+  /**
+   * 从节点上拖一条线到另一个节点。**默认「相关」,而且拖完先不写库。**
+   *
+   * 拖完打开的是「建立关系」那张表单:起点终点就是拖的方向,类型默认最轻的「相关」。
+   * 用户把两个东西拖到一起,系统并不知道那是"前置"还是"相关" —— 而猜成前置会真的
+   * 改变排期结果。所以由他自己确认,确认这一下就是这一次写入。
+   *
+   * ## 为什么不是"先落一条 `related_to`,再让用户在编辑器里改"
+   *
+   * 这里原来就是那么做的:先 `POST related_to`,再把**返回的那一行**灌进编辑器。
+   * 问题出在「相关」是**无向**的 —— 后端按 UUID 排序规范化两端
+   * (`node_service._endpoints`),所以返回的行里哪一头是 `source` **不由用户拖的方向决定**。
+   * 用户从 A 拖到 B、在编辑器里改成有向的「影响」,存下来的方向就在 A→B 与 B→A 之间
+   * 听天由命:有向关系被**静默翻了向**,而这件事一半的运行里看不出来。
+   * (`tests/relations.spec.ts` 那条拖线用例第一次红就是撞上了这一半。)
+   *
+   * 要在"先建后改"这条路上修,得让 PATCH 能改端点,而契约里没有
+   * (`UpdateRelationRequest` 只有类型与说明)。所以拖线回到和表单同一条路:
+   * **先确认,再写一次** —— 一次写入,方向就是用户拖的那一个。
+   */
+  function connectNodes(source: string, target: string) {
+    if (source === target) { setPlanError('一个节点不能和自己连关系。'); return; }
+    openRelationForm(source, target);
+  }
+
   return (
     <div className={`path-canvas ${isRootSpace ? 'root-path' : 'leaf-path'}`}>
       <div className="space-floating-tools">
-        <span>单击编辑内容 · 双击进入子路径</span>
+        {/* 提示里必须写清"怎么连线" —— 拖线这件事没有任何别的入口在教。
+            也说明**点线**能打开编辑器:线很细,不提示的话没人会去点它。 */}
+        <span>单击编辑内容 · 双击进入子路径 · 拖动节点右侧圆点连线 · 点线可改关系</span>
         <button disabled={!canCreate} title={canCreate ? undefined : '正在读取计划…'} onClick={() => { setPlanError(null); patchDraft({ dialog: 'node' }); }}>
           <Plus size={15} />
           {createLabel}
+        </button>
+        {/* 表单建边。拖线是快,但触屏、精确对齐、以及"就是要连到某个具体节点"
+            这三种情况下拖线都不好用 —— 所以两条路都要有。 */}
+        <button
+          disabled={!canCreate || relationCandidates.length < 2}
+          title={relationCandidates.length < 2 ? '这一层至少要有两个节点才能连关系' : undefined}
+          onClick={() => openRelationForm()}
+        >
+          <GitBranch size={15} />
+          建立关系
         </button>
         <button onClick={() => patchDraft({ dialog: 'files' })}>
           <FolderOpen size={15} />
@@ -417,7 +650,18 @@ function Canvas() {
           pendingOpen.current = window.setTimeout(() => { pendingOpen.current = null; openDetail(object); }, 240);
         }}
         onNodeDoubleClick={(_, node) => { cancelPendingOpen(); enterSpace(node.id); }}
-        onPaneClick={() => { cancelPendingOpen(); select(null); }}
+        // 拖线建边。**在节点上拖,不在空白处拖** —— 空白处拖动是平移画布。
+        onConnect={(connection) => {
+          if (!connection.source || !connection.target) return;
+          cancelPendingOpen();
+          connectNodes(connection.source, connection.target);
+        }}
+        onEdgeClick={(_, edge) => {
+          // 这个 handler 只收到关系边(父子连线由 `BranchEdge` 画,没有 onClick)。
+          const relation = growth.edges.find((item) => item.id === edge.id);
+          if (relation) openRelationEditor(relation);
+        }}
+        onPaneClick={() => { cancelPendingOpen(); select(null); setSelectedEdgeId(null); }}
         onNodesChange={(changes) => {
           for (const change of changes) {
             if (change.type === 'position' && change.position) {
@@ -443,7 +687,9 @@ function Canvas() {
           if (fittedScope.current !== spaceId) return;
           setScopeViewport(spaceId, { x: viewport.x, y: viewport.y, zoom: viewport.zoom });
         }}
-        nodesConnectable={false}
+        // 连线的入口也要等计划到位:`'goal'` 那个哨兵值不是真节点 id,拖出来的边
+        // 发到后端是 422。同 `canCreate` 的理由。
+        nodesConnectable={isRealSpace && !planLoading}
         deleteKeyCode={null}
         colorMode="light"
         proOptions={{ hideAttribution: true }}
@@ -551,6 +797,115 @@ function Canvas() {
             <button className="primary-button" disabled={!title.trim() || submitting || planSaving}>
               {submitting ? '正在保存…' : createLabel}
             </button>
+          </form>
+        </Dialog>
+      )}
+      {/*
+        关系编辑器。**一个弹窗两种身份**:
+        `relationId` 为空 = 建立一条新的(起点、终点、类型都还没提交);
+        非空 = 改一条已经存在的边。
+
+        合并成一个,是因为"新建"和"编辑"在这里要问的东西几乎一样 —— 分开写两份,
+        就会出现"新建时能选前置、编辑时忘了禁用"这种两边不一致的漏洞。
+      */}
+      {dialog === 'relation' && (
+        <Dialog title={relationId ? '编辑关系' : '建立关系'} onClose={closeRelationDialog}>
+          <form
+            className="node-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void (relationId ? submitRelationEdit() : submitRelationCreate());
+            }}
+          >
+            {/* 方向那一句话,**建之前也要显示**(表单里两个下拉就是起点/终点),
+                建之后更要显示:一条已经存在的边,用户第一件事是问"这是哪个方向的"。 */}
+            <p className="relation-direction">
+              {relationSentence(relationType, relationSource, relationTarget)}
+            </p>
+
+            {/* 起点与终点只在新建立的时候能选。已存在的边**不能改两端** ——
+                后端那条 PATCH 只收 type 与 note,"改端点"等于删一条再建一条,
+                而删除会丢掉这条边上已经写好的说明。这里不假装能改。 */}
+            {!relationId && (
+              <>
+                <label>
+                  {relationType === 'depends_on' ? '前置（先做）' : '起点'}
+                  <select value={relationSource} onChange={(event) => patchDraft({ relationSource: event.target.value })}>
+                    <option value="">请选择…</option>
+                    {relationCandidates.map((node) => (
+                      <option key={node.id} value={node.id} disabled={node.id === relationTarget}>{node.title || '（未命名）'}</option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  {relationType === 'depends_on' ? '后续（后做）' : '终点'}
+                  <select value={relationTarget} onChange={(event) => patchDraft({ relationTarget: event.target.value })}>
+                    <option value="">请选择…</option>
+                    {relationCandidates.map((node) => (
+                      <option key={node.id} value={node.id} disabled={node.id === relationSource}>{node.title || '（未命名）'}</option>
+                    ))}
+                  </select>
+                </label>
+              </>
+            )}
+
+            <label>
+              关系类型
+              <select value={relationType} onChange={(event) => patchDraft({ relationType: event.target.value as GrowthRelationType })}>
+                <option value="related_to">相关（无向，不影响排期）</option>
+                <option value="influences">影响（有向，不影响排期）</option>
+                {/* 「前置」这一档在**编辑**一条非前置关系时是禁用的:后端不支持
+                    在 depends_on 与另外两种之间换类型(见 `UpdateRelationRequest`)。
+                    把禁用写在这里,而不是等用户点了保存再报错 —— 一个存不进去的
+                    选项,不该看起来能选。 */}
+                <option value="depends_on" disabled={Boolean(relationId) && relationType !== 'depends_on'}>
+                  前置 → 后续（会改变排期）
+                </option>
+              </select>
+            </label>
+
+            {relationType === 'depends_on' ? (
+              <p className="field-hint">
+                「前置 → 后续」参与排期：后续任务不会排在前置完成之前。它没有说明这一栏
+                —— 要记录为什么这么连，请另连一条「相关」或「影响」。
+              </p>
+            ) : (
+              <>
+                <label>
+                  说明（可选）
+                  <textarea
+                    maxLength={200}
+                    value={relationNote}
+                    onChange={(event) => patchDraft({ relationNote: event.target.value })}
+                    placeholder="为什么把这两个连起来？写一句，它会显示在线上"
+                  />
+                </label>
+                {relationId && (
+                  <p className="field-hint">
+                    这一版不能在「前置」与另外两种之间换类型：前置关系存在排期那张表里，
+                    换过去会丢掉这条边上已有的说明。要改性质，请新建一条再删掉这条。
+                  </p>
+                )}
+              </>
+            )}
+
+            {/* 失败原因必须在这里说。它住在 `planError` 里,而这个弹窗是模态的 ——
+                错误显示在别处等于让用户对着一个没反应的按钮反复点。循环依赖(409)、
+                重复边(幂等,不会失败)、越权(404)、保存失败都在这里出现。 */}
+            {planError && <p className="form-error" role="alert">{planError}</p>}
+
+            <div className="relation-actions">
+              <button className="primary-button" disabled={submitting || planSaving || (!relationId && (!relationSource || !relationTarget || relationSource === relationTarget))}>
+                {submitting ? '正在保存…' : relationId ? '保存关系' : '建立关系'}
+              </button>
+              {relationId && (
+                <button type="button" className="danger-button" disabled={submitting || planSaving} onClick={() => void deleteRelation()}>
+                  <Trash2 size={14} />
+                  删除这条关系
+                </button>
+              )}
+            </div>
+            <p className="field-hint">删除关系只断开这条线，两端的节点都还在。</p>
           </form>
         </Dialog>
       )}

@@ -134,12 +134,35 @@ export interface PlanDependency {
   lagDays: number;
 }
 
+/**
+ * `/plan` 里的一条边 —— 三种关系共用这一个形状(见 `lib/backend.ts::RelationPayload`)。
+ *
+ * 它和 `PlanDependency` **不是一回事**:后者只有"前置"那一种,是排期读的东西;
+ * 前者是画布画的东西。同一条前置关系会同时出现在两份里。
+ */
+export interface PlanRelation {
+  id: string;
+  relationType: 'depends_on' | 'related_to' | 'influences';
+  sourceId: string;
+  targetId: string;
+  note: string | null;
+  origin: 'user' | 'ai' | null;
+  lagDays: number | null;
+}
+
 export interface PlanPayload {
   nodes: PlanNode[];
   totalNodes: number;
   revisionVersion: number;
   /** 前置 → 后续。删掉一个节点时,挂在它上面的边必须一起消失,否则库里会留下悬空边。 */
   dependencies: PlanDependency[];
+  /**
+   * 画布上所有的边,三种类型一起。**包含 `dependencies` 的那一份。**
+   *
+   * 界面上的连线读的是这一份(见 `planProjection.ts`),所以"画布上有没有这条线"
+   * 的真值在这里,而不是在 `dependencies` 里 —— 一条 `related_to` 在后者里根本不存在。
+   */
+  relations: PlanRelation[];
 }
 
 /** 读一份计划。**整个空间**,不是当前这一层 —— 进入子空间不影响它读回什么。 */
@@ -150,9 +173,9 @@ export async function getPlan(page: Page, token: string, workspaceId: string): P
 /**
  * 建一条"前者完成后才能开始后者"。
  *
- * 界面上现在**还画不出线**(那是有意的:默认拖线必须建"关联",不能擅自解释成任务前置 ——
- * 见任务书 §3.2,排期语义的线得用户明确选)。但这条边在**库里**是真实存在的,
- * 所以"删节点会不会留下悬空边"这件事现在就能验,而且必须在界面接上线之前就验住。
+ * **走接口而不是界面**,理由和 `createNode` 一样:它是给别的测试搭场景用的。
+ * 凡是验"界面上画不画得出这条线"的测试,就**不该**用它 —— 那要走 `PathView` 上的
+ * 表单或拖线(见 `tests/relations.spec.ts`),否则测的是"接口能写"而不是"用户能连"。
  */
 export async function addDependency(
   page: Page,
