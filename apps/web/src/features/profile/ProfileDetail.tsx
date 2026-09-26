@@ -4,7 +4,7 @@ import { useRouter } from 'next/navigation';
 import { ArrowLeft, ArrowUpRight, Check, FileText, Sparkles } from 'lucide-react';
 import { useState } from 'react';
 import { useDemo } from '@/features/growth/provider';
-import { assetSummaries, memories, profileEntries, reports } from '@/mock/life';
+import { assetSummaries, memories, profileEntries, reports } from '@/features/profile/content';
 import type { AISettings } from '@/types/growth';
 import { SpaceFiles } from '@/components/growth/SpaceFiles';
 const toggles:{key:keyof Pick<AISettings,'proactive'|'adjust'|'critique'|'rest'>;label:string;note:string}[]=[{key:'proactive',label:'主动聊天',note:'在你可能需要帮助时开启对话'},{key:'adjust',label:'允许调整计划',note:'AI 提出建议，由你确认后生效'},{key:'critique',label:'允许批评',note:'直接指出问题，同时尊重你的感受'},{key:'rest',label:'提醒休息',note:'在连续投入时提醒你停一停'}];

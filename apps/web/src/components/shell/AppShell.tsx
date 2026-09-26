@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { Blocks, House, NotebookPen, MessagesSquare, UserRound, ArrowUpRight, LoaderCircle, Layers3 } from 'lucide-react';
 import { useEffect, type ReactNode } from 'react';
-import { profileEntries } from '@/mock/life';
+import { profileEntries } from '@/features/profile/content';
 import { useAuth } from '@/features/auth/provider';
 const links = [['/spaces', '成长空间', Layers3], ['/workbench', '工作台', Blocks], ['/today', '首页', House], ['/journal', '随笔', NotebookPen], ['/conversations', '对话', MessagesSquare], ['/me', '我的', UserRound]] as const;
 export function AppShell({ children }: { children: ReactNode }) {

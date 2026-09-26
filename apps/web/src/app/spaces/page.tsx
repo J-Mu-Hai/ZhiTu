@@ -91,15 +91,9 @@ export default function SpacesPage() {
           <span className="eyebrow">MY GROWTH SPACES</span>
           <h1>选择一个成长空间</h1>
           <p>每个空间拥有独立的路径、时间线、任务和 AI 对话。</p>
-          {/* 示例空间从"没选空间时的默认"改成"主动进去看"。里面的数据是本地写好的,
-              所以入口上就写着"示例",进去之后界面上也一直标着。 */}
-          <button
-            type="button"
-            className="text-button"
-            onClick={() => router.push('/workbench?workspace=primary')}
-          >
-            先看看示例空间（本地预置数据，不经过模型）
-          </button>
+          {/* 这里原来还有一个「先看看示例空间」的入口,指向 `?workspace=primary`。
+              示例空间已经整个删掉了,那个 id 现在打不开任何东西 —— 留着它,用户点
+              下去会看到一句"打不开这个成长空间",而他并没有做错任何事。 */}
         </div>
         <button className="primary-button" onClick={() => setOpen(true)}>
           <Plus size={16} />创建成长空间

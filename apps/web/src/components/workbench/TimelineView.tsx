@@ -3,7 +3,6 @@ import { useState, useRef, useEffect, useMemo, type CSSProperties, type PointerE
 import { ChevronLeft, ChevronRight, Minus, Plus, CalendarDays, X, Flag, Circle, Target } from 'lucide-react';
 import type { GrowthNode } from '@/types/growth';
 import { useDemo } from '@/features/growth/provider';
-import { shiftDate } from '@/features/growth/reducer';
 import { anchoredZoom, dateString, dateToX, dayNumber, getVisibleItems, layoutItems, timelineItems, timelineTicks, unscheduledNodes, zoomLabels, zoomLevelFor, zoomPresets, todayInTimeZone, type TimelineItem, type ZoomLevel } from '@/features/growth/timeline';
 import styles from './TimelineView.module.css';
 
@@ -51,10 +50,12 @@ const rangeLabel = (item: TimelineItem) => {
  *
  * 抽出来是因为这里原来是一条七层嵌套的三元表达式,而"截止日的节点"需要多一档 ——
  * 再往那个链子里塞一层,下一个改它的人只会把顺序改错。**顺序是有意义的**:
- * 待接受的建议 > 推导出来的范围 > 已完成 > 截止日 > 描述 > 兜底。
+ * 推导出来的范围 > 已完成 > 截止日 > 描述 > 兜底。
+ *
+ * 最前面原来还有一档"建议安排 · 等待接受",对应的是示例空间那份**本地**提案的
+ * 预览态。它没有了:卡片现在画的永远是计划里真实的那一天。
  */
-function cardNote(item: TimelineItem, changed: boolean, viewportStart: number): string {
-  if (changed) return '建议安排 · 等待接受';
+function cardNote(item: TimelineItem, viewportStart: number): string {
   if (item.derived) return '计划范围 · 根据子任务推导';
   if (item.node.status === 'completed') return '已完成';
   if (item.node.sessions?.length) return scheduledNote(item.node);
@@ -62,10 +63,11 @@ function cardNote(item: TimelineItem, changed: boolean, viewportStart: number): 
   if (item.start < viewportStart) return '此前开始 · 持续进行';
   return item.node.description ?? (item.kind === 'milestone' ? '重要节点' : item.kind === 'duration' ? '持续安排' : '当日行动');
 }
-type Gesture = { kind: 'pan'; x: number; start: number } | { kind: 'item'; x: number; id: string; days: number };
+/** 画布上唯一还在的手势:平移。拖动卡片改日期的那一支已经删掉了(见 `beginItem`)。 */
+type Gesture = { x: number; start: number };
 
 export function TimelineView() {
-  const { growth, selectedId, select, apply, updateNode, impact, setImpact, proposals, previewProposalId, spaceId, isRealSpace, planError } = useDemo();
+  const { growth, selectedId, select, apply, updateNode, spaceId, isRealSpace, planError } = useDemo();
   // 每次渲染重新算一次。它只在跨过午夜时才会变,而这个组件本来就会因为别的原因
   // 重渲染很多次 —— 为它加一个定时器是没必要的复杂度。
   const today = dayNumber(todayInTimeZone());
@@ -73,7 +75,6 @@ export function TimelineView() {
   const [size, setSize] = useState({ width: 760, height: 570 });
   const [measured, setMeasured] = useState(false);
   const [hovered, setHovered] = useState<string | null>(null);
-  const [draft, setDraft] = useState<{ id: string; days: number } | null>(null);
   const [clusterOpen, setClusterOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editingDeadline, setEditingDeadline] = useState(false);
@@ -89,18 +90,10 @@ export function TimelineView() {
   const all = useMemo(() => timelineItems(growth, spaceId), [growth, spaceId]);
   // 这段时间线上画不出来的节点。它们没有消失,只是没日期 —— 见 `unscheduledNodes`。
   const unscheduled = useMemo(() => unscheduledNodes(growth, spaceId), [growth, spaceId]);
-  const proposal = impact ? proposals.find(p => p.id === previewProposalId && p.status === 'pending') : undefined;
-  const changes = proposal?.actions.filter(a => a.type === 'UPDATE_TIME') ?? [];
-  const displayItems = getVisibleItems(all, level).map(item => {
-    const change = changes.find(a => a.nodeId === item.node.id), days = draft?.id === item.node.id ? draft.days : 0;
-    return { ...item, start: (change ? dayNumber(change.startDate) : item.start) + days, end: (change ? dayNumber(change.endDate) : item.end) + days };
-  });
+  const displayItems = getVisibleItems(all, level);
   const selectedSource = all.find(i => i.node.id === selectedId);
   // Keep a deliberately selected object discoverable across semantic levels.
-  if (selectedSource && !displayItems.some(i => i.node.id === selectedId)) {
-    const change = changes.find(a => a.nodeId === selectedId);
-    displayItems.push(change ? { ...selectedSource, start: dayNumber(change.startDate), end: dayNumber(change.endDate) } : { ...selectedSource, start: selectedSource.start + (draft?.id === selectedId ? draft.days : 0), end: selectedSource.end + (draft?.id === selectedId ? draft.days : 0) });
-  }
+  if (selectedSource && !displayItems.some(i => i.node.id === selectedId)) displayItems.push(selectedSource);
   const { placed, hidden } = layoutItems(displayItems, start, density, size.width, selectedId, cardWidth, layers);
   const ticks = timelineTicks(start, end, level);
   const firstYear = new Date(start * 86400000).getUTCFullYear();
@@ -108,7 +101,7 @@ export function TimelineView() {
   const x = (day: number) => dateToX(day, start, density);
   const selected = selectedId ? growth.nodes[selectedId] : null;
   const overviewStart = Math.min(today - 30, start, ...all.map(i => i.start - 20));
-  const overviewEnd = Math.max(today + 90, end, ...all.map(i => i.end + 20), ...changes.map(a => dayNumber(a.endDate) + 20));
+  const overviewEnd = Math.max(today + 90, end, ...all.map(i => i.end + 20));
   const overviewSpan = overviewEnd - overviewStart;
   const overviewPercent = (day: number) => (day - overviewStart) / overviewSpan * 100;
 
@@ -133,15 +126,9 @@ export function TimelineView() {
     element.addEventListener('wheel', wheel, { passive: false });
     return () => element.removeEventListener('wheel', wheel);
   }, []);
-  useEffect(() => {
-    if (!proposal) return;
-    const ranges = proposal.actions.flatMap(a => a.type === 'UPDATE_TIME' ? [dayNumber(a.startDate), dayNumber(a.endDate), dayNumber(growth.nodes[a.nodeId].startDate ?? a.startDate)] : []);
-    if (!ranges.length) return;
-    const from = Math.min(...ranges) - 20, to = Math.max(...ranges) + 20;
-    setViewport({ start: from, density: Math.min(8, size.width / (to - from)) });
-    // Frame only a newly opened proposal; leave subsequent navigation to the user.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [proposal?.id]);
+  // 这里原本还有一个 effect:打开一份"本地提案"时把视口框到它涉及的那几天。
+  // 那份提案是示例空间在浏览器里编的,现在没有了 —— 后端的提案走的是下面
+  // 那条"确认后重拉计划"的路,不需要预览框。
 
   function zoomTo(nextDensity: number) {
     const next = Math.max(.25, Math.min(160, nextDensity));
@@ -149,29 +136,31 @@ export function TimelineView() {
     setClusterOpen(false);
   }
   function choose(id: string) { select(id); setEditing(false); }
+  /**
+   * 点在卡片上 —— **只选中,不开始拖动。**
+   *
+   * 这里原来还能把卡片横着拖几天,拖完把 `startDate`/`endDate` 推到别处。那条路
+   * 现在整个删了,两个原因都成立:
+   *
+   * 1. 它改的是一场真实存在的安排,而写入路径是「排期」(哪一天、多长时间),
+   *    不是把 `startDate` 往前推几天 —— 后端根本没有这个字段。真正会写下去的
+   *    只有 `deadline`,而那是**截止日**,悄悄拿它当排期用会改掉用户设的截止时间,
+   *    界面上的说辞却是"调整了安排"。
+   * 2. 它原来是配合"本地提案预览"用的(拖一下 → 出一份提案 → 用户点接受才生效),
+   *    而那份提案是示例空间在浏览器内存里编的。示例空间删掉之后没有预览可给了。
+   *
+   * 让它拖起来再报错,不如**根本不开始拖** —— 手感上"拖不动"比"拖完了才说不支持"
+   * 少一次白费的动作。改安排请走工作台的「排期」。
+   */
   function beginItem(event: PointerEvent<HTMLButtonElement>, item: TimelineItem) {
     event.stopPropagation(); choose(item.node.id);
-    // 真实空间里这条拖拽仍然不接,但原因变了:排期已经有了,只是它**不能这样写**。
-    // 拖动改的是一场真实存在的安排,而写入路径是"预览 → 用户看过 → 应用"两步 ——
-    // 拖完直接落库等于绕过预览,用户会看到任务跳到另一天而没有任何东西解释为什么。
-    // 让它拖起来再报错,不如**根本不开始拖**:手感上"拖不动"比"拖完了才说不支持"
-    // 少一次白费的动作。改安排请走工作台的「排期」。
-    if (event.button !== 0 || item.derived || proposal || isRealSpace) return;
-    event.currentTarget.setPointerCapture(event.pointerId);
-    gesture.current = { kind: 'item', x: event.clientX, id: item.node.id, days: 0 };
+    if (event.button !== 0 || item.derived || isRealSpace) return;
   }
   function move(event: PointerEvent) {
     const drag = gesture.current;
-    if (!drag) return;
-    if (drag.kind === 'pan') setViewport(v => ({ ...v, start: drag.start - (event.clientX - drag.x) / v.density }));
-    else { drag.days = Math.round((event.clientX - drag.x) / density); setDraft({ id: drag.id, days: drag.days }); }
+    if (drag) setViewport(v => ({ ...v, start: drag.start - (event.clientX - drag.x) / v.density }));
   }
-  function finish() {
-    const drag = gesture.current; gesture.current = null; setDraft(null);
-    if (drag?.kind !== 'item' || !drag.days) return;
-    const node = growth.nodes[drag.id], from = node.startDate ?? node.scheduledDate;
-    if (from) apply({ type: 'UPDATE_TIME', nodeId: node.id, startDate: shiftDate(from, drag.days), endDate: shiftDate(node.endDate ?? from, drag.days) });
-  }
+  function finish() { gesture.current = null; }
   function beginOverview(event: PointerEvent<HTMLDivElement>) {
     if (event.button !== 0) return;
     const rect = event.currentTarget.getBoundingClientRect(), daysPerPixel = overviewSpan / rect.width;
@@ -186,16 +175,13 @@ export function TimelineView() {
       <div className={styles.controls}><button aria-label="上一时段" onClick={() => setViewport(v => ({ ...v, start: v.start - size.width / density * .7 }))}><ChevronLeft size={14}/></button><button aria-label="缩小时间线" onClick={() => zoomTo(density / 1.5)}><Minus size={14}/></button><input aria-label="时间线缩放" type="range" min={Math.log(.25)} max={Math.log(160)} step="0.01" value={Math.log(density)} onChange={e => zoomTo(Math.exp(Number(e.target.value)))}/><button aria-label="放大时间线" onClick={() => zoomTo(density * 1.5)}><Plus size={14}/></button><button onClick={() => setViewport(v => ({ ...v, start: today - size.width / v.density * .28 }))}>今天</button><button aria-label="下一时段" onClick={() => setViewport(v => ({ ...v, start: v.start + size.width / density * .7 }))}><ChevronRight size={14}/></button></div>
     </div>
     <div className={styles.hint}>
-      <span>{isRealSpace
-        ? '拖动空白平移 · Ctrl / ⌘ + 滚轮缩放 · 卡片画的是已排的日期与截止时间，改安排请用「排期」'
-        : '拖动空白平移 · Ctrl / ⌘ + 滚轮缩放 · 拖动节点调整日期'}</span>
+      <span>拖动空白平移 · Ctrl / ⌘ + 滚轮缩放 · 卡片画的是已排的日期与截止时间，改安排请用「排期」</span>
       <span>{level === 'year' ? '目标与重要节点' : level === 'quarter' ? '阶段与主要安排' : level === 'month' ? '任务与里程碑' : level === 'week' ? '本周的具体安排' : '每天的小行动'}</span>
     </div>
     {planError && <div className={styles.hint} role="alert"><span>{planError}</span></div>}
-    {proposal && <div className={styles.previewBanner}><span>调整预览 · 虚线为原计划，实线为建议安排<br/>接受调整后才会更新计划</span><button onClick={() => setImpact(false)}>关闭预览</button></div>}
     <div ref={canvas} className={styles.canvas} role="region" aria-label="成长时间线，方向键平移，加减键缩放" tabIndex={0} data-testid="timeline-canvas" data-ready={measured} data-start={start} data-density={density}
-      onPointerDown={e => { if (e.button !== 0 || (e.target as HTMLElement).closest('button,input,[data-cluster-panel]')) return; e.currentTarget.setPointerCapture(e.pointerId); gesture.current = { kind: 'pan', x: e.clientX, start }; setClusterOpen(false); }}
-      onPointerMove={move} onPointerUp={finish} onPointerCancel={() => { gesture.current = null; setDraft(null); }}
+      onPointerDown={e => { if (e.button !== 0 || (e.target as HTMLElement).closest('button,input,[data-cluster-panel]')) return; e.currentTarget.setPointerCapture(e.pointerId); gesture.current = { x: e.clientX, start }; setClusterOpen(false); }}
+      onPointerMove={move} onPointerUp={finish} onPointerCancel={finish}
       onKeyDown={e => { if (e.target !== e.currentTarget) return; if (['ArrowLeft', 'ArrowRight', '+', '=', '-', 'Home'].includes(e.key)) e.preventDefault(); if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') setViewport(v => ({ ...v, start: v.start + (e.key === 'ArrowLeft' ? -1 : 1) * size.width / density * .2 })); if (e.key === '+' || e.key === '=') zoomTo(density * 1.5); if (e.key === '-') zoomTo(density / 1.5); if (e.key === 'Home') setViewport(v => ({ ...v, start: today - size.width / density * .28 })); }}>
       <div className={styles.ruler}/>{years.map(year => <span key={year} className={styles.year} style={{ left: Math.max(18, x(dayNumber(`${year}-01-01`)) + 6) }}>{year}</span>)}
       {ticks.map(t => <div key={t.day} className={`${styles.tick} ${t.major ? styles.majorTick : ''}`} style={{ left: x(t.day) }}>{t.major && <span className={styles.tickLabel}>{t.label}</span>}</div>)}
@@ -205,17 +191,15 @@ export function TimelineView() {
         const id = item.node.id, upper = lane % 2 === 0;
         const cardY = upper ? axisY - 112 - Math.floor(lane / 2) * 86 : axisY + 45 + Math.floor(lane / 2) * 86;
         const color = item.node.category ? colors[item.node.category] : '#829dc5';
-        const original = all.find(i => i.node.id === id)!, changed = changes.some(a => a.nodeId === id), rangeY = axisY + 7 + rangeLane * 4;
+        const rangeY = axisY + 7 + rangeLane * 4;
         const Icon = item.kind === 'milestone' ? Flag : item.kind === 'goal' ? Target : Circle;
         return <div key={id} data-timeline-item={id} data-start-date={dateString(item.start)} data-end-date={dateString(item.end)} className={`${styles.object} ${selectedId === id ? styles.selected : ''} ${hovered && hovered !== id ? styles.dim : ''}`} style={{ '--color': color } as CSSProperties} onMouseEnter={() => setHovered(id)} onMouseLeave={() => setHovered(null)}>
           <svg className={styles.lines} aria-hidden="true"><path className={styles.connection} d={`M ${anchorX} ${axisY} V ${upper ? cardY + 84 : cardY - 12} L ${left + cardWidth / 2} ${upper ? cardY + 72 : cardY}`}/>
             {item.end > item.start && <><line className={styles.range} x1={Math.max(0, x(item.start))} x2={Math.min(size.width, x(item.end))} y1={rangeY} y2={rangeY}/>{[item.start,item.end].filter(d => x(d) >= 0 && x(d) <= size.width).map(d => <circle key={d} className={styles.endpoint} cx={x(d)} cy={rangeY} r="2.5"/>)}</>}
-            {changed && <g className={styles.ghost} data-testid="plan-ghost"><line className={styles.range} x1={x(original.start)} x2={x(original.end)} y1={axisY - 15} y2={axisY - 15}/><circle className={styles.endpoint} cx={x(original.start)} cy={axisY - 15} r="4"/><circle className={styles.endpoint} cx={x(original.end)} cy={axisY - 15} r="3"/></g>}
           </svg>
-          {changed && <span className={styles.ghostLabel} style={{ left: Math.max(64, Math.min(size.width - 64, x(original.start))), top: axisY - 33 }}>原计划 {rangeLabel(original)}</span>}
           <button className={`${styles.point} ${item.start < start ? styles.continuation : item.kind === 'milestone' ? styles.milestone : item.kind === 'goal' ? styles.goal : ''}`} style={{ left: anchorX, top: axisY }} aria-label={`${item.node.title}${item.start < start ? '从此前延续' : '时间点'}`} onClick={() => choose(id)} onPointerDown={e => beginItem(e, item)}/>
           <button data-timeline-card className={`${styles.card} ${item.kind !== 'duration' ? styles.eventCard : ''}`} style={{ left, top: cardY, width: cardWidth }} aria-label={`${item.node.title}，${dateString(item.start)}至${dateString(item.end)}`} aria-pressed={selectedId === id} title={`${item.node.title} · ${dateString(item.start)} — ${dateString(item.end)}${item.derived ? '（根据子任务推导）' : ''}`} onClick={() => choose(id)} onPointerDown={e => beginItem(e, item)}>
-            <time><Icon size={11}/>{rangeLabel(item)}</time><strong>{item.node.title}</strong><small className={changed ? styles.previewTag : ''}>{cardNote(item, changed, start)}</small>
+            <time><Icon size={11}/>{rangeLabel(item)}</time><strong>{item.node.title}</strong><small>{cardNote(item, start)}</small>
           </button>
           {(hovered === id || selectedId === id) && item.start >= start && <div className={styles.hoverDate} style={{ left: anchorX }}><span>{shortDate(item.start)}</span></div>}
         </div>;

@@ -1,9 +1,8 @@
 import { expect, type APIRequestContext, type Locator, type Page } from '@playwright/test';
 import { todayInTimeZone } from '../../src/features/growth/timeline';
-import { DEMO_TODAY } from '../../src/mock/growth-state';
 
 /**
- * 登录、调接口、进入示例空间 —— 每个端到端测试都要走的那几步。
+ * 登录、调接口、进空间 —— 每个端到端测试都要走的那几步。
  *
  * ## 为什么抽出来
  *
@@ -18,24 +17,20 @@ import { DEMO_TODAY } from '../../src/mock/growth-state';
  * 注册走的是真的 `POST /api/auth/register`,令牌写进 localStorage 之后浏览器里的
  * 每个请求都带着它,由真正的鉴权路径把关;空间也是真的 `POST /api/workspaces`。
  * 测试**不伪造身份**,只是把真人会做的那几步做完。
+ *
+ * ## 示例空间已经删掉了,这里原来有四个辅助函数跟着一起删
+ *
+ * `DEMO_WORKSPACE` / `demoUrl` / `openDemoSpace` / `demoDate` 以及 `DEMO_TODAY`
+ * 那个种子锚点 —— 它们服务的那个 `?workspace=primary` 演示空间整个没有了。
+ * 现在**每个测试都在真实空间里搭自己的场景**:`createWorkspace` 建空间、
+ * `api()` 建节点,看到的东西全部有后端那一行对应。这比读一份预置演示数据更慢,
+ * 但它验的是产品而不是那份数据。
  */
 
 export const API_BASE = (process.env.API_BASE ?? 'http://127.0.0.1:8000').replace(/\/+$/, '');
 
 /** 令牌在 localStorage 里的键。见 `src/lib/api.ts`。 */
 export const TOKEN_KEY = 'zhitu.auth.token.v1';
-
-/**
- * 示例空间的 id。
- *
- * 保研那套演示数据还在(`src/mock/`),但它**不再是"没选空间时的默认值"** ——
- * 一个刚注册的账户看到系统替他建好的一份保研计划,是这一版明确要消灭的东西。
- * 现在它只能从"成长空间"页主动进入,地址上就是 `?workspace=primary`。
- *
- * 所以凡是"验的是那份演示内容"的测试,都得显式带上这个参数。它是产品的真实入口
- * (空间页那句"先看看示例空间"点下去就是这个地址),不是测试的私门。
- */
-export const DEMO_WORKSPACE = 'primary';
 
 export interface TestAccount {
   token: string;
@@ -121,28 +116,120 @@ export async function createWorkspace(page: Page, token: string, title: string, 
   return created.workspace.id;
 }
 
+/** `/plan` 里一条节点。只声明测试真的会读的几个字段。 */
+export interface PlanNode {
+  id: string;
+  parentId: string | null;
+  title: string;
+  nodeType: string;
+  deadline: string | null;
+  status: string;
+}
+/** 计划里一条边。`/plan` 会把它一并返回,画布的连线就是从这儿投影出来的。 */
+export interface PlanDependency {
+  id: string;
+  predecessorId: string;
+  successorId: string;
+  depType: string;
+  lagDays: number;
+}
+
+export interface PlanPayload {
+  nodes: PlanNode[];
+  totalNodes: number;
+  revisionVersion: number;
+  /** 前置 → 后续。删掉一个节点时,挂在它上面的边必须一起消失,否则库里会留下悬空边。 */
+  dependencies: PlanDependency[];
+}
+
+/** 读一份计划。**整个空间**,不是当前这一层 —— 进入子空间不影响它读回什么。 */
+export async function getPlan(page: Page, token: string, workspaceId: string): Promise<PlanPayload> {
+  return api<PlanPayload>(page, token, `/api/workspaces/${workspaceId}/plan`);
+}
+
 /**
- * 把一个页面地址补成"在当前示例空间里打开它"。
+ * 建一条"前者完成后才能开始后者"。
+ *
+ * 界面上现在**还画不出线**(那是有意的:默认拖线必须建"关联",不能擅自解释成任务前置 ——
+ * 见任务书 §3.2,排期语义的线得用户明确选)。但这条边在**库里**是真实存在的,
+ * 所以"删节点会不会留下悬空边"这件事现在就能验,而且必须在界面接上线之前就验住。
+ */
+export async function addDependency(
+  page: Page,
+  token: string,
+  workspaceId: string,
+  predecessorId: string,
+  successorId: string,
+): Promise<void> {
+  await api(page, token, `/api/workspaces/${workspaceId}/dependencies`, {
+    method: 'POST',
+    data: { predecessorId, successorId },
+  });
+}
+
+/**
+ * 拿**接口**建一个节点,返回它的 id。
+ *
+ * 为什么用接口而不是点界面:凡是要验"后端有什么、界面画不画得出来"的测试,
+ * 节点就必须先真的在后端。从界面建的话,建失败时测试会因为另一个原因
+ * (按钮没生效)而失败,分不清到底哪一环坏了。
+ */
+export async function createNode(
+  page: Page,
+  token: string,
+  workspaceId: string,
+  data: { parentId: string; title: string; nodeType?: string; deadline?: string; description?: string; estimateMinutes?: number },
+): Promise<string> {
+  const created = await api<{ node: PlanNode }>(page, token, `/api/workspaces/${workspaceId}/nodes`, {
+    method: 'POST',
+    data,
+  });
+  return created.node.id;
+}
+
+/**
+ * 等到计划真的从后端到达。
+ *
+ * 计划到达之前,真实空间画出来的是一棵只有根目标的**占位**树,根节点的 id 是哨兵值
+ * `'goal'`(见 `planProjection.emptyGrowth`)。那个状态下界面还改不了数据 —— 新建节点
+ * 是禁用的,因为 `POST /nodes` 要一个真 UUID。不先等这一步,测试是在一个"还不能操作"
+ * 的界面上点按钮,失败原因会指向选择器而不是它真正的原因。
+ */
+export async function waitForRealPlan(page: Page): Promise<void> {
+  await expect
+    .poll(async () => {
+      const ids = await renderedNodeIds(page);
+      return ids.length > 0 && !ids.includes('goal');
+    }, { message: '计划没有从后端到达:画布上还是那个哨兵根节点' })
+    .toBe(true);
+}
+
+/** 画布上真正画出来的节点 id。ReactFlow 不加虚拟化参数时每个节点都在 DOM 里。 */
+export async function renderedNodeIds(page: Page): Promise<string[]> {
+  return (await page.locator('.react-flow__node').evaluateAll(
+    (nodes) => nodes.map((node) => node.getAttribute('data-id') ?? ''),
+  )).sort();
+}
+
+/**
+ * 打开一个空间里的某一页。
  *
  * 六个主导航链接指向的是 `/journal`、`/conversations` 这样的裸地址,不带
- * `?workspace=`。在示例空间里点它们会**丢掉空间上下文**并被弹回空间页 ——
- * 因为示例空间不像真实空间那样记在 `zhitu.active.workspace.<用户>` 里,它只认
- * 地址栏上那个参数(见 `src/features/growth/provider.tsx` 的 WorkspaceRouter)。
- *
- * 所以凡是"跨页面走一遍"的测试,这里用显式地址代替点导航链接:验的是页面之间
- * 共享同一份状态,不是导航链接的 href 拼写。
+ * `?workspace=` —— 它们靠 `zhitu.active.workspace.<用户>` 那个本地键找回上下文。
+ * 所以跨页面走一遍有两种写法:点导航链接(验的是链接本身),或者显式带上参数
+ * (验的是页面之间共享同一份状态)。这个函数是后一种。
  */
-export function demoUrl(path: string, query: Record<string, string> = {}): string {
+export function spaceUrl(path: string, workspaceId: string, query: Record<string, string> = {}): string {
   const [pathname, search = ''] = path.split('?');
   const params = new URLSearchParams(search);
-  params.set('workspace', DEMO_WORKSPACE);
+  params.set('workspace', workspaceId);
   for (const [key, value] of Object.entries(query)) params.set(key, value);
   return `${pathname}?${params.toString()}`;
 }
 
-/** 进示例空间里的某一页。 */
-export async function openDemoSpace(page: Page, path: string, query: Record<string, string> = {}): Promise<void> {
-  await page.goto(demoUrl(path, query));
+/** 进某个空间里的某一页。 */
+export async function openSpacePage(page: Page, path: string, workspaceId: string, query: Record<string, string> = {}): Promise<void> {
+  await page.goto(spaceUrl(path, workspaceId, query));
 }
 
 /**
@@ -173,20 +260,81 @@ export async function expectCanvasNodes(page: Page, ids: string[]): Promise<void
 }
 
 /**
- * 一个种子日期,在**这一次运行里**实际会落在哪一天。
+ * 算一份排期,并把这一份**应用**下去。
  *
- * 示例数据的日期是按 `DEMO_TODAY`(2026-09-16)排的常量,而产品在进示例空间时会
- * 把它们整体平移到"今天"(见 `provider.tsx` 的 `reanchorDemoDates`:今天 − 种子锚点,
- * 保持相对间隔)。所以测试里那些写死的 demo 日期**每过一天就整体后移一天** ——
- * 写成字面量(比如直接断言 `2026-10-18`)在写下的当天是对的,第二天起就是错的,
- * 而失败信息会指向"时间线拖动坏了",不是"日期常量过期了"。
+ * 排期是"哪几天做多久"的写入路径 —— 它和截止时间是两件事(见 `types/growth.ts` 里
+ * `GrowthNode.deadline` 那段)。界面上对应的是工作台的「排期」:先看一份草案,确认了
+ * 才写。这里走的是同一条路,只是把"看"和"确认"压成一步。
  *
- * 这里用产品自己的 `todayInTimeZone()` 和种子锚点 `DEMO_TODAY` 算出这个位移,
- * 再把种子日期换算过去 —— 断言的对象没变(某个节点该在哪一天),
- * 变的是它不再是一个字面量。
+ * **必须带 `estimateMinutes` 的节点才排得进去**:没有工时的节点会变成 `NoEstimate`
+ * 缺口,一行场次都不会产生 —— 而那时候测试失败的样子是"今天这一页什么都没有",
+ * 看起来像页面坏了。
+ *
+ * 返回的是**数据库回报的真实笔数**(`applied.created`),不是算法说它想写多少。
  */
-export function demoDate(seed: string): string {
-  const day = 86400000;
-  const shift = (Date.parse(`${todayInTimeZone()}T00:00:00Z`) - Date.parse(`${DEMO_TODAY}T00:00:00Z`)) / day;
-  return new Date(Date.parse(`${seed}T00:00:00Z`) + shift * day).toISOString().slice(0, 10);
+export async function scheduleEverything(
+  page: Page,
+  token: string,
+  workspaceId: string,
+): Promise<{ created: number; totalPlannedMinutes: number }> {
+  const preview = await api<{ scheduleVersion: string; totalPlannedMinutes: number }>(
+    page,
+    token,
+    `/api/workspaces/${workspaceId}/schedule/preview`,
+    { method: 'POST' },
+  );
+  const applied = await api<{ applied: { created: number } }>(
+    page,
+    token,
+    `/api/workspaces/${workspaceId}/schedule/apply`,
+    {
+      method: 'POST',
+      data: { scheduleVersion: preview.scheduleVersion, idempotencyKey: `e2e-schedule-${crypto.randomUUID()}` },
+    },
+  );
+  return { created: applied.applied.created, totalPlannedMinutes: preview.totalPlannedMinutes };
+}
+
+/** 「今天」这一页读到的一条安排。跨**全部活动空间** —— 路径上没有空间参数。 */
+export interface TodayItem {
+  sessionId: string;
+  nodeId: string;
+  nodeTitle: string;
+  workspaceTitle: string;
+  plannedMinutes: number;
+  status: string;
+  result: string | null;
+  recorded: boolean;
+  actualMinutes: number | null;
+}
+
+/** 读一份「今天」的真值。界面上的勾是乐观更新,这一份才是库里那一行。 */
+export async function getToday(
+  page: Page,
+  token: string,
+): Promise<{ items: TodayItem[]; itemCount: number; recordedCount: number; plannedMinutes: number }> {
+  const today = await api<{
+    workspaces: { items: TodayItem[] }[];
+    itemCount: number;
+    recordedCount: number;
+    plannedMinutes: number;
+  }>(page, token, '/api/today');
+  return {
+    items: today.workspaces.flatMap((workspace) => workspace.items),
+    itemCount: today.itemCount,
+    recordedCount: today.recordedCount,
+    plannedMinutes: today.plannedMinutes,
+  };
+}
+
+/**
+ * 相对今天第 `offset` 天的日期(`YYYY-MM-DD`,UTC 口径)。
+ *
+ * 测试里建节点时用它算截止日,而**不能写字面量** —— 一个写死 `2026-10-18` 的断言
+ * 在写下的当天是对的,第二天起就是错的,而失败信息会指向"时间线坏了",不是
+ * "日期常量过期了"。这里和产品自己算日期用的是同一套口径(`todayInTimeZone`)。
+ */
+export function dayOffset(offset: number, from = new Date()): string {
+  const base = Date.parse(`${todayInTimeZone(from)}T00:00:00Z`);
+  return new Date(base + offset * 86400000).toISOString().slice(0, 10);
 }

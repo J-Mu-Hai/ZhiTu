@@ -1,8 +1,7 @@
 'use client';
 import { BrandMark } from '@/components/ui/BrandMark';
 import { useEffect, useRef, useState } from 'react';
-import { useRouter } from 'next/navigation';
-import { ArrowUp, Plus, X, CornerDownLeft, ArrowUpRight, AlertCircle, RotateCcw, RefreshCw } from 'lucide-react';
+import { ArrowUp, Plus, X, CornerDownLeft, AlertCircle, RotateCcw, RefreshCw } from 'lucide-react';
 import { useDemo } from '@/features/growth/provider';
 import { degradedHint, fieldLabel, sourceLabel } from '@/lib/backend';
 
@@ -39,8 +38,7 @@ const PROPOSAL_STATUS_LABEL: Record<string, string> = {
  *    它跟模型能不能用没关系。
  */
 export function ConversationPanel() {
-  const { growth, selectedId, select, messages, proposals, accept, remoteProposals, proposalErrors, deciding, confirmRemote, rejectRemote, replan, replanState, send, retry, sending, sendError, retryable, brief, historyLoading, messagesTruncated, isRealSpace, previewProposal, spaceId, workspaceId } = useDemo();
-  const router = useRouter();
+  const { growth, selectedId, select, messages, remoteProposals, proposalErrors, deciding, confirmRemote, rejectRemote, replan, replanState, send, retry, sending, sendError, retryable, brief, historyLoading, messagesTruncated, spaceId } = useDemo();
   const [input, setInput] = useState('');
   const [showContexts, setShowContexts] = useState(false);
   const bottom = useRef<HTMLDivElement>(null);
@@ -81,7 +79,9 @@ export function ConversationPanel() {
           <h2>与 AI 一起思考</h2>
           <p>基于当前空间 · {growth.nodes[spaceId]?.title ?? growth.title}</p>
         </div>
-        {!isRealSpace && <span className="local-label">示例空间</span>}
+        {/* 「示例空间」这个标签没有了 —— 因为它指的那个东西没有了。
+            留在这里最坏的情况是它**永远不显示**,而那种"看不出来坏了"的控件
+            比明着报错更难发现。 */}
       </header>
 
       <div className="conversation-history">
@@ -90,12 +90,8 @@ export function ConversationPanel() {
         {!historyLoading && !messages.length && (
           <div className="conversation-empty">
             <BrandMark size={24} />
-            <strong>{isRealSpace ? '说说你想推进什么' : '这是示例空间'}</strong>
-            <p>
-              {isRealSpace
-                ? '比如「我想在三个月内完成一个 Python 项目」。AI 会先问清楚截止时间、每周能投入多少时间、现在的水平，再动手排计划。'
-                : '示例空间里的回复是本地写好的，不经过模型。想看真实对话，请到「成长空间」新建一个空间。'}
-            </p>
+            <strong>说说你想推进什么</strong>
+            <p>比如「我想在三个月内完成一个 Python 项目」。AI 会先问清楚截止时间、每周能投入多少时间、现在的水平，再动手排计划。</p>
           </div>
         )}
 
@@ -110,8 +106,6 @@ export function ConversationPanel() {
         )}
 
         {messages.map(m => {
-          const proposal = proposals.find(p => p.id === m.proposalId);
-          const change = proposal?.actions.find(a => a.type === 'UPDATE_TIME');
           const remote = m.proposalId ? remoteProposals.find(p => p.id === m.proposalId) : undefined;
           return (
             <article className={`message ${m.role}${m.pending ? ' pending' : ''}${m.failed ? ' failed' : ''}`} key={m.id}>
@@ -119,7 +113,6 @@ export function ConversationPanel() {
                 {m.role === 'assistant'
                   ? <><BrandMark size={20} /><strong>知途</strong><span>与你一起</span></>
                   : <><span className="user-dot">我</span><strong>我</strong></>}
-                {m.isExample && <span className="example-badge" title="系统预置的示例内容">示例</span>}
               </div>
 
               <div className="message-text">{m.text}</div>
@@ -134,19 +127,11 @@ export function ConversationPanel() {
               {m.failed && <div className="message-note failed">这一条没有发出去。</div>}
               {m.pending && <div className="message-note">已记录，正在等 AI 回复…</div>}
 
-              {proposal && (
-                <div className="proposal">
-                  <span className="eyebrow">AI 调整建议</span>
-                  <strong>{growth.nodes[proposal.nodeId]?.title ?? '时间调整'}</strong>
-                  <p>{change ? `${change.startDate} — ${change.endDate}` : '更新计划安排'}</p>
-                  {proposal.status === 'pending'
-                    ? <div>
-                        <button onClick={() => { previewProposal(proposal.id); router.replace(`/workbench?workspace=${encodeURIComponent(workspaceId)}&view=timeline`); }}>查看影响<ArrowUpRight size={12} /></button>
-                        <button className="primary-button" onClick={() => void accept(proposal.id)}>接受调整</button>
-                      </div>
-                    : <span className="proposal-status">{proposal.status === 'accepted' ? '✓ 已接受，所有视图已同步' : '日期已更新，此建议已失效'}</span>}
-                </div>
-              )}
+              {/* 这里曾经还有一张"本地提案"卡片(`proposals` / `accept` /`previewProposal`)。
+                  它和下面这张后端的提案卡片**不是同一个东西**,只是名字像:那个是示例
+                  空间里本地编出来的"把某个节点挪一挪",确认了也只改浏览器内存。示例空间
+                  删掉之后它没有生产者了,一并删掉 —— 留着两张长得像、坏得不一样的卡片,
+                  比少一张更难查。 */}
 
               {/* 后端提案:AI 想对计划做的变更。**要用户点"确认"才写进计划** ——
                   模型不能替用户调这个接口,这是产品规则不是技术细节。 */}
@@ -198,7 +183,7 @@ export function ConversationPanel() {
             上面那份渲染是靠 `m.proposalId` 找到提案的,只按消息找的话,一份
             消息已经落在窗口外的提案会静静地躺在库里 —— 用户看不到,也点不了
             确认,甚至连"系统提过调整"这件事都不知道。 */}
-        {isRealSpace && orphanProposals.map(proposal => (
+        {orphanProposals.map(proposal => (
           <article className="message assistant" key={proposal.id}>
             <div className="message-byline"><BrandMark size={20} /><strong>知途</strong><span>按你的执行情况</span></div>
             <div className="message-text">
@@ -242,23 +227,21 @@ export function ConversationPanel() {
             放在对话里而不是排期页,是因为它的产出是一份**要用户确认的提案**,
             而确认的界面就在这里 —— 换个地方发起、再让用户回来确认,中间那一步
             用户是会丢的。 */}
-        {isRealSpace && (
-          <div className="replan-row">
-            <button type="button" className="text-button" disabled={replanState.busy || sending} onClick={() => void replan()}>
-              <RefreshCw size={12} />{replanState.busy ? '正在看最近的执行情况…' : '按最近的执行情况调整计划'}
-            </button>
-            {/* 降级时说"这次没能给出方案",不说"不需要调整" —— 前者要用户重试,
-                后者要用户放心,这两句话差别很大,不能合成一句空白。 */}
-            {replanState.message && (
-              <p className={replanState.degraded ? 'replan-note degraded' : 'replan-note'} role="status">
-                {replanState.message}
-              </p>
-            )}
-          </div>
-        )}
+        <div className="replan-row">
+          <button type="button" className="text-button" disabled={replanState.busy || sending} onClick={() => void replan()}>
+            <RefreshCw size={12} />{replanState.busy ? '正在看最近的执行情况…' : '按最近的执行情况调整计划'}
+          </button>
+          {/* 降级时说"这次没能给出方案",不说"不需要调整" —— 前者要用户重试,
+              后者要用户放心,这两句话差别很大,不能合成一句空白。 */}
+          {replanState.message && (
+            <p className={replanState.degraded ? 'replan-note degraded' : 'replan-note'} role="status">
+              {replanState.message}
+            </p>
+          )}
+        </div>
 
         {/* 还缺哪些条件由服务端算。它跟模型能不能用无关,所以模型挂了也要显示。 */}
-        {isRealSpace && brief && brief.missing.length > 0 && (
+        {brief && brief.missing.length > 0 && (
           <div className="brief-missing" title="AI 会先问清楚这些再排计划">
             <span className="tiny-dot" />
             还缺：{brief.missing.map(fieldLabel).join('、')}
@@ -280,7 +263,7 @@ export function ConversationPanel() {
         <form className="composer" onSubmit={e => { e.preventDefault(); submit(); }}>
           <textarea
             aria-label="给 AI 的消息"
-            placeholder={selected ? `关于「${selected.title}」，告诉 AI 你的想法……` : isRealSpace ? '我想在……之内完成……' : '有什么想法？我们一起梳理……'}
+            placeholder={selected ? `关于「${selected.title}」，告诉 AI 你的想法……` : '我想在……之内完成……'}
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); submit(); } }}
@@ -292,7 +275,7 @@ export function ConversationPanel() {
           </div>
         </form>
         {/* 这里不再写死"DeepSeek" —— 每一轮到底是谁生成的,由消息上方的徽标说。 */}
-        <p className="composer-footnote">一起思考，由你决定。<span>{isRealSpace ? '回复会写明来源' : '示例空间 · 本地回复'}</span></p>
+        <p className="composer-footnote">一起思考，由你决定。<span>回复会写明来源</span></p>
       </div>
     </aside>
   );

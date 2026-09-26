@@ -3,7 +3,7 @@ import { useMemo, useState } from 'react';
 import { Check, Clock3, ArrowUpRight } from 'lucide-react';
 import { useDemo } from '@/features/growth/provider';
 import { isInSpace } from '@/features/growth/selectors';
-import { categories } from '@/mock/growth-state';
+import { categories } from '@/features/growth/categories';
 import { todayInTimeZone, weekBounds } from '@/features/growth/timeline';
 import type { GrowthNode } from '@/types/growth';
 

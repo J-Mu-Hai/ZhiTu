@@ -108,8 +108,8 @@ export function ScheduleView() {
     return <div className={styles.view}>
       <div className={styles.empty} data-testid="schedule-empty">
         <CalendarRange size={22}/>
-        <h2>排期只在真实的成长空间里</h2>
-        <p>示例空间是浏览器里的演示数据，它没有后端，也就没有「排进日历」这件事。在「全部空间」里新建一个真实空间，把目标拆成带预计工时的任务，就能在这里排出周计划和日计划。</p>
+        <h2>还没有打开任何一个成长空间</h2>
+        <p>排期要写进后端，所以得先有一个空间。在「全部空间」里新建一个，把目标拆成带预计工时的任务，就能在这里排出周计划和日计划。</p>
       </div>
     </div>;
   }

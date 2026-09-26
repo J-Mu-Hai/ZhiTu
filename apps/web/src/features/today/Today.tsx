@@ -1,11 +1,6 @@
 'use client';
 
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
-import { ArrowUpRight, Check, Clock3, Pause, Play, Sparkles } from 'lucide-react';
-import { useDemo } from '@/features/growth/provider';
 import { todayInTimeZone } from '@/features/growth/timeline';
-import { categories } from '@/mock/growth-state';
 import { RealToday } from './RealToday';
 
 /**
@@ -28,96 +23,7 @@ function Header({ greeting, dateLabel, dateLabelEn }: { greeting: string; dateLa
   );
 }
 
-/**
- * 示例空间的「今天」。
- *
- * 整份状态都在浏览器里,所以勾选只改本地 reducer —— 这对示例空间是**成立的**,
- * 它本来就没有服务端那一份。真实空间绝不能走这条路:那样界面会说"完成了"而
- * 库里什么都没有,而"根据执行情况持续调整"的起点就是这条记录。两者按
- * `isRealSpace` 分开,不是风格选择,是数据在哪里的问题。
- */
-function DemoToday() {
-  const { growth, apply, enterSpace, focus, setFocus } = useDemo();
-  const router = useRouter();
-  const [why, setWhy] = useState(false);
-
-  const now = new Date();
-  const today = Object.values(growth.nodes).filter(node => node.type === 'task' && node.scheduledDate === todayInTimeZone(now));
-  const main = today.find(node => node.id === 'attention') ?? today[0];
-  const remaining = today.filter(node => node.id !== main?.id);
-  const minutes = Math.floor(focus.seconds / 60).toString().padStart(2, '0');
-  const seconds = (focus.seconds % 60).toString().padStart(2, '0');
-
-  return (
-    <div className="today-columns">
-      <section>
-        <div className="section-label"><span>今天最重要的事</span><span>01 / FOCUS</span></div>
-        {main
-          ? <div className="focus-card">
-              <div className="focus-category"><span className="tiny-dot" />{categories.find(c => c.id === main.category)?.title ?? '今天的事'}</div>
-              <button className="focus-title" onClick={() => { enterSpace(main.id); router.push('/workbench'); }}>{main.title}<ArrowUpRight size={20} /></button>
-              <p>{main.description}</p>
-              <div className="focus-meta">
-                <span><Clock3 size={14} />预计 {Math.round((main.estimatedHours ?? 1.5) * 60)} min</span>
-                <span>一次只做一件事</span>
-              </div>
-              <div className="focus-bottom">
-                {main.status === 'completed'
-                  ? <span className="completed-label"><Check size={17} />今天的这一步，完成了。</span>
-                  : <>
-                      <button className="primary-button" onClick={() => setFocus(f => ({ ...f, nodeId: main.id, running: !f.running }))}>
-                        {focus.running ? <Pause size={14} /> : <Play size={14} />} {focus.running ? '暂停专注' : focus.seconds ? '继续专注' : '开始专注'}
-                      </button>
-                      {focus.seconds > 0 && <>
-                        <time className="focus-timer">{minutes}:{seconds}</time>
-                        <button className="text-button" onClick={() => { setFocus(f => ({ ...f, running: false })); apply({ type: 'UPDATE_STATUS', nodeId: main.id, status: 'completed' }); }}>完成学习<Check size={13} /></button>
-                      </>}
-                    </>}
-              </div>
-            </div>
-          : <div className="empty-note">今天没有安排任务。去工作台为今天留一个小行动。</div>}
-
-        <section className="up-next">
-          <div className="section-label"><span>接下来</span><span>按自己的节奏</span></div>
-          {remaining.map(node => (
-            <div className="today-task" key={node.id}>
-              <button
-                className="task-check"
-                aria-label={`完成${node.title}`}
-                aria-pressed={node.status === 'completed'}
-                onClick={() => apply({ type: 'UPDATE_STATUS', nodeId: node.id, status: node.status === 'completed' ? 'pending' : 'completed' })}
-              >
-                {node.status === 'completed' && <Check size={13} />}
-              </button>
-              <button onClick={() => { enterSpace(node.id); router.push('/workbench'); }}>
-                {node.title}<small>{node.description}</small>
-              </button>
-              <span>{node.estimatedHours ? `${node.estimatedHours * 60} min` : '今天'}</span>
-            </div>
-          ))}
-        </section>
-      </section>
-
-      {/* **这段"观察"是写死的演示文案。** 它说"你今天课程安排比较满""我把科研任务
-          降低到了一个" —— 对示例空间成立,对一个真实新建的空间就是凭空捏造:知途
-          从来没有拿到过用户的课表,也没有替谁做过这个决定。真实空间走 `RealToday`,
-          那里只说它真的知道的事。 */}
-      <aside className="today-aside">
-        <Sparkles size={23} />
-        <span className="eyebrow">来自知途的观察</span>
-        <h2>给今天，留一点余地。</h2>
-        <p>你今天课程安排比较满。<br /><br />我把科研任务降低到了一个，优先保证课程任务和 Attention 学习。</p>
-        <button className="text-button" aria-expanded={why} onClick={() => setWhy(!why)}>{why ? '收起说明' : '为什么这样安排？'}<ArrowUpRight size={13} /></button>
-        {why && <div className="insight-explanation">这是演示中的预设建议：长时间学习 Attention 已经需要较多精力，导师资料整理仅安排 30 分钟。减少切换，比塞满今天更重要。</div>}
-        <div className="quiet-note">成长不只发生在<br />完成任务的那一刻。</div>
-      </aside>
-    </div>
-  );
-}
-
 export function Today() {
-  const { isRealSpace } = useDemo();
-
   // 现在几点 —— 问候语跟着走。"晚上好"出现在早上八点同样是在说一件不真实的事。
   const now = new Date();
   const hour = now.getHours();
@@ -131,7 +37,12 @@ export function Today() {
   return (
     <div className="editorial-page today-page">
       <Header greeting={greeting} dateLabel={dateLabel} dateLabelEn={dateLabelEn} />
-      {isRealSpace ? <RealToday /> : <DemoToday />}
+      {/* 这里原来还有一份 `DemoToday` —— 一份**完全不看后端**的"今天":它按本地
+          计划的 `scheduledDate` 挑任务,旁边那段"来自知途的观察"是写死的文案
+          ("你今天课程安排比较满""我把科研任务降低到了一个")。知途从来没有拿到过
+          用户的课表,也没替谁做过那个决定,所以对任何一个真实空间它都是凭空捏造。
+          现在只有 `RealToday`:它只说它真的从后端读到的事。 */}
+      <RealToday />
     </div>
   );
 }

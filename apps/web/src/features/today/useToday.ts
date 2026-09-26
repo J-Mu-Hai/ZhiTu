@@ -14,8 +14,9 @@ import { ApiError } from '@/lib/api';
  * 就是假的:界面显示"完成了",库里什么都没有,刷新就回来。而"根据执行情况持续调整"
  * 这条闭环的起点,恰恰是"用户报告了实际发生了什么" —— 那一环根本没接上。
  *
- * 所以真实空间走这里:`GET /api/today` 读跨空间的今天,`POST /sessions/{id}/executions`
- * 把结果写进去。示例空间继续走本地那套,两者在 `Today.tsx` 里按 `isRealSpace` 分开。
+ * 所以现在只有这一条路:`GET /api/today` 读跨空间的今天,`POST /sessions/{id}/executions`
+ * 把结果写进去。那份只改内存的本地实现随示例空间一起没有了 —— 留着它,它就会是
+ * 下一个"界面显示完成了、库里什么都没有"的地方。
  *
  * ## 未记录 ≠ 未完成
  *
@@ -70,7 +71,8 @@ export function useToday(enabled: boolean) {
 
   useEffect(() => {
     if (!enabled) {
-      // 切回示例空间时把真实数据清掉:留着它会让示例空间显示另一个账号的安排。
+      // 没有空间可看时把上一次的数据清掉 —— 否则换个账户登录,「今天」还挂着
+      // 上一个账户的安排。
       setData(null);
       setError(null);
       return;

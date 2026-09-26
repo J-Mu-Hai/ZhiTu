@@ -1,11 +1,7 @@
 'use client';
-import { Suspense, createContext, useCallback, useContext, useEffect, useMemo, useRef, useReducer, useState, type ReactNode } from 'react';
+import { Suspense, createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
-import { DEMO_TODAY, initialGrowth } from '@/mock/growth-state';
-import { initialConversation } from '@/mock/conversations';
-import type { AISettings, Conversation, FileAsset, GrowthNode, GrowthState, JournalEntry, Message, PlanAction, Proposal } from '@/types/growth';
-import { historyConversations, initialJournals } from '@/mock/life';
-import { collectNodeBranch, growthReducer, daysBetween, shiftDate } from './reducer';
+import type { AISettings, Conversation, FileAsset, GrowthNode, JournalEntry, Message, PlanAction } from '@/types/growth';
 import { todayInTimeZone } from './timeline';
 import { emptyGrowth, planToGrowth } from './planProjection';
 import { useAuth } from '@/features/auth/provider';
@@ -17,57 +13,67 @@ import { ApiError } from '@/lib/api';
 /**
  * 成长空间状态。
  *
- * ## 这个文件现在有两半,界限必须清楚
+ * ## 现在只有一种空间:真实空间
  *
  * **真实空间**(用户从"成长空间"里建的那个,id 是后端 UUID):对话完全走后端 ——
  * 历史读 `GET /api/workspaces/{id}/messages`,每一轮发 `POST .../messages`。
- * 计划图仍然是前端本地状态(阶段 5 才接 `GET /plan`),但**新空间是空的**,
- * 只有一个根目标节点,标题取真实的空间名。
+ * 计划图从 `GET /plan` 来(见 `planToGrowth`),`/plan` 是它的唯一来源。
  *
- * **示例空间**(`workspace === 'primary'`,只能从空间页主动进入):还是原来那套
- * 本地演示数据,界面上标着"AI DEMO"。它不再是"没选空间时的默认值" ——
- * 没选空间会被送回空间页,因为一个刚注册的账户看到一份保研计划,
- * 会以为那是系统替他建的。
+ * **示例空间已经整个删掉了。** 它曾经是"`workspace === 'primary'` 时才加载"的
+ * 一份本地演示数据:整棵树、对话、随笔都在浏览器里,回复是写死的。
+ * 它同时带来了四件事,删掉它一次解决四件:
  *
- * ## 之前这里做了两件必须删掉的事
+ * 1. localStorage 充当业务主存储 —— 于是"界面改了、库里没有"成了常态;
+ * 2. 硬编码的四分类,和"用户自己建图"这个方向直接冲突;
+ * 3. 假 AI 回复:文案里写着"本地演示建议",但用户看到的仍然是"AI 回答了我";
+ * 4. 假 Today 观察段:它说"你今天课程安排比较满""我把科研任务降低到了一个",
+ *    而知途从来没有拿到过用户的课表,也没替谁做过这个决定。
+ *
+ * 删掉之后这里剩下的东西只有一条规矩:**界面上的每一个数字都必须来自后端**。
+ *
+ * ## 这里做过、也必须继续避免的两件事
  *
  * 1. `send()` 在 `fetch` 失败后 `catch {}` 吞掉错误,然后根据几个中文关键词
- *    (推迟 / 太早 / 延后……)编一条回复。回复里甚至写着"这是本地演示建议",
- *    但用户看到的仍然是"AI 回答了我"。现在真实空间的发送失败就是失败:
+ *    (推迟 / 太早 / 延后……)编一条回复。现在发送失败就是失败:
  *    出错的气泡 + 重试按钮。
  * 2. `readWorkspaces` 读的时候就写 —— 没有空间就伪造一个 `primary`。
- *    那不是"默认值",那是编数据。
+ *    那不是"默认值",那是编数据。那个函数和它伪造的东西一起没了(没有空间就是
+ *    没有空间,界面说"还没有空间"),但**这条规则还在**:读接口不写库。
  */
 
-type WorkspaceSnapshot = {
-  growth: GrowthState;
-  journals: JournalEntry[];
-  conversations: Conversation[];
+/**
+ * 存在这台浏览器里的东西。
+ *
+ * **只有这两样。** 它们是"属于这台机器"的偏好,后端没有它们的位置 —— 用户在路径图上
+ * 把某个阶段拖到了别处,换台机器不该看到同一个位置。计划、消息、提案都不在这里:
+ * 计划由 `GET /plan` 提供,消息由 `GET .../messages` 提供。
+ *
+ * 上一版这里还装着整份计划图(`growth`/`journals`/`conversations`/`messages`/
+ * `proposals`)—— 那是示例空间要整份存进 localStorage 才需要的形状。示例空间没了,
+ * 那些字段就没有生产者了,留着只会让人以为"本地还存着一份计划"。
+ */
+type LocalPrefs = {
   settings: AISettings;
-  messages: Message[];
-  proposals: Proposal[];
   positions: Record<string, { x: number; y: number }>;
 };
 
 /**
  * 当前打开的是哪个空间。
  *
- * `kind` 是三种,不是一个布尔值 —— 因为一开始写成 `isReal: boolean` 的时候,
- * "还没有选空间"被塞进了 `isReal: false`,也就是**示例空间**那一支,
- * 于是没选空间就会看到示例数据。两种不同的情况共用一个布尔值,早晚会串。
+ * `kind` 曾经是三种 —— `real` / `demo` / `none`,而且一开始是 `isReal: boolean`。
+ * 那个布尔值正是"没选空间"落到示例空间那一支的原因:两种不同的情况共用一个布尔值,
+ * 早晚会串。示例空间删掉之后 `demo` 这一档不存在了,但**保留 `none` 这一档**,
+ * 因为它不是示例状态,是空状态。
  *
  * - `real`:后端里的空间,数据从 API 来。
- * - `demo`:示例空间,数据在浏览器里,界面上标着"示例"。
  * - `none`:还没选。**空状态,不是示例状态。**
  */
 export type SpaceInfo = {
   id: string;
   title: string;
   intent: string;
-  kind: 'real' | 'demo' | 'none';
+  kind: 'real' | 'none';
 };
-
-const DEMO_SPACE: SpaceInfo = { id: 'primary', title: '示例空间', intent: '', kind: 'demo' };
 
 /** 还没选空间时的占位。它**不产生任何数据**,只是让组件有个形状可依赖。 */
 const NO_SPACE: SpaceInfo = { id: 'none', title: '', intent: '', kind: 'none' };
@@ -77,37 +83,19 @@ const ROUTES_NEEDING_A_SPACE = ['/workbench', '/today', '/journal', '/conversati
 const DEFAULT_SETTINGS: AISettings = { mode: '教练', frequency: '中', proactive: true, adjust: true, critique: true, rest: true };
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
-
 /**
- * 本地计划快照存哪个键。
+ * 本地偏好(设置 + 画布位置)存哪个键。**按账户分。**
  *
- * 示例空间不按账户分:它是所有人共用的那一份演示数据,不属于任何一个账户,
- * 按账户分只会让"同一个示例空间在不同账户下长得不一样"。真实空间按账户分 ——
- * 同一台机器上换账户登录,绝不能看见上一个账户的计划。
+ * 同一台机器上换账户登录,绝不能看见上一个账户的数据 —— 这条在示例空间还在的时候
+ * 是"按账户分"和"共用一个键"两种做法并存(示例空间是所有人共用的那一份演示数据,
+ * 所以刻意不按账户分)。示例空间删掉之后只剩一种做法:按账户分,没有例外。
  *
  * 写入和读取**必须**走同一个函数。分开写两处的时候很容易对不上,
  * 而对不上的表现是"改了没保存",很难查。
- *
- * **三种 kind 必须是三个键。** 以前这里是 `real ? 按账户 : 示例空间的键` ——
- * 于是"还没选空间"(`kind === 'none'`)和示例空间共用 `guest.primary`。而没选空间的
- * 时候画布上是一棵只有哨兵根节点的空树,那个空树被持久化到示例空间的键上,
- * 下一次进示例空间读到的就是它:`loadDemoSnapshot` 的守卫只看"有没有 goal 节点",
- * 空树正好有,于是守卫放行 —— **示例空间变成一片空白**,
- * 而界面上还写着"点击四个成长分类进入专属路径"。
- *
- * 触发条件比看上去宽:全新账户落在 `/spaces`,那一刻 `space` 就是 `none`,
- * 挂载即写入。所以只要新用户先看过空间列表,示例空间就没了。
  */
 function storageKeyFor(user: AccountProfile | null, space: SpaceInfo): string {
-  // 只有示例空间不按账户分:它是所有人共用的那一份演示数据,不属于任何一个账户,
-  // 按账户分只会让"同一个示例空间在不同账户下长得不一样"。
-  if (space.kind === 'demo') return workspaceStorageKey('guest', DEMO_SPACE.id);
   return workspaceStorageKey(user?.id ?? 'guest', space.id);
 }
-const exampleMessageIds = new Set(['m1', 'm2', 'm3', 'm4', 't1', 't2', 'c1', 'c2', 'f1', 'f2']);
-const exampleConversationIds = new Set(['transformer', 'career', 'future']);
-const exampleJournalIds = new Set(['journal-1', 'journal-2']);
 
 /**
  * 今天的日期。
@@ -121,64 +109,6 @@ const exampleJournalIds = new Set(['journal-1', 'journal-2']);
  */
 function getBeijingDate(now = new Date()): string {
   return todayInTimeZone(now);
-}
-
-function restoreExampleMarkers(snapshot: WorkspaceSnapshot): WorkspaceSnapshot {
-  const markMessage = (message: Message): Message => exampleMessageIds.has(message.id) ? { ...message, isExample: true } : message;
-  const markedConversations = snapshot.conversations.map(conversation => ({
-    ...conversation,
-    isExample: exampleConversationIds.has(conversation.id) || conversation.isExample,
-    messages: conversation.messages.map(markMessage),
-  }));
-  const conversations = markedConversations.some(conversation => !conversation.isExample)
-    ? markedConversations.filter(conversation => !conversation.isExample)
-    : markedConversations;
-  return {
-    ...snapshot,
-    messages: snapshot.messages.map(markMessage),
-    conversations,
-    journals: snapshot.journals.map(journal => {
-      if (exampleJournalIds.has(journal.id)) return { ...journal, isExample: true };
-      if (!journal.isExample && journal.date === DEMO_TODAY) return { ...journal, date: getBeijingDate() };
-      return journal;
-    }),
-  };
-}
-
-/** 示例数据里带日期的字段 —— 见 `mock/growth-state.ts`,节点上没有别的时间字段。 */
-const DEMO_DATE_FIELDS = ['startDate', 'endDate', 'scheduledDate'] as const;
-
-/**
- * 把示例计划的日期整体平移到**真实的今天**。
- *
- * 示例数据是**写死在 `DEMO_TODAY`(2026-09-16)** 那一天的:那天有两项"今天做"的
- * 行动、一条排在那天的"联系导师",以及一个刚结束的学期开头。而时间线 / 今天页 /
- * 任务视图已经改成按真实日期过滤,种子节点的日期却没有跟着迁移 —— 于是示例空间的
- * "今天"**永远是空的**:`/today` 说"今天没有安排任务",任务视图的"今天"是 0 项,
- * 专注流程根本进不去。示例空间自己的主打演示路径就这样废掉了,而界面上什么都看不出来。
- *
- * **每次加载都从种子重算,绝不在存储值上累加。** 示例空间是会被写进 localStorage 的,
- * 如果只在建快照时平移一次,用户第二天再打开,那份快照仍然锚在昨天 —— 还是"今天
- * 恒空",只是晚一天出现。所以判据是"这个节点还是种子里的那一份吗":是,就按
- * `种子日期 + 天数差` 重算(幂等,算多少遍结果都一样);不是 —— 用户在示例空间里
- * 自己建的节点,本来就排在真实日期上 —— 一个字段都不碰。
- */
-function reanchorDemoDates(growth: GrowthState, today: string): GrowthState {
-  const shift = daysBetween(DEMO_TODAY, today);
-  if (!Number.isFinite(shift) || shift === 0) return growth;
-  return {
-    ...growth,
-    nodes: Object.fromEntries(Object.entries(growth.nodes).map(([id, node]) => {
-      const seed = initialGrowth.nodes[id];
-      if (!seed) return [id, node];
-      const moved = { ...node };
-      for (const field of DEMO_DATE_FIELDS) {
-        const from = seed[field];
-        if (from) moved[field] = shiftDate(from, shift);
-      }
-      return [id, moved];
-    })),
-  };
 }
 
 /** 后端的 `MessageView` -> 界面用的 `Message`。id 用后端的,不用本地新生成的 ——
@@ -197,144 +127,31 @@ function toMessage(view: backend.MessageView): Message {
   };
 }
 
-/** 示例空间:整份都在浏览器里,和上一版一致。 */
-function demoSnapshot(): WorkspaceSnapshot {
-  return {
-    // 日期要锚在真实的今天 —— 否则这份演示数据一打开就是"今天什么都没有"。
-    growth: reanchorDemoDates(clone(initialGrowth), getBeijingDate()),
-    journals: clone(initialJournals),
-    conversations: clone(historyConversations),
-    settings: { ...DEFAULT_SETTINGS },
-    messages: clone(initialConversation.messages),
-    proposals: [],
-    positions: {},
-  };
-}
-
 /**
- * 还没有计划时的那份本地快照 —— 只给示例空间和"还没选空间"用。
+ * 读这台浏览器上存着的那两样偏好。
  *
- * 后端建空间时就是只建一个根 goal 节点,所以这里显示一个节点不是"编了一份计划",
- * 而是**如实显示后端真实存在的那一行**。区别在于:以前的版本会把 24 个保研节点灌进
- * 任何一个新空间,那些节点在后端根本不存在。
+ * 读失败(JSON 坏了、存的是上一版的形状)就退回默认值 —— **不抛错**。
+ * 偏好读不出来不该让整个工作台打不开:位置和设置都能重新设一次,计划不能重来,
+ * 而计划在后端,不依赖这里。
  *
- * **真实空间的计划不再走这里了。** 阶段 5 接上了 `GET /plan`,真实空间读的是那份
- * 载荷(见 `planToGrowth`),节点 id 是真实 UUID —— 所以 `sendReal` 里那句
- * "UUID 才发" 的限制,现在只在计划还没拉到的那个窗口里才可能生效。
- *
- * 这个本地根节点的 id 是哨兵值 `goal`。它**只**代表"计划还没到",不代表任何后端
- * 事实,所以不能拿它去比较 —— 判断"是不是在根这一层"要用 `growth.goalId`
- * (真实空间里那是个 UUID)。`currentSpaceId` 会把它挡在前面,调用方通常看不到它。
+ * 兼容性:上一版往同一个键里存的是整份快照(带 `growth`/`messages`/…)。
+ * 这里只取 `settings` 和 `positions`,多出来的字段自然被忽略,所以老数据不会炸。
  */
-function emptySnapshot(space: SpaceInfo, fallbackTitle = ''): WorkspaceSnapshot {
-  const goal: GrowthNode = {
-    id: 'goal',
-    title: space.title || fallbackTitle,
-    description: space.intent || undefined,
-    type: 'goal',
-    status: 'pending',
-    priority: 'high',
-  };
-  return {
-    growth: {
-      id: `growth-${space.id}`,
-      title: space.title,
-      goalId: 'goal',
-      currentStageId: 'goal',
-      nodes: { goal },
-      edges: [],
-    },
-    journals: [],
-    conversations: [],
-    settings: { ...DEFAULT_SETTINGS },
-    messages: [],
-    proposals: [],
-    positions: {},
-  };
-}
-
-/**
- * 真实空间的本地缓存。**只存两样东西:画布上手动拖过的位置、AI 设置。**
- *
- * 这两样是"属于这台浏览器"的偏好,后端没有它们的位置 —— 用户在路径图上把某个
- * 阶段拖到了别处,换台机器不该看到同一个位置。
- *
- * 计划、消息、提案**都不在这里**:
- *
- * - 计划由 `GET /plan` 提供(见 `growth`)。
- * - 消息由 `GET .../messages` 提供(见历史加载那段)。
- *
- * 上一版把整份计划图也写进 localStorage,于是刷新后的顺序是"先画出本地那份 →
- * 后端的数据到了再替换"。用户看到的是计划"闪了一下变了",而如果两份不一致,
- * 他会以为自己刚才的改动丢了。两个真相同时存在时,总有一个时刻在显示错的那个。
- */
-function loadRealSnapshot(user: AccountProfile | null, space: SpaceInfo): WorkspaceSnapshot {
-  const fallback = emptySnapshot(space);
+function loadLocalPrefs(user: AccountProfile | null, space: SpaceInfo): LocalPrefs {
+  const fallback: LocalPrefs = { settings: { ...DEFAULT_SETTINGS }, positions: {} };
   if (!user || typeof window === 'undefined') return fallback;
   try {
     const stored = localStorage.getItem(storageKeyFor(user, space));
     if (!stored) return fallback;
-    const parsed = JSON.parse(stored) as Partial<WorkspaceSnapshot>;
-    return {
-      // 计划不从本地恢复 —— 见上面那段。这里的空树只是个形状,不是一份计划。
-      growth: fallback.growth,
-      journals: [],
-      conversations: [],
-      settings: parsed.settings ?? fallback.settings,
-      messages: [],
-      proposals: [],
-      positions: parsed.positions ?? {},
-    };
-  } catch {
-    return fallback;
-  }
-}
-
-function loadDemoSnapshot(): WorkspaceSnapshot {
-  const fallback = demoSnapshot();
-  if (typeof window === 'undefined') return fallback;
-  try {
-    const stored = localStorage.getItem(storageKeyFor(null, DEMO_SPACE));
-    if (!stored) return fallback;
-    const parsed = JSON.parse(stored) as Partial<WorkspaceSnapshot>;
-    // 守卫要能认出"这确实是示例空间自己存下来的那一份"。
-    //
-    // 以前这里只问"有没有 goal 节点" —— 而**任何**一份空快照都有 goal 节点
-    // (哨兵根),所以别人的数据能冒充示例数据通过守卫。按 `id` 认:
-    // 示例数据是 `growth-1`(`mock/growth-state.ts`),空树是 `growth-none`,
-    // 真实空间是 `growth-<uuid>`。认出来不对就退回内置的那一份,
-    // 并且**把被污染的键清掉** —— 否则每次进示例空间都要再判一次,
-    // 而用户明明什么都没做错。
-    if (parsed.growth?.id !== initialGrowth.id) {
-      localStorage.removeItem(storageKeyFor(null, DEMO_SPACE));
-      return fallback;
-    }
-    return restoreExampleMarkers({
-      // 存下来的那份可能锚在昨天(用户昨天打开过) —— 从种子重算一次,
-      // 而不是信任存储值。见 `reanchorDemoDates`。
-      growth: reanchorDemoDates(parsed.growth, getBeijingDate()),
-      journals: parsed.journals ?? fallback.journals,
-      conversations: parsed.conversations ?? fallback.conversations,
-      settings: parsed.settings ?? fallback.settings,
-      messages: parsed.messages ?? fallback.messages,
-      proposals: parsed.proposals ?? [],
-      positions: parsed.positions ?? {},
-    });
+    const parsed = JSON.parse(stored) as Partial<LocalPrefs>;
+    return { settings: parsed.settings ?? fallback.settings, positions: parsed.positions ?? {} };
   } catch {
     return fallback;
   }
 }
 
 function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
-  const [seed] = useState(() => {
-    if (space.kind === 'real') return loadRealSnapshot(user, space);
-    if (space.kind === 'demo') return loadDemoSnapshot();
-    // 还没选空间:空。**不是**示例数据 —— 这是这一版最容易搞错的地方。
-    return emptySnapshot(space, user?.targetGoal || '还没有选择成长空间');
-  });
-
-  // 示例空间的计划在浏览器里,由 reducer 维护。
-  const [demoGrowth, dispatch] = useReducer(growthReducer, seed.growth);
+  const [seed] = useState(() => loadLocalPrefs(user, space));
 
   // 真实空间的计划**在后端**。这一份是它的投影,只读。
   const [plan, setPlan] = useState<backend.PlanPayload | null>(null);
@@ -346,8 +163,8 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
   /**
    * 当前这份计划。
    *
-   * **真实空间的 `growth` 是算出来的,不是存起来的。** 这是"一个状态,多个视图"
-   * 在前端的落点:路径图、时间线、任务列表读的都是它,而它的唯一来源是 `/plan`。
+   * **`growth` 是算出来的,不是存起来的。** 这是"一个状态,多个视图"在前端的落点:
+   * 路径图、时间线、任务列表读的都是它,而它的唯一来源是 `/plan`。
    * 上一版把计划存在 localStorage 里并让 reducer 就地改,于是"界面上改了、后端不知道"
    * 成了常态 —— 而刷新之后那个改动会消失,用户只会觉得这个产品记不住东西。
    *
@@ -355,9 +172,8 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
    * 显示一份**可能已经过时**的计划比显示"正在读"更糟。
    */
   const growth = useMemo(
-    () =>
-      isReal ? (plan ? planToGrowth(plan, space.title) : emptyGrowth(space.title, space.intent)) : demoGrowth,
-    [isReal, plan, space.title, space.intent, demoGrowth],
+    () => (plan ? planToGrowth(plan, space.title) : emptyGrowth(space.title, space.intent)),
+    [plan, space.title, space.intent],
   );
 
   const [spaceId, setSpaceId] = useState('goal');
@@ -386,17 +202,17 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
   const [files, setFiles] = useState<FileAsset[]>([]);
   const objectUrls = useRef(new Set<string>());
   useEffect(() => () => { objectUrls.current.forEach(url => URL.revokeObjectURL(url)); }, []);
-  const [journals, setJournals] = useState<JournalEntry[]>(seed.journals);
-  const [conversations, setConversations] = useState(seed.conversations);
+  // 随笔、会话、消息、提案都**从空开始**。它们曾经从示例空间的种子里来;
+  // 现在消息由 `GET .../messages` 填(见历史加载那段),随笔和会话是本地功能
+  // (见 `publishJournal` / `setConversations`)。
+  const [journals, setJournals] = useState<JournalEntry[]>([]);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
   const [settings, setSettings] = useState<AISettings>(seed.settings);
-  const [focus, setFocus] = useState({ nodeId: 'attention', seconds: 0, running: false });
+  const [focus, setFocus] = useState({ nodeId: '', seconds: 0, running: false });
   useEffect(() => { if (!focus.running) return; const timer = setInterval(() => setFocus(f => ({ ...f, seconds: f.seconds + 1 })), 1000); return () => clearInterval(timer); }, [focus.running]);
   const [selectedId, select] = useState<string | null>(null);
-  const [messages, setMessages] = useState<Message[]>(seed.messages);
-  const [proposals, setProposals] = useState<Proposal[]>(seed.proposals);
+  const [messages, setMessages] = useState<Message[]>([]);
   const [positions, setPositions] = useState<Record<string, { x: number; y: number }>>(seed.positions);
-  const [impact, setImpact] = useState(false);
-  const [previewProposalId, setPreviewProposalId] = useState<string | null>(null);
 
   // 对话状态。真实空间才用:加载中 / 发送中 / 这一轮的错误 / 还缺哪些规划条件。
   const [historyLoading, setHistoryLoading] = useState(space.kind === 'real');
@@ -410,11 +226,16 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
   const [lastFailed, setLastFailed] = useState<{ clientMessageId: string; text: string } | null>(null);
 
   /**
-   * 后端里的提案。**和上面那个本地 `proposals` 不是一回事。**
+   * 提案。**只有后端这一份。**
    *
-   * 本地那套是示例空间的演示数据(`{nodeId, originalStart, actions: PlanAction[]}`),
-   * 描述的是"把某个节点的日期挪一挪"。后端的提案描述的是"AI 想对计划做这些变更",
-   * 是一份带校验结果的变更集。硬塞进同一个类型只会让两边都变得说不清楚。
+   * 这里曾经有两个同名的东西:一个本地的 `proposals`(示例空间的演示数据,
+   * `{nodeId, originalStart, actions: PlanAction[]}`,描述"把某个节点的日期挪一挪"),
+   * 和一个后端的 `remoteProposals`(AI 想对计划做哪些变更,带校验结果的变更集)。
+   * 两者名字像、含义完全不同,所以后端的那个一直带着 `remote` 前缀。
+   *
+   * 示例空间删掉之后本地那份没有生产者了,`remote` 这个前缀也就失去了对照物 ——
+   * 但**名字保留**:它在这份文件里到处出现,而改名是纯噪音的改动,不值得混在
+   * 删除示例空间这一次里做。
    */
   const [remoteProposals, setRemoteProposals] = useState<backend.ProposalView[]>([]);
   /**
@@ -431,18 +252,7 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     { busy: false, message: null, degraded: false },
   );
 
-  // 示例空间:整份状态都在浏览器里,照旧整个存下来。
-  useEffect(() => {
-    // "还没选空间"不写。它不是一份状态,是一份占位 —— 存下来只会污染别的键
-    // (见 `storageKeyFor`)。
-    if (!user || isReal || space.kind === 'none') return;
-    const snapshot: WorkspaceSnapshot = {
-      growth: demoGrowth, journals, conversations, settings, messages, proposals, positions,
-    };
-    localStorage.setItem(storageKeyFor(user, space), JSON.stringify(snapshot));
-  }, [conversations, demoGrowth, isReal, journals, messages, positions, proposals, settings, user, space]);
-
-  // 真实空间:只存属于浏览器的两样(见 `loadRealSnapshot`)。计划与消息都在后端。
+  // 只存属于浏览器的两样(见 `LocalPrefs`)。计划与消息都在后端,不在这里。
   useEffect(() => {
     if (!user || !isReal) return;
     localStorage.setItem(storageKeyFor(user, space), JSON.stringify({ settings, positions }));
@@ -513,16 +323,7 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     return () => { cancelled = true; };
   }, [space.id, space.kind]);
 
-  function previewProposal(id: string) {
-    const proposal = proposals.find(p => p.id === id && p.status === 'pending');
-    if (!proposal) return;
-    // 回到根那一层,再选中被改动的节点 —— 它在根空间里才看得见。
-    setSpaceId(growth.goalId); select(proposal.nodeId); setPreviewProposalId(id); setImpact(true);
-  }
   function enterSpace(id: string) { if (!growth.nodes[id]) return; setSpaceId(id); select(id); }
-  function updatePlanMeta(title: string, targetYear: number, school: string, major: string) {
-    dispatch({ type: 'UPDATE_PLAN_META', title, description: `${targetYear} · ${school} · ${major}` });
-  }
   /**
    * 重新拉整份计划。
    *
@@ -560,39 +361,33 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
   }
 
   function updateNode(nodeId: string, patch: Extract<PlanAction, { type: 'UPDATE_NODE' }>['patch']) {
-    if (isReal) {
-      // 界面的 patch 里有 `startDate`/`endDate`,后端**没有这两个字段** ——
-      // 排期是阶段 6 的事。静默丢掉它们是不行的(用户改了日期、界面说保存成功、
-      // 而计划没动),所以这里显式只传后端认识的字段,日期那部分由调用方
-      // (路径图的节点编辑器)按真实能力决定显示什么。
-      void mutatePlan(() => backend.updateNode(space.id, nodeId, {
-        title: patch.title,
-        description: patch.description ?? null,
-        priority: patch.priority,
-        status: patch.status,
-        deadline: patch.deadline === undefined ? undefined : patch.deadline || null,
-        // **预计工时是排期的输入,不是装饰。** 少了它的叶子节点在排期里会变成一条
-        // "这个任务没有工时"的缺口,一场都不会被排出来 —— 于是「今天」永远是空的,
-        // 用户看不到任何可以勾的东西。所以这个字段必须能从这里发出去。
-        estimateMinutes: patch.estimateMinutes === undefined ? undefined : patch.estimateMinutes,
-      }));
-      return;
-    }
-    dispatch({ type: 'UPDATE_NODE', nodeId, patch });
+    if (!isReal) return;
+    // 界面的 patch 里有 `startDate`/`endDate`,后端**没有这两个字段** ——
+    // 排期是阶段 6 的事。静默丢掉它们是不行的(用户改了日期、界面说保存成功、
+    // 而计划没动),所以这里显式只传后端认识的字段,日期那部分由调用方
+    // (路径图的节点编辑器)按真实能力决定显示什么。
+    void mutatePlan(() => backend.updateNode(space.id, nodeId, {
+      title: patch.title,
+      description: patch.description ?? null,
+      priority: patch.priority,
+      status: patch.status,
+      deadline: patch.deadline === undefined ? undefined : patch.deadline || null,
+      // **预计工时是排期的输入,不是装饰。** 少了它的叶子节点在排期里会变成一条
+      // "这个任务没有工时"的缺口,一场都不会被排出来 —— 于是「今天」永远是空的,
+      // 用户看不到任何可以勾的东西。所以这个字段必须能从这里发出去。
+      estimateMinutes: patch.estimateMinutes === undefined ? undefined : patch.estimateMinutes,
+    }));
   }
 
   function setNodeStatus(nodeId: string, status: GrowthNode['status']) {
-    if (isReal) {
-      void mutatePlan(() => backend.updateNode(space.id, nodeId, { status }));
-      return;
-    }
-    dispatch({ type: 'UPDATE_STATUS', nodeId, status });
+    if (!isReal) return;
+    void mutatePlan(() => backend.updateNode(space.id, nodeId, { status }));
   }
 
   /**
    * 新建一个节点。**返回它到底成没成。**
    *
-   * 真实节点的 id 由后端生成,所以这里给不出 id(调用方也不需要)。但**必须给得出
+   * 节点的 id 由后端生成,所以这里给不出 id(调用方也不需要)。但**必须给得出
    * "成没成"**:创建弹窗以前提交完就无条件关掉,而失败时错误进的是 `planError` ——
    * 显示在详情弹窗里,创建弹窗根本看不到。用户看到的是"弹窗关了,树上多了一片吗?
    * 没有" —— 于是他再点一次,再失败一次。
@@ -603,59 +398,31 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     description = '',
     estimateMinutes?: number | null,
   ): Promise<boolean> {
-    if (!title.trim()) return false;
-    if (isReal) {
-      const created = await mutatePlan(() => backend.createNode(space.id, {
-        parentId: currentSpaceId,
-        title: title.trim(),
-        nodeType: type,
-        description: description.trim() || null,
-        // 建的时候就能填工时 —— 建完再去详情里补,是"先创建一份排不进去的东西,
-        // 再回来修"的两步路,而排期读的正是这个字段。
-        estimateMinutes: estimateMinutes ?? null,
-      }));
-      return created !== null;
-    }
-    const parent = growth.nodes[currentSpaceId]; const id = crypto.randomUUID();
-    // 示例空间里新建的节点排到今天 —— 用户是**现在**加的它。以前排到 `DEMO_TODAY`,
-    // 也就是一个写死的过去日期,新加的叶子会立刻出现在时间线的三个月前。
-    const today = todayInTimeZone();
-    dispatch({ type: 'CREATE_NODE', node: { id, title: title.trim(), description: description.trim() || undefined, type, parentId: currentSpaceId, category: parent.category ?? 'personal', stageId: growth.currentStageId, status: 'pending', priority: 'medium', startDate: today, endDate: today, scheduledDate: today } });
-    select(id); return true;
+    if (!title.trim() || !isReal) return false;
+    const created = await mutatePlan(() => backend.createNode(space.id, {
+      parentId: currentSpaceId,
+      title: title.trim(),
+      nodeType: type,
+      description: description.trim() || null,
+      // 建的时候就能填工时 —— 建完再去详情里补,是"先创建一份排不进去的东西,
+      // 再回来修"的两步路,而排期读的正是这个字段。
+      estimateMinutes: estimateMinutes ?? null,
+    }));
+    return created !== null;
   }
 
   function deleteNode(nodeId: string) {
     const node = growth.nodes[nodeId];
     if (!node || nodeId === growth.goalId) return;
 
-    if (isReal) {
-      // 本地的选中态与画布位置可以立刻清掉:它们不依赖后端是否成功,而且
-      // 保留一个指向"正在被删的节点"的选中态会让详情面板闪一下空白。
-      // **计划本身不动** —— 以 `refreshPlan` 回来的那份为准。
-      if (selectedId === nodeId) select(null);
-      setPositions(old => Object.fromEntries(Object.entries(old).filter(([key]) => !key.endsWith(`:${nodeId}`))));
-      void mutatePlan(() => backend.deleteNode(space.id, nodeId));
-      return;
-    }
+    if (!isReal) return;
 
-    const branch = collectNodeBranch(growth, nodeId);
-    const parentId = node.parentId && growth.nodes[node.parentId] ? node.parentId : growth.goalId;
-    dispatch({ type: 'DELETE_NODE', nodeId });
-    if (selectedId && branch.has(selectedId)) select(null);
-    if (branch.has(currentSpaceId)) { setSpaceId(parentId); select(parentId); }
-    if (branch.has(focus.nodeId)) setFocus(old => ({ ...old, nodeId: parentId, running: false }));
-    setPositions(old => Object.fromEntries(Object.entries(old).filter(([key]) => !key.split(':').some(id => branch.has(id)))));
-    setFiles(old => old.filter(asset => {
-      if (!branch.has(asset.ownerId)) return true;
-      URL.revokeObjectURL(asset.url); objectUrls.current.delete(asset.url); return false;
-    }));
-    setProposals(old => old.filter(proposal => !branch.has(proposal.nodeId)));
-    setPreviewProposalId(null); setImpact(false);
-    setJournals(old => old.map(journal => ({ ...journal, linkedNodeIds: journal.linkedNodeIds.filter(id => !branch.has(id)) })));
-    setConversations(old => old.map(conversation => ({ ...conversation, linkedNodeIds: conversation.linkedNodeIds.filter(id => !branch.has(id)) })));
-    setMessages(old => old.map(message => message.contextId && branch.has(message.contextId)
-      ? { ...message, contextId: undefined, proposalId: undefined }
-      : message));
+    // 本地的选中态与画布位置可以立刻清掉:它们不依赖后端是否成功,而且
+    // 保留一个指向"正在被删的节点"的选中态会让详情面板闪一下空白。
+    // **计划本身不动** —— 以 `refreshPlan` 回来的那份为准。
+    if (selectedId === nodeId) select(null);
+    setPositions(old => Object.fromEntries(Object.entries(old).filter(([key]) => !key.endsWith(`:${nodeId}`))));
+    void mutatePlan(() => backend.deleteNode(space.id, nodeId));
   }
   function addFiles(ownerId: string, incoming: File[]) {
     const assets = incoming.map(file => { const url = URL.createObjectURL(file); objectUrls.current.add(url); return { id: crypto.randomUUID(), ownerId, name: file.name, size: file.size, mime: file.type, url, file }; });
@@ -665,24 +432,16 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
   function publishJournal(content: string, tags: string[], linkedNodeIds: string[], images: File[]) {
     const id = crypto.randomUUID(); setJournals(old => [{ id, content: content.trim(), tags, linkedNodeIds, date: getBeijingDate() }, ...old]); addFiles(id, images);
   }
-  function sendHistory(id: string, text: string) {
-    if (id === 'admission') { void send(text); return; }
-    setConversations(old => old.map(c => c.id !== id ? c : { ...c, messages: [...c.messages,
-      { id: crypto.randomUUID(), role: 'user', text },
-      { id: crypto.randomUUID(), role: 'assistant', text: `我们可以继续聊「${c.title}」。先把你最在意的问题变成一个小行动，再回到关联空间安排它。\n\n这是示例空间的本地回复，不是模型生成的。` },
-    ] }));
-  }
-  const append = (message: Omit<Message, 'id'>) => setMessages(old => [...old, { ...message, id: crypto.randomUUID() }]);
 
   /**
    * 计划变更的统一入口。
    *
-   * ## 真实空间里,这里**不再**什么都接
+   * ## 这里**不接所有动作**
    *
    * 上一版这个函数无条件 `dispatch(action)`,把变更写进本地 reducer。接上后端之后
    * 那样做就成了一句谎话:界面上的任务勾上了、后端不知道,刷新就退回去。
    *
-   * 所以按动作分流:
+   * 所以按动作分流,只放行**后端真的能写**的那一个:
    *
    * - `UPDATE_STATUS`(勾选完成)→ **直接保存**。这是用户明确的动作,属于产品
    *   规定里"用户自己勾选完成可以直接保存"的那一类,不经过提案。
@@ -690,36 +449,18 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
    *   (哪天做、做多久),而后端现在只有 `deadline`(截止日)——两个不同的东西。
    *   把它当截止日写进去会静默改掉用户设的截止时间,而界面上的说辞是"调整了安排"。
    *   排期在阶段 6 接入,那时这个方法会真的有东西可写。
-   * - `UPDATE_PLAN_META` 与其余本地动作只在示例空间里走 reducer。
+   * - 其余动作**什么都不做**,并且如实说。它们以前由 reducer 就地改本地计划,
+   *   而本地那份计划已经没有了 —— 现在是静默无效(界面说改了、其实没改),
+   *   所以这里显式报错,和 `UPDATE_TIME` 一个待遇。
    */
   function apply(action: PlanAction) {
-    if (isReal) {
-      if (action.type === 'UPDATE_STATUS') { setNodeStatus(action.nodeId, action.status); return; }
-      if (action.type === 'UPDATE_TIME') {
-        setPlanError('现在还不能直接拖日期改安排 —— 计划里只有截止时间,还没有排出来的具体时段。');
-        return;
-      }
+    if (!isReal) return;
+    if (action.type === 'UPDATE_STATUS') { setNodeStatus(action.nodeId, action.status); return; }
+    if (action.type === 'UPDATE_TIME') {
+      setPlanError('现在还不能直接拖日期改安排 —— 计划里只有截止时间,还没有排出来的具体时段。');
       return;
     }
-    dispatch(action);
-    if (action.type === 'UPDATE_TIME') {
-      setProposals(old => old.map(p => p.nodeId === action.nodeId && p.status === 'pending' ? { ...p, status: 'outdated' } : p));
-      const node = growth.nodes[action.nodeId];
-      if (node.id === 'project' && action.startDate >= '2026-12-01' && action.startDate <= '2027-01-15') {
-        const id = crypto.randomUUID();
-        setProposals(old => [...old, { id, nodeId: node.id, originalStart: action.startDate, status: 'pending', actions: [{ type: 'UPDATE_TIME', nodeId: node.id, startDate: '2027-01-18', endDate: '2027-02-28' }] }]);
-        append({ role: 'assistant', contextId: node.id, proposalId: id, text: `你把「科研项目」调整到了 ${Number(action.startDate.slice(5, 7))} 月。\n\n这可能与期末复习阶段产生时间冲突。\n\n我建议保留 10 月的导师联系，但将正式科研项目调整到寒假。` });
-      } else append({ role: 'assistant', contextId: node.id, text: `已将「${node.title}」调整为 ${action.startDate} 至 ${action.endDate}。路径、时间线和任务会同步读取这次变更。` });
-    }
-  }
-  async function accept(id: string) {
-    const proposal = proposals.find(p => p.id === id);
-    if (!proposal || proposal.status !== 'pending') return;
-    proposal.actions.forEach(dispatch);
-    setProposals(old => old.map(p => p.id === id ? { ...p, status: 'accepted' } : p.nodeId === proposal.nodeId && p.status === 'pending' ? { ...p, status: 'outdated' } : p));
-    setImpact(false);
-    const change = proposal.actions.find(a => a.type === 'UPDATE_TIME');
-    append({ role: 'assistant', text: change ? `已将「${growth.nodes[proposal.nodeId].title}」安排在 ${change.startDate} 至 ${change.endDate}。其他安排保持不变，路径、时间线和任务已同步。` : '已接受调整。', contextId: proposal.nodeId });
+    setPlanError('这个改动现在还不能保存到计划里。');
   }
 
   /**
@@ -861,32 +602,11 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     }
   }
 
-  /** 示例空间的一轮对话。本地生成,**界面上标着"示例"**,不假装是模型。 */
-  function sendDemo(text: string) {
-    const node = selectedId ? growth.nodes[selectedId] : null;
-    append({ role: 'user', text, contextId: selectedId ?? undefined });
-    if (node?.startDate && node.endDate && /推迟|太早|晚一点|延后|往后/.test(text)) {
-      const requestedFebruary = /2\s*月|二月/.test(text);
-      const startDate = requestedFebruary && `${node.startDate.slice(0,4)}-02-01` > node.startDate
-        ? `${node.startDate.slice(0,4)}-02-01`
-        : requestedFebruary ? `${Number(node.startDate.slice(0,4)) + 1}-02-01` : shiftDate(node.startDate, 30);
-      const endDate = shiftDate(node.endDate, daysBetween(node.startDate, startDate));
-      const id = crypto.randomUUID();
-      setProposals(old => [...old.map(p => p.nodeId === node.id && p.status === 'pending' ? { ...p, status: 'outdated' as const } : p), { id, nodeId: node.id, originalStart: node.startDate!, status: 'pending', actions: [{ type: 'UPDATE_TIME', nodeId: node.id, startDate, endDate }] }]);
-      append({ role: 'assistant', contextId: node.id, proposalId: id, text: `可以先预览把「${node.title}」推迟到 ${startDate} 的安排，持续时间保持不变。\n\n${node.id === 'project' ? '科研启动延后可能压缩后续论文产出和夏令营准备时间，建议提前保留导师沟通与文献阅读。' : '延后可能压缩后续安排的准备时间，建议确认相关节点是否需要同步调整。'}其他任务暂不变动。\n\n这是示例空间的本地建议，不是模型生成的；查看影响不会修改计划，接受后才会更新。` });
-      return;
-    }
-    append({ role: 'assistant', contextId: selectedId ?? undefined, text: node
-      ? `我们可以围绕「${node.title}」继续梳理。${node.description || '先确定一个足够小、可以开始的行动。'}\n\n这是示例空间的本地回复，不是模型生成的。想看真实的 AI 对话，请在「成长空间」里新建一个空间。`
-      : '当前是示例空间。想看真实的 AI 对话，请在「成长空间」里新建一个空间 —— 示例空间里的回复是本地写好的，不会经过模型。' });
-  }
-
   async function send(text: string) {
     const trimmed = text.trim();
     if (!trimmed || sending) return;
-    // 只有真实空间能发。示例空间走本地演示,还没选空间的话没有地方可发 ——
-    // 静默丢掉比编一句回复好;界面在这种状态下本来就会把人送回空间页。
-    if (space.kind === 'demo') { sendDemo(trimmed); return; }
+    // 只有真实空间能发 —— 消息的真相在后端,没有别的地方可以发。
+    // 还没选空间时静默丢掉比编一句回复好;界面在这种状态下本来就会把人送回空间页。
     if (space.kind !== 'real') return;
     await sendReal(trimmed, crypto.randomUUID());
   }
@@ -898,7 +618,7 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     await sendReal(lastFailed.text, lastFailed.clientMessageId);
   }
 
-  return { growth, workspaceId: space.id, isRealSpace: space.kind === 'real', apply, selectedId, select, messages, proposals, accept, send, retry, sending, sendError, retryable, brief, historyLoading, messagesTruncated, positions, setPositions, impact, setImpact, previewProposalId, previewProposal,
+  return { growth, workspaceId: space.id, isRealSpace: space.kind === 'real', apply, selectedId, select, messages, send, retry, sending, sendError, retryable, brief, historyLoading, messagesTruncated, positions, setPositions,
     // 计划。`revisionVersion` 是"你眼前这份是第几版" —— 界面上比对提案的
     // `baseRevisionVersion` 用它,能在发请求**之前**发现"你看的那份已经旧了"。
     plan, planLoading, planError, planSaving, setPlanError, revisionVersion: plan?.revisionVersion ?? 0,
@@ -910,7 +630,7 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     replan, replanState,
     // 对外给的是**算出来**的那个(见 `currentSpaceId`)。调用方拿它去
     // `growth.nodes[spaceId]` 是安全的,这是这个字段的契约。
-    spaceId: currentSpaceId, enterSpace, updatePlanMeta, updateNode, setNodeStatus, addNode, deleteNode, files, addFiles, removeFile, journals, publishJournal, conversations, setConversations, sendHistory, settings, setSettings, focus, setFocus };
+    spaceId: currentSpaceId, enterSpace, updateNode, setNodeStatus, addNode, deleteNode, files, addFiles, removeFile, journals, publishJournal, conversations, setConversations, settings, setSettings, focus, setFocus };
 }
 const Context = createContext<ReturnType<typeof useWorkspaceState> | null>(null);
 
@@ -947,8 +667,9 @@ function WorkspaceRouter({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!user) { setSpace(null); return; }
-    // 示例空间要显式进入(`?workspace=primary`),不会被当成默认值。
-    if (requested === DEMO_SPACE.id) { setSpace(DEMO_SPACE); return; }
+    // `?workspace=` 必须是一个真实空间 id。它以前还兼着"进入示例空间"这一档
+    // (`?workspace=primary`),那一档已经没有了 —— 现在它就是一个 id,打不开
+    // 就走下面的失败分支,不会退回任何演示内容。
     const id = requested ?? (typeof window === 'undefined' ? null : localStorage.getItem(activeKey));
     if (!id) {
       setSpace(null);

@@ -6,8 +6,7 @@ import { ArrowUpRight, Check, ChevronRight, LogOut, Pencil, Sparkles, X } from '
 import { useEffect, useState, type FormEvent } from 'react';
 import { useAuth } from '@/features/auth/provider';
 import type { AccountProfile, EditableProfile } from '@/features/auth/types';
-import { useDemo } from '@/features/growth/provider';
-import { profileEntries } from '@/mock/life';
+import { profileEntries } from '@/features/profile/content';
 
 /**
  * 缺的字段整段换掉,不留空位。
@@ -37,7 +36,6 @@ function editableProfile(user: AccountProfile | null): EditableProfile {
 export function Profile() {
   const router = useRouter();
   const { user, updateProfile, logout } = useAuth();
-  const { updatePlanMeta } = useDemo();
   const [editing, setEditing] = useState(false);
   const [saved, setSaved] = useState(false);
   const [draft, setDraft] = useState<EditableProfile>(() => editableProfile(user));
@@ -49,10 +47,21 @@ export function Profile() {
     setDraft((old) => ({ ...old, [key]: value }));
   }
 
+  /**
+   * 保存资料。
+   *
+   * 这里原来还跟着一句 `updatePlanMeta(...)` —— 它把目标、年份、学校、专业写进
+   * **本地那份计划**的元信息里(计划图的标题、"目标"节点上的那行小字就读它)。
+   * 那份本地计划是示例空间的,已经没有了。
+   *
+   * 所以现在要如实说清一件事:**改目标名称只改了档案,没有改计划**。计划里那个
+   * 目标节点的标题来自后端 `plan_nodes`,档案里的 `targetGoal` 是另一回事 ——
+   * 两条不同的记录,改一条不会连带改另一条。要让它们一致,得走真实的节点重命名
+   * (工作台里改目标节点标题),那是另一个动作,不该由这里悄悄替他做。
+   */
   function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     updateProfile(draft);
-    updatePlanMeta(draft.targetGoal, draft.targetYear, draft.school, draft.major);
     setEditing(false);
     setSaved(true);
   }

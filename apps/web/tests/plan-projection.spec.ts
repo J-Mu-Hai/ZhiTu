@@ -1,5 +1,5 @@
-import { expect, test, type Page } from '@playwright/test';
-import { api, assertBackendRunning, registerAccount } from './support/session';
+import { expect, test } from '@playwright/test';
+import { assertBackendRunning, createNode, createWorkspace, dayOffset, getPlan, registerAccount, renderedNodeIds, waitForRealPlan } from './support/session';
 
 /**
  * 阶段 5 的验收:路径图上画出来的节点,必须和 `/plan` 里真实存在的节点一致。
@@ -23,59 +23,18 @@ import { api, assertBackendRunning, registerAccount } from './support/session';
  * 它**不需要模型 key**:所有节点都由这个测试自己通过接口创建,不经过 AI。
  */
 
-interface PlanNode {
-  id: string;
-  parentId: string | null;
-  title: string;
-  nodeType: string;
-  deadline: string | null;
-}
-interface PlanPayload {
-  nodes: PlanNode[];
-  totalNodes: number;
-  revisionVersion: number;
-}
-
 test.beforeAll(async ({ request }) => {
   await assertBackendRunning(request);
 });
-
-/** 画布上真正画出来的节点 id。ReactFlow 不加虚拟化参数时每个节点都在 DOM 里。 */
-async function renderedNodeIds(page: Page): Promise<string[]> {
-  return (await page.locator('.react-flow__node').evaluateAll(
-    (nodes) => nodes.map((node) => node.getAttribute('data-id') ?? ''),
-  )).sort();
-}
-
-/**
- * 等到计划真的从后端到达。
- *
- * 计划到达之前,真实空间画出来的是一棵只有根目标的**占位**树,根节点的 id 是哨兵值
- * `'goal'`(见 `planProjection.emptyGrowth`)。那个状态下界面还改不了数据 —— 新建节点
- * 是禁用的,因为 `POST /nodes` 要一个真 UUID。不先等这一步,测试是在一个"还不能操作"
- * 的界面上点按钮,失败原因会指向选择器而不是它真正的原因。
- */
-async function waitForRealPlan(page: Page): Promise<void> {
-  await expect
-    .poll(async () => {
-      const ids = await renderedNodeIds(page);
-      return ids.length > 0 && !ids.includes('goal');
-    }, { message: '计划没有从后端到达:画布上还是那个哨兵根节点' })
-    .toBe(true);
-}
 
 test('路径图上画出来的节点，就是 /plan 里那一批', async ({ page }) => {
   const { token } = await registerAccount(page, 'projection');
 
   // 空间建好时**只有一个根目标**,零节点、零对话。这是阶段 2 定下的不变量,
   // 这里顺带再验一次:如果它又变成"新建空间先灌一份保研 Demo",下面的断言会立刻炸。
-  const created = await api<{ workspace: { id: string } }>(page, token, '/api/workspaces', {
-    method: 'POST',
-    data: { title: '投影验收空间', intent: '确认界面和后端是同一份数据' },
-  });
-  const workspaceId = created.workspace.id;
+  const workspaceId = await createWorkspace(page, token, '投影验收空间', '确认界面和后端是同一份数据');
 
-  const initial = await api<PlanPayload>(page, token, `/api/workspaces/${workspaceId}/plan`);
+  const initial = await getPlan(page, token, workspaceId);
   expect(initial.nodes, '新建空间应该只有一个根目标').toHaveLength(1);
   const root = initial.nodes[0];
   expect(root.nodeType).toBe('goal');
@@ -91,17 +50,13 @@ test('路径图上画出来的节点，就是 /plan 里那一批', async ({ page
    */
   const stages: string[] = [];
   for (const title of ['阶段一 · 打基础', '阶段二 · 做项目', '阶段三 · 收尾']) {
-    const node = await api<{ node: PlanNode }>(page, token, `/api/workspaces/${workspaceId}/nodes`, {
-      method: 'POST',
-      data: { parentId: root.id, title, nodeType: 'stage' },
-    });
-    stages.push(node.node.id);
+    stages.push(await createNode(page, token, workspaceId, { parentId: root.id, title, nodeType: 'stage' }));
   }
 
   await page.goto(`/workbench?workspace=${workspaceId}`);
   await waitForRealPlan(page);
 
-  const payload = await api<PlanPayload>(page, token, `/api/workspaces/${workspaceId}/plan`);
+  const payload = await getPlan(page, token, workspaceId);
   expect(payload.totalNodes).toBe(4);
   // 顶层画布 = 根目标 + 根的直接子节点。不是 `payload.nodes.length`:子节点要**进入**
   // 自己的空间才画得出来,这是有意的层级设计,不是丢数据。所以比的是同一层的集合。
@@ -129,48 +84,33 @@ test('路径图上画出来的节点，就是 /plan 里那一批', async ({ page
 
 test('进入阶段空间，它下面的任务画得出来', async ({ page }) => {
   const { token } = await registerAccount(page, 'projection');
-  const created = await api<{ workspace: { id: string } }>(page, token, '/api/workspaces', {
-    method: 'POST',
-    data: { title: '层级验收空间', intent: '' },
-  });
-  const workspaceId = created.workspace.id;
-  const root = (await api<PlanPayload>(page, token, `/api/workspaces/${workspaceId}/plan`)).nodes[0];
+  const workspaceId = await createWorkspace(page, token, '层级验收空间');
+  const root = (await getPlan(page, token, workspaceId)).nodes[0];
 
-  const stage = await api<{ node: PlanNode }>(page, token, `/api/workspaces/${workspaceId}/nodes`, {
-    method: 'POST',
-    data: { parentId: root.id, title: '唯一阶段', nodeType: 'stage' },
-  });
+  const stageId = await createNode(page, token, workspaceId, { parentId: root.id, title: '唯一阶段', nodeType: 'stage' });
   const tasks: string[] = [];
   for (const title of ['任务 A', '任务 B']) {
-    const node = await api<{ node: PlanNode }>(page, token, `/api/workspaces/${workspaceId}/nodes`, {
-      method: 'POST',
-      data: { parentId: stage.node.id, title, nodeType: 'task' },
-    });
-    tasks.push(node.node.id);
+    tasks.push(await createNode(page, token, workspaceId, { parentId: stageId, title, nodeType: 'task' }));
   }
 
   await page.goto(`/workbench?workspace=${workspaceId}`);
   await waitForRealPlan(page);
 
   // 根这一层:根 + 阶段,任务**不**在这一层 —— 它们属于阶段自己的空间。
-  await expect.poll(() => renderedNodeIds(page)).toEqual([root.id, stage.node.id].sort());
+  await expect.poll(() => renderedNodeIds(page)).toEqual([root.id, stageId].sort());
 
   // 双击进入阶段的子空间。这是"层级"这个设计唯一的用法,也是它唯一能被验证的地方:
   // 如果进入之后什么都没有,那层级就是把节点藏起来了,而不是组织起来了。
-  await page.locator(`.react-flow__node[data-id="${stage.node.id}"]`).dblclick();
-  await expect.poll(() => renderedNodeIds(page)).toEqual([stage.node.id, ...tasks].sort());
+  await page.locator(`.react-flow__node[data-id="${stageId}"]`).dblclick();
+  await expect.poll(() => renderedNodeIds(page)).toEqual([stageId, ...tasks].sort());
   await expect(page.getByText('任务 A', { exact: true })).toBeVisible();
   await expect(page.getByText('任务 B', { exact: true })).toBeVisible();
 });
 
 test('在界面上新建的节点，后端真的存下来了', async ({ page }) => {
   const { token } = await registerAccount(page, 'projection');
-  const created = await api<{ workspace: { id: string } }>(page, token, '/api/workspaces', {
-    method: 'POST',
-    data: { title: '写回验收空间', intent: '' },
-  });
-  const workspaceId = created.workspace.id;
-  const before = await api<PlanPayload>(page, token, `/api/workspaces/${workspaceId}/plan`);
+  const workspaceId = await createWorkspace(page, token, '写回验收空间');
+  const before = await getPlan(page, token, workspaceId);
   const root = before.nodes[0];
 
   await page.goto(`/workbench?workspace=${workspaceId}`);
@@ -187,7 +127,7 @@ test('在界面上新建的节点，后端真的存下来了', async ({ page }) 
   await expect(page.getByText('手写的一个节点', { exact: true })).toBeVisible();
   await expect(page.getByRole('dialog')).toHaveCount(0);
 
-  const after = await api<PlanPayload>(page, token, `/api/workspaces/${workspaceId}/plan`);
+  const after = await getPlan(page, token, workspaceId);
   expect(after.nodes, '界面上新建的节点必须真的进库').toHaveLength(2);
   expect(after.totalNodes).toBe(2);
   // 直写也要走版本记账 —— 计划变了就必须留下一个版本,否则"计划在提案生成后被改过"
@@ -207,27 +147,18 @@ test('在界面上新建的节点，后端真的存下来了', async ({ page }) 
 
 test('没有日期的节点不会从时间线上悄悄消失', async ({ page }) => {
   const { token } = await registerAccount(page, 'projection');
-  const created = await api<{ workspace: { id: string } }>(page, token, '/api/workspaces', {
-    method: 'POST',
-    data: { title: '时间线验收空间', intent: '' },
-  });
-  const workspaceId = created.workspace.id;
-  const root = (await api<PlanPayload>(page, token, `/api/workspaces/${workspaceId}/plan`)).nodes[0];
+  const workspaceId = await createWorkspace(page, token, '时间线验收空间');
+  const root = (await getPlan(page, token, workspaceId)).nodes[0];
 
-  const deadline = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
-  const dated = await api<{ node: PlanNode }>(page, token, `/api/workspaces/${workspaceId}/nodes`, {
-    method: 'POST',
-    data: { parentId: root.id, title: '有截止日的任务', nodeType: 'task', deadline },
-  });
-  const undated = await api<{ node: PlanNode }>(page, token, `/api/workspaces/${workspaceId}/nodes`, {
-    method: 'POST',
-    data: { parentId: root.id, title: '还没定日期的任务', nodeType: 'task' },
-  });
-  // 真值从**回包**里取,不是取我发出去的那个字符串 —— 后端把日期规范化过
+  const deadline = dayOffset(30);
+  const datedId = await createNode(page, token, workspaceId, { parentId: root.id, title: '有截止日的任务', nodeType: 'task', deadline });
+  const undatedId = await createNode(page, token, workspaceId, { parentId: root.id, title: '还没定日期的任务', nodeType: 'task' });
+  // 真值从**计划**里取,不是取我发出去的那个字符串 —— 后端把日期规范化过
   // (`date` 类型),拿自己发的值去比等于在验自己。
-  const storedDeadline = dated.node.deadline!;
+  const plan = await getPlan(page, token, workspaceId);
+  const storedDeadline = plan.nodes.find(node => node.id === datedId)!.deadline!;
   expect(storedDeadline).toBe(deadline);
-  expect(undated.node.deadline).toBeNull();
+  expect(plan.nodes.find(node => node.id === undatedId)!.deadline).toBeNull();
 
   await page.goto(`/workbench?workspace=${workspaceId}&view=timeline`);
 
@@ -242,7 +173,7 @@ test('没有日期的节点不会从时间线上悄悄消失', async ({ page }) 
   // 断言落在 `[data-timeline-card]` 那个按钮上,不是外面那层 `[data-timeline-item]`:
   // 外层 div 里装的全是绝对定位的子元素,它自己高度是 0 —— Playwright 判它"不可见",
   // 而它在屏幕上明明是画着的。
-  const card = page.locator(`[data-timeline-item="${dated.node.id}"] [data-timeline-card]`);
+  const card = page.locator(`[data-timeline-item="${datedId}"] [data-timeline-card]`);
   await expect(card).toBeVisible();
   await expect(card.locator('time')).toHaveText(
     `截止 ${Number(storedDeadline.slice(5, 7))}.${Number(storedDeadline.slice(8, 10))}`,
@@ -251,7 +182,7 @@ test('没有日期的节点不会从时间线上悄悄消失', async ({ page }) 
 
   // 没有日期的那个:**不在**时间线上(它画不出来,这不是 bug),但也不能凭空消失。
   // 这条断言和下面那条是一对 —— 只有前者,等于承认了"没日期 = 不存在"。
-  await expect(page.locator(`[data-timeline-item="${undated.node.id}"]`)).toHaveCount(0);
+  await expect(page.locator(`[data-timeline-item="${undatedId}"]`)).toHaveCount(0);
 
   const unscheduled = page.getByTestId('unscheduled-items');
   await expect(unscheduled).toBeVisible();

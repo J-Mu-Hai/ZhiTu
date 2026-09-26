@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { TOKEN_KEY, registerAccount } from './support/session';
+import { TOKEN_KEY, createWorkspace, registerAccount } from './support/session';
 
 /**
  * 刷新页面时"恢复登录状态"遇到后端出问题,会怎样。
@@ -26,13 +26,17 @@ import { TOKEN_KEY, registerAccount } from './support/session';
 
 test('后端一直够不着时,留住令牌并给一个重试,而不是把用户登出', async ({ page }) => {
   const account = await registerAccount(page, 'restore-blip');
+  // 打的是**真实空间**。以前这里写 `?workspace=primary`,那个 id 属于已经删掉的示例空间
+  // —— 它打不开任何东西,于是"重试之后进去了"这一条会因为**空间不存在**而失败,
+  // 失败信息指向登录态,真正的原因是那个 id 早就没人认识了。
+  const workspaceId = await createWorkspace(page, account.token, '会话恢复验收空间');
 
   let failing = true;
   await page.route('**/api/users/me', (route) =>
     failing ? route.abort('connectionfailed') : route.continue(),
   );
 
-  await page.goto('/workbench?workspace=primary&view=timeline');
+  await page.goto(`/workbench?workspace=${workspaceId}&view=timeline`);
 
   // 停在"连不上,重试",而不是登录页 —— 用户并没有被登出。
   await expect(page.getByText('暂时连不上后端,你的登录状态还在。')).toBeVisible();
@@ -47,7 +51,9 @@ test('后端一直够不着时,留住令牌并给一个重试,而不是把用户
 });
 
 test('服务端明确拒绝这张令牌时,才回到登录页', async ({ page }) => {
-  await registerAccount(page, 'restore-401');
+  const account = await registerAccount(page, 'restore-401');
+  // 同上:令牌被拒绝时该回登录页,与地址上那个空间存不存在无关,但地址仍然用真的。
+  const workspaceId = await createWorkspace(page, account.token, '会话恢复验收空间');
 
   await page.route('**/api/users/me', (route) =>
     route.fulfill({
@@ -57,7 +63,7 @@ test('服务端明确拒绝这张令牌时,才回到登录页', async ({ page })
     }),
   );
 
-  await page.goto('/workbench?workspace=primary&view=timeline');
+  await page.goto(`/workbench?workspace=${workspaceId}&view=timeline`);
 
   await expect(page).toHaveURL(/\/login$/);
   // 令牌被拒绝了,留着它只会让用户反复看到"已登录但什么都没有"。

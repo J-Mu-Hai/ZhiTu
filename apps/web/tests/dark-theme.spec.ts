@@ -62,10 +62,12 @@ interface SeedNode {
   title: string;
   nodeType: string;
   deadline?: string;
+  /** 挂在哪个节点下面,按**标题**找。不写就挂在根目标下面。 */
+  parentTitle?: string;
 }
 
 /**
- * 建一个空间,返回它的 id 与根节点 id。
+ * 建一个空间,返回它的 id、根节点 id,以及**每个节点的 id**(按标题)。
  *
  * 建完之后**再进一次工作台** —— 这一步不是多余的:`/today`、`/journal`、
  * `/conversations` 在没有选中空间时会被重定向回 `/spaces`,而"选中了哪个空间"是
@@ -75,7 +77,7 @@ async function seedSpace(
   page: Page,
   token: string,
   input: { title: string; nodes?: SeedNode[] },
-): Promise<{ workspaceId: string; rootId: string }> {
+): Promise<{ workspaceId: string; rootId: string; nodeIds: Record<string, string> }> {
   const headers = { Authorization: `Bearer ${token}` };
   const created = await page.request.post(`${API_BASE}/api/workspaces`, {
     headers,
@@ -85,16 +87,20 @@ async function seedSpace(
   const plan = await page.request.get(`${API_BASE}/api/workspaces/${workspace.id}/plan`, { headers });
   const { nodes } = (await plan.json()) as { nodes: { id: string }[] };
   const rootId = nodes[0].id;
-  for (const node of input.nodes ?? []) {
+  const nodeIds: Record<string, string> = {};
+  for (const { parentTitle, ...node } of input.nodes ?? []) {
+    const parentId = parentTitle ? nodeIds[parentTitle] : rootId;
+    if (!parentId) throw new Error(`找不到「${parentTitle}」—— 它得排在引用它的节点前面`);
     const response = await page.request.post(`${API_BASE}/api/workspaces/${workspace.id}/nodes`, {
       headers,
-      data: { parentId: rootId, ...node },
+      data: { parentId, ...node },
     });
     if (!response.ok()) throw new Error(`建节点「${node.title}」失败:${response.status()} ${await response.text()}`);
+    nodeIds[node.title] = ((await response.json()) as { node: { id: string } }).node.id;
   }
   await page.goto(`/workbench?workspace=${workspace.id}`);
   await expect(page.locator(`.react-flow__node[data-id="${rootId}"]`)).toBeVisible();
-  return { workspaceId: workspace.id, rootId };
+  return { workspaceId: workspace.id, rootId, nodeIds };
 }
 
 type Rgb = [number, number, number];
@@ -130,23 +136,37 @@ function expectLightSurface(value: string, label: string): void {
   }
 }
 
-/** 元素往上找到第一个真正画了背景的祖先 —— 那就是它显示出来的"表面"。 */
+/**
+ * 元素往上找到第一个真正画了背景的祖先 —— 那就是它显示出来的"表面"。
+ *
+ * 找不到时要**分清是哪一种找不到**:页面真的没人画背景,还是这个元素**已经不在文档里**
+ * (React 重新挂载把它换掉了)。后者量出来的是一串空字符串,一路走到头也找不到 —— 报出来
+ * 的样子和前者一模一样,而两件事要修的地方完全不同。所以把 `isConnected` 一起报出来。
+ */
 async function paintedSurface(locator: Locator, label: string): Promise<string> {
-  const found = await locator.evaluate((element) => {
+  const result = await locator.evaluate((element) => {
     let node: HTMLElement | null = element as HTMLElement;
+    const seen: string[] = [];
     while (node) {
       const background = getComputedStyle(node).backgroundColor;
+      seen.push(`${node.tagName.toLowerCase()}=${background || '(空)'}`);
       const numbers = background.match(/rgba?\(([^)]+)\)/);
       if (numbers) {
         const parts = numbers[1].split(',').map(Number);
-        if (parts.length < 4 || parts[3] > 0.5) return background;
+        if (parts.length < 4 || parts[3] > 0.5) return { background, connected: element.isConnected, seen };
       }
       node = node.parentElement;
     }
-    return null;
+    return { background: null, connected: element.isConnected, seen };
   });
-  expect(found, `${label} 往上找不到任何画了背景的祖先`).not.toBeNull();
-  return found!;
+  expect(
+    result.background,
+    result.connected
+      ? `${label} 往上找不到任何画了背景的祖先(查过:${result.seen.join(' → ')})`
+      : `${label} 已经不在文档里了 —— 测量对象在断言之前被换掉了,看到的背景才是空的。` +
+        `这多半是整页重新挂载造成的,往地址或加载时机上查,不要往颜色上查。`,
+  ).not.toBeNull();
+  return result.background!;
 }
 
 /**
@@ -246,33 +266,46 @@ test('根目标节点的渐变是浅色的', async ({ page }) => {
   expectLightSurface(goal.backgroundImage, '根目标节点渐变');
 });
 
-test('示例空间仍然是一棵有结构的演示计划', async ({ page }) => {
-  await signIn(page);
-  // 四个成长分类是**示例空间**的结构,真实空间没有这个概念(它只有根目标与子节点)。
-  await page.goto('/workbench?workspace=primary');
-  await expect(page.locator('.react-flow__node[data-id="goal"]')).toBeVisible();
+test('画布上是一棵真的树，不是一处颜色正确的空白', async ({ page }) => {
+  const token = await signIn(page);
+  const { rootId, nodeIds } = await seedSpace(page, token, {
+    title: '结构验收空间',
+    nodes: [
+      { title: '阶段一 · 打基础', nodeType: 'stage' },
+      { title: '阶段二 · 做项目', nodeType: 'stage' },
+      { title: '读两篇论文', nodeType: 'task', parentTitle: '阶段一 · 打基础' },
+    ],
+  });
 
-  // 这条断言是补上的第二次:示例空间曾经**整棵变成空白** —— `kind === 'none'`
-  // (还没选空间)和示例空间共用了同一个 localStorage 键,于是新用户只要先看过
-  // 空间列表,那份空树就被当成示例数据读了回来,而界面上还写着
-  // "点击四个成长分类进入专属路径"。只断言颜色的话,那个状态是"通过"的。
-  await expect(page.locator('.react-flow__node[data-id="research"]')).toBeVisible();
-  await expect(page.locator('.react-flow__node[data-id="academic"]')).toBeVisible();
+  // 上一版这一条看的是示例空间那棵保研树。它当年**整棵变成空白**过:`kind === 'none'`
+  // (还没选空间)和示例空间共用同一个 localStorage 键,于是新用户只要先看过空间列表,
+  // 那份空树就被当成示例数据读了回来。而只断言颜色的话,那个状态是**通过**的 ——
+  // 空白的地方没有一处是深色。
+  //
+  // 真实空间的失效模式一模一样,而且更常见:接口挂了、投影多滤了一层、层级算错,
+  // 画布都会安静地空着。所以这里数的是**节点个数**:根 + 两个阶段。任务不在这一层。
+  await expect(page.locator('.react-flow__node')).toHaveCount(3);
+  await expect(page.locator(`.react-flow__node[data-id="${rootId}"]`)).toBeVisible();
 
-  // 进入子路径是**双击**(`PathView.tsx` 的 `onNodeDoubleClick`)—— 单击只选中。
+  // 进入子空间是**双击**(`PathView.tsx` 的 `onNodeDoubleClick`)—— 单击只选中。
   // 之前这里写成单击,于是断言一直等一个不会出现的东西。
-  await page.locator('.react-flow__node[data-id="research"]').dblclick();
+  await page.locator(`.react-flow__node[data-id="${nodeIds['阶段一 · 打基础']}"]`).dblclick();
   await expect(page.locator('.leaf-path')).toBeVisible();
+
+  // 这一层是"阶段一 + 它下面的任务"。另一个阶段**不在**这一层 —— 而它并没有消失,
+  // 返回上级就有。层级画出来的必须是后端那一层,不是"把整棵树铺平"。
+  await expect(page.locator('.react-flow__node')).toHaveCount(2);
+  await expect(page.locator(`.react-flow__node[data-id="${nodeIds['读两篇论文']}"]`)).toBeVisible();
+  await expect(page.locator(`.react-flow__node[data-id="${nodeIds['阶段二 · 做项目']}"]`)).toHaveCount(0);
 
   // 进到子路径之后,这几个表面必须还是同一套暖白。
   expectLightSurface(await paintedSurface(page.locator('.leaf-path'), '子路径'), '子路径的背景');
   const leaf = page.locator('.leaf-path .growth-node.task').first();
-  if (await leaf.count() > 0) {
-    expectLightSurface(
-      await leaf.evaluate((element) => getComputedStyle(element).backgroundColor),
-      '子路径的树叶',
-    );
-  }
+  await expect(leaf).toBeVisible();
+  expectLightSurface(
+    await leaf.evaluate((element) => getComputedStyle(element).backgroundColor),
+    '子路径的树叶',
+  );
 });
 
 /**
@@ -348,21 +381,40 @@ test('时间线画布与信息卡使用同一套表面', async ({ page }) => {
   const token = await signIn(page);
   // 时间线上的卡片来自**有日期**的节点。没有 deadline 的节点画不出信息卡 ——
   // 这正是这一版新加的、老断言没覆盖到的状态(老断言建的是无日期任务,然后假设有卡片)。
-  await seedSpace(page, token, {
+  const { workspaceId } = await seedSpace(page, token, {
     title: '时间线主题空间',
     nodes: [{ title: '有截止日期的任务', nodeType: 'task', deadline: '2026-10-20' }],
   });
 
-  // 视图由 `?view=` 决定(见 `Workbench.tsx`),不是组件内部状态 —— 刷新之后还在的。
-  await page.goto('/workbench?view=timeline');
+  /*
+   * 视图由 `?view=` 决定(见 `Workbench.tsx`),不是组件内部状态 —— 刷新之后还在的。
+   * 地址上带 `?workspace=`:这一页在没有空间参数时会先按"还没有空间"渲染一次,
+   * 靠本地键找回空间之后**整个应用外壳重新挂载**。
+   */
+  await page.goto(`/workbench?workspace=${workspaceId}&view=timeline`);
 
   const timeline = page.getByTestId('timeline-view');
-  await expect(timeline).toBeVisible();
-  // 时间线自己的背景是透明的,颜色来自上一层的画布 —— 所以往上找。
-  expectLightSurface(await paintedSurface(timeline, '时间线画布'), '时间线画布');
-
   const card = page.locator('[data-timeline-card]').first();
+
+  /*
+   * **先等卡片,再量颜色。** 顺序是这两条的要点,不是随手排的。
+   *
+   * 计划到达之前,时间线这一页**已经画出来了** —— 只是空的。上一版量颜色在等卡片之前,
+   * 于是量到的可能是"计划到达"那一次重挂载**换掉的那个元素**:它已经脱离文档,
+   * `getComputedStyle` 对它返回一串空字符串,往上走到头都没有背景,报出来的是
+   * "找不到任何画了背景的祖先" —— 看着像配色错了,其实是**测量对象被换掉了**。
+   * 实测:老顺序连跑三次红两次,和基线里它一直红着对得上。
+   *
+   * 卡片只可能来自真实的节点,所以"卡片画出来了"就是"这一页已经画完最后一次了"。
+   * 等它,量到的就是最终那一份 DOM;这不是放宽等待,是把**测量的时机**摆对。
+   */
   await expect(card).toBeVisible();
+  await expect(timeline).toBeVisible();
+
+  // 往上找第一个真正画了背景的祖先。时间线这一层现在自己就画了表面,所以第一个找到的
+  // 就是它;写成"往上找"是为了哪天它改回透明时这条断言仍然成立 —— 那时颜色来自画布,
+  // 而画布是不是浅色这件事仍然要有人看着。
+  expectLightSurface(await paintedSurface(timeline, '时间线画布'), '时间线画布');
   expectLightSurface(
     await card.evaluate((element) => getComputedStyle(element).backgroundColor),
     '时间线信息卡',

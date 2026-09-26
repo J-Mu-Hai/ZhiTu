@@ -28,10 +28,13 @@ import { assertBackendRunning, clickUntilVisible, createWorkspace, registerAccou
  * 第二条里账户和空间用接口建(那条路径第一条已经走过一遍了),这样它才有余量
  * 把"登出、再登回来、换个账户"这些真正要验的东西做完。
  *
- * 另外:整条流水线是**并行**跑的(Playwright 默认按 CPU 数开工作进程,这台机器上不
- * 限就是 8 个;`playwright.config.ts` 里现在限成 4),而它们共用同一台 `next dev` ——
+ * 另外:这条流水线本来是按"同时开好几个工作进程"设计的,而它们共用同一台 `next dev` ——
  * 单独跑一条只要 4 秒,跑满时同一条能慢上几倍。所以这里每一次整页加载都要算钱,能省则省
  * (见下面 `switchAccount` 那段)。
+ *
+ * **这条经验现在仍然成立,但前提变了**:`playwright.config.ts` 里
+ * `workers` 默认是 **1**(串行),并行要显式给 `PLAYWRIGHT_WORKERS`。
+ * 串行是验收口径 —— 并行跑出来的红,先分清楚是资源竞争还是产品坏了再说。
  */
 
 test.beforeAll(async ({ request }) => {

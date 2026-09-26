@@ -97,7 +97,6 @@ export interface Message {
   text: string;
   contextId?: string;
   proposalId?: string;
-  isExample?: boolean;
   /**
    * 这条回复是谁生成的(`direct_llm` / `rule_fallback` / …)。
    *
@@ -112,9 +111,9 @@ export interface Message {
   /** 这一轮失败了。界面显示错误与重试,**不显示一句编出来的 AI 回复**。 */
   failed?: boolean;
 }
-export interface Conversation { id: string; title: string; linkedNodeIds: string[]; messages: Message[]; tags?: string[]; isExample?: boolean }
+export interface Conversation { id: string; title: string; linkedNodeIds: string[]; messages: Message[]; tags?: string[] }
 export interface User { id: string; name: string; major: string; year: string; rank: number; targetYear: number }
-export interface JournalEntry { id: string; content: string; date: string; linkedNodeIds: string[]; tags?: string[]; insight?: string; isExample?: boolean }
+export interface JournalEntry { id: string; content: string; date: string; linkedNodeIds: string[]; tags?: string[] }
 export interface FileAsset { id: string; ownerId: string; name: string; size: number; mime: string; url: string; file: File }
 export interface AISettings { mode: string; frequency: string; proactive: boolean; adjust: boolean; critique: boolean; rest: boolean }
 export interface Proposal { id: string; nodeId: string; status: 'pending' | 'accepted' | 'outdated'; originalStart: string; actions: PlanAction[]; remote?: boolean }
