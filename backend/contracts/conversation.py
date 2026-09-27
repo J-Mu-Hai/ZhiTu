@@ -39,6 +39,15 @@ class SendMessageRequest(ApiModel):
     #: 当前视图名(path / timeline / tasks / today)。同样是为了消解指代。
     current_view: str | None = Field(default=None, max_length=40)
 
+    #: 用户此刻在**哪个层级**里(画布显示的那一层子空间的根节点)。
+    #:
+    #: 与 `context_node_id` 是两件事,别合成一个:那个是"我在聊哪个节点",
+    #: 这个是"我在哪个范围里聊"。范围决定 AI 能改哪些节点 —— 范围外的默认只读,
+    #: 越界的变更会被服务端拒绝(见 services/proposal_validation.py 的 OUT_OF_SCOPE)。
+    #:
+    #: 不传表示"整个空间",也就是不缩小范围。
+    scope_root_id: uuid.UUID | None = None
+
 
 class MessageView(ApiModel):
     id: uuid.UUID

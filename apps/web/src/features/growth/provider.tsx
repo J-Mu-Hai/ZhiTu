@@ -1221,6 +1221,10 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
         // 发过去是 422。阶段 5 本地节点都换成真实 id 之后,这个判断自然就总为真。
         contextNodeId: selectedId && UUID_RE.test(selectedId) ? selectedId : null,
         currentView: 'workbench',
+        // 作用范围就是**用户此刻所在的那一层**。他在子空间里说话,就只有这一支
+        // 会被 AI 改动;范围外的东西它看得见、改不了(越界的动作会被服务端拒掉)。
+        // 和 `contextNodeId` 的区别见 backend.ts 上那段注释。
+        scopeRootId: UUID_RE.test(currentSpaceId) ? currentSpaceId : null,
       });
       setMessages(old => [
         ...old.filter(m => m.id !== optimisticId),

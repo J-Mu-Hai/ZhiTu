@@ -24,13 +24,35 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from backend.db.models.enums import DegradedReason, ModelSource
+
+if TYPE_CHECKING:  # pragma: no cover - 只为类型检查,运行时不导入
+    # **只做类型引用,不在运行时导入。** 快照的存储形状住在 services 里(它同时管
+    # 落库契约),而 `agent/` 这一层不该在运行时依赖 services —— 依赖方向是
+    # services -> agent。写成字符串注解 + TYPE_CHECKING 之后,两边都成立。
+    from backend.services.input_snapshot import InputSnapshot
 
 #: 送进模型的上下文最多带多少轮历史。太长的历史既费钱又会让模型忽略最近几轮,
 #: 而"最近几轮"才是用户此刻在说的事。
 HISTORY_TURNS = 12
+
+# ---------------------------------------------------------------------------------
+# 节点在本次上下文里的位置。**一个节点只属于一层**,渲染时按层分段。
+# ---------------------------------------------------------------------------------
+#: 本轮讨论的对象(用户正看着它)。正文优先给全。
+LAYER_FOCUS = "focus"
+#: 焦点的祖先链 —— 目标与约束所在。**只读**的规则不在这里:祖先在范围内一样可写,
+#: 可不可写看的是范围,不是辈分。
+LAYER_ANCESTOR = "ancestor"
+#: 焦点的直属子节点。渐进拆解要看的正是这一层。
+LAYER_CHILD = "child"
+#: 范围内、既不是焦点也不是它的直属子节点的那部分。
+LAYER_SCOPE = "scope"
+#: 范围之外。**默认只读** —— 模型可以看见它(看得见才知道整棵树长什么样),
+#: 但对它提的任何变更都会被服务端拒绝。
+LAYER_OUTSIDE = "outside"
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +91,16 @@ class PlanNodeView:
     `handle` 是这一轮里这个节点的本地记号(`n1`、`n2`…)。模型只看得到记号;它要修改
     某个已有节点时,也只能写记号,由服务端翻译回真实行。所以模型**在物理上无法指涉
     一个它没见过的 id** —— 这是提示注入的着力点被拿掉的地方,不是靠提示词请求它自觉。
+
+    ## `body_read` 为什么必须与 `description` 分开
+
+    `description` 为空有两种完全不同的原因:这个节点没有正文,或者**本次没读它的
+    正文**(范围外、层级太远、超出预算)。合成一种的话,模型看到一片空白,会以为
+    "这些节点都是空的",然后凭想象补内容 —— 而它其实什么都没看到。分开之后,
+    渲染层能如实印出"本次没有读它的正文,需要就先问",而"没读到"不会变成"没有"。
+
+    正文的截断不在这里做:`description` 是原样的事实,截到多少字由渲染层决定,
+    因此"模型实际看到多少"只有一处答案(见 `agent/prompts/planning.py`)。
     """
 
     handle: str
@@ -78,6 +110,37 @@ class PlanNodeView:
     depth: int
     deadline: str | None = None
     estimate_minutes: int | None = None
+    #: 父节点的记号。根目标为 None。用来让模型看清自己拿到的是一棵树,而不是一张表。
+    parent_handle: str | None = None
+    description: str | None = None
+    acceptance_criteria: str | None = None
+    #: 本次读了它的正文吗?**与"有没有正文"不是一回事**。
+    body_read: bool = False
+    #: 见本文件顶部那组 `LAYER_*`。
+    layer: str = LAYER_SCOPE
+    #: 是否在本次的作用范围之内。范围外的默认只读(服务端强制,不是靠提示词)。
+    in_scope: bool = True
+
+    @property
+    def read_only(self) -> bool:
+        return not self.in_scope
+
+
+@dataclass(frozen=True, slots=True)
+class RelationView:
+    """给模型看的一条关系边。**两端也是记号**,不是 id —— 同 `PlanNodeView`。
+
+    「前置」与「关联」分成两个字段表达,而不是合成一个 `label`:前者是排期算法的输入
+    (后者不能早于前者完成),后者只是说明。混成一个,模型下一轮就会拿一条关联去推排期。
+    """
+
+    source: str  # 记号
+    target: str  # 记号
+    #: 'dep' = 前置(`dependencies` 表);'rel' = 用户自己画的关联/影响。
+    kind: str
+    #: `finish_to_start` / `related_to` / `influences`。
+    relation_type: str
+    note: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +173,40 @@ class TurnContext:
     #: 用户此刻在界面上看着哪个视图/哪个节点。用于"把这个阶段展开讲讲"这类指代消解。
     current_view: str | None = None
     context_node_title: str | None = None
+
+    # ---------------------------------------------------------------------------
+    # 作用范围。**三个概念必须分开,混成一个就会写坏东西**
+    #
+    #   scope(范围起点)  用户此刻在哪个空间里 —— 导航出来的,通常是某一层子空间
+    #   focus(讨论对象)  用户点着哪个节点 —— 这一轮在聊的是它
+    #   writable(可改集) 模型这一轮能改哪些节点 —— 目前等于"范围内的那些"
+    #
+    # 分开的价值在"越界请求能被拒绝"这句话上:模型可以**看见**范围外的东西
+    # (不看见就不知道整棵树),但它对范围外提的任何变更都会被服务端拒掉,
+    # 而不是靠提示词请它自觉。
+    # ---------------------------------------------------------------------------
+    #: 范围起点的记号与标题。None 表示这一轮没有更窄的范围可说(即整个空间)。
+    scope_root_handle: str | None = None
+    scope_root_title: str | None = None
+    #: 讨论对象的记号。`context_node_title` 是它的标题。
+    focus_handle: str | None = None
+    #: 这一轮可以改的节点记号。空元组表示"没有范围限制"由调用方决定,见
+    #: `proposal_service.build_from_actions` 的 `writable_handles`。
+    writable_handles: tuple[str, ...] = ()
+    #: 这个空间里现存的节点之间的关系。两端都是记号。
+    edges: tuple[RelationView, ...] = ()
+    #: 有多少条关系因为两端之一不在本次读到的节点里而没能列出来。**如实计数**,
+    #: 不列出来又不说明的话,模型会把"我没看到"当成"没有关系"。
+    edges_hidden: int = 0
+    #: 这个空间里当时存活的节点总数,以及"分批读"有没有发生。
+    #:
+    #: 存在的理由只有一条:让"我这次没有读全"成为一句**能被说出口的事实**。
+    #: 漏读又不说,模型就会拿半份上下文当全份用。
+    live_node_count: int = 0
+    window_truncated: bool = False
+
+    #: 这次分析的输入快照(见 services/input_snapshot.py)。**服务端专用,不渲染。**
+    input_snapshot: InputSnapshot | None = None
 
     #: 记号 -> 真实节点 id 的映射,**服务端专用,绝不渲染进提示词**。
     #:

@@ -314,6 +314,11 @@ async def propose_replan(
         conversation_id=conversation.id,
         actions=result.actions,
         handles=turn.node_handles,
+        # 复盘是**工作区级**的动作(用户在「排期」里点的那一下),没有"我在哪一层"
+        # 可言,所以上面那个 turn 不带焦点,可改集自然就是整个空间。这里仍然把
+        # `turn.writable_handles` 传下去,而不是留空:范围这件事只有一处定义,
+        # 免得以后有人给复盘加上子空间视角、却忘了这个参数还是 None。
+        writable_handles=turn.writable_handles,
         reasoning=result.reply,
         assistant_message=message,
         trigger_type=RevisionTrigger.EXECUTION_DEVIATION,

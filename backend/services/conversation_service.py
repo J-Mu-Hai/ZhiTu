@@ -197,6 +197,7 @@ async def submit_turn(
     client_message_id: str | None = None,
     context_node_id: uuid.UUID | None = None,
     current_view: str | None = None,
+    scope_root_id: uuid.UUID | None = None,
 ) -> TurnOutcome:
     text = (content or "").strip()
     if not text:
@@ -239,6 +240,7 @@ async def submit_turn(
         exclude_message_id=user_message.id,
         context_node_id=context_node_id,
         current_view=current_view,
+        scope_root_id=scope_root_id,
     )
 
     # ---- 模型调用在两次提交之间。它失败不会影响上面已经落库的用户消息。----
@@ -260,6 +262,9 @@ async def submit_turn(
         # **这一轮送给模型的那份记号表**,不是重新按当前库状态生成的。
         # 重新生成的话,模型说的 n3 可能已经指向了另一个节点(见 turn_context 里的注释)。
         handles=turn.node_handles,
+        # 提示词里说过的范围,在这里变成一条真的检查:范围外的动作逐条被拒,
+        # 落在 `proposal_errors` 里如实告诉用户。
+        writable_handles=turn.writable_handles,
         # 程序性说明取自模型自己那段回复:用户点开提案卡片看到的"为什么这么排",
         # 应该和它刚才在对话里说的话是同一句,而不是系统另写的一段。
         reasoning=result.reply,

@@ -2920,6 +2920,19 @@
           ],
           "default": null,
           "title": "Currentview"
+        },
+        "scopeRootId": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scoperootid"
         }
       },
       "required": [

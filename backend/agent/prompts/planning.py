@@ -46,7 +46,61 @@ from __future__ import annotations
 
 #: 写进每条助手消息的 prompt_version。改了这个文件就要改它——
 #: 事后排查"这轮回复为什么这么怪"时,能定位到当时用的是哪一版提示词。
-PROMPT_VERSION = "planning-v4"
+PROMPT_VERSION = "planning-v5"
+
+# ---------------------------------------------------------------------------------
+# 正文的预算。**这里定多少,模型就看到多少** —— 别处不再截一次
+# ---------------------------------------------------------------------------------
+#: 焦点节点的正文给全多少字。它是"用户正在写的那一页",优先给。
+FOCUS_BODY_CHARS = 4000
+#: 祖先与子节点各自给多少字。它们要的是"够我判断",不是全文。
+CONTEXT_BODY_CHARS = 800
+#: 最多给几个子节点带正文。多出来的仍然列出标题,只是不展开。
+MAX_CHILD_BODIES = 20
+#: 祖先链里,给正文的那些:最上面一条(空间的根目标,最硬的约束)+ 最近的这么几条。
+#: 中间那些只给标题 —— 它们离这一轮太远,展开只会把焦点冲淡。
+ANCESTOR_BODIES_NEAREST = 5
+#: "哪些正文没读"那一行最多列几个记号。多出来的用"等共 N 个"收尾 ——
+#: 那一段的目的是让人知道"有东西没读到",不是把整张清单抄一遍(清单在下面逐条标着)。
+UNREAD_HANDLES_SHOWN = 20
+
+#: 层标题。**顺序就是渲染顺序**,也是"相关性从高到低"的顺序。
+#:
+#: 标题里**不写"只读了标题"**这种话:读没读是一行一个的事实(`_node_line` 逐条印),
+#: 写进标题反而在"其实读了"的时候变成一句假话。
+LAYER_TITLES: dict[str, str] = {
+    "focus": "本轮焦点(用户点着的那个节点)",
+    "ancestor": "焦点的祖先链 —— 越往上越是硬约束,先看它",
+    "child": "焦点的直属子节点(渐进拆解时先看这一层有没有重复的对象)",
+    "scope": "范围内其它节点",
+    "outside": "范围之外,**只读** —— 可以看见,但不能对它提任何变更",
+}
+
+#: 逐条印在节点后面的两种状态。**分开写,因为它们是两件事**:范围外是权限,
+#: 只读了标题是本次读了多少。
+READ_ONLY_NOTE = "【范围外,只读】"
+TITLE_ONLY_NOTE = "【本次只读了标题】"
+
+#: 正文被截断时的说明模板。`{shown}` / `{total}` 是字数。
+TRUNCATED_NOTE = "(只给了前 {shown} 字,原文共 {total} 字)"
+
+#: 一个节点的正文行前缀。写成常量是因为渲染与断言都要用到它。
+BODY_LABEL = "正文"
+ACCEPTANCE_LABEL = "验收标准"
+
+#: 用户在界面上正看着哪一页。`current_view` 一路传到这里**必须印出来** ——
+#: 它是"把这个阶段展开讲讲"里"这个"指谁的唯一外部线索,而这个字段以前传到了服务层
+#: 就断了,模型永远看不到。
+#:
+#: 认不出来的值**原样印出**,不去猜:前端以后加了新视图,印一个生名字仍然比印一句
+#: 编出来的解释好 —— 编错的那一句会被模型当成事实。
+VIEW_TITLES: dict[str, str] = {
+    "workbench": "工作台",
+    "path": "工作台 · 路径视图",
+    "timeline": "工作台 · 时间线视图",
+    "tasks": "工作台 · 任务视图",
+    "schedule": "工作台 · 排期视图",
+}
 
 SYSTEM_PROMPT = """你是「知途」,帮助大学生把目标变成可执行计划的助手。用中文回复。
 
@@ -62,6 +116,28 @@ SYSTEM_PROMPT = """你是「知途」,帮助大学生把目标变成可执行计
 
 3. **三样齐了(或用户明确说"你先排一个"),才给出计划。** 计划要分阶段、每阶段有
    能验收的产出,并说明打算怎么排、有什么风险。
+
+## 先给分析,再问缺口
+
+用户把目标写进正文、又跟你说话,他要的是**有内容的回应**,不是一份问卷:
+
+1. 先说你在现有信息里看到了什么:哪几件事是明确的、哪两件互相冲突、哪一段的时间
+   明显不够。这一步不需要任何新信息就能做,条件不齐的时候也照做 —— 它是"你在读"
+   的唯一证据。
+2. 再说缺什么会**让计划整个不一样**。每轮最多问两个,而且只问正文与已知条件里确实
+   没有的。用户自己写过的东西再问一遍,比不回答更让人泄气。
+
+## 你能看到节点的正文
+
+上面「空间里现有的计划」里,焦点与它上下相关的节点会带出**正文**(用户自己写的说明与
+验收标准)。正文比标题可信得多,所以要:
+
+- 正文里说过的事不要再问。用户写了"只能周末做",那就是一条约束,不用再确认一遍。
+- 正文与你的判断冲突时,**以正文为准**,并把冲突说出来让用户裁决。
+- **哪些正文没被读到,上面会明确写出来**(只读了标题 / 正文被截断 / 节点太多没读全)。
+  没读到的部分不要说成"没有",也不要假装看过了 —— 那是把"我没看见"说成了"它不存在"。
+- 范围之外的内容是只读的。**不要对范围外的节点提任何变更** —— 服务端会拒绝,
+  用户看到的是"AI 提了但我没能执行",白说一轮。
 
 ## 关于"用户没说过的数字"
 
@@ -91,6 +167,11 @@ SYSTEM_PROMPT = """你是「知途」,帮助大学生把目标变成可执行计
 不要重复占用已有的记号。
 
 一条提案里只能引用**在本条之前已经出现过**的记号:先建节点的条目,再写引用它的条目。
+
+**只能改范围内的节点。** 上面标着「范围之外」的那些是只读的:你可以引用它们来说明
+问题,但对它们提的变更会被服务端整条拒绝(连同这一轮的其他变更一起白费)。
+要往某个父节点下面加东西,那个父节点也得在范围内。范围是什么、边界在哪,写在
+「这次的作用范围」那一节里。
 
 ### 支持的 op
 
@@ -187,6 +268,10 @@ TURN_TEMPLATE = """## 今天的日期
 空间名:{workspace_title}
 用户当初写的意图:{workspace_intent}
 
+## 这次的作用范围
+
+{scope_section}
+
 ## 已经知道的条件
 
 {brief_section}
@@ -194,6 +279,10 @@ TURN_TEMPLATE = """## 今天的日期
 ## 空间里现有的计划
 
 {plan_section}
+
+## 节点之间的关系
+
+{relations_section}
 
 ## 最近的对话
 
@@ -229,30 +318,189 @@ def render_brief_section(known: dict[str, object]) -> str:
 
 
 def render_plan_section(nodes: list[dict[str, object]]) -> str:
-    """用户真实已有的计划。**这是原来最大的缺口** —— 前端从不上传计划,
-    模型只能看到它自己上一轮提过的东西,于是对话里"你上次说的那个阶段"随时会指错。
+    """用户真实已有的计划,**按"离这一轮有多近"分层**。
 
     每个节点前面印出它的记号。**模型写 actions 时只能引用这些记号**,看不到真实 id,
     所以这一段同时也是"模型能够指涉哪些节点"的完整清单 —— 清单之外的一律会被服务端
     按悬空引用拒绝。末尾额外告诉它新节点该从哪个编号开始,省掉一整类可避免的冲突。
+
+    分层的意义是**把"读到什么程度"写明白**:焦点给正文全文,祖先与子节点给一段,
+    范围外只给标题。一视同仁地平铺,模型会以为自己掌握了全部细节;分层之后
+    "哪些只是标题"是看得见的事实。
     """
     if not nodes:
         return "(这个空间里还没有任何计划节点,除了一个根目标。)"
-    lines = []
+
+    grouped: dict[str, list[dict[str, object]]] = {layer: [] for layer in LAYER_TITLES}
     for node in nodes:
-        indent = "  " * int(node.get("depth") or 0)
-        bits = [
-            f"{indent}- {node.get('handle')} [{node.get('node_type')}] {node.get('title')}"
-        ]
-        if node.get("deadline"):
-            bits.append(f"(截止 {node['deadline']})")
-        if node.get("estimate_minutes"):
-            bits.append(f"(预计 {node['estimate_minutes']} 分钟)")
-        bits.append(f"状态={node.get('status')}")
-        lines.append(" ".join(bits))
-    lines.append("")
+        grouped.setdefault(str(node.get("layer") or "scope"), []).append(node)
+
+    lines: list[str] = []
+    for layer, title in LAYER_TITLES.items():
+        members = grouped.get(layer) or []
+        if not members:
+            continue
+        lines.append(f"### {title}")
+        limit = FOCUS_BODY_CHARS if layer == "focus" else CONTEXT_BODY_CHARS
+        for node in members:
+            lines.append(_node_line(node))
+            lines.extend(_body_lines(node, limit))
+        lines.append("")
     lines.append(f"新建节点的 localId 请从 n{len(nodes) + 1} 开始编号。")
     return "\n".join(lines)
+
+
+def _node_line(node: dict[str, object]) -> str:
+    indent = "  " * int(node.get("depth") or 0)
+    bits = [f"{indent}- {node.get('handle')} [{node.get('node_type')}] {node.get('title')}"]
+    if node.get("parent_handle"):
+        bits.append(f"(上级 {node['parent_handle']})")
+    if node.get("deadline"):
+        bits.append(f"(截止 {node['deadline']})")
+    if node.get("estimate_minutes"):
+        bits.append(f"(预计 {node['estimate_minutes']} 分钟)")
+    bits.append(f"状态={node.get('status')}")
+    if node.get("read_only"):
+        bits.append(READ_ONLY_NOTE)
+    if not node.get("body_read"):
+        bits.append(TITLE_ONLY_NOTE)
+    return " ".join(bits)
+
+
+def _body_lines(node: dict[str, object], limit: int) -> list[str]:
+    """一个节点的正文行。
+
+    **没读到就说没读到(在 `_node_line` 里逐条印出来),截断了就说截断了。**
+    两种都不许留白:留白的话模型会把你没给它看的东西当成"那里什么都没有",
+    然后照着想象往下排 —— 而这正是这一批要修的那个毛病换了个地方复发。
+    """
+    if not node.get("body_read"):
+        return []
+
+    indent = "  " * (int(node.get("depth") or 0) + 1)
+    lines: list[str] = []
+    for label, key in ((BODY_LABEL, "description"), (ACCEPTANCE_LABEL, "acceptance_criteria")):
+        text = str(node.get(key) or "").strip()
+        if not text:
+            continue
+        if len(text) > limit:
+            note = TRUNCATED_NOTE.format(shown=limit, total=len(text))
+            lines.append(f"{indent}{label}{note}:{text[:limit]}")
+        else:
+            lines.append(f"{indent}{label}:{text}")
+    if not lines:
+        lines.append(f"{indent}(这个节点没有正文 —— 这是读到的结果,不是没读)")
+    return lines
+
+
+def render_scope_section(
+    *,
+    scope_title: str | None,
+    focus_handle: str | None,
+    focus_title: str | None,
+    writable: list[str],
+    nodes: list[dict[str, object]],
+    live_node_count: int,
+    window_truncated: bool,
+    current_view: str | None = None,
+) -> str:
+    """这一轮能改什么、读到了什么。
+
+    ## 为什么"读到了什么"要单独说一段
+
+    因为"没读到"和"没有"在模型眼里长得一模一样。范围外、太远的祖先、超出预算的
+    子节点 —— 这些节点的正文根本不会出现,而一段没出现过的文字不会留下任何痕迹。
+    把这件事写成一句话,模型才有机会说出"这部分我还没看到",而不是拿半份上下文
+    当全份用。规范要的"明确记录省略或截断"就落在这里。
+
+    `current_view` 是第一行,因为它回答的是"用户在哪儿"的另一半:范围说的是"他在哪一层",
+    视图说的是"他在哪一页"。两者合起来,"这个阶段展开讲讲"才指得清楚。
+    """
+    lines: list[str] = []
+    if current_view:
+        lines.append(f"- 用户此刻在:{VIEW_TITLES.get(current_view, current_view)}")
+    if scope_title:
+        lines.append(f"- 范围起点:**{scope_title}** 这一支(它的子树算范围内)")
+    else:
+        lines.append("- 范围起点:整个空间(没有更窄的范围)")
+    if focus_handle:
+        lines.append(f"- 本轮焦点:{focus_handle}「{focus_title or '(无标题)'}」")
+    else:
+        lines.append("- 本轮焦点:用户没有指定节点(可以问一句他在说哪一块)")
+
+    if writable:
+        lines.append(f"- 你可以改:{' '.join(writable)}")
+    outside = [str(node.get("handle")) for node in nodes if node.get("read_only")]
+    if outside:
+        lines.append(f"- 范围外(只读,不能改):{' '.join(outside)}")
+
+    unread = [str(node.get("handle")) for node in nodes if not node.get("body_read")]
+    if unread:
+        shown = " ".join(unread[:UNREAD_HANDLES_SHOWN])
+        more = f" 等共 {len(unread)} 个" if len(unread) > UNREAD_HANDLES_SHOWN else ""
+        lines.append(
+            f"- 这些节点的正文**本次没有读**:{shown}{more}"
+            "(下面逐条标着「本次只读了标题」;需要就先问用户,不要当成它们没有内容)"
+        )
+    cut = [
+        str(node.get("handle"))
+        for node in nodes
+        if node.get("body_read") and _is_cut(node)
+    ]
+    if cut:
+        lines.append(f"- 这些节点的正文被截断了(只给了前一段):{' '.join(cut)}")
+
+    if window_truncated:
+        lines.append(
+            f"- 空间里一共有 {live_node_count} 个节点,本次只读到了其中离根较近的一部分,"
+            "更远的那些连标题都没有出现在下面 —— **不要假装看过它们**。"
+        )
+    return "\n".join(lines)
+
+
+def _is_cut(node: dict[str, object]) -> bool:
+    """这个节点的正文在渲染时会挨一刀吗?用与渲染**同一对**上限判断。"""
+    limit = FOCUS_BODY_CHARS if node.get("layer") == "focus" else CONTEXT_BODY_CHARS
+    return any(len(str(node.get(key) or "").strip()) > limit for key in ("description", "acceptance_criteria"))
+
+
+def render_relations_section(edges: list[dict[str, object]], *, hidden: int = 0) -> str:
+    """节点之间的关系。**前置与关联必须分开说。**
+
+    「前置」会改变排期(后者不能早于前者完成),「相关」「影响」不会 —— 它们只是
+    说明。把三类混成一句"这些节点有关联",模型下一轮就会拿一条关联去推排期,
+    而那种错误在界面上看不出来:计划看起来是被"关系"约束过的。
+
+    `hidden` 是"涉及本轮没读到的节点、列不出来"的那些。如实说一句 —— 不说的后果是
+    模型把"我没看见"当成"没有关系",然后在一个其实有前置的任务上往下排。
+    """
+    tail = ""
+    if hidden:
+        tail = (
+            f"\n(另外还有 {hidden} 条关系涉及本次没有读到的节点,没有列在这里 —— "
+            "需要的话先问用户。)"
+        )
+    if not edges:
+        return "(这些节点之间还没有关系。)" + tail
+    lines: list[str] = []
+    for edge in edges:
+        source, target = edge.get("source"), edge.get("target")
+        kind = str(edge.get("kind") or "")
+        if kind == "dep":
+            lines.append(f"- {source} → {target}:前置({source} 完成后,{target} 才能开始)")
+        else:
+            relation = str(edge.get("relation_type") or "")
+            marker = "→" if relation == "influences" else "—"
+            label = {"related_to": "相关", "influences": "影响"}.get(relation, relation)
+            lines.append(f"- {source} {marker} {target}:{label}")
+        if edge.get("note"):
+            lines.append(f"    (用户写的说明:{edge['note']})")
+    lines.append("")
+    lines.append(
+        "只有「前置」会影响排期。「相关」是无向的(谁在前谁在后都一样),"
+        "「影响」和「相关」都不排先后。"
+    )
+    return "\n".join(lines) + tail
 
 
 def render_history_section(history: list[dict[str, str]]) -> str:

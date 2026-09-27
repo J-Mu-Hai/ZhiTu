@@ -54,6 +54,10 @@ OP_NOT_YET_AVAILABLE = "OP_NOT_YET_AVAILABLE"
 PAYLOAD_SCHEMA_INVALID = "PAYLOAD_SCHEMA_INVALID"
 DANGLING_PROPOSAL_REF = "DANGLING_PROPOSAL_REF"
 NODE_NOT_IN_WORKSPACE = "NODE_NOT_IN_WORKSPACE"
+#: 这条变更要动的东西在当前作用范围之外。**与 `DANGLING_PROPOSAL_REF` 是两回事**:
+#: 那个是"根本没这个节点",这个是"节点在,但不在你这一轮能改的范围里"。混成一个
+#: 错误码,用户会以为节点丢了,而实际上他只需要先进入那一层。
+OUT_OF_SCOPE = "OUT_OF_SCOPE"
 LOCAL_ID_CONFLICT = "LOCAL_ID_CONFLICT"
 DUPLICATE_LOCAL_ID = "DUPLICATE_LOCAL_ID"
 TOO_MANY_ACTIONS = "TOO_MANY_ACTIONS"
@@ -205,12 +209,23 @@ def validate_actions(
     nodes: Mapping[uuid.UUID, NodeSnapshot],
     dependencies: Iterable[tuple[uuid.UUID, uuid.UUID]] = (),
     today: date,
+    writable: Iterable[uuid.UUID] | None = None,
 ) -> ValidationResult:
     """把模型的一段变更校验成一个可以落地的变更集。
 
     `handles` 是本轮送给模型的那份记号表。**这是唯一合法的指涉来源** ——
     模型写出的、不在其中的 id 一律按悬空引用拒绝,而不是"查一下数据库看看这个 id
     存不存在"。后者会让别的空间里的节点 id 变成一条可用的输入。
+
+    ## `writable`:提示词里的范围**也必须是服务端的检查**
+
+    `None` 表示不设范围限制(直接调用这个函数的少数场景:测试、复盘那条工作区级的
+    路径 —— 那里用户要调整的是整个空间)。给了集合就表示"只能动这些":其余节点
+    一律拒绝,即使模型看得见它们。
+
+    为什么不能只靠提示词说"范围外别动":提示词是一段建议,而范围是一条权限。
+    模型被注入的输入带偏、或者只是自作主张地"顺手把上面那条也改了",提示词都拦不住 ——
+    用户看到的结果会是"我明明只在看这个阶段,它把我整份计划改了"。
     """
     if len(actions) > MAX_ACTIONS:
         return _fail(
@@ -230,6 +245,7 @@ def validate_actions(
             (a, b) for a, b in dependencies if a in nodes and b in nodes
         },
         today=today,
+        writable=None if writable is None else frozenset(writable),
     )
     errors: list[ActionError] = []
 
@@ -272,11 +288,14 @@ class _Book:
         nodes: Mapping[uuid.UUID, NodeSnapshot],
         dependencies: set[tuple[uuid.UUID, uuid.UUID]],
         today: date,
+        writable: frozenset[uuid.UUID] | None = None,
     ) -> None:
         self.today = today
         self.handles = dict(handles)
         self.nodes = dict(nodes)
         self.existing_dependencies = dependencies
+        #: None = 不设范围限制。见 `validate_actions` 的注释。
+        self.writable = writable
 
         #: 记号 -> 真实 id。开始是已有的句柄,随着 create 逐条长大。
         #: **只增不改**:一个记号一旦绑定就不能再指向别的东西。
@@ -400,6 +419,12 @@ class _Book:
             ]
         if parent_id not in self.nodes and parent_id not in {p.id for p in self.creates.values()}:
             return [_err(ordinal, NODE_NOT_IN_WORKSPACE, f"{action.parent_ref} 不在这个空间里。")]
+        # 同一条提案里刚建出来的父节点不用查范围:它的父节点已经查过了,而范围对
+        # "往下"是封闭的 —— 范围内的节点下面新建的东西,也在范围内。
+        if parent_id not in self._planned_ids():
+            blocked_by_scope = self._out_of_scope(ordinal, parent_id, action.parent_ref)
+            if blocked_by_scope is not None:
+                return [blocked_by_scope]
         # 只挡"往一个正在被删的节点下面加子节点"。父节点**被改过**不影响新建 ——
         # 见 `touched` 那段注释,这是真实模型踩出来的一条。
         if self.touched.get(parent_id) == _TOUCH_DELETE:
@@ -465,6 +490,10 @@ class _Book:
         if not changed:
             return [_err(ordinal, PAYLOAD_SCHEMA_INVALID, "这一条没有说要改什么。")]
 
+        blocked_by_scope = self._out_of_scope(ordinal, node_id, action.target_ref)
+        if blocked_by_scope is not None:
+            return [blocked_by_scope]
+
         blocked = self.touched.get(node_id)
         if blocked is not None:
             return [
@@ -519,6 +548,10 @@ class _Book:
                 )
             ]
 
+        blocked_by_scope = self._out_of_scope(ordinal, node_id, action.target_ref)
+        if blocked_by_scope is not None:
+            return [blocked_by_scope]
+
         blocked = self.touched.get(node_id)
         if blocked is not None:
             return [
@@ -556,6 +589,11 @@ class _Book:
         pair = self._resolve_pair(ordinal, action.predecessor_ref, action.successor_ref)
         if isinstance(pair, list):
             return pair
+        blocked = self._pair_out_of_scope(
+            ordinal, pair, action.predecessor_ref, action.successor_ref
+        )
+        if blocked is not None:
+            return [blocked]
         predecessor, successor = pair
         if predecessor == successor:
             return [_err(ordinal, SELF_DEPENDENCY, "一个节点不能以自己为前提。")]
@@ -590,6 +628,11 @@ class _Book:
         pair = self._resolve_pair(ordinal, action.predecessor_ref, action.successor_ref)
         if isinstance(pair, list):
             return pair
+        blocked = self._pair_out_of_scope(
+            ordinal, pair, action.predecessor_ref, action.successor_ref
+        )
+        if blocked is not None:
+            return [blocked]
         if pair not in self.existing_dependencies:
             return [
                 _err(
@@ -613,6 +656,40 @@ class _Book:
             )
         )
         return []
+
+    # -- 范围 ------------------------------------------------------------------
+    def _out_of_scope(self, ordinal: int, node_id: uuid.UUID, ref: str) -> ActionError | None:
+        """这个节点在不在"这一轮能改的"里面。不在就返回一条错误,在就返回 None。
+
+        消息里同时给记号(`targetRef` 里的那个)和标题:用户要判断的是"它说的哪个节点",
+        而他看到的是画布上的标题,不是记号。
+        """
+        if self.writable is None or node_id in self.writable:
+            return None
+        title = self.title_of(node_id) if node_id in self.nodes else ref
+        return _err(
+            ordinal,
+            OUT_OF_SCOPE,
+            f"「{title}」在当前范围内是只读的,这一条没有执行。"
+            "只能改你正在看的这一片 —— 要动它,先进入它所在的层级再说。",
+        )
+
+    def _pair_out_of_scope(
+        self,
+        ordinal: int,
+        pair: tuple[uuid.UUID, uuid.UUID],
+        predecessor_ref: str,
+        successor_ref: str,
+    ) -> ActionError | None:
+        """关系是**两端**的事:有一端在范围外,改的就是范围外那个节点的处境。"""
+        for ref, node_id in ((predecessor_ref, pair[0]), (successor_ref, pair[1])):
+            # 同一条提案里刚建出来的节点不用查:它的父节点已经查过了,范围往下是封闭的。
+            if node_id in self._planned_ids():
+                continue
+            blocked = self._out_of_scope(ordinal, node_id, ref)
+            if blocked is not None:
+                return blocked
+        return None
 
     # -- 辅助 ------------------------------------------------------------------
     def _resolve_pair(
@@ -823,6 +900,7 @@ def _describe(exc: ValidationError) -> str:
 __all__ = [
     "CANNOT_DELETE_ROOT",
     "CONFLICTING_OPERATIONS",
+    "OUT_OF_SCOPE",
     "DANGLING_PROPOSAL_REF",
     "DEADLINE_IN_PAST",
     "DEPENDENCY_ALREADY_EXISTS",

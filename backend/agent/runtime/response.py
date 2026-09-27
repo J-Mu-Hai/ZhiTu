@@ -38,6 +38,8 @@ from backend.agent.prompts.planning import (
     render_brief_section,
     render_history_section,
     render_plan_section,
+    render_relations_section,
+    render_scope_section,
 )
 from backend.agent.runtime.base import BriefClaim, ReasoningResult, TurnContext
 from backend.db.models.enums import ModelSource
@@ -111,6 +113,9 @@ def render_turn(turn: TurnContext) -> str:
     }
     # 逐字段挑选,不是 `asdict(node)`。`asdict` 会把以后新加的每一个字段都带上,
     # 而"哪些东西可以进提示词"必须是一次一次明确的决定,不是默认全给。
+    #
+    # 正文(`description` / `acceptance_criteria`)在这里是**原样**的:截到多少字
+    # 由渲染层决定,所以"模型实际看到多少正文"只有一处答案。
     nodes = [
         {
             "handle": n.handle,
@@ -120,8 +125,24 @@ def render_turn(turn: TurnContext) -> str:
             "depth": n.depth,
             "deadline": n.deadline,
             "estimate_minutes": n.estimate_minutes,
+            "parent_handle": n.parent_handle,
+            "description": n.description,
+            "acceptance_criteria": n.acceptance_criteria,
+            "body_read": n.body_read,
+            "layer": n.layer,
+            "read_only": n.read_only,
         }
         for n in turn.nodes
+    ]
+    edges = [
+        {
+            "source": edge.source,
+            "target": edge.target,
+            "kind": edge.kind,
+            "relation_type": edge.relation_type,
+            "note": edge.note,
+        }
+        for edge in turn.edges
     ]
     history = [{"role": r, "content": c} for r, c in turn.history]
 
@@ -131,8 +152,19 @@ def render_turn(turn: TurnContext) -> str:
         timezone=turn.timezone,
         workspace_title=turn.workspace_title or "(未命名)",
         workspace_intent=turn.workspace_intent or "(用户没写)",
+        scope_section=render_scope_section(
+            scope_title=turn.scope_root_title,
+            focus_handle=turn.focus_handle,
+            focus_title=turn.context_node_title,
+            writable=list(turn.writable_handles),
+            nodes=nodes,
+            live_node_count=turn.live_node_count,
+            window_truncated=turn.window_truncated,
+            current_view=turn.current_view,
+        ),
         brief_section=render_brief_section(known),
         plan_section=render_plan_section(nodes),
+        relations_section=render_relations_section(edges, hidden=turn.edges_hidden),
         history_section=render_history_section(history),
         user_message=turn.user_message,
     )

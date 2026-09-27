@@ -154,6 +154,7 @@ async def build_from_actions(
     reasoning: str | None = None,
     assistant_message=None,
     trigger_type: RevisionTrigger | None = None,
+    writable_handles: tuple[str, ...] | None = None,
 ) -> ProposalOutcome:
     """校验模型这一轮提的变更,通过就落一条提案。
 
@@ -168,6 +169,12 @@ async def build_from_actions(
     `EXECUTION_DEVIATION`,于是它在 `plan_revisions` 里也分得出来 —— 而
     "这次调整是因为执行情况,不是我自己想改"正是复盘时最需要看得见的那件事。
     不给时按老规矩推:第一版计划是 `initial_plan`,其余是 `manual_replan`。
+
+    `writable_handles` 是**这一轮模型能改的那些节点的记号**。传 `None` 表示不设范围
+    限制(复盘那条工作区级的路径、以及直接调用的测试);对话那条路径一定传,
+    因为它拿到的是一个有范围问题的上下文(用户在某一层子空间里)。范围之外的动作
+    会被逐条拒成 `OUT_OF_SCOPE`,而不是静默丢掉 —— 用户要看到"AI 提了但我没执行",
+    否则他会以为那句调整已经生效了。
     """
     if not actions:
         return ProposalOutcome(proposal=None)
@@ -185,6 +192,13 @@ async def build_from_actions(
     }
     handle_map = _handles_to_ids(handles)
     dependencies = await _load_dependency_pairs(db, ctx.id)
+    # 记号表里认不出来的记号直接落空 —— 那一条会在校验里按悬空引用被拒,
+    # 而不是变成"范围内没有这个节点"。
+    writable = (
+        None
+        if writable_handles is None
+        else {handle_map[handle] for handle in writable_handles if handle in handle_map}
+    )
 
     result = validate_actions(
         actions,
@@ -192,6 +206,7 @@ async def build_from_actions(
         nodes=snapshots,
         dependencies=dependencies,
         today=today_in(ctx.timezone),
+        writable=writable,
     )
 
     if result.plan is None:

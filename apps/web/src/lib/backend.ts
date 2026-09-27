@@ -236,6 +236,14 @@ export function sendMessage(
     clientMessageId?: string;
     contextNodeId?: string | null;
     currentView?: string | null;
+    /**
+     * 这次对话的作用范围起点 —— 用户在哪个子空间里。
+     *
+     * **与 `contextNodeId` 不是一回事**:那个是"我在说哪个节点",这个说的是
+     * "这一轮允许改哪一片"。不传就是整个空间(旧行为)。传了一个后端认不出来的
+     * 节点会得到 400,而不是被悄悄放宽成整个空间 —— 宁可报错也不越过用户划的线。
+     */
+    scopeRootId?: string | null;
   },
 ): Promise<SendMessageResponse> {
   return apiFetch<SendMessageResponse>(`/api/workspaces/${workspaceId}/messages`, {

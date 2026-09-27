@@ -189,6 +189,7 @@ async def send_message(
         client_message_id=payload.client_message_id,
         context_node_id=payload.context_node_id,
         current_view=payload.current_view,
+        scope_root_id=payload.scope_root_id,
     )
     # 简报在这里重新取一次,而不是用 outcome.brief:重复提交时服务层不会去解析条件,
     # 那条路径上 outcome.brief 是 None,直接用它会让重试的响应里简报突然消失。
