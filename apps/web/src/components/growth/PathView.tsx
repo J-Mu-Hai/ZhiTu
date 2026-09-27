@@ -1236,11 +1236,15 @@ function Canvas() {
             )}
             {isRealSpace && bodyNote.kind === 'conflict' && (
               <div className="body-conflict-actions">
-                {/* **两条路都摆出来,而且都不静默。** 覆盖是用户明确选的(它拿的是
-                    库里此刻那一版做前置条件,所以"覆盖"也仍然是一致性写入);
-                    放弃则是把库里那份读回编辑器。哪一种都不该由我们替他挑。 */}
+                {/* **两条路都摆出来,而且都不静默。** 覆盖是用户明确选的,但它**不是**
+                    "无条件写入":`flushBody` 带的是冲突那一刻从库里读回来的
+                    `contentVersion`,所以哪怕点了覆盖,只要这中间又有人写过,它还是 409、
+                    还是回到这一屏(有用例专门钉住这一下,见 `node-body.spec.ts` 的
+                    「点了覆盖之后又有人改,它还是不肯写」)。放弃则是把库里那份读回编辑器。
+                    哪一种都不该由我们替他挑 —— 文案也照这个说:覆盖的是**草稿**,
+                    不是"我这份",它要经过同一道版本校验。 */}
                 <button type="button" onClick={() => { setBodyNote({ kind: 'none' }); void flushBody(); }}>
-                  用我这份覆盖
+                  用我的草稿覆盖
                 </button>
                 {Boolean(bodyNote.serverBody) && (
                   <button

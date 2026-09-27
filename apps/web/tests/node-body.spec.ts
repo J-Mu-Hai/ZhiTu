@@ -246,7 +246,7 @@ test('正文存不上时草稿还在、界面说没存上，重试之后才写�
 // ---------------------------------------------------------------------------------
 // 4. 别人先改了:409 → 说清冲突 → 覆盖要用**服务端那一版**做前置条件
 // ---------------------------------------------------------------------------------
-test('正文被别人改过时显示冲突，覆盖与放弃两条路都不静默', async ({ page }) => {
+test('正文被别人改过时显示冲突，覆盖仍走版本校验、放弃更是一个字都不写', async ({ page }) => {
   test.slow();
   const { account, workspaceId, stageId, leafId } = await scene(page, 'body-conflict');
   await openSpacePage(page, '/workbench', workspaceId);
@@ -287,16 +287,43 @@ test('正文被别人改过时显示冲突，覆盖与放弃两条路都不静�
   expect(untouched.contentVersion).toBe(2);
 
   const actions = page.locator('.body-conflict-actions');
-  await expect(actions.getByRole('button', { name: '用我这份覆盖' })).toBeVisible();
+  await expect(actions.getByRole('button', { name: '用我的草稿覆盖' })).toBeVisible();
   await expect(actions.getByRole('button', { name: '放弃我的改动,载入库里那份' })).toBeVisible();
-  await actions.getByRole('button', { name: '用我这份覆盖' }).click();
+
+  // --- 一之续:**点了覆盖,但这一下不能是无条件写入** ------------------------------
+  //
+  // 用户按下去之前又有人写了一次。覆盖带的是**冲突那一刻读回来的**那一版(2),
+  // 而库里已经是 3 —— 所以它必须**再冲突一次**,而不是把别人的字盖掉。
+  // 这一条是"锁没有被绕开"的直接证据:如果覆盖走的是无条件 PATCH,它会绿着写进去,
+  // 而屏幕上什么都不会说。
+  const between = await patch('别人在我要点覆盖之前又写了一次', held + 1);
+  expect(between.ok(), `第三次竞争的写入失败了:${between.status()} ${await between.text()}`).toBe(true);
+  const afterBetween = await storedBody(page, account.token, workspaceId, leafId);
+  expect(afterBetween.description).toBe('别人在我要点覆盖之前又写了一次');
+
+  await actions.getByRole('button', { name: '用我的草稿覆盖' }).click();
+  await expect(note, '点了覆盖之后又有人改,它却照样写进去了 —— 这一下没有被版本校验拦住').toHaveClass(
+    /is-conflict/,
+    { timeout: 15000 },
+  );
+  await expect(note).toContainText('库里现在是:「别人在我要点覆盖之前又写了一次」');
+  const stillNotMine = await storedBody(page, account.token, workspaceId, leafId);
+  expect(stillNotMine.description, '覆盖绕开了版本锁,把别人的字盖掉了').toBe(
+    '别人在我要点覆盖之前又写了一次',
+  );
+
+  // 再点一次:这一回带的是刚读回来的那一版,才真的写进去。
+  await actions.getByRole('button', { name: '用我的草稿覆盖' }).click();
   await expectSaved(page);
 
   const won = await storedBody(page, account.token, workspaceId, leafId);
   expect(won.description).toBe('我写的');
-  // **3 而不是 2。** 覆盖这一下拿的必须是刚才从库里读回来的那一版做前置条件 ——
-  // 还拿着手上那个旧号(1)重发的话,它会永远 409,而界面上看起来是"点了没反应"。
-  expect(won.contentVersion, '覆盖之后版本号不对 —— 这一下带的不是服务端那一版').toBe(3);
+  // **比"别人最后写的那一版 +1"。** 覆盖这一下拿的必须是**刚从库里读回来的**那一版做
+  // 前置条件:一直拿着手上那个旧号(1)重发,它会永远 409,而界面上看起来是"点了没反应"。
+  expect(
+    won.contentVersion,
+    '覆盖之后版本号不对 —— 这一下带的不是服务端那一版',
+  ).toBe(afterBetween.contentVersion + 1);
 
   // --- 二、"放弃"这条路 -----------------------------------------------------------
   // 再来一次冲突:这次选放弃,它必须**只把库里那份读进编辑器,不写任何东西**。
