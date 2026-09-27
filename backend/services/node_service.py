@@ -69,7 +69,7 @@ lock_workspace  ->  新版本号  ->  plan_revisions 一行  ->  domain_events �
 from __future__ import annotations
 
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -139,6 +139,26 @@ EDITABLE_FIELDS = frozenset(
 #: 将来编辑器一并读写的很可能就是它,所以现在一起算进去 —— 只锁一半的话,
 #: 那条丢失更新会从另一半溜回来。
 BODY_FIELDS = frozenset({"description", "acceptance_criteria"})
+
+
+def touch_content_version(node: PlanNode, fields: Iterable[str]) -> bool:
+    """改了 `BODY_FIELDS` 里的字段就推进正文版本号;返回是否推进了。
+
+    **全仓唯一推进 `content_version` 的地方。** 改一个已有节点的正文只有两条路:
+    用户直接编辑(`update_node`)与 AI 提案确认(`proposal_service._apply`)——
+    两条都必须走这里。各写一遍的代价不是"重复",是**迟早有一条忘了写**,而忘写
+    的表现是**静默丢失更新**:客户端手里那个版本号还停在原地,它下一次保存就会把
+    别人刚写的正文整段盖掉,而两边都不会看到冲突。
+
+    这不是假设:提案路径原来正是漏的 —— `UpdateNodeAction` 里没有 `content_version`,
+    `_apply` 只 `setattr`,于是"AI 改过的正文"在版本上等于没发生过。
+    `tests/test_content_version_single_writer.py` 里有一条 AST 用例钉住"只有一个
+    写入点",另有一条端到端用例钉住"提案改完正文,旧编辑器保存会被 409 拦住"。
+    """
+    if not BODY_FIELDS & set(fields):
+        return False
+    node.content_version = node.content_version + 1
+    return True
 
 #: 字符串字段 -> 它对应的闭集枚举。闭集之外的值一律 400,不写进库。
 #:
@@ -405,9 +425,8 @@ async def update_node(
 
         for field, value in values.items():
             setattr(node, field, value)
-        # 正文改了才推进版本号 —— 见函数文档最后那一节。
-        if BODY_FIELDS & set(values):
-            node.content_version = node.content_version + 1
+        # 正文改了才推进版本号 —— 规则与提案路径共用同一个函数,见上面那一节。
+        touch_content_version(node, values)
         # `completed_at` 与 `status` **必须一起改**。留着一个"已完成但没有完成时间"
         # 的行,复盘时就算不出"这个阶段实际花了多久" —— 而那是复盘唯一有用的数字。
         if "status" in values and node.status is not was_status:

@@ -87,6 +87,7 @@ from backend.db.models.enums import (
 )
 from backend.services import plan_service, turn_context
 from backend.services.context import WorkspaceContext
+from backend.services.node_service import touch_content_version
 from backend.services.errors import (
     IdempotencyKeyReused,
     ProposalExpired,
@@ -609,6 +610,11 @@ async def _apply(
 
         for field in patch.changed_fields:
             setattr(node, field, getattr(patch.action, field))
+        # **正文的版本号必须跟着一起走。** 少这一句,"AI 改过的正文"在版本上等于没
+        # 发生过:客户端手里那个号还停在原地,它下一次保存就会把这条**用户已经确认过**
+        # 的改写静默盖掉 —— 而两边都不会看到冲突。规则与用户直接编辑共用同一个函数,
+        # 免得两条路各写一遍、然后有一条忘了写。
+        touch_content_version(node, patch.changed_fields)
         if patch.action.title is not None:
             node.title = patch.action.title.strip()
         # `completed_at` 与 `status` 必须一起改。留着一个"已完成但没有完成时间"的
