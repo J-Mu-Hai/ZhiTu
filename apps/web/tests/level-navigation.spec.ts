@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { assertBackendRunning, createNode, createWorkspace, getPlan, registerAccount, renderedNodeIds, waitForRealPlan } from './support/session';
+import { assertBackendRunning, createNode, createWorkspace, enterSpace, getPlan, registerAccount, renderedNodeIds, waitForRealPlan } from './support/session';
 
 /**
  * 层级导航:进入子空间、在里面建东西、返回上级 —— **每一层都是后端那一层**。
@@ -46,7 +46,7 @@ test('进入子空间、在里面建节点、返回上级，每一层都对得�
   await expect.poll(() => renderedNodeIds(page)).toEqual([root.id, stageId].sort());
 
   // --- 进阶段:阶段是它自己那一层的中心,树叶画在它旁边 --------------------------
-  await page.locator(`.react-flow__node[data-id="${stageId}"]`).dblclick();
+  await enterSpace(page, stageId);
   await expect(page.locator('.space-breadcrumb')).toContainText('联系导师');
   await expect.poll(() => renderedNodeIds(page)).toEqual([stageId, leafId].sort());
 

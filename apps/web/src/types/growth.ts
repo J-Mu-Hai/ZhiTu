@@ -62,6 +62,16 @@ export interface GrowthNode {
   estimatedHours?: number;
   estimateMinutes?: number;
   timelineLevel?: 'major' | 'task' | 'action';
+  /**
+   * 正文的版本号(后端 `plan_nodes.content_version`),保存正文时原样带回做乐观锁。
+   *
+   * 可选是因为**它不该挡住保存**:投影拿不到它就说明这份格式不是真实的计划节点,
+   * 而"某条路径上缺了一个号"的正确表现是照旧能存,不是把用户的正文扣下。
+   *
+   * 它必须跟着 `description` 一起走:用户在编辑器里改完正文按下保存时,要带的正是
+   * "我读到的**那一版**" —— 而不是"现在最新的一版"。拿后者去比,锁就形同虚设。
+   */
+  contentVersion?: number;
 }
 export type Task = GrowthNode & { type: 'task' };
 export type Milestone = GrowthNode & { type: 'milestone' };

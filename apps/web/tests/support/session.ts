@@ -130,6 +130,18 @@ export interface PlanNode {
   nodeType: string;
   deadline: string | null;
   status: string;
+  /**
+   * 预计工时(分钟)。**正文保存不许动它** —— 它抹掉的话,那条任务会突然排不进
+   * 任何一天,而排期与「今天」都不会报错,只是安静地少了一件事(见 `node-body.spec.ts`)。
+   */
+  estimateMinutes: number | null;
+  /** 正文。`null` 是"没写过",与空串不是一回事(后端用 `None` 表示没写过)。 */
+  description: string | null;
+  /**
+   * 正文的乐观锁(步骤 4)。**测试要读它才能造出真正的冲突** —— 拿一个旧号去写,
+   * 而不是"随便写个 0 看看会不会炸"。
+   */
+  contentVersion: number;
 }
 /** 计划里一条边。`/plan` 会把它一并返回,画布的连线就是从这儿投影出来的。 */
 export interface PlanDependency {
@@ -301,6 +313,31 @@ export async function clickUntilVisible(page: Page, trigger: Locator, effect: Lo
     await trigger.click();
     await expect(effect).toBeVisible({ timeout: 3000 });
   }).toPass({ timeout: 15000 });
+}
+
+/**
+ * 进入某个节点的子空间。
+ *
+ * ## 为什么是点那个箭头按钮,而不是双击
+ *
+ * 2026-09-27(步骤 4)之前,进子空间靠**双击节点**。那件事和"单击打开正文与详情"
+ * 挤在同一个手势上,只能靠一个 240 毫秒的计时器分开 —— 于是每一次查看正文都要先
+ * 等 240 毫秒,而双击会不会被认出来取决于手速。现在两件事拆开了:单击看正文,
+ * 进子空间走节点右上角那个箭头(`.node-enter`,它从 3A 那一批起就在)。
+ *
+ * 所以测试里也该走那条路 —— **不要**在这里偷偷用 `dblclick`:那个手势已经不是
+ * 产品的入口了,留着它等于测一条用户走不了的路。
+ */
+export async function enterSpace(page: Page, nodeId: string): Promise<void> {
+  const node = page.locator(`.react-flow__node[data-id="${nodeId}"]`);
+  await node.scrollIntoViewIfNeeded();
+  await node.hover();
+  // "进去了"的证据:**这个节点变成了当前这一层的根**(`PathView` 里
+  // `growth.nodes[spaceId]` 就是画出来那个 `goal`)—— 它原来是一张普通卡片。
+  // 用它当效果,而不是"按钮还在不在":后者点之前就成立(见 `clickUntilVisible`
+  // 那段注释里"效果必须是点了会发生什么")。
+  const becameTheRoot = page.locator(`.react-flow__node[data-id="${nodeId}"] .growth-node.goal`);
+  await clickUntilVisible(page, node.locator('.node-enter'), becameTheRoot);
 }
 
 /** 断言画布上真的画出了一批节点 —— 它是"数据到了"最直接的证据。 */

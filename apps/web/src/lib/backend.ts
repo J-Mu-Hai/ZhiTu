@@ -409,6 +409,15 @@ export interface NodePatch {
   priority?: string;
   estimateMinutes?: number | null;
   deadline?: string | null;
+  /**
+   * 正文的乐观锁:**你手上那一份是第几版**。不是要写的字段,是一个前置条件。
+   *
+   * 带上它,后端会拿它和库里那一版比对:对不上就 409 `CONCURRENCY_CONFLICT`,
+   * 整条请求一个字都不写。**只有保存正文时才该带** —— 改标题/优先级/工时不带,
+   * 因为那些字段是逐字段改的,对方动过标题不该让你的正文保存被拒。
+   * 见 `backend/contracts/plan.py` 的 `UpdateNodeRequest.content_version`。
+   */
+  contentVersion?: number;
 }
 
 export function getPlan(workspaceId: string): Promise<PlanPayload> {

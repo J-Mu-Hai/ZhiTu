@@ -5,6 +5,7 @@ import {
   assertBackendRunning,
   createNode,
   createWorkspace,
+  enterSpace,
   getPlan,
   registerAccount,
   waitForRealPlan,
@@ -367,12 +368,12 @@ test('子空间里那个节点摆在哪,是从库里按"它属于哪一层"读�
 
   const other = await openElsewhere(browser, account, `/workbench?workspace=${account.workspaceId}`);
   try {
-    // 双击进入子空间 —— 位置是**在那一层画出来的**,和根那一层看到的不是同一张图。
-    await other.page.locator(`.react-flow__node[data-id="${account.a}"]`).dblclick();
+    // 进入子空间 —— 位置是**在那一层画出来的**,和根那一层看到的不是同一张图。
+    await enterSpace(other.page, account.a);
     await expect
       .poll(async () => (await other.page.locator('.react-flow__node').evaluateAll(
         (nodes) => nodes.map((node) => node.getAttribute('data-id') ?? '').sort(),
-      )), { message: '双击之后没有进入子空间', timeout: 15000 })
+      )), { message: '进入子空间之后没看到那一层的节点', timeout: 15000 })
       .toContain(leaf);
 
     const node = await nodeAt(other.page, leaf);

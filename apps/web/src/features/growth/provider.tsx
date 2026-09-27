@@ -85,6 +85,19 @@ export type SpaceInfo = {
   kind: 'real' | 'none';
 };
 
+/**
+ * 一次正文保存的结果。**三种都是正常结局,调用方必须都处理。**
+ *
+ * - `saved`:真写进去了,`contentVersion` 是**新的**那一版,下次保存要用它。
+ * - `conflict`:别处改过同一段正文(乐观锁挡下了)。带上服务端此刻那一份,让用户
+ *   自己决定留哪一段 —— 悄悄覆盖正是这个功能要消灭的那件事。
+ * - `failed`:没写进去(网络、5xx…)。**界面绝不能说"已保存"**;草稿还得留着。
+ */
+export type BodySaveResult =
+  | { status: 'saved'; contentVersion: number }
+  | { status: 'conflict'; serverBody: string; serverVersion: number; message: string }
+  | { status: 'failed'; message: string };
+
 /** 还没选空间时的占位。它**不产生任何数据**,只是让组件有个形状可依赖。 */
 const NO_SPACE: SpaceInfo = { id: 'none', title: '', intent: '', kind: 'none' };
 
@@ -404,11 +417,23 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
    * 等于把服务端的语义抄一遍。抄写的版本早晚会和原件不一致,而不一致的那一刻
    * 界面上显示的东西就是错的,且不会有任何东西报错。一次往返换这个,值得。
    */
-  const refreshPlan = useCallback(async () => {
+  /**
+   * 重取整份计划。**把重取到的那一份返回给调用方。**
+   *
+   * 冲突那一条路必须拿到"服务端此刻那一份正文"才能把选择摆给用户,而刚 `setPlan`
+   * 的那份在闭包里还是旧的 —— 靠 `plan` 这个 state 读到的永远慢一拍。所以让重取
+   * 的人自己把结果带回来,而不是让调用方去 `plan` 里再找一遍。
+   */
+  const reloadPlan = useCallback(async () => {
     const fresh = await backend.getPlan(space.id);
     setPlan(fresh);
     setBrief(fresh.brief);
+    return fresh;
   }, [space.id]);
+
+  const refreshPlan = useCallback(async () => {
+    await reloadPlan();
+  }, [reloadPlan]);
 
   /**
    * 真实空间的一次写入。失败**不吞**:把错误放进 `planError` 让界面显示出来。
@@ -779,6 +804,75 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
   function setNodeStatus(nodeId: string, status: GrowthNode['status']) {
     if (!isReal) return;
     void mutatePlan(() => backend.updateNode(space.id, nodeId, { status }));
+  }
+
+  /**
+   * **只保存正文**(详细说明),带乐观锁。编辑器里那段自动保存走的就是这里。
+   *
+   * ## 为什么不让它走 `mutatePlan`
+   *
+   * `mutatePlan` 每次成功都 `refreshPlan()` 一次整份计划。正文是边打字边存的,那样
+   * 每存一次就把整份计划重取一遍 —— 而这里有更准的做法:响应里回来的就是**改完的
+   * 那一个节点**,就地合进本地计划即可。重取只在冲突时做一次(那时本地那份确实旧了,
+   * 而且必须拿到服务端那一段字才能把选择摆给用户)。
+   *
+   * ## 为什么返回一个结果,而不是把错误写进 `planError`
+   *
+   * 正文保存失败要显示在**编辑器里那一段字旁边**,和"我写了什么"待在同一屏;
+   * `planError` 是画布级的,它出现的位置离用户此刻的注意力很远。而"保存失败但界面
+   * 什么也不说"正是这个功能最容易犯的错 —— 所以失败是**返回值**,调用方必须处理。
+   *
+   * `contentVersion` 为 `undefined` 时**不带这个字段**(而不是带 null):不带 = 后端
+   * 不检查,带 null 也一样,但少一个字段就少一次"这个 null 是什么意思"的解释。
+   */
+  async function saveNodeBody(
+    nodeId: string,
+    body: string,
+    contentVersion: number | undefined,
+  ): Promise<BodySaveResult> {
+    if (!isReal) {
+      return { status: 'failed', message: '这个空间里的正文还不支持保存。' };
+    }
+    try {
+      const result = await backend.updateNode(space.id, nodeId, {
+        description: body,
+        ...(contentVersion === undefined ? {} : { contentVersion }),
+      });
+      // 就地打补丁:`description` 与 `contentVersion` 都用后端回来的那一份 ——
+      // 用本地那份的话,下次保存带的就是一个我自己猜的号,锁立刻失效。
+      const saved = result.node;
+      setPlan((old) => {
+        if (!old) return old;
+        let touched = false;
+        const nodes = old.nodes.map((node) => {
+          if (node.id !== nodeId) return node;
+          touched = true;
+          return saved;
+        });
+        return touched ? { ...old, nodes, revisionVersion: result.revisionVersion } : old;
+      });
+      return { status: 'saved', contentVersion: saved.contentVersion };
+    } catch (cause) {
+      if (cause instanceof ApiError && cause.code === 'CONCURRENCY_CONFLICT') {
+        // **先把服务端那一份读回来再回话。** 只说"冲突了"是没用的:用户要知道
+        // 他手上这份和库里那份差在哪儿,才能决定留哪个。
+        let serverBody = '';
+        let serverVersion = 0;
+        try {
+          const fresh = await reloadPlan();
+          const node = fresh.nodes.find((item) => item.id === nodeId);
+          serverBody = node?.description ?? '';
+          serverVersion = node?.contentVersion ?? 0;
+        } catch {
+          // 连回读都失败了 —— 那就不谎报版本号(留 0),让界面只能说"库里那份取不到"。
+        }
+        return { status: 'conflict', serverBody, serverVersion, message: cause.message };
+      }
+      return {
+        status: 'failed',
+        message: cause instanceof ApiError ? cause.message : '正文没有保存上,请重试。',
+      };
+    }
   }
 
   /**
@@ -1194,7 +1288,7 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     // 布局落库的那三样。`layoutReady` 是"后端那份问过了",自动 fit 要等它;
     // `layoutError` 与 `retryLayoutSave` 是保存失败时界面上那一行和那个按钮。
     layoutReady, layoutError, retryLayoutSave,
-    enterSpace, updateNode, setNodeStatus, addNode,
+    enterSpace, updateNode, setNodeStatus, addNode, saveNodeBody,
     // 归档与恢复。`deleteNode` 那个直接写库的入口**改名成了 `askArchive`** ——
     // 名字换掉是有意的:它的语义从"删"变成了"先问一句",留着旧名字会让下一个改动
     // 的人以为它还是原来那件事。

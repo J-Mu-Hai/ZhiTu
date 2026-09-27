@@ -75,10 +75,9 @@ function isTextEntry(target: EventTarget | null): boolean {
 }
 
 function GrowthNodeComponent({ data, selected }: NodeProps<FlowNode>) {
-  // 这里**不挂 `onDoubleClick`**。双击进入子空间统一由 Canvas 的 `onNodeDoubleClick`
-  // 处理 —— 原因见那边 `pendingOpen` 的注释:编辑器弹窗会在第一次点击后就盖住画布,
-  // 双击的第二次点击落在弹窗遮罩上,节点上的 `dblclick` 永远不会触发。两边都挂的话,
-  // 看似双保险,实际是两条路径抢同一次操作。
+  // 这里**不挂 `onDoubleClick`**,而"双击进子空间"这件事本身也已经没有了(步骤 4):
+  // 单击开正文与详情,进子空间只走右上角那个箭头按钮(下面那个 `node-enter`)。
+  // 两件事拆开之后,节点上就不该再有任何"看时间/看次数"的隐藏语义。
   const { enterSpace, askArchive } = useDemo();
   const node = data.object;
   const sourcePosition = data.vertical ? Position.Bottom : Position.Right;
@@ -136,6 +135,27 @@ function GrowthNodeComponent({ data, selected }: NodeProps<FlowNode>) {
     </div>
   );
 }
+
+/**
+ * 正文停手多久才发一次保存。
+ *
+ * 与布局那一条(`provider.tsx` 的 `LAYOUT_SAVE_DEBOUNCE_MS = 600`)同一个量级,理由
+ * 一样:太短会把一段话拆成十几次请求,太长会让"我改完就切走"丢掉最后那几秒。
+ */
+const BODY_SAVE_DEBOUNCE_MS = 700;
+
+/**
+ * 编辑器里那段正文此刻是什么状态。**这六种都要能显示出来** —— 少一种,用户就会
+ * 在"没存上"的时候以为存上了。
+ */
+type BodyNote =
+  | { kind: 'none' }
+  | { kind: 'saving' }
+  /** 真保存成功了,带一个时刻。**只有真拿到成功响应才会出现这一条。** */
+  | { kind: 'saved'; at: string }
+  | { kind: 'failed'; message: string }
+  /** 别处改过同一段正文。带上服务端那一份,由用户决定留哪一段。 */
+  | { kind: 'conflict'; serverBody: string; message: string };
 
 const nodeTypes = { growth: GrowthNodeComponent };
 
@@ -235,7 +255,10 @@ const CANVAS_LIFECYCLE_LIMIT = 50;
 function Canvas() {
   const {
     growth, selectedId, select, positions, commitNodeMove, spaceId, workspaceId, canvasKey, viewports, setScopeViewport,
-    enterSpace, addNode, updateNode, addRelation, updateRelation, removeRelation,
+    // `enterSpace` **不在这里取**:进入子空间只剩节点右上角那个按钮(在自己的
+    // 子组件里取,见 `GrowthNodeComponent`)和面包屑。画布本身不再需要它 ——
+    // 这是拆开单击语义之后顺带掉下来的一处:那条双击路径是它在这里唯一的用处。
+    addNode, updateNode, saveNodeBody, addRelation, updateRelation, removeRelation,
     files, isRealSpace, planSaving, planLoading, planError, setPlanError,
     layoutReady, layoutError, retryLayoutSave,
     undoLayout, redoLayout, canUndo, canRedo, historyNote, setHistoryNote,
@@ -309,22 +332,19 @@ function Canvas() {
     // "挂载过几次"这个问题就被答错了。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  /**
-   * 待打开的节点详情。
-   *
-   * 单击节点要打开编辑器,双击要进入子空间 —— 而浏览器在双击时**先发两次 click**。
-   * 直接在第一下 click 里开弹窗的话,弹窗的遮罩会在第二下之前盖住画布,`dblclick`
-   * 落在遮罩上,于是"双击进入子路径"(弹窗里自己印着的那句话)永远不会发生:用户
-   * 双击一个节点,得到的是打开编辑器两次。
-   *
-   * 所以第一次点击**先等 240 毫秒**。这个窗口里来了 dblclick 就取消,没有才开编辑器。
-   * 240 毫秒是双击的常见上限,人感觉不到;而"双击没反应"是立刻能感觉到的。
-   */
-  const pendingOpen = useRef<number | null>(null);
-  const cancelPendingOpen = () => {
-    if (pendingOpen.current !== null) { window.clearTimeout(pendingOpen.current); pendingOpen.current = null; }
-  };
-  useEffect(() => cancelPendingOpen, []);
+  /* **这里原来有一个 `pendingOpen`(240 毫秒的双击窗口),已经删掉(步骤 4)。**
+     它当时解决的问题是真的:单击开编辑器、双击进子空间,而浏览器双击会先发两次
+     click,第一次 click 就把弹窗盖上去,第二次落在遮罩上,`dblclick` 永远不来。
+     于是第一下点击先等 240 毫秒,窗口里来了 dblclick 就取消。
+
+     但那个折中有它自己的代价,而且是用户能感觉到的:**每一次查看正文都要先等 240
+     毫秒**,而且"双击"这条路径永远依赖一个计时器——点快了、点慢了、系统卡了一下,
+     同一个动作会给出两种结果。任务书 §4.5 要的正是把这两件事拆开,不要让单击同时
+     承担两件。
+
+     现在:**单击 = 打开正文与详情(立刻),进入子空间只有两个入口** —— 节点右上角
+     那个箭头按钮,和上面的面包屑。两者都是"按一下就知道会发生什么"的动作,
+     不再需要任何计时器。 */
   const [measurements, setMeasurements] = useState<Record<string, { width: number; height: number }>>({});
   /**
    * **拖动中**的位置预览。节点画的是 `dragging[key] ?? positions[key] ?? 自动排布`。
@@ -345,6 +365,21 @@ function Canvas() {
    * 和 `selectedId` 一个待遇。
    */
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+
+  /* ------------------------- 正文自动保存(步骤 4)的状态 ------------------------- */
+  /** 编辑器里此刻的正文。**存的是 ref**:`flushBody` 是从定时器里被调用的,
+   *  那时闭包里的 `detailDescription` 可能已经旧了一帧,而"发出去的必须是用户
+   *  最后写下的那一段"。 */
+  const detailDescriptionRef = useRef('');
+  /** 手上这份正文是第几版(乐观锁)。打开编辑器时取,每次保存成功用**后端回来的**
+   *  那个号覆盖。见 `openDetail` 与 `flushBody`。 */
+  const bodyVersion = useRef<number | undefined>(undefined);
+  /** 有没有一次保存在飞。用 ref 不用 state:它是"效果里的守卫",不参与渲染。 */
+  const bodyInFlight = useRef(false);
+  /** 上一次真保存成功的时刻。与 `bodyNote` 分开存,是因为状态要能回到"未保存"
+   *  而这句话还得留着(用户想知道"我刚才那次到底存上没有")。 */
+  const bodySavedAt = useRef<string | null>(null);
+  const [bodyNote, setBodyNote] = useState<BodyNote>({ kind: 'none' });
 
   /**
    * 弹窗与编辑器里**还没提交的输入**。它们住在组件外面 —— 见 `drafts.ts` 的文件头。
@@ -586,7 +621,79 @@ function Canvas() {
           : '',
       detailDeadline: isRealSpace ? (node.endDate ?? '') : '',
     });
+    // 打开的这一份是哪一版。**必须在打开的那一刻取**,不能等到保存的时候再去读
+    // `detailNode.contentVersion`:那中间可能已经刷新过好几次计划,拿到的就是"最新
+    // 那一版",而这个号正是用来发现"我手上这份旧了"的,它一"自动变新",锁就没了。
+    bodyVersion.current = node.contentVersion;
+    bodySavedAt.current = null;
+    setBodyNote({ kind: 'none' });
   }
+
+  /* ---------------------------------------------------------------------------
+     正文的自动保存(步骤 4)
+     ---------------------------------------------------------------------------
+     「正文可靠保存」这句话拆开是三件事,缺一件这个功能就等于没有:
+
+     1. **不用记得按保存。** 写两行字就切走,回来还在 —— 那才是"可靠"。所以正文
+        边打边存(停手 700 毫秒发一次),而不是靠用户记得去点按钮。
+     2. **存不上要看得见,而且草稿不许丢。** 失败时那段字**留在编辑器里**(它本来就
+        在草稿存储里,见 `drafts.ts`),旁边写清"没存上"和一个能用的重试。
+        **绝不显示"已保存"** —— 那是这个功能最容易犯、也最难被发现的错。
+     3. **别人改过同一段正文时,不许悄悄盖掉。** 这就是 `contentVersion` 那个乐观锁:
+        对不上就是 409,由用户决定留哪一段。见 `saveNodeBody`。
+
+     状态用 ref + 一个 state 的组合:**"正在飞"和"冲突未决"必须是 ref**(效果里读,
+     而且不参与渲染),"显示什么"是 state。冲突未决时**不自动重发** —— 否则它会
+     一次又一次地撞同一堵墙,用户看到状态来回闪。
+  --------------------------------------------------------------------------- */
+  async function flushBody() {
+    const node = detailNode;
+    if (!node || bodyInFlight.current) return;
+    const text = detailDescriptionRef.current;
+    if (text === (node.description ?? '')) return;
+    bodyInFlight.current = true;
+    setBodyNote({ kind: 'saving' });
+    const result = await saveNodeBody(node.id, text, bodyVersion.current);
+    bodyInFlight.current = false;
+    if (result.status === 'saved') {
+      // **版本号用后端回来的那一个**:自己 `+1` 的话,只要有一次写入不是"正文 +1"
+      // (比如别人先动过、或者某次编辑被别的路径合并了),本地那个号就会一路偏下去,
+      // 之后每一次保存都 409。
+      bodyVersion.current = result.contentVersion;
+      bodySavedAt.current = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+      setBodyNote({ kind: 'saved', at: bodySavedAt.current });
+      return;
+    }
+    if (result.status === 'conflict') {
+      bodyVersion.current = result.serverVersion;
+      setBodyNote({
+        kind: 'conflict',
+        serverBody: result.serverBody,
+        message: result.message,
+      });
+      return;
+    }
+    setBodyNote({ kind: 'failed', message: result.message });
+  }
+
+  /**
+   * 正文改动后停手 700 毫秒存一次。
+   *
+   * 依赖里**只有正文字和当前节点**:`bodyNote` 的状态变化不在依赖里,否则
+   * "保存中 → 已保存"这一下会把这个效果再跑一遍,再排一个定时器 —— 存一次变成
+   * 一直存。同理,`bodyInFlight` / `bodyNote` 的判定都在效果**里面**读 ref。
+   */
+  useEffect(() => {
+    const node = detailNode;
+    if (!node) return;
+    detailDescriptionRef.current = detailDescription;
+    if (bodyNote.kind === 'conflict') return;      // 冲突没解决之前不重发(见上)
+    if (bodyInFlight.current) return;              // 上一次还在飞
+    if (detailDescription === (node.description ?? '')) return;  // 没有差别
+    const timer = window.setTimeout(() => { void flushBody(); }, BODY_SAVE_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 见上:`bodyNote` 只做守卫,不进依赖
+  }, [detailDescription, detailNode]);
 
   /**
    * 这一层能连的节点 —— **就是画布上看得见的那些**,不是这个空间里的全部节点。
@@ -709,7 +816,7 @@ function Canvas() {
       <div className="space-floating-tools">
         {/* 提示里必须写清"怎么连线" —— 拖线这件事没有任何别的入口在教。
             也说明**点线**能打开编辑器:线很细,不提示的话没人会去点它。 */}
-        <span>单击编辑内容 · 双击进入子路径 · 拖动节点右侧圆点连线 · 点线可改关系</span>
+        <span>单击看正文与详情 · 右上角箭头进入子路径 · 拖动节点右侧圆点连线 · 点线可改关系</span>
         <button disabled={!canCreate} title={canCreate ? undefined : '正在读取计划…'} onClick={() => { setPlanError(null); patchDraft({ dialog: 'node' }); }}>
           <Plus size={15} />
           {createLabel}
@@ -794,17 +901,12 @@ function Canvas() {
         zoomOnDoubleClick={false}
         minZoom={0.25}
         maxZoom={1.7}
-        onNodeClick={(_, node) => {
-          const object = node.data.object;
-          // 见 `pendingOpen`:先等一个双击窗口,真双击来了就取消,不当成"单击"。
-          cancelPendingOpen();
-          pendingOpen.current = window.setTimeout(() => { pendingOpen.current = null; openDetail(object); }, 240);
-        }}
-        onNodeDoubleClick={(_, node) => { cancelPendingOpen(); enterSpace(node.id); }}
+        // 单击 = 打开正文与详情,**立刻开**。进入子空间不再挂在这里(见上面那段注释:
+        // 拆开之后这条路上没有任何计时器,按下去发生什么是一定的)。
+        onNodeClick={(_, node) => openDetail(node.data.object)}
         // 拖线建边。**在节点上拖,不在空白处拖** —— 空白处拖动是平移画布。
         onConnect={(connection) => {
           if (!connection.source || !connection.target) return;
-          cancelPendingOpen();
           connectNodes(connection.source, connection.target);
         }}
         onEdgeClick={(_, edge) => {
@@ -812,7 +914,7 @@ function Canvas() {
           const relation = growth.edges.find((item) => item.id === edge.id);
           if (relation) openRelationEditor(relation);
         }}
-        onPaneClick={() => { cancelPendingOpen(); select(null); setSelectedEdgeId(null); }}
+        onPaneClick={() => { select(null); setSelectedEdgeId(null); }}
         onNodeDragStart={(_, node) => {
           // 拖动开始那一刻它在哪儿。撤销要把它摆回**这一帧**,而不是"删掉它的位置" ——
           // 节点第一次被拖动时位置表里没有它,删键只在本地看着对,刷新就会被库里那份
@@ -1095,11 +1197,61 @@ function Canvas() {
           的正文还在,而这里不会闪一个"节点不存在"的空编辑器。 */}
       {detailNode && (
         <Dialog title={`编辑节点 · ${detailNode.title}`} onClose={closeDetailEditor}>
-          <form className="node-form" onSubmit={(event) => { event.preventDefault(); updateNode(detailNode.id, isRealSpace
-            ? { title: detailTitle.trim() || detailNode.title, description: detailDescription.trim() || undefined, priority: detailPriority, deadline: detailDeadline || null, estimateMinutes: parseEstimate(detailEstimate) }
-            : { title: detailTitle.trim() || detailNode.title, description: detailDescription.trim() || undefined, priority: detailPriority, startDate: detailStart || undefined, endDate: detailEnd || undefined }); closeDetailEditor(); }}>
+          <form className="node-form" onSubmit={(event) => { event.preventDefault();
+            // **这个按钮不再写 `description`。** 正文有自己的保存路径(带上乐观锁、
+            // 边打边存,见 `flushBody`)—— 两边都写的话,这里发出去的那一份不带版本号,
+            // 恰好就是"悄悄盖掉别人刚写的正文"那条路。一个字段只有一个写入口。
+            updateNode(detailNode.id, isRealSpace
+            ? { title: detailTitle.trim() || detailNode.title, priority: detailPriority, deadline: detailDeadline || null, estimateMinutes: parseEstimate(detailEstimate) }
+            : { title: detailTitle.trim() || detailNode.title, priority: detailPriority, startDate: detailStart || undefined, endDate: detailEnd || undefined }); closeDetailEditor(); }}>
             <label>节点名称<input autoFocus value={detailTitle} maxLength={80} onChange={(event) => patchDraft({ detailTitle: event.target.value })} /></label>
-            <label>详细说明<textarea value={detailDescription} maxLength={1000} onChange={(event) => patchDraft({ detailDescription: event.target.value })} placeholder="记录这个节点的目标、约束、判断和下一步…" /></label>
+            {/* 正文:边打边存。下面那一行状态是**真实结果**,不是"我发过一次请求" ——
+                见 `flushBody`。 */}
+            <label>
+              详细说明
+              <textarea value={detailDescription} maxLength={1000} onChange={(event) => patchDraft({ detailDescription: event.target.value })} placeholder="记录这个节点的目标、约束、判断和下一步…" />
+            </label>
+            {isRealSpace && (
+              <p className={`body-save-note is-${bodyNote.kind}`} role="status">
+                {bodyNote.kind === 'saving' && '正在保存正文…'}
+                {bodyNote.kind === 'saved' && `正文已保存（${bodyNote.at}）`}
+                {bodyNote.kind === 'failed' && (
+                  <>
+                    正文没有保存上:{bodyNote.message}
+                    <button type="button" onClick={() => { setBodyNote({ kind: 'none' }); void flushBody(); }}>重试</button>
+                  </>
+                )}
+                {bodyNote.kind === 'conflict' && (
+                  <>
+                    <b>这段正文在别处被改过了,所以这次没有写进去。</b>
+                    {bodyNote.serverBody
+                      ? <>库里现在是:「{bodyNote.serverBody}」</>
+                      : <>库里那份这一步没读到 —— 可以先用你这份覆盖,或者关掉重开再看一眼。</>}
+                  </>
+                )}
+                {bodyNote.kind === 'none' && (detailDescription === (detailNode.description ?? '')
+                  ? '正文与库里一致。'
+                  : '正文有改动,停手后会自动保存。')}
+              </p>
+            )}
+            {isRealSpace && bodyNote.kind === 'conflict' && (
+              <div className="body-conflict-actions">
+                {/* **两条路都摆出来,而且都不静默。** 覆盖是用户明确选的(它拿的是
+                    库里此刻那一版做前置条件,所以"覆盖"也仍然是一致性写入);
+                    放弃则是把库里那份读回编辑器。哪一种都不该由我们替他挑。 */}
+                <button type="button" onClick={() => { setBodyNote({ kind: 'none' }); void flushBody(); }}>
+                  用我这份覆盖
+                </button>
+                {Boolean(bodyNote.serverBody) && (
+                  <button
+                    type="button"
+                    onClick={() => { patchDraft({ detailDescription: bodyNote.serverBody }); setBodyNote({ kind: 'none' }); }}
+                  >
+                    放弃我的改动,载入库里那份
+                  </button>
+                )}
+              </div>
+            )}
             <div className="node-editor-grid"><label>优先级<select value={detailPriority} onChange={(event) => patchDraft({ detailPriority: event.target.value as GrowthNode['priority'] })}><option value="high">高</option><option value="medium">中</option><option value="low">低</option></select></label>
               {/* 真实空间只给"截止时间"这一个日期 —— 后端有这个概念,别的没有。
                   把开始/结束日期也画出来、保存时又悄悄丢掉,用户会以为改了日期而
@@ -1117,7 +1269,7 @@ function Canvas() {
                   </>
                 : <><label>开始日期<input type="date" value={detailStart} onChange={(event) => patchDraft({ detailStart: event.target.value })} /></label><label>结束日期<input type="date" value={detailEnd} onChange={(event) => patchDraft({ detailEnd: event.target.value })} /></label></>}
             </div>
-            <p>{isRealSpace ? '双击节点可进入其子路径；保存会立刻写入计划，并产生一个新的计划版本。' : '双击节点可进入其子路径；在这里保存的说明会保留在当前成长空间。'}</p>
+            <p>{isRealSpace ? '正文边写边存（停手即存）；下面这个按钮保存名称、优先级与时间，会产生一个新的计划版本。进入子路径请用节点右上角的箭头。' : '在这里保存的说明会保留在当前成长空间。'}</p>
             {isRealSpace && planError && <p className="form-error" role="alert">{planError}</p>}
             <button className="primary-button" disabled={!detailTitle.trim() || planSaving}>{planSaving ? '保存中…' : '保存节点'}</button>
           </form>

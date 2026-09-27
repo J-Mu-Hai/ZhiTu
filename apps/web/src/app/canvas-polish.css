@@ -172,6 +172,30 @@
   .path-canvas .growth-node { max-width: 270px; }
 }
 
+/* ------------------------------------------------------ 正文保存的状态(步骤 4) */
+/* 这一行必须**读得出是哪种状态**,因为它回答的是"我刚写的那段字到底存上没有"。
+   平时它是安静的浅灰(与库里一致 / 有改动待存),只有三种情况会变色:
+
+   - `.is-saving`:还是浅雾蓝,但话说清"正在保存";
+   - `.is-saved`:鼠尾草绿那一套(`.archive-note` 同色),表示真的成功了;
+   - `.is-failed` / `.is-conflict`:杏色(`.layout-save-error` 同色)。
+
+   为什么后两种共用一个颜色:它们对用户是同一件事 —— **你写的这段字现在不在库里**。
+   区分它们的不是颜色,是那一行下面的按钮("重试" vs "覆盖/放弃")。 */
+.body-save-note {
+  margin: 0;
+  color: #7b8fa1;
+  font-size: 11px;
+  line-height: 1.8;
+}
+.body-save-note.is-saving { color: #28577f; }
+.body-save-note.is-saved { color: #3f6b52; }
+.body-save-note.is-failed,
+.body-save-note.is-conflict { color: #a85341; }
+.body-save-note button { margin-left: 6px; }
+.body-conflict-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+
 /* ---------------------------------------------------------------------------
    归档与恢复(步骤 3C)
    ---------------------------------------------------------------------------

@@ -4,6 +4,7 @@ import {
   createNode,
   createWorkspace,
   dayOffset,
+  enterSpace,
   getPlan,
   openSpacePage,
   registerAccount,
@@ -61,9 +62,9 @@ test('同一份计划在路径、时间线、任务三个视图里是同一份�
 
   // --- 进阶段:两级画布是同一份计划的两个窗口,不是两份数据 ---------------------
   //
-  // **双击**进去,不是单击:单击是"选中 + 打开节点详情",那个弹窗会一直盖在画布上,
-  // 后面点视图页签会被它截住。
-  await page.locator(`.react-flow__node[data-id="${stageId}"]`).dblclick();
+  // 走节点右上角那个箭头进去 —— **不是单击**:单击现在是"打开正文与详情",那个弹窗
+  // 会盖在画布上,后面点视图页签会被它截住(双击那条路在步骤 4 已经拆掉了)。
+  await enterSpace(page, stageId);
   await expect.poll(() => renderedNodeIds(page)).toEqual([stageId, project, mentor].sort());
 
   // 对话的上下文跟着当前所在的这一层走 —— 这是"画布上下文"那件事的用户可见形态。
@@ -130,7 +131,7 @@ test('同一份计划在路径、时间线、任务三个视图里是同一份�
   await waitForRealPlan(page);
   // 整页重载之后回到的是根那一层(子空间是组件内部的状态,不在地址里),
   // 所以再进一次阶段 —— 而里面的完成状态是从后端读回来的。
-  await page.locator(`.react-flow__node[data-id="${stageId}"]`).dblclick();
+  await enterSpace(page, stageId);
   await expect(page.locator(`.react-flow__node[data-id="${project}"] .growth-node`)).toHaveClass(/is-complete/);
   await expect(page.locator('.floating-conversation .message').filter({ hasText: '我想先整理导师资料' })).toBeVisible();
 

@@ -3,6 +3,7 @@ import {
   assertBackendRunning,
   createNode,
   createWorkspace,
+  enterSpace,
   getPlan,
   openSpacePage,
   registerAccount,
@@ -60,11 +61,11 @@ test('对话页:只有这个空间那一条，而且和工作台是同一份', a
 
   // --- 工作台里对着一个节点说的话,对话页看得出是关于那个节点 ---------------------
   //
-  // 双击进阶段:进子空间会把它选中,而"当前选中了谁"就是工作台发消息时带上的上下文
-  // (`contextNodeId`)。这是"画布上下文"那件事在库里的落点。
+  // 进阶段(节点的箭头按钮):进子空间会把它选中,而"当前选中了谁"就是工作台发消息时
+  // 带上的上下文(`contextNodeId`)。这是"画布上下文"那件事在库里的落点。
   await openSpacePage(page, '/workbench', workspaceId);
   await waitForRealPlan(page);
-  await page.locator(`.react-flow__node[data-id="${stage}"]`).dblclick();
+  await enterSpace(page, stage);
   await expect(page.getByRole('textbox', { name: '给 AI 的消息' }))
     .toHaveAttribute('placeholder', '关于「联系导师」，告诉 AI 你的想法……');
   await page.getByRole('textbox', { name: '给 AI 的消息' }).fill('这个阶段我想先联系导师');

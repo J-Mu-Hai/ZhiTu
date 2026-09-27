@@ -90,6 +90,9 @@ export function toGrowthNode(node: PlanNodePayload, sessions: GrowthSession[] = 
     id: node.id,
     title: node.title,
     description: node.description ?? undefined,
+    // 正文的乐观锁跟着节点走(见 `GrowthNode.contentVersion`)—— 编辑器保存时
+    // 要原样带回"我读到的是哪一版"。
+    contentVersion: node.contentVersion,
     type: toNodeType(node),
     parentId: node.parentId ?? undefined,
     status: toStatus(node.status),

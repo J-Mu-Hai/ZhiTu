@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { assertBackendRunning, createNode, createWorkspace, dayOffset, getPlan, registerAccount, renderedNodeIds, waitForRealPlan } from './support/session';
+import { assertBackendRunning, createNode, createWorkspace, dayOffset, enterSpace, getPlan, registerAccount, renderedNodeIds, waitForRealPlan } from './support/session';
 
 /**
  * 阶段 5 的验收:路径图上画出来的节点,必须和 `/plan` 里真实存在的节点一致。
@@ -99,9 +99,10 @@ test('进入阶段空间，它下面的任务画得出来', async ({ page }) => 
   // 根这一层:根 + 阶段,任务**不**在这一层 —— 它们属于阶段自己的空间。
   await expect.poll(() => renderedNodeIds(page)).toEqual([root.id, stageId].sort());
 
-  // 双击进入阶段的子空间。这是"层级"这个设计唯一的用法,也是它唯一能被验证的地方:
-  // 如果进入之后什么都没有,那层级就是把节点藏起来了,而不是组织起来了。
-  await page.locator(`.react-flow__node[data-id="${stageId}"]`).dblclick();
+  // 进入阶段的子空间(节点右上角那个箭头)。这是"层级"这个设计唯一的用法,也是它
+  // 唯一能被验证的地方:如果进入之后什么都没有,那层级就是把节点藏起来了,
+  // 而不是组织起来了。
+  await enterSpace(page, stageId);
   await expect.poll(() => renderedNodeIds(page)).toEqual([stageId, ...tasks].sort());
   await expect(page.getByText('任务 A', { exact: true })).toBeVisible();
   await expect(page.getByText('任务 B', { exact: true })).toBeVisible();

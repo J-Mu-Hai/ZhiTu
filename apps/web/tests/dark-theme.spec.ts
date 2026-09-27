@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
-import { clickUntilVisible } from './support/session';
+import { clickUntilVisible, enterSpace } from './support/session';
 
 /**
  * 视觉系统的一致性回归。
@@ -287,9 +287,9 @@ test('画布上是一棵真的树，不是一处颜色正确的空白', async ({
   await expect(page.locator('.react-flow__node')).toHaveCount(3);
   await expect(page.locator(`.react-flow__node[data-id="${rootId}"]`)).toBeVisible();
 
-  // 进入子空间是**双击**(`PathView.tsx` 的 `onNodeDoubleClick`)—— 单击只选中。
-  // 之前这里写成单击,于是断言一直等一个不会出现的东西。
-  await page.locator(`.react-flow__node[data-id="${nodeIds['阶段一 · 打基础']}"]`).dblclick();
+  // 进入子空间走节点右上角那个箭头(步骤 4 之前是双击;单击现在是"打开正文与详情",
+  // 那条路会把弹窗盖在画布上 —— 所以这里不能再用单击,也不再有双击)。
+  await enterSpace(page, nodeIds['阶段一 · 打基础']);
   await expect(page.locator('.leaf-path')).toBeVisible();
 
   // 这一层是"阶段一 + 它下面的任务"。另一个阶段**不在**这一层 —— 而它并没有消失,
