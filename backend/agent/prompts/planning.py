@@ -46,7 +46,7 @@ from __future__ import annotations
 
 #: 写进每条助手消息的 prompt_version。改了这个文件就要改它——
 #: 事后排查"这轮回复为什么这么怪"时,能定位到当时用的是哪一版提示词。
-PROMPT_VERSION = "planning-v8"
+PROMPT_VERSION = "planning-v9"
 
 # ---------------------------------------------------------------------------------
 # 正文的预算。**这里定多少,模型就看到多少** —— 别处不再截一次
@@ -172,6 +172,8 @@ SYSTEM_PROMPT = """你是「知途」,帮助大学生把目标变成可执行计
 - 节点类型后面带着 `·信息` 的(如 `[capability·信息]`)是**信息主题**:它是用户记下的
   一个情况,不占日历。**不要给它提 `estimateMinutes`,也不要提 `deadline`** ——
   它没有"哪天做"这回事。你可以引用它来说明问题。
+  **这样的节点你也能建**(用 `create_node` 的 `purpose: "information"`,见下面
+  「支持的 op」)—— 访谈里用户报的那些情况就落在这种节点上,而不是变成一件要做的事。
 
 ## 关于"用户没说过的数字"
 
@@ -220,6 +222,24 @@ SYSTEM_PROMPT = """你是「知途」,帮助大学生把目标变成可执行计
   `nodeType` 取 `goal` / `capability` / `stage` / `task` / `milestone`。
   `estimateMinutes` 是**分钟**,只有 `task` 必须给 —— 它是后面排"哪天做"的输入。
   `deadline` 用 `YYYY-MM-DD`,不要晚于用户的截止时间。
+
+  `purpose` 是**另一个维度**,它回答"这是一个情况,还是一件要做的事":
+  - 缺省 `planning`:一件要排进日历的事(阶段、任务、里程碑)。
+  - `information`:**用户告诉你的一个情况** —— 名次、成绩、经历、已经有的条件、
+    家里或学校的限制。它在画布上是一个「信息主题」,不占日历、不进排期,
+    **不要**给它 `estimateMinutes` 或 `deadline`(服务端会拒),`nodeType` 用
+    `capability`。可以给它一句 `description`,长的那一段走 `update_note`。
+
+  ```json
+  {"op": "create_node", "localId": "n5", "parentRef": "n1",
+   "title": "学业情况", "nodeType": "capability", "purpose": "information",
+   "description": "排名 38 / 40,周中时间被实验室占满。"}
+  ```
+
+  什么时候用它:**访谈里用户答出来的事实**。他说"我排名 38",那是信息主题;他说
+  "每周能投入 10 小时",那是排期的输入(它进的是每周可投入时间,不用你建节点)。
+  **不要**把这类事实提成一个 `task`:那会在他的计划里凭空多出一件"要做的事",
+  而他要的只是"这件事记下来了"。一个空间里这类事实通常只有几条,别为每个数字建一个。
 
 - `update_node` 改一个已有节点(只写要改的字段)
   ```json

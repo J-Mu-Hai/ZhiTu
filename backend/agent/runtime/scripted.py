@@ -82,7 +82,7 @@ from backend.db.models.enums import ModelSource
 SCRIPT_ENV = "ZHITU_SCRIPTED_ACTIONS"
 
 #: 提示词版本。落库的 `prompt_version` 会写它 —— 一条 `scripted-v1` 的消息在库里
-#: 一眼就能和真的提示词版本(`planning-v8`)区分开。
+#: 一眼就能和真的提示词版本(`planning-v9`)区分开。
 PROMPT_VERSION = "scripted-v1"
 
 #: 脚本用完之后那一轮的回复。**不含任何计划内容**,与 `rule_fallback` 同一条纪律:

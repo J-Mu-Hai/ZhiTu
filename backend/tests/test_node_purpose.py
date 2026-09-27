@@ -351,3 +351,29 @@ async def test_an_information_node_cannot_carry_an_estimate_or_a_deadline(
     stored = {node["id"]: node for node in (await _plan(app_client, account))["nodes"]}
     assert stored[info["id"]]["estimateMinutes"] is None, "被拒的写入还是落了一半"
     assert stored[task["id"]]["estimateMinutes"] is None
+
+
+# ---------------------------------------------------------------------------------
+# 5. 提示词里那条路:模型知不知道**能建**信息主题
+# ---------------------------------------------------------------------------------
+def test_the_prompt_tells_the_model_it_can_create_information_nodes() -> None:
+    """提示词里必须有**建**信息主题这条路,而不只是"怎么读它"。
+
+    这一条是真实模型那一层逼出来的,不是想出来的。2026-09-28 那次验收里,模型把
+    「排名 38」落成了一个 planning 节点(「补齐申请基础信息」的正文),而不是信息主题 ——
+    而原因不在模型:那之前的提示词里 `purpose` **只出现在"怎么读 `·信息` 节点"那一节**,
+    模型没有任何理由知道 `create_node` 能带用途。机制那一半当时已经齐了(契约、写入校验、
+    排期排除、统计排除),缺的只是一句告诉它这条路存在的话。
+
+    所以断言的是**那句话在不在**,而不是措辞:两条子串各自指向一件事 ——
+    `create_node` 收 `purpose`,以及 `information` 这个值怎么用。
+    """
+    from backend.agent.prompts.planning import SYSTEM_PROMPT
+
+    assert "`purpose`" in SYSTEM_PROMPT, (
+        "提示词没有告诉模型 `create_node` 可以带 `purpose` —— 那它就只会把用户报的情况"
+        "建成一个 planning 任务,而信息主题这一整条路在真实模型下的使用率是零。"
+    )
+    assert '"information"' in SYSTEM_PROMPT, (
+        "提示词里没有 `information` 这个值的用法(或没有例子),模型猜不出该怎么填。"
+    )

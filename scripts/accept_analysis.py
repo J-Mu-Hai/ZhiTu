@@ -11,7 +11,7 @@
 分析记录**("一段不是模型给的判断不能冒充判断"),所以那一栈里根本没有一条真记录可以过期。
 于是"过期"这条链路的浏览器端只能验前端那一半,剩下的一半在这里。
 
-## 它验的六件事
+## 它验的八件事
 
 1. 模型真的会给一份结构化的判断(七栏),不是一段没法挑错的散文。
 2. 那条记录**挂在被讨论的节点上**(`focusNodeId`),而且是 `fresh` 的。
@@ -21,6 +21,19 @@
    最新一条回到 `fresh`。
 5. 全程没有多出节点、没有多出工时(正文保存只动正文)。
 6. 时间边界:这一批的回复里**不许出现**"已经排好日程"这类声称——模型没有排期写入能力。
+7. **访谈共建**(第二批,v1.2 §2.5):换一个**干净空间**,用真实模型走三轮问答,断言
+   「用户说过的那条事实」最终落在**某个节点**上(正文或长笔记),而不是消失在一句
+   「记下了」里;而且它落在的是**信息主题**上 —— 那正是第二批新长出来的那条路。
+8. 同一段访谈里的两条机械边界:没有把「38/40」这样的比值当节点标题、信息主题没有
+   带工时或截止(§4.1)、也没有一条提议撞上机械守卫。
+
+**这一层刻意不比措辞。** 模型把那个节点叫「学业情况」还是「申请背景」都行,用户要的是
+"我说过的那个数字被记下来了";所以第 7 条的断言是结构性的:含不含那个数字、落在哪一种
+用途的节点上。
+
+第 7 条不通过时,报告要能回答**是哪一半坏了**,于是第 5 步顺手量了一个对照项:同样这个
+进程、这份提示词、这个模型,在**显式的**「重新分析」那一轮提出了多少条动作。两个数摆
+在一起才分得清「动作通道不通」和「普通对话轮里模型不提动作」—— 这两种的修法完全不同。
 
 ## 它不碰什么
 
@@ -46,6 +59,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -178,6 +192,14 @@ class Server:
 #: 这一批明确**不许说**的话。模型没有排期写入能力,说了就是编的。
 FORBIDDEN_CLAIMS = ("已经调整了日程", "已经排好了", "已排进日程", "已经帮你排", "已经安排好")
 
+#: 「38/40」这样的**比值**不是一件事,不该变成节点标题。访谈里用户报排名,这是最容易
+#: 被模型原样抄成标题的一种输入。**不比措辞**:只要求标题里没有这种形状。
+BARE_RATIO = re.compile(r"^\D*\d+\s*/\s*\d+$")
+
+#: 服务端那几道机械守卫的错误码。撞上它们不是产品缺陷(拒绝是对的),但它说明**模型的
+#: 判断**与 §4.1 说的不一致,所以单独记一条,让读报告的人看得见是哪一半出了问题。
+GUARD_CODES = {"INFORMATION_NODE_MUST_NOT_BE_SCHEDULABLE", "DUPLICATE_NODE_TITLE"}
+
 
 class Acceptance:
     def __init__(self, server: Server, turns: int) -> None:
@@ -191,6 +213,14 @@ class Acceptance:
         self.latest: dict = {}
         self.first_id: str = ""
         self.transcript: list[dict] = []
+        #: 访谈那一段里所有被服务端拒过的动作码 —— 全有或全无,所以它们同时解释了
+        #: "为什么那一轮没有落库"。
+        self.interview_errors: list[str] = []
+        #: **诊断用的两个数**:对话轮里提过几轮提案、以及显式触发的那一轮提了多少条。
+        #: 它们摆在一起才回答得了"模型不提动作"是哪一半的问题(见 `interview` 末尾)。
+        self.chat_turns = 0
+        self.chat_proposals = 0
+        self.refresh_actions = 0
 
     def auth(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.token}"}
@@ -270,17 +300,26 @@ class Acceptance:
 
     # -- 对话 ----------------------------------------------------------------------
 
-    async def turn(self, content: str, node_id: str | None = None) -> dict:
-        """发一条消息,把回复原文记进 `transcript`(报告要用)。"""
+    async def turn(
+        self, content: str, node_id: str | None = None, workspace: str | None = None
+    ) -> dict:
+        """发一条消息,把回复原文记进 `transcript`(报告要用)。
+
+        `workspace` 缺省是分析那一段的空间;访谈那一段有它自己的干净空间(见
+        `interview`),而 `transcript` 是共用的 —— 最后那条措辞检查因此覆盖全部轮次。
+        """
         payload: dict = {"content": content}
         if node_id:
             payload["contextNodeId"] = node_id
         status, body = await self.call(
-            "post", f"/api/workspaces/{self.workspace}/messages",
+            "post", f"/api/workspaces/{workspace or self.workspace}/messages",
             headers=self.auth(), json=payload,
         )
         if status != 200:
             raise RuntimeError(f"发消息失败:HTTP {status} {short(body, 300)}")
+        self.chat_turns += 1
+        if body.get("proposal"):
+            self.chat_proposals += 1
         self.transcript.append(
             {
                 "asked": content,
@@ -430,6 +469,17 @@ class Acceptance:
         record("重新分析返回 200", status == 200, f"HTTP {status}")
         if status != 200:
             raise RuntimeError(f"重新分析失败:{short(body, 300)}")
+        # 这一轮的**动作条数**是第 8 步那条诊断的对照项:`manual_replan` 是显式触发,
+        # 而普通对话轮是模型自己判断该不该提 —— 两者一比,才知道"模型不提动作"是哪一半。
+        proposal = body.get("proposal") or {}
+        self.refresh_actions = proposal.get("itemCount", 0)
+        if self.refresh_actions:
+            note(
+                "这一轮明确提出 "
+                + str(self.refresh_actions)
+                + " 条动作:"
+                + short(" / ".join(item["summary"] for item in proposal.get("items", [])), 160)
+            )
 
         asked = (body.get("userMessage") or {}).get("content", "")
         record(
@@ -482,7 +532,7 @@ class Acceptance:
         )
 
     def no_forbidden_claims(self) -> None:
-        print("\n7. 时间边界:不许声称已经排好了日程")
+        print("\n9. 时间边界与措辞:不许声称已经排好了日程")
         offenders = [
             short(item["reply"], 80)
             for item in self.transcript
@@ -493,6 +543,153 @@ class Acceptance:
             not offenders,
             " / ".join(offenders) if offenders else f"检查了 {len(self.transcript)} 条回复",
         )
+
+    # -- 访谈共建(第二批) ----------------------------------------------------------
+
+    async def interview(self) -> None:
+        """三轮访谈:用户说过的那条事实有没有落点。
+
+        ## 为什么要另起一个干净空间
+
+        上面那个空间里已经有根 + 一个任务,而这个断言要问的是「从零开始,模型会不会自己
+        长出东西」——里混着那两个节点的话,每条断言都得先扣掉它们,而扣法本身就成了
+        一个可能出错的地方。干净空间里只需要回答一个问题:用户说了排名 38,它去哪了。
+
+        ## 断言哪里、不断言哪里
+
+        不断言措辞,也不规定落在哪个节点上(节点叫什么都行)。断言的是**结构**:那个数字
+        出现在某个节点的正文或长笔记里,而且承载它的节点是 `information` 用途 ——
+        落在一个 planning 任务上意味着模型把它当成了一件要做的事,那正是 §2.5 要挡的。
+        """
+        print("\n8. 访谈共建:一句一句说出来的事实有没有落点")
+        status, body = await self.call(
+            "post", "/api/workspaces",
+            json={
+                "title": "访谈共建验收空间",
+                "intent": "想申请出国读研,但不知道从哪开始",
+                "goal": "三个月内把出国申请准备好",
+            },
+            headers=self.auth(),
+        )
+        record("访谈用的干净空间建起来了", status == 201, f"HTTP {status}")
+        if status != 201:
+            raise RuntimeError(f"建访谈空间失败:{short(body, 300)}")
+        space = body["workspace"]["id"]
+
+        said = [
+            "我想申请出国读研,但不知道从哪开始。",
+            "我排名 38,每周能投入 10 小时。",
+            "把刚才那些细节记下来。",
+        ]
+        proposed = 0
+        for index, line in enumerate(said, start=1):
+            answer = await self.turn(line, workspace=space)
+            codes = [error.get("code") for error in answer.get("proposalErrors") or []]
+            self.interview_errors += [code for code in codes if code]
+            if codes:
+                note(f"第 {index} 轮有动作被服务端拒了:{codes}")
+            proposal = answer.get("proposal")
+            if not proposal:
+                note(f"第 {index} 轮没有提案")
+                continue
+            proposed += 1
+            note(
+                f"第 {index} 轮提案 {proposal['itemCount']} 条:"
+                + short(" / ".join(item["summary"] for item in proposal["items"]), 160)
+            )
+            if codes:
+                # 全有或全无:只要有一条被拒,整份提案都不生效,确认它只会拿到错误码。
+                continue
+            status, confirmed = await self.call(
+                "post", f"/api/workspaces/{space}/proposals/{proposal['id']}/confirm",
+                headers=self.auth(), json={"idempotencyKey": f"interview-{index}"},
+            )
+            detail = f"HTTP {status}" + (f" —— {short(confirmed, 200)}" if status != 200 else "")
+            record(f"第 {index} 轮提的东西确认之后真的落了库", status == 200, detail)
+
+        record(
+            "三轮里模型确实提出了要写进计划的东西",
+            proposed > 0,
+            f"{proposed}/{len(said)} 轮有提案",
+        )
+        guards = [code for code in self.interview_errors if code in GUARD_CODES]
+        record(
+            "没有一条提议撞上机械守卫(信息主题带工时 / 同父同用途重复)",
+            not guards,
+            "撞上的是:" + "、".join(guards) if guards else "三轮零拒绝",
+        )
+
+        _, plan = await self.call("get", f"/api/workspaces/{space}/plan", headers=self.auth())
+        nodes = plan["nodes"]
+        information = [node for node in nodes if node.get("purpose") == "information"]
+
+        offenders = [node["title"] for node in nodes if BARE_RATIO.match(node["title"] or "")]
+        record(
+            "没有把「38/40」这样的比值当成节点标题",
+            not offenders,
+            " / ".join(offenders) if offenders else f"{len(nodes)} 个节点里没有这种形状的标题",
+        )
+
+        landed: list[tuple[dict, str]] = []
+        for node in nodes:
+            if "38" in (node.get("description") or ""):
+                landed.append((node, "正文"))
+        for node in information:
+            status, stored = await self.call(
+                "get", f"/api/workspaces/{space}/nodes/{node['id']}/notes", headers=self.auth()
+            )
+            if status == 200 and "38" in (stored.get("body") or ""):
+                landed.append((node, "长笔记"))
+        record(
+            "「排名 38」被记在了某处(节点正文或长笔记),不是只剩一句「记下了」",
+            bool(landed),
+            " / ".join(f"「{node['title']}」的{where}" for node, where in landed) or "哪里都没有",
+        )
+        record(
+            "承载它的是一条**信息主题**,不是一件要做的事",
+            any(node.get("purpose") == "information" for node, _ in landed),
+            "落在:" + " / ".join(f"「{node['title']}」({node.get('purpose')}·{where})" for node, where in landed)
+            if landed else "没有落点",
+        )
+
+        planning_nodes = [node for node in nodes if node.get("purpose") != "information"]
+        record(
+            "「计划里有多少个节点」只数要排期的那些",
+            plan["totalNodes"] == len(planning_nodes),
+            f"totalNodes={plan['totalNodes']},非信息用途 {len(planning_nodes)} 个 / 全部 {len(nodes)} 个",
+        )
+        scheduling_bits = [
+            node["title"] for node in information if node.get("estimateMinutes") or node.get("deadline")
+        ]
+        record(
+            "信息主题没有带工时或截止(§4.1:它不需要这两个)",
+            not scheduling_bits,
+            " / ".join(scheduling_bits) if scheduling_bits else f"{len(information)} 个信息主题都没带",
+        )
+
+        # -------------------------------------------------------------- 诊断
+        #
+        # **这一条不是为了通过,是为了让上面那个 0 能读。** 三轮一个动作都没提时,
+        # "0/3" 这个数字本身解释不了任何事:它既可能是"模型压根不给 actions"(通道或
+        # 输出格式的问题),也可能是"模型会给 actions,只是没人告诉它用户报的情况可以建成
+        # 信息主题、可以写成长笔记"(提示词的问题)。这两种的修法完全不同。
+        #
+        # 判据是**整个进程里有没有提过动作**,而不是"哪一轮提的":第一次写成"显式的
+        # 『重新分析』那一轮必须提"(想拿它当对照),结果 2026-09-28 那次运行里,重新分析
+        # 提了 0 条、而访谈第三轮提了 1 条 —— 那个判据本身在报一个假的不通过。哪一个
+        # 触发会提是**模型的判断**,不是机制的不变量;机制的不变量只有"提了就要能落库"。
+        record(
+            "诊断:这一轮里模型确实提过动作(动作通道是通的)",
+            (self.chat_proposals + self.refresh_actions) > 0,
+            f"对话轮 {self.chat_proposals}/{self.chat_turns} 轮有提案,"
+            f"显式「重新分析」{self.refresh_actions} 条",
+        )
+        if not self.chat_proposals:
+            note(
+                "普通对话轮里模型一条动作都没提过 —— 这时先看上面的提示词:它有没有告诉"
+                "模型「用户报的情况可以建成信息主题、一大段可以写成长笔记」。机制全都在也"
+                "不等于模型知道那条路存在。"
+            )
 
     # -- 跑完 ----------------------------------------------------------------------
 
@@ -510,6 +707,7 @@ class Acceptance:
             await self.edit_body_then_expect_stale()
             await self.refresh()
             await self.nothing_was_duplicated()
+            await self.interview()
             self.no_forbidden_claims()
 
 
@@ -556,7 +754,7 @@ def main() -> int:
     db_path = work / "zhitu_analysis.db"
 
     print("=" * 72)
-    print("知途 · AI 分析层验收(真实模型)")
+    print("知途 · AI 分析与访谈共建验收(真实模型)")
     print(f"运行目录  {run_dir}")
     print(f"临时库    {db_path}   (不碰 data/zhitu_dev.db)")
     print("密钥      有(.env 里的 LLM_API_KEY,全程不打印)")
@@ -576,7 +774,7 @@ def main() -> int:
     finally:
         server.stop()
         lines = [
-            "知途 · AI 分析层验收(真实模型)",
+            "知途 · AI 分析与访谈共建验收(真实模型)",
             "",
             f"运行目录    {run_dir}",
             f"时间        {stamp}",
