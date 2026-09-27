@@ -8,6 +8,7 @@ import {
   createNode,
   createWorkspace,
   getPlan,
+  openSpacePage,
   registerAccount,
   renderedNodeIds,
   waitForRealPlan,
@@ -312,4 +313,75 @@ test('归档不动库里的边，彻底删除才动', async ({ page }) => {
   // `deletedCount` 说的是"我收走了几条",用户需要知道这一点才不会被吓一跳:
   // 这里收的是叶子,所以是 1,不是一整支。
   expect(removedPredecessor.deletedCount).toBe(1);
+});
+
+/**
+ * 被归档的节点,不能继续挂在对话的上下文上。
+ *
+ * ## 这一条钉的是"用户在别处没了这个东西"之后的那一句话
+ *
+ * 归档不只发生在垃圾桶上:AI 的提案里能提 `delete_node`,用户点确认之后那个节点就
+ * 不在计划里了;别的标签页也会归档。而那两种情况下,**本地的选中不会跟着清** ——
+ * `select(null)` 只在用户自己点垃圾桶时走(`provider.confirmArchive`)。
+ *
+ * 于是用户下一次发消息,带上去的是一个已经不存在的节点 id。服务端会拒绝它
+ * (404 `NODE_NOT_FOUND`,见 `backend/tests/test_message_context_node.py`),
+ * 而用户看到一句和他刚说的话毫无关系的错误 —— 真正的问题在他的画面之外。
+ *
+ * **判据是"没有错误行",不是"上下文标签不见了"。** 标签在两处都已经会自己消失:
+ * 它渲染的是 `growth.nodes[selectedId]`,节点不在计划里它就空了。而发出去的
+ * `contextNodeId` 读的是**另一个**东西 —— 那个原始的 `selectedId`。两者分家正是
+ * 这个缺陷的形状,所以只断言标签等于什么都没验。
+ */
+const DOOMED_TITLE = '查文献';
+const SURVIVOR_TITLE = '活着的任务';
+test('正在讨论的节点在别处被归档之后，下一条消息不带它的 id 上去', async ({ page }) => {
+  const { token } = await registerAccount(page, 'archive-context');
+  const workspaceId = await createWorkspace(page, token, '归档后续验收空间');
+  const root = (await getPlan(page, token, workspaceId)).nodes[0];
+
+  // 被选中、然后从别处归档的那一个。
+  const doomed = await createNode(page, token, workspaceId, {
+    parentId: root.id, title: DOOMED_TITLE, nodeType: 'task',
+  });
+  // 旁边活下来一个,用来触发那次计划重拉(见下)。少了它,唯一能点的"完成"
+  // 就落在根目标上,而"根目标能不能被标成完成"是另一件事,不该混进这条测试。
+  await createNode(page, token, workspaceId, {
+    parentId: root.id, title: SURVIVOR_TITLE, nodeType: 'task',
+  });
+
+  // 先在**路径**视图上等计划到达:`waitForRealPlan` 读的是画布上真画出来的节点,
+  // 而任务视图里没有画布,直接落在那里会一直读到空列表、超时在一句与真正原因无关的
+  // 失败信息上。计划到了再切到任务视图。
+  await openSpacePage(page, '/workbench', workspaceId);
+  await waitForRealPlan(page);
+  await page.getByRole('tab', { name: '任务', exact: true }).click();
+
+  // 点任务行 = 选中它(和画布上点节点是同一个状态)。对话卡片上多出"正在讨论"。
+  await page.locator('.task-detail').filter({ hasText: DOOMED_TITLE }).click();
+  await expect(page.locator('.floating-conversation .context-chip')).toContainText(DOOMED_TITLE);
+
+  // **走接口归档,不走界面上那个垃圾桶。** 界面上的删除会顺手把选中清掉 ——
+  // 那样就正好绕过了这条测试要验的那件事。
+  await api(page, token, `/api/workspaces/${workspaceId}/nodes/${doomed}`, { method: 'DELETE' });
+
+  // 触发一次**同一会话内**的计划重拉。任何一次成功的计划写入都会重拉
+  // (`mutatePlan` -> `refreshPlan`),而任务行左边那个复选框就是最省事的一次。
+  // 复选框的 `aria-label` 是"完成" + **节点标题**(见 TaskView)。
+  await page.locator(`.task-check[aria-label="完成${SURVIVOR_TITLE}"]`).click();
+  // 等到新计划真的到了才继续:上下文标签消失就是它的可见证据 ——
+  // 标签渲染的是 `growth.nodes[selectedId]`,而那一份在新计划里已经没有这个节点了。
+  await expect(page.locator('.floating-conversation .context-chip')).toHaveCount(0);
+
+  await page.getByLabel('给 AI 的消息').fill('那先做别的');
+  await page.getByRole('button', { name: '发送消息', exact: true }).click();
+
+  const sent = page.locator('.floating-conversation .message').filter({ hasText: '那先做别的' });
+  await expect(sent).toBeVisible();
+  // `turn-error` 是这条消息失败时**唯一**的落点。404 那条路上它会写着
+  // "这个节点不在当前空间里。" —— 而这句话对用户刚说的那句话毫无解释力。
+  await expect(page.locator('.floating-conversation .turn-error')).toHaveCount(0);
+  // 反过来确认这一轮真跑完了:助手回了一条,而不是停在"发送中"。
+  // 新空间一条历史都没有,所以这一轮跑完就该正好两条。
+  await expect(page.locator('.floating-conversation .message')).toHaveCount(2);
 });

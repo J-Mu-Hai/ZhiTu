@@ -46,7 +46,7 @@ from backend.db.models.enums import (
     MessageRole,
     ModelSource,
 )
-from backend.services import analysis_service, proposal_service
+from backend.services import analysis_service, node_service, proposal_service
 from backend.services.brief_service import apply_claims
 from backend.services.context import WorkspaceContext
 from backend.services.errors import InvalidInput
@@ -257,6 +257,43 @@ async def submit_turn(
         raise InvalidInput("消息不能是空的。")
     if len(text) > MAX_MESSAGE_CHARS:
         raise InvalidInput(f"消息太长了,请控制在 {MAX_MESSAGE_CHARS} 字以内。")
+
+    # **先确认这个节点真的是这个空间的,再决定要不要处理这条消息。**
+    #
+    # 顺序是这一段存在的全部理由。`context_node_id` 来自请求体,而它一路都被当成
+    # 事实在用:它会被写进 `messages.context_node_id` 那一行、决定这一轮的范围与焦点、
+    # 还决定分析记录的 `focusNodeId`。
+    #
+    # 不校验的后果不是崩溃,是**静默错位** —— 这才是它难被发现的原因。`load_scope`
+    # 只把落在范围内的焦点认下来,范围外的**悄悄当成没给**(见那里的注释:它的职责是
+    # 防止"上一处的选中"被当成"这一轮在聊什么",不是鉴权)。于是拿别人空间的节点 id
+    # 发消息,拿到的是 200、一条记着那个 id 的用户消息、和一轮**没有焦点**的对话:
+    # 没有任何迹象说明那个 id 被丢掉了。用户以为自己说的是那个节点,模型以为他没指。
+    #
+    # 所以这里不交给 `load_scope` 兜底:**兜底的语义是"忽略",而正确的语义是"拒绝"**。
+    # 拿 `scope_root_id` 比一下就更清楚 —— 那个 id 给错了是 `InvalidInput`,因为
+    # "基于我没读到的东西去做范围判断,才是真正危险的那件事"。
+    #
+    # **外键不是这道校验的替代品,这一点值得写下来**:`messages.context_node_id` 上
+    # 确实有个 `ForeignKey("plan_nodes.id")`,但它拦的只有"这个 id 从没存在过"那一种 ——
+    # 而且拦下来的方式是在 `_insert_user_message` 里抛 IntegrityError,被那一层的重试
+    # 循环当成 seq 冲突再试几次,最后从一个错误路径上炸出去。**跨空间和已归档的 id
+    # 外键是拦不住的**:那些行真的在 `plan_nodes` 里(归档只是打 `deleted_at`),
+    # 于是写入成功、响应 200、id 原样回显 —— 一条记着别的空间节点的用户消息就这么
+    # 落了库。外键管的是"这一行在不在",管不了"这一行属不属于你"。
+    #
+    # 归属条件写在 `load_node` 的 WHERE 里(`workspace_id` 不匹配就查不到),所以
+    # 跨用户、跨空间、不存在、已归档这四种情况在这里是**同一个** `NodeNotFound`。
+    # 分开返回的话,拿 id 逐个试就能问出"这个 id 有没有存在过"(理由见 `NodeNotFound`)。
+    # 也正因为条件在 WHERE 里,非法的 id **一行都取不出来** —— 别人节点的正文
+    # 在这一步没有被读到,不是因为"读完再判断",而是因为它根本没进过查询结果。
+    #
+    # **位置在两次提交之前。** 上面只有纯文本校验(不碰库);下面
+    # `get_or_create_primary_conversation` 就会建对话、`_insert_user_message` 会写消息、
+    # `build_turn_context` 会把节点正文读进提示词、`reasoner.reason` 会调模型。
+    # 非法请求在这里停住,四件事一件都不会发生。
+    if context_node_id is not None:
+        await node_service.load_node(db, ctx, context_node_id)
 
     conversation = await get_or_create_primary_conversation(db, ctx)
 

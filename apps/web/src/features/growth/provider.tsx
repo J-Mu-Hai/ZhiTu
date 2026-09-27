@@ -290,6 +290,21 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
   const [focus, setFocus] = useState({ nodeId: '', seconds: 0, running: false });
   useEffect(() => { if (!focus.running) return; const timer = setInterval(() => setFocus(f => ({ ...f, seconds: f.seconds + 1 })), 1000); return () => clearInterval(timer); }, [focus.running]);
   const [selectedId, select] = useState<string | null>(null);
+  // 选中的节点从计划里消失了就把选中清掉。**这不是防御性代码,是一条会真的走到的路**:
+  // AI 的提案里能提 `delete_node`(归档),用户点确认之后那个节点就不在计划里了,
+  // 而 `selectedId` 只在用户**自己**删除时被清(见 `confirmArchive`)。
+  //
+  // 留着它的后果是下一次发消息会带着一个已经不存在的节点 id 上去 —— 服务端会拒绝
+  // (404 `NODE_NOT_FOUND`),用户看到一句和他刚说的话毫无关系的错误。清掉之后退化成
+  // "没有焦点",那正是它此时的真实状态。
+  //
+  // 计划为空时**什么都不做**:那说明还没读到,不是"它没了"。少了这一句,首屏加载
+  // 完成前的一次选中会被误清。
+  useEffect(() => {
+    if (!selectedId) return;
+    if (Object.keys(growth.nodes).length === 0) return;
+    if (!growth.nodes[selectedId]) select(null);
+  }, [growth.nodes, selectedId]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [positions, setPositionsRaw] = useState<Record<string, { x: number; y: number }>>(seed.positions);
 

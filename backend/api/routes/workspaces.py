@@ -41,7 +41,6 @@ from backend.services import (
     analysis_service,
     brief_service,
     conversation_service,
-    node_service,
     proposal_service,
     workspace_service,
 )
@@ -228,14 +227,13 @@ async def refresh_analysis(
     响应,那一轮不会留下分析记录。界面上要如实显示成"这次没分析成",不能拿上一次的
     旧分析顶替 —— 那正是这一批要拦的那种假象。
 
-    **节点要先在这里查一次,`submit_turn` 不查。** 这不是重复校验,是两条路径的请求
-    含义本来就不同:发消息那条里节点只是"用户此刻看着谁"的一个提示,节点刚好被删了
-    也该把他那句话答完;而这一条里**节点就是请求本身**,它不存在的时候没有任何
-    合理的事可做,只能 404。查不到与不属于当前空间返回同一个错误(理由见
-    `NodeNotFound` 的注释)。
+    **`contextNodeId` 的归属校验在 `submit_turn` 里,两条路径共用同一处。**
+    曾经这条路径单独先查一次,理由是"发消息那条里节点只是提示,节点没了也该把话答完"。
+    那个区别站不住:同一个非法 id 在一条路上 404、在另一条路上被**悄悄忽略**,
+    等于同一份输入有两套真相,而"忽略"那一套没有任何迹象。现在两条路都拒绝,
+    校验因此在服务层做一次就够 —— 校验和执行挨在一起,谁调用都绕不过去。
+    查不到与不属于当前空间返回同一个错误(理由见 `NodeNotFound` 的注释)。
     """
-    await node_service.load_node(db, ctx, node_id)
-
     outcome = await conversation_service.submit_turn(
         db,
         ctx,

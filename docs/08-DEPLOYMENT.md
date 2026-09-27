@@ -817,9 +817,26 @@ Vercel 部署的是 `next build` 的产物；本地开发用的是 `next dev`，
     `test_the_forwarding_schemas_carry_every_declared_key` 都变红；把基线那道闸去掉，
     `test_a_foreign_brief_write_is_still_reported` 变红。三条回归用例留在
     `test_openjiuwen_adapter.py` 与 `test_analysis_staleness.py` 里。
-  - **`POST /workspaces/{id}/messages` 上 `contextNodeId` 不被校验**（拿别人的节点 id 配自己
-    的空间会得到 200）。这是做步骤 D 时由新用例抓出来的真缺陷，**只修了新的 refresh 那条路**
-    （它先 `load_node`，所以 404），发消息那条路径**没修**，留在这里免得被读成"已经修好了"。
+  - **`POST /workspaces/{id}/messages` 上 `contextNodeId` 不校验** —— 做步骤 D 时抓出来的真缺
+    陷，当时只修了 refresh 那条路（它先 `load_node`，所以 404）。**现已修复**：校验收进
+    `conversation_service.submit_turn` 的开头，两条路共用同一处，非法 id 一律 404
+    `NODE_NOT_FOUND`。之所以挪进服务层而不是在路由里再查一次，是因为"节点没了也该把话答完"
+    那个区别站不住 —— 同一个非法 id 在一条路上 404、在另一条路上被**悄悄忽略**，等于同一份
+    输入有两套真相，而"忽略"的那一套没有任何迹象。
+    修之前四种非法 id **不是同一种表现**，所以用例分了四条：
+
+    | 情况 | 修之前 | 外键拦住了吗 |
+    | --- | --- | --- |
+    | 别人的节点 | **200**，id 原样落库并回显，焦点被静默丢掉 | 拦不住，那行真的在 `plan_nodes` 里 |
+    | 自己另一个空间的节点 | 同上 | 同上 |
+    | 已归档的节点 | 同上（归档只打 `deleted_at`，行还在） | 同上 |
+    | 从没存在过的 id | 写入抛 `IntegrityError`，从错误路径上炸出去 | 拦得住，但拦法是一场崩溃 |
+
+    最后一行是这次顺带查清楚的：`messages.context_node_id` 上那个外键**不是**这道校验的
+    替代品 —— 它管的是"这一行在不在"，管不了"这一行属不属于你"。六条用例在
+    `test_message_context_node.py`；反向验证见第四节开头那段的做法（把校验关掉，四条"拒绝"
+    用例一起变红，两条"合法"用例仍绿 —— 后者正是防止修法退化成"把所有 `contextNodeId`
+    都拒掉"的那一半）。
   - **一处与 `docs/11` 原文的差异**：那一节原来写着界面要有「成熟度」，而步骤 B 落库时按
     "分析草稿不能冒充正式约束"把它去掉了 —— 一个没有判据的自评档位看起来像可以据以行动的
     结论。原文已改。
