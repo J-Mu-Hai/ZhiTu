@@ -215,8 +215,11 @@ async def load_schedule(db: AsyncSession, ctx: WorkspaceContext) -> LoadedSchedu
             )
         )
     )
-    horizon_days = _horizon_days(today, nodes)
-    horizon_last = today + timedelta(days=horizon_days - 1)
+    horizon = horizon_days(
+        today,
+        max((node.deadline for node in nodes if node.deadline is not None), default=None),
+    )
+    horizon_last = today + timedelta(days=horizon - 1)
     live_ids = {node.id for node in nodes}
     parents = {node.parent_id for node in nodes if node.parent_id is not None}
 
@@ -284,7 +287,7 @@ async def load_schedule(db: AsyncSession, ctx: WorkspaceContext) -> LoadedSchedu
     return LoadedSchedule(
         request=ScheduleRequest(
             today=today,
-            horizon_days=horizon_days,
+            horizon_days=horizon,
             profile=await capacity_profile(db, user_id, workspace_ids),
             nodes=tuple(
                 # `parents` 里的是"有孩子的那些节点的 id",所以查的是 node.id。
@@ -389,18 +392,25 @@ async def _stated_weekly_minutes(
     return max(values) if values else None
 
 
-def _horizon_days(today: date, nodes: list[PlanNode]) -> int:
+def horizon_days(today: date, furthest_deadline: date | None) -> int:
     """往后看多远。
 
     至少要覆盖最远的那个截止日,否则那个任务会被判成"超出视界"而排不进去 —— 用户会
     看到一句和"我的截止日是三个月后"接不上的话。多给一周的余量(见 `_DEADLINE_SLACK_DAYS`),
     并且始终兜在 `[1, MAX_HORIZON_DAYS]` 里:一个手滑写进 `deadline` 的 2099 年会在没有
     上限时让算法去算两万七千天。
+
+    ## 为什么收的是一个日期而不是一串节点(以前是后者)
+
+    因为"往后看多远"有第二个读者了:AI 那一轮的时间上下文要向用户报"这期间最多能拿出
+    多少分钟",而那个数字只有和排期预览**看同一个视界**才可比。两处各写一份推算规则的
+    话,一边多给了余量而另一边没给,用户会看到"AI 说还差 200 分钟、排期预览说排得下" ——
+    而两个数字都自称是按同一套预算算的。让它只认"最远的截止日",调用方怎么把那一天查出来
+    是调用方的事。
     """
-    furthest = max((node.deadline for node in nodes if node.deadline is not None), default=None)
     horizon = DEFAULT_HORIZON_DAYS
-    if furthest is not None:
-        horizon = max(horizon, (furthest - today).days + _DEADLINE_SLACK_DAYS)
+    if furthest_deadline is not None:
+        horizon = max(horizon, (furthest_deadline - today).days + _DEADLINE_SLACK_DAYS)
     return max(1, min(horizon, MAX_HORIZON_DAYS))
 
 
@@ -816,6 +826,7 @@ __all__ = [
     "LoadedSchedule",
     "active_workspace_ids",
     "apply",
+    "horizon_days",
     "load_schedule",
     "preview",
 ]

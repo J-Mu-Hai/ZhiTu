@@ -143,6 +143,120 @@ class RelationView:
     note: str | None = None
 
 
+# ---------------------------------------------------------------------------------
+# 时间底盘。**这一组全是只读的事实,没有一条是"我会替你安排"**。
+#
+# 为什么单开一组而不是几个散字段:它们一起回答的是同一个问题 ——
+# 「这个人还剩多少时间、已经被占掉多少」。模型拿它做的判断(排不排得开、要不要砍)
+# 全都建立在这几个数字上,而它们全部来自排期器自己用的那几处(见 services/turn_context
+# 的 `load_time_view`)。散着塞进 `KnownConditions` 的话,"哪些是用户说的条件、
+# 哪些是系统算出来的事实"这条界线就没了。
+# ---------------------------------------------------------------------------------
+@dataclass(frozen=True, slots=True)
+class AvailableWindowView:
+    """一条周期性可用时段。`weekday` 0 = 周一,与 `date.weekday()` 一致。"""
+
+    weekday: int
+    start_minute: int
+    end_minute: int
+
+
+@dataclass(frozen=True, slots=True)
+class SessionFactView:
+    """已经排进日历的一场。**已经排进去的,不是"建议排的"。**"""
+
+    handle: str
+    day: str  # YYYY-MM-DD
+    minutes: int
+    status: str
+    #: 用户锁定的场次不能被自动挪走。要说"我把这场往后挪了"之前必须先看这个。
+    locked: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionFactView:
+    """做过的记录。`actual_minutes` 为空表示用户没报实际用时。"""
+
+    handle: str
+    result: str
+    actual_minutes: int | None = None
+    completion_ratio: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TimeView:
+    """这个人的时间底盘。**只读**。
+
+    ## 为什么这里必须有"不知道"
+
+    `weekly_total_minutes` 为 None 表示**个人容量表里没有这一行** —— 而不是"每周零分钟"。
+    这个区分是整条时间链路的重点,与 `KnownConditions.weekly_available_minutes` 为 None
+    是同一个道理:分不清的话,模型会把"不知道"当成"没有限制",然后给出一个自己
+    都没底的可行性判断。所以除了数字,这里还要回答**这些数字是从哪来的**
+    (`capacity_configured`),渲染层才有话可说。
+
+    ## `capacity_minutes` 是什么、不是什么
+
+    它是**视界内最多能拿出的分钟数**(以今天到最远截止日为准,与排期预览同一个视界、
+    同一个 `assess_feasibility` 口径)。它**不是**"这份计划排不排得开"的结论 ——
+    结论要把各任务的 `estimateMinutes` 加起来才谈得上,而那是模型自己算的,服务端
+    一个字都不替它说。两个数字混为一谈的后果,是模型把"总容量"读成"已经排好了"。
+    """
+
+    # --- 视界 ---
+    horizon_days: int
+    #: 最远的截止日。视界就是按它推出来的;为空表示所有节点都没写截止时间。
+    horizon_last_day: str | None
+    #: 视界已经到达上限(`MAX_HORIZON_DAYS`)。到了就**必须说出来** ——
+    #: 否则"这期间最多能拿出多少"会被读成"总共能拿出多少"。
+    horizon_at_limit: bool
+    capacity_minutes: int
+
+    # --- 预算 ---
+    #: 个人容量表里的每周总量。None = 表里没有这一行(注册时刻意不建),**不是零**。
+    weekly_total_minutes: int | None
+    #: 真正生效的每周预算 = 总量 × 安全系数。权威算法是 `scheduler.calendar.weekly_budget`。
+    weekly_budget_minutes: int
+    safety_factor: str | None
+    daily_cap_minutes: int
+    min_session_minutes: int
+    max_session_minutes: int
+    default_buffer_minutes: int
+    #: 个人容量表里到底有没有一行。False 时上面几个数字来自**默认值**或用户说过的那句,
+    #: 必须如实说明"这不是你设的"。
+    capacity_configured: bool
+
+    # --- 什么时候有空 ---
+    windows: tuple[AvailableWindowView, ...] = ()
+    windows_total: int = 0
+    #: 视界内的逐日例外(请假/临时有空)。列出来的有上限,总数如实给。
+    exceptions: tuple[tuple[str, int | None, bool], ...] = ()
+    exceptions_total: int = 0
+
+    # --- 已经排进去的 ---
+    sessions: tuple[SessionFactView, ...] = ()
+    sessions_total: int = 0
+    #: **别的空间**还排着多少场(仍然占着时间的那几种)。时间池是按人算的,
+    #: 子空间不各自拥有一份额度 —— 不写出这个数,模型会以为每个子空间都能占满整周。
+    sessions_other_workspaces: int = 0
+
+    # --- 做过的 ---
+    executions: tuple[ExecutionFactView, ...] = ()
+    executions_total: int = 0
+
+    # --- 计划这一侧要多少 ---
+    #: 这个空间里**还没做完的任务**的预计工时合计。**只是一个加法**,不是结论 ——
+    #: 它和 `capacity_minutes` 一起给,是为了让"够不够"这一步建立在两个可核对的数字上,
+    #: 而不是让模型自己去加几十个节点的 `estimateMinutes`(它会加错,而且错得看不出来)。
+    open_task_minutes: int = 0
+    #: 其中**没填预计工时**的任务数。大于 0 时上面那个合计数只是**下限** —— 必须说出来,
+    #: 否则模型会把"我看到的加起来"当成"总共要多少"。这正是规范里那条
+    #: "不知道工时时不要声称日程已经合理安排"的落点。
+    open_tasks_without_estimate: int = 0
+    #: 这个人还有几个别的活动空间。大于 0 时上面那个合计数**不包含它们的任务**。
+    other_active_workspaces: int = 0
+
+
 @dataclass(frozen=True, slots=True)
 class TurnContext:
     """一次对话轮次里,模型能看到的全部东西。
@@ -204,6 +318,13 @@ class TurnContext:
     #: 漏读又不说,模型就会拿半份上下文当全份用。
     live_node_count: int = 0
     window_truncated: bool = False
+
+    #: 时间底盘(见 `TimeView`)。**只读** —— 这一轮里没有任何一个字段是模型能改的。
+    #:
+    #: 为 None 表示这一次没有读时间信息(手工构造 TurnContext 的那些调用方)。
+    #: 渲染层据此印出"本次没有读时间信息",而不是印一份空表 —— 空表看起来像
+    #: "这个人没有时间预算",那正是这一批要修的那种"把没读到当成没有"。
+    time: TimeView | None = None
 
     #: 这次分析的输入快照(见 services/input_snapshot.py)。**服务端专用,不渲染。**
     input_snapshot: InputSnapshot | None = None

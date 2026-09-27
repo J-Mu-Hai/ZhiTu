@@ -40,6 +40,7 @@ from backend.agent.prompts.planning import (
     render_plan_section,
     render_relations_section,
     render_scope_section,
+    render_time_section,
 )
 from backend.agent.runtime.base import (
     AnalysisDraft,
@@ -168,6 +169,7 @@ def render_turn(turn: TurnContext) -> str:
             current_view=turn.current_view,
         ),
         brief_section=render_brief_section(known),
+        time_section=render_time_section(turn.time),
         plan_section=render_plan_section(nodes),
         relations_section=render_relations_section(edges, hidden=turn.edges_hidden),
         history_section=render_history_section(history),

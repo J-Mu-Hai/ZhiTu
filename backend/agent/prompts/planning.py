@@ -46,7 +46,7 @@ from __future__ import annotations
 
 #: 写进每条助手消息的 prompt_version。改了这个文件就要改它——
 #: 事后排查"这轮回复为什么这么怪"时,能定位到当时用的是哪一版提示词。
-PROMPT_VERSION = "planning-v5"
+PROMPT_VERSION = "planning-v6"
 
 # ---------------------------------------------------------------------------------
 # 正文的预算。**这里定多少,模型就看到多少** —— 别处不再截一次
@@ -63,6 +63,23 @@ ANCESTOR_BODIES_NEAREST = 5
 #: "哪些正文没读"那一行最多列几个记号。多出来的用"等共 N 个"收尾 ——
 #: 那一段的目的是让人知道"有东西没读到",不是把整张清单抄一遍(清单在下面逐条标着)。
 UNREAD_HANDLES_SHOWN = 20
+
+# ---------------------------------------------------------------------------------
+# 时间那一段的行数预算。**同样:这里定多少,模型就看到多少**
+#
+# 与正文不同的是,这几段**每一段都带"一共多少、这里列了几条"**。截断本身不可怕,
+# 可怕的是截断了不说 —— 模型看到 5 场排期,会当成"日历上就这 5 场".
+# ---------------------------------------------------------------------------------
+#: 最多列几条可用时段 / 几条逐日例外。
+MAX_AVAILABILITY_ROWS = 12
+MAX_EXCEPTION_ROWS = 8
+#: 最多列几场已排的场次 / 几条执行记录。列出来的从**最近的**开始 ——
+#: 用户问"这周还排得下吗"时,三个月后的那几场帮不上忙。
+MAX_SESSION_ROWS = 12
+MAX_EXECUTION_ROWS = 8
+
+#: 0 = 周一,与 `date.weekday()` 一致。这里只用来把 0..6 印成中文。
+WEEKDAY_NAMES = ("一", "二", "三", "四", "五", "六", "日")
 
 #: 层标题。**顺序就是渲染顺序**,也是"相关性从高到低"的顺序。
 #:
@@ -223,6 +240,30 @@ SYSTEM_PROMPT = """你是「知途」,帮助大学生把目标变成可执行计
 然后在 `reply` 里告诉用户:**排期会按新条件重算,去工作台的「排期」里预览确认**。
 把话说全:`动作 + 为什么 + 下一步在哪确认`。
 
+### 时间那一段是**只读的**,而且它有"不知道"
+
+上下文里「时间与已经排进去的安排」那一段是你唯一的时间依据。它的规则只有这样几条:
+
+- **它是事实,不是你的权限。** 你不能设每周可投入多少、不能改可用时段、不能加一场排期、
+  不能"把某件事挪到周三"。你手上能动的只有计划本身(节点、正文、预计工时、截止日、
+  前置关系)。
+- **说"已经调整了日程""我把它挪到周末了"都是假话。** 具体哪天做哪一件事,只有在工作台
+  「排期」里预览、由用户确认之后才算数。你可以在 `reply` 里**建议**怎么放,但要用
+  "可以把它安排在……你看行不行"这种说法,不能说成已经发生。
+- **没写在里面的就是不知道,不许补一个。** 那一段会明说"个人容量表里没有设置""还没
+  记过可用时段"。这种情况下**不要**说"按你的时间看排得开""日程安排是合理的" ——
+  你手里没有那个数字。要么问,要么只说风险,别给结论。
+- **两个数都是服务端算好的,但都只是数,不是结论。** 那一段会给出"这期间最多能拿出
+  多少"(容量侧)和"计划这一侧要多少"(这个空间里还没做完的任务的预计工时合计)。
+  **不要去替用户重算这两个数,也不要改口径**;要对比就把两边的口径各自说清楚。留意
+  那一段会告诉你"有几个任务还没填预计工时" —— 有的话那个合计只是**下限**,必须说出来,
+  不能拿它当完整的需求量。
+- **不要说"我已经检查过工时/冲突了"。** 你没有跑过任何检查,系统这一轮也没有跑;
+  「排期」预览才是真正算过的地方。可以指出你**看到**的风险(某人一周只有 4 小时、
+  某个截止日前只剩两周),但不能把"没有发现问题"说成"已经确认没问题"。
+- 那一段里带"(还有 N 条没列出来)"的地方,是真的没列完。**不要**假装自己看到了全部 ——
+  需要那一部分就问,或者说明你的判断只基于列出来的这些。
+
 ### 什么时候给 actions
 
 - 三个条件还没齐:**`actions` 必须是空数组**,先问缺的。
@@ -320,6 +361,10 @@ TURN_TEMPLATE = """## 今天的日期
 
 {brief_section}
 
+## 时间与已经排进去的安排(只读)
+
+{time_section}
+
 ## 空间里现有的计划
 
 {plan_section}
@@ -359,6 +404,170 @@ def render_brief_section(known: dict[str, object]) -> str:
         lines.append("")
         lines.append("(这个空间还没有任何已知条件,用户刚开口。)")
     return "\n".join(lines)
+
+
+def render_time_section(time: object | None) -> str:
+    """时间底盘那一段。**只读的事实 + "哪些不知道"。**
+
+    ## 三种"没有"要分开印,不能合成一片空白
+
+    1. `time is None` —— 这一次**没有读**时间信息(手工构造的 TurnContext)。
+    2. 个人容量表里没有那一行 —— 数字来自默认值或用户说过的那句,**不是用户设的**。
+    3. 没记过可用时段、没排过场次、没做过任何一件事 —— 都是空的,但不是同一件事。
+
+    合成一片空白的话,模型会把每一种都读成"没有限制 / 没有占用",然后给一个自己都没底
+    的可行性判断。所以这里逐条印出"不知道什么",而且**容量未知时会明说"不要对排不排得开
+    下结论"** —— 提示词里那一条规则,靠的就是这一段先说出实情。
+
+    ## 为什么总数与列出来的条数是两个数
+
+    行数有上限,超出的部分不列。只印列出来的那几条,模型会把"我看到 5 场"当成
+    "一共 5 场",然后据此说"这周还挺空"。所以每一段都带"共 N 条"(N 是**全部**),
+    并在截断时补一句"还有 M 条没列出来"。
+    """
+    if time is None:
+        return "(本次没有读取时间信息 —— 不要对时间够不够、排不排得开下任何结论。)"
+
+    lines: list[str] = ["### 每周能投入多少(跨全部空间共用一份,不按空间分摊)"]
+    if time.capacity_configured:
+        lines.append(
+            f"- 用户设置的每周总量:{time.weekly_total_minutes} 分钟,"
+            f"安全系数 {time.safety_factor} → **实际按 {time.weekly_budget_minutes} 分钟/周 排**"
+        )
+    else:
+        lines.append(
+            f"- **个人容量表里没有设置**(用户从没设过) → 系统按默认值走:"
+            f"{time.weekly_total_minutes} 分钟/周 × 安全系数 {time.safety_factor}"
+            f" = {time.weekly_budget_minutes} 分钟/周"
+        )
+        lines.append(
+            "  (这不是用户说的数字。他亲口说过的那个写在上面「已经知道的条件」里,"
+            "以那个为准;两个都没有时,**你不知道他每周有多少时间**。)"
+        )
+    lines.append(
+        f"- 单日上限 {time.daily_cap_minutes} 分钟;单场 {time.min_session_minutes}~"
+        f"{time.max_session_minutes} 分钟,每场另计 {time.default_buffer_minutes} 分钟缓冲"
+    )
+
+    lines.append("")
+    lines.append("### 用户什么时候有空")
+    if not time.windows and not time.exceptions:
+        lines.append(
+            "- **一条都没记过** —— 只知道他每周的总量,不知道具体哪几天、哪个时段。"
+            "所以「安排在周三晚上」这种话你说不了,要说也只能是问。"
+        )
+    else:
+        for window in time.windows:
+            lines.append(
+                f"- 每周{_weekday_cn(window.weekday)} "
+                f"{_hhmm(window.start_minute)}–{_hhmm(window.end_minute)}"
+            )
+        if time.windows_total > len(time.windows):
+            lines.append(f"  (可用时段共 {time.windows_total} 条,上面列了 {len(time.windows)} 条)")
+        for on_date, minutes, unavailable in time.exceptions:
+            if unavailable:
+                lines.append(f"- {on_date} 整天不可用")
+            else:
+                lines.append(f"- {on_date} 只可用 {minutes} 分钟")
+        if time.exceptions_total > len(time.exceptions):
+            lines.append(
+                f"  (视界内的例外共 {time.exceptions_total} 条,"
+                f"上面列了 {len(time.exceptions)} 条)"
+            )
+
+    lines.append("")
+    lines.append("### 已经排进日历的(这个空间)")
+    for session in time.sessions:
+        locked = ",用户锁定" if session.locked else ""
+        lines.append(
+            f"- {session.handle} {session.day} {session.minutes} 分钟"
+            f"({session.status}{locked})"
+        )
+    # **"列不出来"和"一场都没有"是两件事。** 只看 `sessions` 是不是空的,会把
+    # "这个空间排了 3 场、但它们挂在模型看不见的节点上"印成"一场都没有" ——
+    # 那是把"我没读到"说成了"没有",这一批整批都在修的就是这一种。
+    if not time.sessions and not time.sessions_total:
+        lines.append("- 一场都没有。**这不等于「时间很空」** —— 可能只是还没排过。")
+    elif time.sessions_total > len(time.sessions):
+        lines.append(
+            f"  (这个空间共 {time.sessions_total} 场,上面列了 {len(time.sessions)} 场 ——"
+            "其余那些的节点这一轮没读到,所以它们**是存在的**,只是这里看不到)"
+        )
+    if time.sessions_other_workspaces:
+        lines.append(
+            f"- **别的空间还排着 {time.sessions_other_workspaces} 场** ——"
+            "时间是这个人的,不是每个空间各有一份。"
+        )
+
+    lines.append("")
+    lines.append("### 做过的")
+    if not time.executions:
+        lines.append("- 还没有任何执行记录。")
+    else:
+        for fact in time.executions:
+            bits = [f"- {fact.handle} {fact.result}"]
+            if fact.actual_minutes is not None:
+                bits.append(f"实际 {fact.actual_minutes} 分钟")
+            if fact.completion_ratio is not None:
+                bits.append(f"完成度 {fact.completion_ratio}")
+            lines.append(" ".join(bits))
+        if time.executions_total > len(time.executions):
+            lines.append(
+                f"  (共 {time.executions_total} 条,上面列了 {len(time.executions)} 条)"
+            )
+
+    lines.append("")
+    lines.append("### 从现在到最远的截止日,最多能拿出多少")
+    horizon_end = time.horizon_last_day or "(没有节点写截止日)"
+    at_limit = (
+        ",**视界已经到上限了**,所以这个容量只算到那之前的这一段"
+        if time.horizon_at_limit
+        else ""
+    )
+    lines.append(f"- 视界:{time.horizon_days} 天(到 {horizon_end}){at_limit}")
+    lines.append(
+        f"- 按上面的预算,这期间**最多**能拿出约 {time.capacity_minutes} 分钟。"
+        "这是「总共能拿出多少」,**不是「这份计划排不排得开」** ——"
+        "要对比就拿它去比下面「计划这一侧要多少」那个合计,"
+        "并把两边各自的口径说清楚。"
+    )
+
+    lines.append("")
+    lines.append("### 计划这一侧要多少(这个空间里还没做完的任务)")
+    if time.open_task_minutes or time.open_tasks_without_estimate:
+        lines.append(
+            f"- 还没做完的任务,预计工时合计 **{time.open_task_minutes} 分钟**。"
+            "这是服务端把每个任务的预计工时加出来的一个加法结果,**不是结论**。"
+        )
+        if time.open_tasks_without_estimate:
+            lines.append(
+                f"  - 其中有 {time.open_tasks_without_estimate} 个任务**还没填预计工时**,"
+                f"没有算进这个数 —— 所以 {time.open_task_minutes} 分钟只是**下限**。"
+                "要说这个合计数的时候,必须同时把这个下限说出来。"
+            )
+    else:
+        lines.append(
+            "- 这个空间里没有还没做完的任务"
+            "(口径:节点类型是任务、状态是待做或进行中)。"
+        )
+    if time.other_active_workspaces > 0:
+        lines.append(
+            f"- 你还有 {time.other_active_workspaces} 个活动中的空间。"
+            "那些空间里待做的任务**不在上面的合计里**,但它们和这里花的是同一份时间。"
+        )
+    return "\n".join(lines)
+
+
+def _weekday_cn(weekday: int) -> str:
+    """0=周一 .. 6=周日。越界的值原样印出来,不猜 —— 猜出来的那一个字会被当成事实。"""
+    if 0 <= weekday < len(WEEKDAY_NAMES):
+        return WEEKDAY_NAMES[weekday]
+    return f"({weekday})"
+
+
+def _hhmm(minute: int) -> str:
+    """分钟数印成 HH:MM。24:00 是合法的一种"一天结束",所以不取模。"""
+    return f"{minute // 60:02d}:{minute % 60:02d}"
 
 
 def render_plan_section(nodes: list[dict[str, object]]) -> str:

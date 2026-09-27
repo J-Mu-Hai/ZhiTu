@@ -42,12 +42,17 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import date, timedelta
 
 from sqlalchemy import func, select
 
 from backend.agent.prompts.planning import (
     ANCESTOR_BODIES_NEAREST,
+    MAX_AVAILABILITY_ROWS,
     MAX_CHILD_BODIES,
+    MAX_EXCEPTION_ROWS,
+    MAX_EXECUTION_ROWS,
+    MAX_SESSION_ROWS,
 )
 from backend.agent.runtime.base import (
     HISTORY_TURNS,
@@ -56,12 +61,37 @@ from backend.agent.runtime.base import (
     LAYER_FOCUS,
     LAYER_OUTSIDE,
     LAYER_SCOPE,
+    AvailableWindowView,
+    ExecutionFactView,
     PlanNodeView,
     RelationView,
+    SessionFactView,
+    TimeView,
     TurnContext,
 )
-from backend.db.models import Dependency, Message, NodeRelation, PlanNode
-from backend.services import input_snapshot
+from backend.db.models import (
+    AvailabilityException,
+    AvailabilityRule,
+    Dependency,
+    ExecutionRecord,
+    Message,
+    NodeRelation,
+    PlanNode,
+    ScheduledSession,
+    UserCapacityProfile,
+)
+from backend.db.models.enums import NodeType
+from backend.scheduler.calendar import build_day_pools, daily_cap, weekly_budget
+from backend.scheduler.capacity import assess_feasibility
+from backend.scheduler.schedule import OCCUPYING_STATUSES
+from backend.scheduler.types import (
+    AvailabilityWindow,
+    DayException,
+)
+from backend.scheduler.types import (
+    NodeStatus as SchedulerNodeStatus,
+)
+from backend.services import input_snapshot, schedule_service
 from backend.services.brief_service import load_brief, to_known_conditions
 from backend.services.context import WorkspaceContext
 from backend.services.errors import InvalidInput
@@ -119,6 +149,279 @@ async def load_history(
     rows.reverse()
     # 系统消息不进对话历史:它们是内部标记,模型看到会当成用户说的话。
     return [(m.role.value, m.content) for m in rows if m.role.value in ("user", "assistant")]
+
+
+# ---------------------------------------------------------------------------------
+# 时间底盘
+# ---------------------------------------------------------------------------------
+def _occupying_values() -> frozenset[str]:
+    """仍然占着时间的那几种场次状态。
+
+    **从排期器那里取,不在这里重写一遍。** 那一组常量(`OCCUPYING_STATUSES`)决定了
+    哪些场次占着当天的时间池;这里自己列一份的话,两边对"这一周还剩多少"给出不同答案,
+    而用户看到的是"AI 说排得下、排期预览说排不下"。比的是 `value` 字符串,因为两边
+    声明的枚举是各自独立的(理由见 `scheduler/types.py` 顶部)。
+    """
+    return frozenset(item.value for item in OCCUPYING_STATUSES)
+
+
+async def load_time_view(
+    db,
+    ctx: WorkspaceContext,
+    *,
+    today: date,
+    handles: dict[uuid.UUID, str],
+) -> TimeView:
+    """读这个人的时间底盘。**只读,一行都不写。**
+
+    ## 为什么"读"也要成段地写在这里,而不是散在渲染层
+
+    时间那一段里的每一个数字都要和排期预览对得上:每周多少分钟来自 `capacity_profile`
+    的三档回落,`safety_factor` 只在 `weekly_budget` 里乘一次,视界来自 `horizon_days`。
+    这几处各写一份的后果不是报错,是**两个都自称按同一套预算算的数字对不上** ——
+    而用户会相信 AI 那一份,因为它说得更像人话。所以这里只做取数 + 调用那几处,
+    一个算术都不自己写。
+
+    ## 挂在哪几个节点上的场次才看得见
+
+    场次与执行记录都按**本轮拿得到的记号**过滤:节点的记号是模型唯一能指涉的东西,
+    没有记号的节点(超出 `MAX_NODES`、或已归档)列出来它也没法引用。没列出来的不静默
+    丢掉 —— 总数照给,渲染层会说"共 N 场,上面列了 M 场"。
+    """
+    user_id = ctx.user.user_id
+    workspace_ids = await schedule_service.active_workspace_ids(db, user_id)
+    profile = await schedule_service.capacity_profile(db, user_id, workspace_ids)
+    profile_row = await db.scalar(
+        select(UserCapacityProfile).where(UserCapacityProfile.user_id == user_id)
+    )
+
+    window_rows = list(
+        await db.scalars(
+            select(AvailabilityRule)
+            .where(AvailabilityRule.user_id == user_id)
+            .order_by(AvailabilityRule.weekday.asc(), AvailabilityRule.start_minute.asc())
+        )
+    )
+    windows = tuple(
+        AvailabilityWindow(
+            weekday=row.weekday,
+            start_minute=row.start_minute,
+            end_minute=row.end_minute,
+            effective_from=row.effective_from,
+            effective_to=row.effective_to,
+        )
+        for row in window_rows
+    )
+
+    # 视界:**和排期预览同一套规则**,连"最远的截止日"都是同一次 `max()` 的意思。
+    # 查的是这个人全部活动空间里最远的那个截止日 —— 时间池是按人算的,只看当前空间
+    # 会让 AI 报出一个比排期预览更小的容量。
+    furthest = await db.scalar(
+        select(func.max(PlanNode.deadline)).where(
+            PlanNode.workspace_id.in_(workspace_ids),
+            PlanNode.deleted_at.is_(None),
+        )
+    )
+    horizon = schedule_service.horizon_days(today, furthest)
+    horizon_last = today + timedelta(days=horizon - 1)
+
+    exception_rows = list(
+        await db.scalars(
+            select(AvailabilityException)
+            .where(
+                AvailabilityException.user_id == user_id,
+                # 视界之外的例外影响不了这次判断,却会把那一段撑长。
+                AvailabilityException.on_date >= today,
+                AvailabilityException.on_date <= horizon_last,
+            )
+            .order_by(AvailabilityException.on_date.asc())
+        )
+    )
+    exceptions = tuple(
+        DayException(
+            on_date=row.on_date,
+            available_minutes=row.available_minutes,
+            is_unavailable=row.is_unavailable,
+        )
+        for row in exception_rows
+    )
+
+    pools = build_day_pools(
+        start=today,
+        horizon_days=horizon,
+        profile=profile,
+        windows=windows,
+        exceptions=exceptions,
+    )
+    # `required_minutes=0` 是有意的:这里要的只是**容量那一侧**,一次减法都不做。
+    # 需求那一侧(待做任务的预计工时合计)在下面由 `_plan_workload` 单独给出 —— 两个
+    # 数字都摆出来,但**相减、下结论仍然不在这里做**:那要看安全系数、缓冲和前置关系
+    # 能不能排得开,是「排期」预览的活。
+    capacity_minutes = assess_feasibility(
+        required_minutes=0, pools=pools, last_day=furthest
+    ).capacity_minutes
+
+    sessions, sessions_total = await _load_sessions(db, ctx, handles)
+    executions, executions_total = await _load_executions(db, ctx, handles)
+    other_workspaces = await _count_other_sessions(db, user_id, ctx.id, workspace_ids)
+    task_minutes, tasks_without_estimate = await _plan_workload(db, ctx)
+
+    return TimeView(
+        horizon_days=horizon,
+        horizon_last_day=None if furthest is None else furthest.isoformat(),
+        horizon_at_limit=horizon >= schedule_service.MAX_HORIZON_DAYS,
+        capacity_minutes=capacity_minutes,
+        weekly_total_minutes=profile.weekly_total_minutes,
+        weekly_budget_minutes=weekly_budget(profile),
+        safety_factor=str(profile.safety_factor),
+        daily_cap_minutes=daily_cap(profile),
+        min_session_minutes=profile.min_session_minutes,
+        max_session_minutes=profile.max_session_minutes,
+        default_buffer_minutes=profile.default_buffer_minutes,
+        capacity_configured=profile_row is not None,
+        windows=tuple(
+            AvailableWindowView(
+                weekday=row.weekday, start_minute=row.start_minute, end_minute=row.end_minute
+            )
+            for row in window_rows[:MAX_AVAILABILITY_ROWS]
+        ),
+        windows_total=len(window_rows),
+        exceptions=tuple(
+            (item.on_date.isoformat(), item.available_minutes, item.is_unavailable)
+            for item in exceptions[:MAX_EXCEPTION_ROWS]
+        ),
+        exceptions_total=len(exceptions),
+        sessions=sessions,
+        sessions_total=sessions_total,
+        sessions_other_workspaces=other_workspaces,
+        executions=executions,
+        executions_total=executions_total,
+        open_task_minutes=task_minutes,
+        open_tasks_without_estimate=tasks_without_estimate,
+        # 按 id 逐个排除当前空间,不写成 `len(...) - 1` —— 那个写法默认当前空间一定在
+        # 这批活动空间里。它通常确实在,但"通常"不是一个可以拿来算数的事实。
+        other_active_workspaces=len([item for item in workspace_ids if item != ctx.id]),
+    )
+
+
+async def _load_sessions(
+    db, ctx: WorkspaceContext, handles: dict[uuid.UUID, str]
+) -> tuple[tuple[SessionFactView, ...], int]:
+    """这个空间排过的场次:能指涉的列出来,一共多少照实说。
+
+    排序按日期 —— 用户问"这周还排得下吗"时,三个月后的那几场帮不上忙,而截断砍掉的是
+    尾巴。
+    """
+    rows = list(
+        await db.scalars(
+            select(ScheduledSession)
+            .where(ScheduledSession.workspace_id == ctx.id)
+            .order_by(ScheduledSession.scheduled_date.asc(), ScheduledSession.seq.asc())
+        )
+    )
+    listed = tuple(
+        SessionFactView(
+            handle=handles[row.node_id],
+            day=row.scheduled_date.isoformat(),
+            minutes=row.planned_minutes,
+            status=row.status.value,
+            locked=row.locked,
+        )
+        for row in rows
+        if row.node_id in handles
+    )
+    return listed[:MAX_SESSION_ROWS], len(rows)
+
+
+async def _load_executions(
+    db, ctx: WorkspaceContext, handles: dict[uuid.UUID, str]
+) -> tuple[tuple[ExecutionFactView, ...], int]:
+    """执行记录。**最近的那些优先** —— 它们才是"上次实际花了多久"的答案。"""
+    rows = list(
+        await db.scalars(
+            select(ExecutionRecord)
+            .where(ExecutionRecord.workspace_id == ctx.id)
+            .order_by(ExecutionRecord.created_at.desc())
+        )
+    )
+    listed = tuple(
+        ExecutionFactView(
+            handle=handles[row.node_id],
+            result=row.result.value,
+            actual_minutes=row.actual_minutes,
+            completion_ratio=None if row.completion_ratio is None else str(row.completion_ratio),
+        )
+        for row in rows
+        if row.node_id in handles
+    )
+    return listed[:MAX_EXECUTION_ROWS], len(rows)
+
+
+async def _plan_workload(db, ctx: WorkspaceContext) -> tuple[int, int]:
+    """这个空间还没做完的任务:预计工时合计,以及其中几个没填预计工时。
+
+    ## 为什么这个加法由服务端做
+
+    让模型自己去加几十个节点的 `estimateMinutes`,它会算错 —— 而**算错的方向看不出来**,
+    它给的理由听起来和算对的时候一模一样。两个数字都由服务端给出来,"够不够"这一步
+    就建立在两个可核对的事实上,而不是一次无声的算术。
+
+    ## 为什么它仍然不是结论
+
+    它只是**这个空间**待做任务的预计工时。别的空间的待做任务不在这里面(所以另外印一行
+    说明这个人还有几个活动空间),已完成的不算,而"安全系数、缓冲、前置关系能不能排得开"
+    一个都没进来。这些留给「排期」预览 —— 那里才是唯一的结论。
+
+    ## "还没做完"的口径
+
+    用排期器自己声明的那两个状态(`scheduler.types.NodeStatus` 的待做/进行中,见
+    `ScheduleNode.is_open`),不在这里另立一套。自己写一份的话,AI 说的"还要做多少"
+    和排期器算的会慢慢分家。
+    """
+    open_statuses = tuple(
+        item.value for item in (SchedulerNodeStatus.PENDING, SchedulerNodeStatus.DOING)
+    )
+    where = (
+        PlanNode.workspace_id == ctx.id,
+        PlanNode.deleted_at.is_(None),
+        PlanNode.node_type == NodeType.TASK,
+        PlanNode.status.in_(open_statuses),
+    )
+    minutes = await db.scalar(
+        select(func.coalesce(func.sum(PlanNode.estimate_minutes), 0)).where(*where)
+    )
+    missing = await db.scalar(
+        select(func.count())
+        .select_from(PlanNode)
+        .where(*where, PlanNode.estimate_minutes.is_(None))
+    )
+    return int(minutes or 0), int(missing or 0)
+
+
+async def _count_other_sessions(
+    db,
+    user_id: uuid.UUID,
+    workspace_id: uuid.UUID,
+    workspace_ids: tuple[uuid.UUID, ...],
+) -> int:
+    """**别的空间**还排着多少场仍然占时间的安排。
+
+    这个数是"时间池按人算"那条产品规则唯一的可见形式。没有它,模型会以为每个子空间
+    各有一份每周预算 —— 于是对一个被别的空间占满的星期说"这里还很空"。
+    """
+    others = tuple(item for item in workspace_ids if item != workspace_id)
+    if not others:
+        return 0
+    total = await db.scalar(
+        select(func.count())
+        .select_from(ScheduledSession)
+        .where(
+            ScheduledSession.user_id == user_id,
+            ScheduledSession.workspace_id.in_(others),
+            ScheduledSession.status.in_(sorted(_occupying_values())),
+        )
+    )
+    return int(total or 0)
 
 
 # ---------------------------------------------------------------------------------
@@ -403,6 +706,7 @@ async def build_turn_context(
         window=nodes,
         window_truncated=live_total > len(nodes),
     )
+    time_view = await load_time_view(db, ctx, today=today, handles=handle_of)
 
     return TurnContext(
         current_date=today.isoformat(),
@@ -424,6 +728,7 @@ async def build_turn_context(
         edges_hidden=hidden_edges,
         live_node_count=live_total,
         window_truncated=live_total > len(nodes),
+        time=time_view,
         input_snapshot=snapshot,
         node_handles=handles,
     )
