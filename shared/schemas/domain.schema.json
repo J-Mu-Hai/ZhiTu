@@ -3588,6 +3588,18 @@
           "default": null,
           "title": "Acceptancecriteria"
         },
+        "contentVersion": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Contentversion"
+        },
         "deadline": {
           "anyOf": [
             {

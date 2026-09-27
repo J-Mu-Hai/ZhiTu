@@ -289,6 +289,16 @@ class UpdateNodeRequest(ApiModel):
     priority: str | None = None
     estimate_minutes: int | None = None
     deadline: date | None = None
+    #: **正文的乐观锁,不是要写的字段 —— 它是一个前置条件。**
+    #:
+    #: 客户端把读到的那一版 `PlanNodePayload.content_version` 原样带回来;对不上
+    #: 就是 409 `CONCURRENCY_CONFLICT`,这一次编辑整个不生效。不带(或带 null)表示
+    #: "不检查" —— 内部调用方(提案确认、排期)走的就是这条路,它们本来就持有锁。
+    #:
+    #: 它**不在** `EDITABLE_FIELDS` 里:那是"能被写进列的字段"的白名单,而这个是
+    #: "你手上那一份是不是还够新"的断言。混进去的后果是它会被当成一次赋值,于是
+    #: 谁都能把版本号改成任意数字 —— 锁就没了。
+    content_version: int | None = None
 
 
 class CreateDependencyRequest(ApiModel):

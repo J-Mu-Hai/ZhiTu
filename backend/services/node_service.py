@@ -105,6 +105,7 @@ from backend.scheduler.calendar import daily_cap
 from backend.services import plan_service, schedule_service
 from backend.services.context import WorkspaceContext
 from backend.services.errors import (
+    ConcurrencyConflict,
     DependencyRejected,
     InvalidInput,
     NodeNotFound,
@@ -131,6 +132,13 @@ EDITABLE_FIELDS = frozenset(
         "deadline",
     }
 )
+
+#: 哪些字段算"正文" —— 它们改一次,`plan_nodes.content_version` 就 +1。
+#:
+#: `description` 是界面上那个"详细说明";`acceptance_criteria` 是同一类的自由文本,
+#: 将来编辑器一并读写的很可能就是它,所以现在一起算进去 —— 只锁一半的话,
+#: 那条丢失更新会从另一半溜回来。
+BODY_FIELDS = frozenset({"description", "acceptance_criteria"})
 
 #: 字符串字段 -> 它对应的闭集枚举。闭集之外的值一律 400,不写进库。
 #:
@@ -333,8 +341,28 @@ async def update_node(
     ctx: WorkspaceContext,
     node_id: uuid.UUID,
     patch: dict[str, object],
+    *,
+    expected_content_version: int | None = None,
 ) -> EditResult:
-    """改一个节点的字段。只改白名单里的列。"""
+    """改一个节点的字段。只改白名单里的列。
+
+    `expected_content_version` 是**正文的乐观锁**(可选)。给了就一定比对:对不上抛
+    `ConcurrencyConflict`(409),这一次编辑**整个不生效** —— 不是"只改别的字段"。
+    半个请求生效比整个失败更难查:用户看到"保存失败",刷新却发现工时变了。
+
+    比对在 `_each_change` **里面**做,也就是在拿到工作区锁之后。放到锁外面的话,
+    "查完 -> 别人写 -> 我写"这三步里的中间那一步谁都拦不住,而锁存在的意义正是
+    让这三步变成一件事。
+
+    ## 只有正文会推进版本号
+
+    推进版本的只有 `description` / `acceptance_criteria` 这两个字段 —— 它们才是
+    "正文",也才是客户端整份读回来、整份写回去的那份数据(丢失更新就发生在这里)。
+    改标题、优先级、工时**不动版本号**:那些字段是逐字段 PATCH 的,两个标签页分别
+    改标题和正文互不覆盖,不该因为对方动过就被判成冲突 —— 那样用户会看到
+    "你手上那份旧了",而他改的那个字段根本没人碰过。
+    """
+
     unknown = set(patch) - EDITABLE_FIELDS
     if unknown:
         # 静默忽略是更坏的选择:用户改了"父节点",界面显示保存成功,而计划没动。
@@ -363,8 +391,23 @@ async def update_node(
         # 进入事务之后写。`_Change` 把 detail 做成可赋值的,正是为了这个。
         change.detail = _edit_detail(node.title, values)
 
+        if expected_content_version is not None and node.content_version != expected_content_version:
+            # 消息里给的是**两个数字**,不说"请刷新重试"这种没有信息量的话:
+            # 界面上要能告诉用户"你手上是第 3 版,库里已经是第 5 版" —— 那是他判断
+            # "要不要用我这份覆盖"的唯一依据。`details` 里的 `content_version`
+            # 是**此刻库里那一版**,客户端可以拿它直接重发。
+            raise ConcurrencyConflict(
+                f"这份正文在别处被改过了(你手上是第 {expected_content_version} 版,"
+                f"库里已经是第 {node.content_version} 版),所以这次没有写进去。",
+                content_version=node.content_version,
+                expected_content_version=expected_content_version,
+            )
+
         for field, value in values.items():
             setattr(node, field, value)
+        # 正文改了才推进版本号 —— 见函数文档最后那一节。
+        if BODY_FIELDS & set(values):
+            node.content_version = node.content_version + 1
         # `completed_at` 与 `status` **必须一起改**。留着一个"已完成但没有完成时间"
         # 的行,复盘时就算不出"这个阶段实际花了多久" —— 而那是复盘唯一有用的数字。
         if "status" in values and node.status is not was_status:

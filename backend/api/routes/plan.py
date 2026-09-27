@@ -122,9 +122,16 @@ async def update_node(
     `exclude_unset=True` 是关键:它让"没传这个字段"和"传了 null"分得开。前者是
     "不改",后者是"清空"(把截止时间去掉)。两者混起来的表现是"我只改了标题,
     说明被清空了"。
+
+    `content_version` 走的是**另一条路**:它在那里被 `pop` 出来当成关键字参数,
+    不进 `patch`。理由见 `UpdateNodeRequest.content_version` —— 它是前置条件,
+    不是要写的列;混进 `patch` 会先撞上 `EDITABLE_FIELDS` 那道白名单,变成 400
+    "这些字段不能直接改",而那会把"你手上那份旧了"报成"这个字段不能改"。
     """
+    fields = payload.model_dump(exclude_unset=True)
+    expected = fields.pop("content_version", None)
     result = await node_service.update_node(
-        db, ctx, node_id, payload.model_dump(exclude_unset=True)
+        db, ctx, node_id, fields, expected_content_version=expected
     )
     return _edit_response(result)
 
