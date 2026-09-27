@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -50,6 +50,7 @@ from backend.services import analysis_service, proposal_service
 from backend.services.brief_service import apply_claims
 from backend.services.context import WorkspaceContext
 from backend.services.errors import InvalidInput
+from backend.services.input_snapshot import InputSnapshot
 from backend.services.turn_context import build_turn_context
 
 logger = logging.getLogger(__name__)
@@ -196,6 +197,50 @@ async def _find_reply_after(db, conversation_id: uuid.UUID, seq: int) -> Message
     return result.scalar_one_or_none()
 
 
+def _snapshot_for_analysis(
+    *,
+    snapshot: InputSnapshot,
+    brief: PlanningBrief | None,
+    input_changed: bool,
+) -> InputSnapshot:
+    """交给分析记录的那份快照:把"这一轮自己记下的条件"从基线里挪走。
+
+    ## 为什么不能直接用 `turn.input_snapshot`
+
+    那份快照是模型**读之前**取的(`build_turn_context` 里),而 `apply_claims` 在它
+    之后才把这一轮读出的条件落到简报上 —— `brief.version` 与
+    `weekly_available_minutes` 两个都在快照里。原样存下去的话,一次"一边给判断、
+    一边记条件"的回合会让它**刚给出的分析一出生就报过期**,理由是「已知条件变了」,
+    而用户什么都没改。这不是假想的边角:**"我每周能投 10 小时,帮我拆一下"正是最
+    常见的那一轮**(见 `test_the_models_own_claims_do_not_kill_its_own_proposal`)。
+
+    那一条用例修的是同一个缺陷的另一半 —— 它把 `input_changed` 的比较挪到了
+    `apply_claims` **之前**。而过期是**读的时候**现算的(存下的快照 vs 此刻的库),
+    借不到那次挪动,只能在**存**的时候把这一轮自己的写入挪出基线。
+
+    ## 为什么只在 `input_changed` 为假时才挪
+
+    这一轮自己记了哪些条件,库里没有单独的账;`apply_claims` 返回的是"现在的简报",
+    它**同样包含别人在这一轮期间写进去的东西**。所以无条件地拿它当基线,会把
+    "用户同时在另一个标签页改了每周时长"这件事一起抹掉 —— 那正是必须报出来的。
+
+    `input_changed` 恰好是那个判据:它在 `apply_claims` 之前比过一次,为假就说明
+    这一轮期间**没有别人的写入**,此刻简报与快照的差全部来自模型自己。
+
+    为真时原样保留旧快照:那份分析本来就要标成"基于旧版本",而别人的写入必须继续
+    留在可见的差异里。代价是那种情况下会多出一条「已知条件变了」—— 那时的过期标记
+    本来就已经是对的,而多一句不一定准的理由,比在**最常见的那一轮**上说一句
+    假的"用户改了口径"要好得多。
+    """
+    if input_changed or brief is None:
+        return snapshot
+    return replace(
+        snapshot,
+        brief_version=brief.version,
+        weekly_available_minutes=brief.weekly_available_minutes,
+    )
+
+
 async def submit_turn(
     db,
     ctx: WorkspaceContext,
@@ -287,7 +332,12 @@ async def submit_turn(
             ctx,
             conversation_id=conversation.id,
             message_id=assistant_message.id,
-            snapshot=turn.input_snapshot,
+            # **不是 `turn.input_snapshot`。** 见 `_snapshot_for_analysis`:
+            # 那一份是模型**读之前**取的,而刚刚那次 `apply_claims` 又改了它 ——
+            # 照原样存下去,这一轮自己的写入会被下一次读读成"用户后来改了口径"。
+            snapshot=_snapshot_for_analysis(
+                snapshot=turn.input_snapshot, brief=brief, input_changed=input_changed
+            ),
             draft=result.analysis,
             prompt_version=result.prompt_version,
             # 降级时 `source` 是 `rule_fallback` / `unavailable` —— 那段话不是模型

@@ -61,6 +61,7 @@ from typing import Any
 from backend.agent.prompts.planning import PROMPT_VERSION, SYSTEM_PROMPT
 from backend.agent.runtime.base import ReasoningResult, TurnContext
 from backend.agent.runtime.response import (
+    ANALYSIS_FIELD_ORDER,
     BRIEF_FIELD_ORDER,
     PayloadInvalid,
     payload_to_result,
@@ -93,6 +94,19 @@ _BRIEF_FIELD_DESCRIPTIONS: dict[str, str] = {
     "constraints": f"现实限制,value 是字符串列表。{_BRIEF_CLAIM_SHAPE}",
 }
 
+#: analysis 七栏各自给模型看的说明。与提示词里那一段说的是同一件事,但**这张声明
+#: 才是 SDK 真正会拿去约束输出的那一边** —— 只写在提示词里的话,栏名写错了模型
+#: 也照给,然后被 pop 掉。
+_ANALYSIS_FIELD_DESCRIPTIONS: dict[str, str] = {
+    "known": "这一轮真的读到的事实(带节点记号)",
+    "unknowns": "还缺什么才能判断",
+    "evidence": "用户给的依据,必须带来源与日期",
+    "assumptions": "没有依据时替用户假设了什么",
+    "diagnosis": "判断与推理",
+    "strategy_options": "可选的走法,每种说清代价",
+    "risks": "可能出问题的地方(不写'已经排好日程')",
+}
+
 #: 给模型看的输出形状。**它同时是给 SDK 的抽取声明**:
 #: 只有在这里列出的键会被带回来,模型多写的字段由 SDK 丢掉,
 #: 少写 `brief` / `actions` 不算失败(`required: False`,理由见模块开头)。
@@ -121,7 +135,50 @@ OUTPUT_CONFIG: dict[str, Any] = {
     # 就让整轮失败。而这里的取舍相反 —— 十条里有一条不合法,应该留下另外九条,
     # 把那条的错误码单独报给用户(见 `response.py` 的 `parse_actions`)。
     "actions": {"type": "array", "required": False, "description": "提议的计划变更"},
+    # analysis 同 `brief`:七栏里没列进 `properties` 的键会被 SDK pop 掉。
+    #
+    # **它必须在这里。** 这一条是真实模型验收抓出来的:提示词从 C 批起就要求模型给
+    # `analysis`、`response.py` 也一直在解析它,唯独这份声明漏了 —— 而 `reason()` 那条
+    # 路拿到的载荷是**由这张声明重建**的,不在声明里的键根本到不了解析器。于是模型
+    # 每一轮都认真给了七栏判断,`node_analyses` 却一行都没有,而且全程没有任何异常
+    # 或日志。直连那条路是直接把模型原文交给解析器的,所以只有 openJiuwen 这条路会犯,
+    # 而这恰好是装了 SDK 时的**默认**路径。
+    #
+    # 七个数组都**不设 `required`**(理由同 brief),`analysis` 整键也是可选的:
+    # "这一轮只是打招呼"是正常情况,不能被判成失败。
+    "analysis": {
+        "type": "object",
+        "required": False,
+        "description": "自己对这块内容的判断,没有实质判断时整个键都不要给",
+        "properties": {
+            field: {"type": "array", "description": _ANALYSIS_FIELD_DESCRIPTIONS[field]}
+            for field in ANALYSIS_FIELD_ORDER
+        },
+    },
 }
+
+def component_outputs_schema() -> dict[str, str]:
+    """LLM 组件自己的输出引用表:声明过的每个键各取一份。
+
+    `${reply}` 是 openJiuwen 的引用语法,指的是**这个组件自己**输出字典里的那个键。
+    少了它,`End` 收到的是 None,而 `WorkflowOutput.result` 会安静地变成 None ——
+    一次成功的模型调用就此消失,日志里什么异常都没有。
+
+    **由 `OUTPUT_CONFIG` 现推,不手抄。** 这两处以前是逐键写死的,于是 C 批给提示词
+    与解析器都加上了 `analysis`,却没人想起这里 —— 模型给的七栏判断在组件出口就被
+    丢掉,`payload_to_result` 读到的永远是没有那个键的对象,`node_analyses` 一行都
+    没有。它不报错、不打日志,只是安静地少一块。
+
+    单列成函数是为了能在**不导入 SDK** 的前提下被测试 —— 见
+    `tests/test_openjiuwen_adapter.py`(那个文件刻意不 import openjiuwen)。
+    """
+    return {field: f"${{{field}}}" for field in OUTPUT_CONFIG}
+
+
+def end_inputs_schema() -> dict[str, str]:
+    """`End` 节点的输入引用表:把组件输出里的每个键都交给它。同样由声明现推。"""
+    return {field: f"${{planning.{field}}}" for field in OUTPUT_CONFIG}
+
 
 #: 进程级的 Runner 启动状态。`Runner.resource_mgr` 是全局的,按请求重复 start
 #: 是生命周期 bug;而 `reason()` 可能在任何时候被第一个调用,所以这里自己做一次
@@ -278,23 +335,13 @@ class OpenJiuwenReasoner:
         flow.add_workflow_comp(
             "planning",
             workflow_module.LLMComponent(config),
-            # `${reply}` 是 openJiuwen 的引用语法,指的是**这个组件自己**输出字典里的
-            # 那个键。少了它,`End` 收到的是 None,而 `WorkflowOutput.result` 会安静地
-            # 变成 None —— 一次成功的模型调用就此消失,日志里什么异常都没有。
-            outputs_schema={
-                "reply": "${reply}",
-                "brief": "${brief}",
-                "actions": "${actions}",
-            },
+            # 两张表都由 `OUTPUT_CONFIG` 现推,理由见 `component_outputs_schema`。
+            outputs_schema=component_outputs_schema(),
         )
         flow.set_end_comp(
             "end",
             workflow_module.End(),
-            inputs_schema={
-                "reply": "${planning.reply}",
-                "brief": "${planning.brief}",
-                "actions": "${planning.actions}",
-            },
+            inputs_schema=end_inputs_schema(),
         )
         flow.add_connection("start", "planning")
         flow.add_connection("planning", "end")

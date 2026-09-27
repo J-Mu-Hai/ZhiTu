@@ -32,7 +32,7 @@ import pytest
 from sqlalchemy import select, update
 
 from backend.agent.runtime.base import AnalysisDraft, BriefClaim
-from backend.db.models import NodeAnalysis, PlanNode, UserCapacityProfile
+from backend.db.models import NodeAnalysis, PlanningBrief, PlanNode, UserCapacityProfile
 from backend.db.session import SessionLocal
 from backend.tests.conftest import FakeReasoner
 
@@ -633,6 +633,128 @@ async def test_the_models_own_claims_do_not_kill_its_own_proposal(
     assert body["proposalErrors"] == []
     assert body["proposal"] is not None, "模型自己记下的条件把它自己的提案作废了"
     assert body["changedFields"] == ["weekly_available_minutes"]
+
+
+async def test_its_own_claims_do_not_make_its_own_analysis_look_stale(
+    app_client: httpx.AsyncClient, make_account, use_reasoner
+) -> None:
+    """上一条守的是提案,这一条守**分析** —— 而且它是真实模型验收抓出来的。
+
+    `inputChanged` 那次修在**比较**那一侧(把比较挪到 `apply_claims` 之前),所以那条
+    路是对的。但**过期不靠比较**,它是读的时候拿存下的快照跟此刻的库现算的 ——
+    存下去的那份快照仍然是"模型读之前"的样子,于是同一个缺陷换了个出口又出现了:
+    模型一边给判断一边记条件的那一轮,它自己的分析一出生就带着「已知条件变了」。
+
+    这比一个笼统的"已过期"更糟:这一批的承诺是"过期说得出是**谁**变了",而这句话
+    指的是一件没有发生过的事 —— 用户什么都没改。
+
+    症状是真实模型跑出来的:模型连着三轮把每周时长、截止时间、当前水平问齐,
+    紧接着那一轮给出七栏判断,而列出来就是 `stale`,理由写着"已知条件变了"。
+    """
+    account = await make_account("analysis-self-claim-fresh@example.com")
+    focus = await _root_id(app_client, account)
+
+    use_reasoner(
+        FakeReasoner(
+            analysis=_draft(known=("用户每周能投 10 小时",)),
+            claims=(BriefClaim("weekly_available_minutes", 600, "user_stated"),),
+        )
+    )
+    response = await _send(app_client, account, "我每周能投 10 小时,帮我拆一下", contextNodeId=focus)
+    assert response.status_code == 200, response.text
+
+    listed = await _analyses(app_client, account, focusNodeId=focus)
+    assert len(listed["analyses"]) == 1, "这一轮没有留下分析记录"
+    row = listed["analyses"][0]
+    assert row["freshness"] == "fresh", (
+        "模型自己这一轮记下的条件把它自己的分析标成了过期 —— 理由是「已知条件变了」,"
+        f"而用户没有改过任何东西:{_reasons(row)}"
+    )
+    assert row["staleReasons"] == []
+
+    # **过期这条路不能因此被关掉。** 后一轮再改一次口径,第一轮那份就该过期了 ——
+    # 那一次真的是"在它之后"发生的写入,而不是它自己的。
+    use_reasoner(
+        FakeReasoner(
+            analysis=_draft(known=("用户改口成每周 4 小时",)),
+            claims=(BriefClaim("weekly_available_minutes", 240, "user_stated"),),
+        )
+    )
+    response = await _send(app_client, account, "其实每周只能 4 小时", contextNodeId=focus)
+    assert response.status_code == 200, response.text
+
+    listed = await _analyses(app_client, account, focusNodeId=focus)
+    assert len(listed["analyses"]) == 2, "第二轮没有留下自己的分析"
+    first = next(item for item in listed["analyses"] if item["id"] == row["id"])
+    assert first["freshness"] == "stale", "后面的那一轮改了条件,前面那份该过期了"
+    assert "已知条件变了" in _reasons(first), _reasons(first)
+    assert listed["analyses"][0]["freshness"] == "fresh", "刚做出来的那一份是新的"
+
+
+@dataclass
+class _ForeignBriefWriter(FakeReasoner):
+    """在**被调用的那一刻**改一次简报 —— 模拟别人在模型思考期间改了口径。
+
+    简报没有直接的写接口(它由对话推导),所以这里直接落库。走的是和
+    `_EditingReasoner` 同一个思路:只有让假模型在回答**之前**真的动一下库,
+    才复现得了"模型思考期间输入变了"这段真实的时间。
+    """
+
+    workspace_id: str = ""
+    weekly: int = 99
+
+    async def reason(self, turn):
+        async with SessionLocal() as session:
+            brief = await session.scalar(
+                select(PlanningBrief).where(
+                    PlanningBrief.workspace_id == uuid.UUID(self.workspace_id)
+                )
+            )
+            if brief is None:
+                # 还没问出过任何条件时,简报这一行本来就还不存在 —— 别人写的就是
+                # **第一版**。照 `apply_claims` 建行的样子来,别造一个它不会造的形状。
+                brief = PlanningBrief(workspace_id=uuid.UUID(self.workspace_id), version=1)
+                brief.assumptions = {"audit": []}
+                session.add(brief)
+            else:
+                brief.version = (brief.version or 0) + 1
+            brief.weekly_available_minutes = self.weekly
+            await session.commit()
+        return await super().reason(turn)
+
+
+async def test_a_foreign_brief_write_is_still_reported(
+    app_client: httpx.AsyncClient, make_account, use_reasoner
+) -> None:
+    """**别人的**写入必须继续报出来 —— 上一条的修法不许把这一条一起抹掉。
+
+    上一条为了让模型自己的写入不算数,交给分析记录的那份快照被重新定了一次基线。
+    这里钉住它的边界:`input_changed` 为真时**不动**基线,因为那时确实有别人的写入
+    发生过,"已知条件变了"是一句真话。
+
+    少了这一条,一个"永远不重新定基线"或者"干脆永远不定基线"的实现都能让上一条绿
+    —— 而过期就再也不会因为口径变化而触发了。
+    """
+    account = await make_account("analysis-foreign-brief@example.com")
+    focus = await _root_id(app_client, account)
+
+    use_reasoner(
+        _ForeignBriefWriter(
+            workspace_id=str(account.workspace_id),
+            analysis=_draft(known=("别人的写入发生在这一轮里",)),
+        )
+    )
+    response = await _send(app_client, account, "帮我看看这个节点", contextNodeId=focus)
+    assert response.status_code == 200, response.text
+    assert response.json()["inputChanged"] is True, (
+        "别人的写入没有让 inputChanged 变真 —— 这一条测的前提就不成立"
+    )
+
+    listed = await _analyses(app_client, account, focusNodeId=focus)
+    assert len(listed["analyses"]) == 1
+    row = listed["analyses"][0]
+    assert row["freshness"] == "stale", "别人的写入被基线抹掉了,这份分析看起来像最新的"
+    assert "已知条件变了" in _reasons(row), _reasons(row)
 
 
 # ---------------------------------------------------------------------------------

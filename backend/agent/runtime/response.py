@@ -180,6 +180,20 @@ def render_turn(turn: TurnContext) -> str:
 # ---------------------------------------------------------------------------------
 # 组装结果
 # ---------------------------------------------------------------------------------
+#: `payload_to_result` **真正会读**的键。它单独是个常量,为的是让"声明给 SDK 的键"
+#: 与"解析器会读的键"能对得上,而且**不是靠测试里手抄一遍**。
+#:
+#: 这一条是真实模型验收抓出来的:C 批给提示词和解析器都加了 `analysis`,却漏了
+#: `openjiuwen_runtime` 那份输出声明 —— 而那条路上模型给的对象是**照声明重建**的,
+#: 不在声明里的键在到解析器之前就没了。于是七栏判断被安静地丢掉,一行记录都不落。
+#: 原本那条"声明与解析必须一致"的测试没拦住,因为它自己也把键手抄了一遍 ——
+#: 同一个遗漏写在了两个地方,看起来就是一致的。
+#:
+#: 所以键的来源收在这里一处:加一栏只改 `parse_analysis` 与这个常量,测试会替人
+#: 盯住 `OUTPUT_CONFIG` 有没有跟上。
+PARSED_PAYLOAD_FIELDS = frozenset({"reply", "brief", "actions", "analysis"})
+
+
 def payload_to_result(
     payload: Any,
     *,
@@ -197,6 +211,9 @@ def payload_to_result(
 
     `brief` 与 `actions` 缺失是**正常情况**(模型这轮只是在回答问题,没有变更),
     不构成失败。这正是"部分可用比全部不可用好"的落点。
+
+    这里读的键必须与 `PARSED_PAYLOAD_FIELDS` 一致,而后者必须与
+    `openjiuwen_runtime.OUTPUT_CONFIG` 一致 —— 两条都有测试钉着。
     """
     if not isinstance(payload, dict):
         raise PayloadInvalid(f"模型给的不是一个对象: {type(payload).__name__}")
@@ -458,6 +475,7 @@ __all__ = [
     "BRIEF_FIELD_ORDER",
     "MAX_ACTIONS",
     "MINUTES_IN_WEEK",
+    "PARSED_PAYLOAD_FIELDS",
     "PayloadInvalid",
     "clean_value",
     "parse_actions",

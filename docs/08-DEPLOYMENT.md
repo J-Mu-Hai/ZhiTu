@@ -771,9 +771,10 @@ Vercel 部署的是 `next build` 的产物；本地开发用的是 `next dev`，
 
   | 层 | 命令 | 结果 |
   |---|---|---|
-  | 后端规则与契约 | `PYTHONUTF8=1 python -m pytest backend/tests` | `526 passed`，0 failed / 0 error / 0 skipped，107.08s |
+  | 后端规则与契约 | `PYTHONUTF8=1 python -m pytest backend/tests` | 当日先 `526 passed`；**补完第三层之后是 `529 passed`**（多了三条回归用例），0 failed / 0 error / 0 skipped |
   | 前端静态 | `npm run typecheck` / `lint` / `contracts:check` | 三条 exit 0；契约 48 个 interface 逐字段比对，无漂移 |
-  | 端到端（隔离栈） | `node scripts/dev/accept-e2e.mjs` | 运行编号 `20260927-152230-bd24848`：**70 条 69 passed / 0 failed / 1 skipped / 0 flaky**，219.2s |
+  | 端到端（隔离栈） | `node scripts/dev/accept-e2e.mjs` | 运行编号 `20260927-161035-352a016`：**70 条 69 passed / 0 failed / 1 skipped / 0 flaky**，3.1m（本批早些时候那次 `20260927-152230-bd24848` 结果同） |
+  | **真实模型连续体验** | `python scripts/accept_analysis.py` | 运行编号 `20260927-160944-realmodel`：**25 条 25 passed / 0 failed**，独立账号 + 临时库 + 真实 `LLM_API_KEY` |
 
   唯一那条 skipped 是**早就存在的**（`experience.spec.ts`：随笔刷新之后还在 —— 后端还没有随笔表），
   与本批无关。`ruff check backend` 新增 0 条（HEAD 基线是 8 条，本批一度引入 1 条 I001，已修）。
@@ -786,9 +787,36 @@ Vercel 部署的是 `next build` 的产物；本地开发用的是 `next dev`，
     不推、正文保存后重读一次、重新分析真的在对话里留下两条消息）；完整链路由
     `backend/tests/test_analysis_staleness.py` 与 `test_analysis_refresh.py` 用固定 reasoner 钉着。
     这不是"没验"，是**分了两层**，写在 `apps/web/tests/node-analysis.spec.ts` 的文件头。
-  - **真实模型那一层这一轮没有验。** 它要开发后端重启加载本批代码（`:8000` 上那个进程是
-    14:28 起的，比本批后端改动早）。所以本批的结论只覆盖**前两层**；真实模型连续体验要等
-    重启之后再走一遍，届时按 `docs/11` 第 6 节的三层分开报。
+  - **第三层（真实模型）跑了，而且正是它抓到了两个前两层抓不到的缺陷。** 脚本是
+    `scripts/accept_analysis.py`，自起一个 uvicorn 子进程 + 临时库（**不碰 `data/zhitu_dev.db`**），
+    要求 `.env` 里有非空 `LLM_API_KEY` 否则**拒绝运行**（降级跑出来的报告会被读成"真实模型也这样"）。
+    它走的是用户 §1A 第 4 条那个场景：模糊目标 → 补时间限制 → 深入子节点 → 改正文约束 →
+    重新分析 → 刷新验证。两个缺陷都是它先撞上、再回 pytest 层钉住的：
+
+    1. **openJiuwen 那条路会把模型给的 `analysis` 整个丢掉**（提交见 git log）。提示词从 C 批起
+       就要求七栏判断，`response.py` 也一直在解析它，唯独 `openjiuwen_runtime.py` 那份给 SDK 的
+       输出声明（`OUTPUT_CONFIG`）漏了这个键 —— 而那条路上的载荷是**照声明重建**的，不在声明里的
+       键在到解析器之前就没了。于是**模型每一轮都认真给了七栏，`node_analyses` 却一行都没有**，
+       全程没有异常、没有日志。直连那条路是直接把模型原文交给解析器的，所以只有装了 SDK 时的
+       **默认**路径会犯。修法是把两张转发表（组件输出、`End` 输入）改成由 `OUTPUT_CONFIG` 现推，
+       并把"声明 vs 解析器会读的键"这组对照从测试里手抄的载荷换成一个常量
+       （`response.PARSED_PAYLOAD_FIELDS`）—— 原来那条测试**自己也把键手抄了一遍**，
+       同一个遗漏写在两处，看起来就是一致的，所以它一直是绿的。
+    2. **一次"一边记条件、一边给判断"的回合，会让它自己的分析一出生就报过期**，理由是
+       「已知条件变了」，而用户什么都没改。快照是模型读之前取的，`apply_claims` 在它之后改
+       `brief.version` / `weekly_available_minutes`，两个都在快照里；`input_changed` 那次把比较
+       挪到 `apply_claims` 之前是对的，但**过期是读的时候现算的**，借不到那次挪动。
+       这不是边角 —— "我每周能投 10 小时，帮我拆一下"正是最常见的那一轮。修法见
+       `conversation_service._snapshot_for_analysis`：只在 `input_changed` 为假时重新定基线
+       （为假才说明这一轮没有别人的写入），为真时原样保留，别人的变化必须继续报出来。
+       这一批的承诺是"过期说得出是**谁**变了" —— 一个把模型自己的写入说成用户改了口径的理由，
+       比一句笼统的"已过期"更糟，因为它听起来像事实。
+
+    两条都做了反向验证（改坏 → 用例必须红 → 改回）：把 `analysis` 从声明里拿掉，
+    `test_the_output_declaration_matches_what_the_parser_reads` 与
+    `test_the_forwarding_schemas_carry_every_declared_key` 都变红；把基线那道闸去掉，
+    `test_a_foreign_brief_write_is_still_reported` 变红。三条回归用例留在
+    `test_openjiuwen_adapter.py` 与 `test_analysis_staleness.py` 里。
   - **`POST /workspaces/{id}/messages` 上 `contextNodeId` 不被校验**（拿别人的节点 id 配自己
     的空间会得到 200）。这是做步骤 D 时由新用例抓出来的真缺陷，**只修了新的 refresh 那条路**
     （它先 `load_node`，所以 404），发消息那条路径**没修**，留在这里免得被读成"已经修好了"。

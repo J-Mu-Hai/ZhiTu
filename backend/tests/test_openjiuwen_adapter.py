@@ -218,11 +218,18 @@ def test_the_output_declaration_matches_what_the_parser_reads() -> None:
     就会漂移,而漂移的方向很难发现:被裁掉的键在解析器那边看起来就是"模型没给",
     于是安静地少了一块 —— 没有异常,没有日志。
 
-    这里**同时**从两边现取:声明那一侧读 `OUTPUT_CONFIG`,解析那一侧从
-    `payload_to_result` 真的读一遍带全三个键的载荷,看它认不认。
+    **对照的那一半取自 `PARSED_PAYLOAD_FIELDS`,不是这个文件里手写的载荷。**
+    这条测试原来的写法是自己列三个键、再断言它等于 `OUTPUT_CONFIG` —— 于是
+    "解析器会读 `analysis`、但声明里没有"这件事它一个字都说不出来:同一个遗漏
+    写在了两处,看起来就是一致的。这正是 C 批漏掉 `analysis` 却全绿的原因。
     """
     from backend.agent.prompts.planning import PROMPT_VERSION
-    from backend.agent.runtime.response import payload_to_result
+    from backend.agent.runtime.response import PARSED_PAYLOAD_FIELDS, payload_to_result
+
+    assert set(OUTPUT_CONFIG) == set(PARSED_PAYLOAD_FIELDS), (
+        "给 SDK 的输出声明与解析器会读的键对不上了 —— 少写的那一边会让模型给的"
+        "内容在到解析器之前就被裁掉,而且不报错"
+    )
 
     payload = {
         "reply": "好。",
@@ -230,6 +237,7 @@ def test_the_output_declaration_matches_what_the_parser_reads() -> None:
         # 的值进确认字段**的东西,所以这里照真实形状写。
         "brief": {"weekly_available_minutes": {"value": 360, "source": "user_stated"}},
         "actions": [{"op": "create_node", "ref": "n1", "title": "打基础"}],
+        "analysis": {"known": ["n1 的正文里写着只能周末做"], "diagnosis": ["缺一个时长"]},
     }
     assert set(payload) == set(OUTPUT_CONFIG), (
         "载荷的键与给 SDK 的输出声明对不上了 —— 有一边多写或少写了"
@@ -239,9 +247,46 @@ def test_the_output_declaration_matches_what_the_parser_reads() -> None:
         payload, source=ModelSource.OPENJIUWEN, request_id="r", prompt_version=PROMPT_VERSION
     )
 
-    assert result.degraded is False, "三个键齐全的载荷必须是成功的"
+    assert result.degraded is False, "键齐全的载荷必须是成功的"
     assert [c.field for c in result.brief_claims] == ["weekly_available_minutes"]
     assert len(result.actions) == 1
+    assert result.analysis is not None, "解析器读了 analysis,结果里就必须有它"
+    assert result.analysis.known == ("n1 的正文里写着只能周末做",)
+
+
+def test_the_forwarding_schemas_carry_every_declared_key() -> None:
+    """两张转发表必须带上**声明过的每一个**键,一个不少。
+
+    这一条钉的是真实模型验收抓出来的那个缺陷:`OUTPUT_CONFIG`、组件输出、`End` 输入
+    是三处独立写下的键名,而 openJiuwen 那条路上的载荷是**照这三处重建**的。C 批给
+    提示词和解析器都加了 `analysis`,唯独没加这三处里的后两处 —— 模型每轮都认真
+    给出七栏判断,`node_analyses` 却一行都没有,全程没有一个异常或一条日志。
+
+    断言的是"集合相等"而不是"包含":多出来一个键同样有问题(`End` 会收到一个
+    组件根本没产出的引用,`WorkflowOutput.result` 变成 None,一次成功的调用凭空消失)。
+    """
+    from backend.agent.runtime.openjiuwen_runtime import (
+        component_outputs_schema,
+        end_inputs_schema,
+    )
+
+    outputs = component_outputs_schema()
+    inputs = end_inputs_schema()
+
+    assert set(outputs) == set(OUTPUT_CONFIG), (
+        "组件输出表与输出声明对不上 —— 少掉的那个键在模型那边给了也没用"
+    )
+    assert set(inputs) == set(OUTPUT_CONFIG), "End 输入表与输出声明对不上"
+
+    # 逐条比引用串的写法:两处的 `${}` 语法不一样(`${x}` 对 `${planning.x}`),
+    # 写反了不会报错,只会让那个键取到 None。
+    for field in OUTPUT_CONFIG:
+        assert outputs[field] == f"${{{field}}}"
+        assert inputs[field] == f"${{planning.{field}}}"
+
+    assert "analysis" in outputs, (
+        "analysis 不在组件输出表里 —— 这正是让整层分析记录一行都不落的那个遗漏"
+    )
 
 
 def test_the_workflow_identity_is_stable() -> None:

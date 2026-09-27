@@ -82,6 +82,15 @@ AgentResponse
 所以它会在对话里留下两条消息 —— 按钮与对话不是两个真相。那句话常量只有一个来源：
 `analysis_service.REANALYZE_MESSAGE`。
 
+**加一栏判断时，改的是三处，不是一处。** `known` / `risks` 这些栏要能真的落进库，得同时
+出现在：提示词（`agent/prompts/planning.py`）、解析器（`runtime/response.py` 的
+`ANALYSIS_FIELD_ORDER`）、以及**给 SDK 的输出声明**（`runtime/openjiuwen_runtime.py` 的
+`OUTPUT_CONFIG`）。漏掉第三处的后果最难查：openJiuwen 那条路上的载荷是**照声明重建**的，
+不在声明里的键在到解析器之前就没了 —— **模型给了、库里没有、日志里什么也没有**。
+这条是真实模型验收抓出来的（当时漏的正是 `analysis` 这个键本身，整层记录一行都不落）。
+现在两张转发表由 `OUTPUT_CONFIG` 现推，`PARSED_PAYLOAD_FIELDS` 是"解析器会读哪些键"的
+唯一出处，两端各有测试钉着；加一个键只需改**提示词 + `OUTPUT_CONFIG` + 解析器**。
+
 ## Example
 
 **User:**
