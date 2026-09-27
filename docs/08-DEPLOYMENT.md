@@ -611,6 +611,63 @@ Vercel 部署的是 `next build` 的产物；本地开发用的是 `next dev`，
   所以这一处修改**不会出现在任何提交里**，只存在于本机；谁要是从别处拿一份仓库，
   拿到的是没有它的版本（它以前也没入库，这不是本轮引入的）。
 
+- **本次（2026-09-27 11:41–12:04 实测，节点正文可靠保存 / 步骤 4，提交 `79f6051` +
+  `a764137`）：一轮前端验收 + 一轮后端 + 两条反向验证。**
+
+  - `npm run test:accept -- --workers=1`，运行编号 `20260927-120018-86f4710`，现场在
+    `apps/web/artifacts/runs/20260927-120018-86f4710/`。`summary.txt` 里写着提交
+    `86f4710`、**工作区：有 21 项未提交改动** —— 这一次跑的**就是那 21 项**（步骤 4 的
+    全部改动），那个提交号只是开跑这一刻的标签。跑完立刻分两笔提交（后端 `79f6051`、
+    前端 `a764137`）。**64 条：63 passed / 0 failed / 1 skipped / 0 flaky**（234.9s）。
+  - 比 `c6112a9` 那一轮的 59 条多 5 条，全部来自新文件
+    `apps/web/tests/node-body.spec.ts`（单击语义 1.9s / 停手自动保存 + 空 localStorage
+    的另一个上下文仍读到 4.9s / 存不上 4.7s / 冲突两条路 7.4s / 子空间改完回上层 3.4s）。
+  - 那 1 条 skipped 仍是 `experience.spec.ts` 里写明原因的那条 `test.fixme`，**它不是通过**。
+  - 进子空间的方式从 `dblclick` 换成了 `enterSpace`（点 `.node-enter`，判据是"这个节点
+    变成了当前这一层的根"，不能用"按钮还在不在"——那一条点之前就成立）。改到的六个
+    spec 这一轮都跑过：`plan-projection`（4 条）、`level-navigation`、`conversation-hub`、
+    `dark-theme`、`layout`、`workbench`；`canvas-stability` 只改了注释。
+  - 后端在**同一份工作区**上跑了
+    `PYTHONUTF8=1 python -m pytest backend/tests -rs --junitxml=<path>`（conda 环境
+    `zhitu`）= **420 条：0 failed / 0 errors / 0 skipped**（实测 230.4s）。条数**从 JUnit
+    XML 里数**（`tests` / `failures` / `errors` / `skipped` 四个属性）；这一轮没再给多余的
+    `-q`，所以终端末行也在（`420 passed, 7 warnings in 230.44s`），两个来源一致。
+    **420 = 上一轮 414 + 这一轮新增的 6 条**（`backend/tests/test_node_content_version.py`）。
+    *(顺带记一笔：上一轮同一套件自报 1254s，这一轮 230.4s。同一台机器、同一份用例集 ——
+    这类墙钟数**不能拿来比快慢**，尤其别反过来当成"改动让它变快了"的证据。)*
+
+  **两条反向验证（都是先让它红、再改回来复绿）：**
+
+  - **把 `contentVersion` 从正文保存请求里去掉** → 只有「正文被别人改过时显示冲突」那条红
+    （卡在 `is-conflict` 那一行：锁没带上，别人刚写的字被静默盖掉，而界面什么也没说），
+    其余 4 条绿。红出来的正是这一批要修的那个毛病——"写侧从来没用过这一列"。
+  - **把失败分支改成显示"已保存"** → 只有「正文存不上时草稿还在…」那条红，其余 4 条绿。
+    这条说明"绝不显示虚假的已保存"是真的被断言盯住了，而不是"跑绿了没报错"。
+
+  两次都**只红在对应的那一条**上，所以红是归因清楚的，不是碰巧。
+
+  **这一版正文保存的边界（如实写清）：**
+
+  - **「正文更新后标记相关分析过期 + 让 AI 根据修改重新分析」没有做。** 今天唯一存在的
+    "内容变了"信号是：一次正文保存会产生一个新的 `PlanRevision`。没有过期标记，对话面板里
+    也没有那个入口。见 `docs/10-NEXT-BATCH-SCOPE.md` §8。
+  - **开发库里打开的那个预览，这一轮验不了正文保存。** `127.0.0.1:8000` 上跑的后端是
+    **改动之前**启动的（uvicorn 没有 `--reload`），它的 `UpdateNodeRequest` 里**没有**
+    `contentVersion` 且 `additionalProperties: false` —— 带版本号的保存会被它 422 掉
+    （界面显示的是"请求内容不符合要求"）。这是用**只读探针**查出来的：`GET /openapi.json`
+    里那个 schema 的 `properties` 是 `title/description/acceptanceCriteria/nodeType/status/
+    priority/estimateMinutes/deadline`，**没有 `contentVersion`**。
+    这一轮的验收**全部跑在隔离栈上**（`:8100`、独立 SQLite、无模型 key），**没有碰开发后端**。
+    要让开发预览也能存正文，得重启那一个后端进程 —— 那件事按规矩要用户点头。
+  - **这一轮没有跑开发预览检查**（`artifacts/dev-preview-check.mjs`），理由同上：它跑在
+    `next dev` + 复用 5173 + 打开发后端上，而那个后端还没有这一批的能力，跑出来只会是
+    "19 项里有一半红"，那既不说明产品也不说明预览。
+  - 编辑器仍然住在那个模态 `<dialog>` 里，所以"**弹窗开着的时候页签点不动**"依旧成立
+    （`canvas-stability.spec.ts` 文件头写着这个预期，那条测试专门绕开它）。
+  - 「每个 scope 记住浏览位置」**不是这一批做的**，它在布局持久化那一批里
+    （`layout.spec.ts` 的「把画布拖开:视口进的是后端,换台机器打开还停在原处」）。
+  - **PostgreSQL 仍未验证**（和每一轮一样只用临时 SQLite；开发库也是 SQLite）。
+
 - **汇总行为什么读不到：`-q` 传重了（2026-09-27 记，我踩了一次）。**
 
   `pytest.ini` 的 `addopts` 里已经有一个 `-q`，命令行上再给一个就是 **`-qq`** —— 那时
