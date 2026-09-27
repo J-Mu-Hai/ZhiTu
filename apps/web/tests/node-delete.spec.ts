@@ -30,9 +30,16 @@ import {
  * 而边**一行都不动**。所以第三条测试的断言跟着反了过来(见它自己的注释),并且
  * 多了一条"归档 → 恢复"的完整闭环。
  *
+ * ## 第三次改动(§9.1.1):入口从常驻垃圾桶挪进了右键菜单
+ *
+ * 上面那句"点垃圾桶之前先告诉你这一下会带走什么"现在读作"点菜单里的「归档」之前"。
+ * 变了的是**入口**,没变的是这条测试真正钉的东西:确认框里的数字来自后端现算,
+ * 且按下去之后整支能原样恢复。所以下面那些断言一条都没删,只是前面多了一步
+ * 「先开菜单」。
+ *
  * ## 一条重复过的坑
  *
- * 垃圾桶按钮默认 `opacity: 0`,悬停才到 1(`dark-theme.css:252`)。所以断言"默认看不见"
+ * `.node-more` 默认 `opacity: 0`,悬停才到 1。所以断言"默认看不见"
  * 之前**必须先把鼠标挪开** —— 上一条测试或上一次交互把指针留在节点上的话,读到的是
  * 1,而失败信息会指向"按钮的样式坏了"。
  */
@@ -71,14 +78,35 @@ test('归档前先告诉你这一下会带走什么，之后能把整支恢复�
   //(这是有意的层级设计,不是丢数据)。所以这里比的是同层集合。
   await expect.poll(() => renderedNodeIds(page)).toEqual([root.id, doomed, kept].sort());
 
-  // --- 点垃圾桶:**先出数字,再出按钮** ----------------------------------------
+  // --- 从菜单里归档:**先出数字,再出按钮** ------------------------------------
+  //
+  // §9.1.1 之前这一步是"点节点上那个常驻垃圾桶"。现在那个按钮收进了菜单
+  // (`.node-more` →「归档(可以恢复)」),但**它仍然只在悬停时显现** ——
+  // 所以下面那两句 opacity 断言照旧要有,只是换了类名。
+  // 留着它们不是惯性:一个"按钮永远 opacity: 1"的实现会让画布上多出一排
+  // 常驻图标,而那正是这一批要收掉的东西。
   await page.mouse.move(2, 2);
   const node = page.locator(`.react-flow__node[data-id="${doomed}"]`);
-  const trash = node.locator('.node-delete');
-  await expect(trash).toHaveCSS('opacity', '0');
+  const more = node.locator('.node-more');
+  await expect(more, '鼠标不在节点上时它应该是隐的').toHaveCSS('opacity', '0');
   await node.hover();
-  await expect(trash).toHaveCSS('opacity', '1');
-  await trash.click();
+  await expect(more).toHaveCSS('opacity', '1');
+
+  // 菜单里的操作对象是**被点开菜单的那个节点**,不是当前选中项 —— 这条断言
+  // (菜单里必须有「归档」)是下面整段的前提。
+  await more.click();
+  const menu = page.getByRole('menu');
+  await expect(menu).toBeVisible();
+  await expect(menu.getByRole('menuitem')).toHaveCount(3);
+  await menu.getByRole('menuitem', { name: '归档' }).click();
+  await expect(menu, '选完之后菜单该收起来').toHaveCount(0);
+
+  // **归档不能右键一下就执行。** 上面那两下(开菜单、选「归档」)到现在为止
+  // 只是打开了一个确认框,库里那一行必须原封不动 —— 判据读的是后端,不是界面:
+  // 一个"先乐观地删掉、确认框再问"的实现会让下面这条红,而那正是要挡住的。
+  const stillThere = await getPlan(page, token, workspaceId);
+  expect(stillThere.nodes.map((item) => item.id), '还没确认,什么都不能写').toContain(doomed);
+  expect(stillThere.revisionVersion, '计划版本也不该动').toBe(before.revisionVersion);
 
   const confirm = page.getByRole('dialog');
   await expect(confirm.getByRole('heading')).toHaveText('归档「待收阶段」？');
@@ -151,21 +179,77 @@ test('归档前先告诉你这一下会带走什么，之后能把整支恢复�
   await expect.poll(() => renderedNodeIds(page)).toEqual([root.id, doomed, kept].sort());
 });
 
-test('根目标没有归档入口，两种模式下都收不走', async ({ page }) => {
+test('根目标的归档入口禁用并写明原因，两种模式下也都收不走', async ({ page }) => {
   const { token } = await registerAccount(page, 'archive-root');
   const workspaceId = await createWorkspace(page, token, '根目标保护空间');
   const root = (await getPlan(page, token, workspaceId)).nodes[0];
-  await createNode(page, token, workspaceId, { parentId: root.id, title: '一个普通节点', nodeType: 'task' });
+  const child = await createNode(page, token, workspaceId, { parentId: root.id, title: '一个普通节点', nodeType: 'task' });
 
   await page.goto(`/workbench?workspace=${workspaceId}`);
   await waitForRealPlan(page);
 
-  // 界面上**根本不提供**这个入口,而不是"点了报错"。
+  /*
+   * 界面上这个入口**是禁用的,而且说出了原因**。
+   *
+   * 这条断言 §9.1.1 之后反了过来,理由值得写下来:以前根节点上**根本不渲染**垃圾桶,
+   * 于是"为什么我没有删除?"这个问题在界面上无解。而更早一版是**静默 return**
+   * (`provider.askArchive` 对根目标直接返回)—— 菜单点下去什么都不发生,看起来像坏了。
+   * §9.1.1 要的是第三种:入口在、不可选、旁边写着为什么。
+   *
+   * 所以这里不能断言"没有这一项" —— 那会放过一个把原因藏起来的实现。
+   */
   const rootNode = page.locator(`.react-flow__node[data-id="${root.id}"]`);
   await rootNode.hover();
-  await expect(rootNode.locator('.node-delete')).toHaveCount(0);
-  // 子节点上是有的 —— 少了这句,一个"按钮整个没渲染出来"的实现也照样全绿。
-  expect(await page.locator('.node-delete').count()).toBeGreaterThan(0);
+  await rootNode.locator('.node-more').click();
+  const rootMenu = page.getByRole('menu');
+  const rootArchive = rootMenu.getByRole('menuitem', { name: '归档' });
+  await expect(rootArchive, '入口要在,只是不可选').toHaveAttribute('aria-disabled', 'true');
+  // 原因**印在菜单里**,不只在 title 上 —— title 要悬停几百毫秒才出来,
+  // 触屏更是根本没有悬停,而这个产品明确要保留触屏入口。
+  await expect(rootArchive.locator('.context-menu-why')).toHaveText('根目标不能归档');
+  /*
+   * 点下去不许有任何后果。禁用项在实现上是个 `aria-disabled` 的按钮(不是
+   * `disabled`),所以"点不动"这件事必须真的点一下才算验过 —— 只读属性的话,
+   * 一个 onClick 里漏判 disabled 的实现照样全绿。
+   *
+   * `force: true` 是必需的,而且它本身也是一条证据:Playwright 把
+   * `aria-disabled="true"` **当成真的不可用来对待**(报 `element is not enabled`),
+   * 所以这里默认根本点不下去。而我们要验的恰恰是"就算用真实鼠标点上去也不该有反应"
+   * —— `force` 跳过的是那几项可操作性检查,点仍然是**真的点**(在元素的坐标上按下、
+   * 抬起),所以一个忘了在 onClick 里判 disabled 的实现照样会在这里露馅。
+   */
+  await rootArchive.click({ force: true });
+  await expect(page.getByRole('dialog'), '禁用的项点下去什么弹窗都不该开').toHaveCount(0);
+  await page.keyboard.press('Escape');
+
+  // 子节点上这一项是**可用的** —— 少了这半句,一个"所有节点都禁用"的实现也照样全绿。
+  // 断言写的是"没有 aria-disabled",不是"等于 false":未禁用时这个属性整个不渲染
+  // (见 `ContextMenu.tsx` 的 `item.disabled ? true : undefined`),写成等号会红在一个
+  // 与"能不能用"无关的细节上。
+  const childNode = page.locator(`.react-flow__node[data-id="${child}"]`);
+  await childNode.hover();
+  await childNode.locator('.node-more').click();
+  await expect(page.getByRole('menu').getByRole('menuitem', { name: '归档' }))
+    .not.toHaveAttribute('aria-disabled', 'true');
+  await expect(page.getByRole('menu').locator('.context-menu-why'), '能用的项不该有原因').toHaveCount(0);
+  await page.keyboard.press('Escape');
+
+  /*
+   * 详情里那个入口也算一遍。§9.1.1 把它写进了同一条要求里("节点详情中保留可发现的
+   * 『更多/归档』入口"),而它是**触屏上唯一的那条路** —— 触屏既没有右键,也点不到
+   * 节点卡片上那个被弹窗盖住的按钮。
+   *
+   * 所以这里断言的不是"有个按钮",而是那个按钮**说出了原因**。它是个原生 `disabled`
+   * 按钮,而原生禁用的按钮不触发鼠标事件、也没法聚焦 —— 原因只写在 `title` 上的话,
+   * 鼠标悬停弹不出来、屏幕阅读器也读不到,用户看到的就是一个没来由的灰按钮。
+   */
+  await page.locator(`.react-flow__node[data-id="${root.id}"]`).click();
+  const detail = page.getByRole('dialog');
+  await expect(detail.getByRole('heading')).toContainText('编辑节点');
+  await expect(detail.getByRole('button', { name: '归档' })).toBeDisabled();
+  await expect(detail, '禁用了却不说为什么 —— 那和没有这个入口是一样的').toContainText('根目标不能归档');
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
 
   // 接口这一层是最后一道闸:界面藏起来只是界面的事,绕过界面仍然删不掉才算数。
   // 两种模式都试:归档可恢复、彻底删除不可恢复,但"根目标不能没有"与模式无关。

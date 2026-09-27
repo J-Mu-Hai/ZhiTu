@@ -3,7 +3,7 @@ import { Suspense, createContext, useCallback, useContext, useEffect, useMemo, u
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import type { AISettings, Conversation, FileAsset, GrowthNode, GrowthRelationType, JournalEntry, Message, PlanAction } from '@/types/growth';
 import { dayNumber, todayInTimeZone } from './timeline';
-import { PLACEHOLDER_ROOT_ID, emptyGrowth, planToGrowth } from './planProjection';
+import { PLACEHOLDER_ROOT_ID, emptyGrowth, planToGrowth, toGrowthNode } from './planProjection';
 import {
   applyPatch,
   emptyHistory,
@@ -902,30 +902,60 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
   }
 
   /**
-   * 新建一个节点。**返回它到底成没成。**
+   * 新建一个节点。**返回后端真正建出来的那一个**(失败是 `null`)。
    *
-   * 节点的 id 由后端生成,所以这里给不出 id(调用方也不需要)。但**必须给得出
-   * "成没成"**:创建弹窗以前提交完就无条件关掉,而失败时错误进的是 `planError` ——
-   * 显示在详情弹窗里,创建弹窗根本看不到。用户看到的是"弹窗关了,树上多了一片吗?
-   * 没有" —— 于是他再点一次,再失败一次。
+   * 返回值从 `boolean` 改成节点本身,是因为双击空白处那条路要**紧接着用它的 id 写位置**
+   * —— 见下面的 `position`。在那之前调用方只需要"成没成",所以原来的布尔够用。
+   *
+   * 为什么要给位置:`POST /nodes` 不接受坐标,位置走的是另一条路(`PUT /layout`)。
+   * 双击建节点如果只建不摆,节点会先出现在**自动排布**算出来的地方 —— 而用户刚刚
+   * 明确指着画布上的一个点。所以建完之后立刻把位置写进本地那份布局,复用
+   * `applyPositions`(也就是拖动走的那一条),后端保存、单飞、`NODE_NOT_FOUND`
+   * 自修复、失败重试全部跟着复用,不另造一套。
+   *
+   * 键用节点自己的**归属键** `${parentId}:${nodeId}`,与 `layoutPayload` 的规范化
+   * 一致(见那里的说明)—— 写成 `${spaceId}:${nodeId}` 的话,这个位置只在这一层
+   * 算数,而 `PUT /layout` 读的是归属那一份,刷新后节点会回到自动排布的位置。
    */
-  async function addNode(
-    title: string,
-    type: GrowthNode['type'] = 'task',
-    description = '',
-    estimateMinutes?: number | null,
-  ): Promise<boolean> {
-    if (!title.trim() || !isReal) return false;
+  async function addNode(options: {
+    title: string;
+    nodeType?: GrowthNode['type'];
+    purpose?: GrowthNode['purpose'];
+    description?: string;
+    estimateMinutes?: number | null;
+    /** 流坐标。给了就把它写成这个节点在**归属层级**里的位置。 */
+    position?: { x: number; y: number } | null;
+  }): Promise<GrowthNode | null> {
+    const title = options.title.trim();
+    if (!title || !isReal) return null;
+    const parentId = currentSpaceId;
     const created = await mutatePlan(() => backend.createNode(space.id, {
-      parentId: currentSpaceId,
-      title: title.trim(),
-      nodeType: type,
-      description: description.trim() || null,
+      parentId,
+      title,
+      nodeType: options.nodeType ?? 'task',
+      purpose: options.purpose,
+      description: options.description?.trim() || null,
       // 建的时候就能填工时 —— 建完再去详情里补,是"先创建一份排不进去的东西,
       // 再回来修"的两步路,而排期读的正是这个字段。
-      estimateMinutes: estimateMinutes ?? null,
+      estimateMinutes: options.estimateMinutes ?? null,
     }));
-    return created !== null;
+    if (!created) return null;
+    // **从响应里投影,不读 `growthRef`。** 那面镜子是在**渲染时**才被赋值的
+    // (`growthRef.current = growth` 写在渲染体里),而 `await mutatePlan(...)`
+    // 回来的时候计划的状态刚 `set` 完、这一次渲染还没有发生 —— 读它读到的是**上一份**
+    // 计划,里面没有这个新节点。症状是"双击建出来的节点位置没写进去",而且只在
+    // 这一条路径上出现。
+    const node = toGrowthNode(created.node);
+    if (options.position) {
+      // 建出来的节点一定属于 `parentId`(是这次 POST 传上去的),所以归属键可以直接拼。
+      // 这一份位置随后由 `flushLayout` 那套机制落到后端 —— 它比这次渲染晚(有防抖),
+      // 那时 `growthRef` 已经是新的一份了,`layoutPayload` 的筛子不会把它滤掉。
+      applyPositions({
+        ...positionsRef.current,
+        [`${parentId}:${node.id}`]: options.position,
+      });
+    }
+    return node;
   }
 
   /**

@@ -42,6 +42,26 @@ import type { GrowthNode, GrowthRelationType } from '@/types/growth';
  * 卸载不同 —— 卸载对用户来说什么都没发生。
  */
 
+/**
+ * 新建节点表单里的三个语义选项。
+ *
+ * 每一项是一对 `(purpose, nodeType)` —— 界面上问的是"你要加的是什么",
+ * 两个后端字段由这张表推出来,**不给它们各自单独变的机会**。
+ *
+ * 为什么不是"复制一套业务类型"给信息节点用:`purpose` 是一条**正交的轴**
+ * (见后端 `db/models/enums.py::NodePurpose`),它和 `nodeType` 组合,而不是替代它。
+ * 给信息主题另起一套 `nodeType` 会让"这是个 capability"和"它不排期"变成同一句话,
+ * 于是用户想把一个已有的信息主题改成要排期时,类型也得跟着换 —— 而那是一次
+ * 没有必要的重命名。
+ */
+export type CreateKind = 'topic' | 'action' | 'milestone';
+
+export const CREATE_KINDS: Record<CreateKind, { label: string; purpose: 'planning' | 'information'; nodeType: GrowthNode['type'] }> = {
+  topic: { label: '主题 / 方向', purpose: 'information', nodeType: 'capability' },
+  action: { label: '行动', purpose: 'planning', nodeType: 'task' },
+  milestone: { label: '里程碑', purpose: 'planning', nodeType: 'milestone' },
+};
+
 /** 一次编辑会话里全部还没提交的输入。字段与画布上那几个弹窗一一对应。 */
 export interface CanvasDraft {
   /** 现在开着哪个弹窗。`null` 是都没开。**它也要留住** —— "误关编辑器"指的是关掉这个,不是关掉输入框。 */
@@ -49,8 +69,25 @@ export interface CanvasDraft {
   /** 新建节点表单。 */
   title: string;
   description: string;
-  type: GrowthNode['type'];
+  /**
+   * 用户在类型选择器里挑的那一项。
+   *
+   * **不是 `nodeType`,是一个语义选项** —— 每一项映射到一对
+   * `(purpose, nodeType)`,见 `CREATE_KINDS`。存 `nodeType` 的话,用途那半就没了
+   * 落点:选择器上「主题/方向」与「行动」的区别**正是**用途的区别,而两者的
+   * `nodeType` 可以一样。存一份 `(purpose, nodeType)` 也行,但那给了"它们能各自
+   * 独立变化"的错觉 —— 界面上它们从来是一起变的。
+   */
+  createKind: CreateKind;
   estimate: string;
+  /**
+   * 双击空白处建节点时,**指针在流坐标里的位置**。工具栏那条路不带它。
+   *
+   * 放进草稿一次满足三件事:取消即清(`closeCreateDialog` 会把它写回 null)、
+   * 失败时位置还在(用户重试不用重新对准)、以及天然按 `(空间, 层级)` 隔离 ——
+   * 在 A 层双击、切到 B 层,两边各记各的,不会串。
+   */
+  createPosition: { x: number; y: number } | null;
   /** 节点详情编辑器(`detailNodeId` 为空就是没开)。 */
   detailNodeId: string | null;
   detailTitle: string;
@@ -88,8 +125,12 @@ export const EMPTY_DRAFT: CanvasDraft = Object.freeze({
   dialog: null,
   title: '',
   description: '',
-  type: 'task',
+  // 默认是**行动**而不是主题:工具栏那个按钮写着「新建节点」/「添加树叶」,
+  // 「添加第一片树叶」那个空状态也是它 —— 那些入口的语境是要加一件能做的事。
+  // 双击空白处会显式把它改成 `topic`(见 `PathView` 的 `onDoubleClick`)。
+  createKind: 'action',
   estimate: '',
+  createPosition: null,
   detailNodeId: null,
   detailTitle: '',
   detailDescription: '',

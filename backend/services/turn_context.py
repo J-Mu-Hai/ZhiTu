@@ -677,6 +677,7 @@ async def build_turn_context(
             handle=handle,
             title=node.title,
             node_type=node.node_type.value,
+            purpose=node.purpose.value,
             status=node.status.value,
             depth=node.depth,
             deadline=node.deadline.isoformat() if node.deadline else None,

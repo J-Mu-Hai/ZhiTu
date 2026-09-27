@@ -10,6 +10,7 @@ import {
   waitForRealPlan,
   type TestAccount,
 } from './support/session';
+import { selectNodeMenuItem } from './support/menu';
 
 /**
  * 布局的撤销/重做:**一次拖拽 = 一步,撤销之后的那个位置会真的写回后端。**
@@ -399,10 +400,9 @@ test('撤销一个已经归档的节点:它不会回来,跳过这件事会说清
   const b1 = await nodeAt(page, account.b);
   await dragNode(page, account.a, 150, 120);
 
-  const nodeA = page.locator(`.react-flow__node[data-id="${account.a}"]`);
-  await page.mouse.move(2, 2);
-  await nodeA.hover();
-  await nodeA.locator('.node-delete').click();
+  // 归档这一步 §9.1.1 之后在菜单里(`.node-more` →「归档(可以恢复)」)。
+  // 这条测试真正钉的是"撤销不该把归档过的节点带回来",入口怎么变与它无关。
+  await selectNodeMenuItem(page, account.a, '归档');
   const confirm = page.getByRole('dialog');
   await expect(confirm.getByRole('heading')).toContainText('归档');
   await confirm.getByRole('button', { name: '归档' }).click();

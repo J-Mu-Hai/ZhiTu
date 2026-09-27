@@ -400,6 +400,13 @@ export interface PlanNodePayload {
   description: string | null;
   acceptanceCriteria: string | null;
   nodeType: 'goal' | 'capability' | 'stage' | 'task' | 'milestone';
+  /**
+   * 用途轴。**与 `nodeType` 正交** —— "这是什么事"和"这件事要不要占日历"是两个问题。
+   *
+   * `information` 的信息主题不参与排期:没有工时、没有勾选、不进完成度分母,
+   * 也不能作为前置依赖的端点。理由见后端 `db/models/enums.py::NodePurpose`。
+   */
+  purpose: 'planning' | 'information';
   status: 'pending' | 'doing' | 'completed' | 'archived';
   priority: 'low' | 'medium' | 'high';
   estimateMinutes: number | null;
@@ -568,6 +575,8 @@ export function createNode(
     parentId: string;
     title: string;
     nodeType?: string;
+    /** `information` 建出来的是主题/方向节点 —— 不进排期。默认 `planning`。 */
+    purpose?: string;
     description?: string | null;
     priority?: string;
     estimateMinutes?: number | null;

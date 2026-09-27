@@ -24,6 +24,16 @@ export interface GrowthNode {
   title: string;
   description?: string;
   type: 'goal' | 'capability' | 'stage' | 'task' | 'milestone';
+  /**
+   * 用途轴。**与 `type` 正交**,不是它的第六个取值。
+   *
+   * `information` 是"主题 / 方向"节点:用户记下的一个情况,不占日历 —— 不显示完成
+   * 勾选框、不进任务视图、不计入完成度(后端已经把它排除出 `totalNodes` /
+   * `completedNodes`),也不能作为前置依赖的端点。
+   *
+   * 缺省当 `planning` 读:老数据与还没重取的载荷都没有这个字段。
+   */
+  purpose?: 'planning' | 'information';
   parentId?: string;
   category?: Category;
   /** 它所属的阶段(最近的 stage 祖先,没有就是根目标)。任务视图按它分组。 */

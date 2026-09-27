@@ -94,6 +94,7 @@ export function toGrowthNode(node: PlanNodePayload, sessions: GrowthSession[] = 
     // 要原样带回"我读到的是哪一版"。
     contentVersion: node.contentVersion,
     type: toNodeType(node),
+    purpose: node.purpose,
     parentId: node.parentId ?? undefined,
     status: toStatus(node.status),
     priority: node.priority,

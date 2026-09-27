@@ -125,7 +125,7 @@
 .path-canvas .growth-node .react-flow__handle:hover { opacity: 1; box-shadow: 0 0 0 4px color-mix(in srgb, var(--semantic, #7c9dd0) 20%, transparent); }
 .path-canvas .react-flow__edge-path { stroke-linecap: round; stroke-linejoin: round; }
 .path-canvas .growth-node .node-enter { right: -10px; bottom: -10px; }
-.path-canvas .growth-node .node-delete { right: -10px; top: -10px; }
+.path-canvas .growth-node .node-more { right: -10px; top: -10px; }
 .path-canvas .growth-node.is-selected { border-color: var(--semantic); background: #f0f7fc; }
 .space-floating-tools > button { background: #fff; color: #425e77; border-color: #d4e2ec; }
 .space-floating-tools > button:hover:not(:disabled) { background: #edf5fb; color: #28577f; }

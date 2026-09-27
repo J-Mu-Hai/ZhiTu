@@ -34,6 +34,7 @@ from backend.db.base import Base, JsonDict, TimestampMixin, UtcDateTime, UuidPk,
 from backend.db.models.enums import (
     DependencyType,
     NodeOrigin,
+    NodePurpose,
     NodeRelationType,
     NodeStatus,
     NodeType,
@@ -78,6 +79,18 @@ class PlanNode(UuidPk, TimestampMixin, Base):
 
     node_type: Mapped[NodeType] = mapped_column(
         enum_type(NodeType, "node_type"), default=NodeType.TASK, nullable=False
+    )
+    # 用途轴。与 `node_type` **正交** —— 见 `NodePurpose` 的 docstring。
+    #
+    # server_default 是**必需**的(与上面 `content_version` 同一个理由,不是抄来的
+    # 习惯):SQLite 的 ADD COLUMN 不接受"NOT NULL 且无默认值"。少了它,迁移根本
+    # 加不上这一列;而只在迁移里写、模型里不写,`create_all` 与迁移出来的 DDL 就会
+    # 分叉,`test_migration_matches_models.py` 逐字比对会红。两处必须同时有。
+    purpose: Mapped[NodePurpose] = mapped_column(
+        enum_type(NodePurpose, "node_purpose"),
+        default=NodePurpose.PLANNING,
+        server_default=sql_text("'planning'"),
+        nullable=False,
     )
     status: Mapped[NodeStatus] = mapped_column(
         enum_type(NodeStatus, "node_status"), default=NodeStatus.PENDING, nullable=False

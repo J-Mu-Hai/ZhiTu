@@ -46,7 +46,7 @@ from __future__ import annotations
 
 #: 写进每条助手消息的 prompt_version。改了这个文件就要改它——
 #: 事后排查"这轮回复为什么这么怪"时,能定位到当时用的是哪一版提示词。
-PROMPT_VERSION = "planning-v6"
+PROMPT_VERSION = "planning-v7"
 
 # ---------------------------------------------------------------------------------
 # 正文的预算。**这里定多少,模型就看到多少** —— 别处不再截一次
@@ -80,6 +80,9 @@ MAX_EXECUTION_ROWS = 8
 
 #: 0 = 周一,与 `date.weekday()` 一致。这里只用来把 0..6 印成中文。
 WEEKDAY_NAMES = ("一", "二", "三", "四", "五", "六", "日")
+
+#: 印在信息主题的节点类型后面的那半截(`[capability·信息]`)。见 `_type_label`。
+INFORMATION_MARK = "信息"
 
 #: 层标题。**顺序就是渲染顺序**,也是"相关性从高到低"的顺序。
 #:
@@ -155,6 +158,9 @@ SYSTEM_PROMPT = """你是「知途」,帮助大学生把目标变成可执行计
   没读到的部分不要说成"没有",也不要假装看过了 —— 那是把"我没看见"说成了"它不存在"。
 - 范围之外的内容是只读的。**不要对范围外的节点提任何变更** —— 服务端会拒绝,
   用户看到的是"AI 提了但我没能执行",白说一轮。
+- 节点类型后面带着 `·信息` 的(如 `[capability·信息]`)是**信息主题**:它是用户记下的
+  一个情况,不占日历。**不要给它提 `estimateMinutes`,也不要提 `deadline`** ——
+  它没有"哪天做"这回事。你可以引用它来说明问题。
 
 ## 关于"用户没说过的数字"
 
@@ -603,9 +609,27 @@ def render_plan_section(nodes: list[dict[str, object]]) -> str:
     return "\n".join(lines)
 
 
+def _type_label(node: dict[str, object]) -> str:
+    """`[task]`,信息主题印成 `[capability·信息]`。
+
+    为什么要多印这半截:模型看节点列表时**唯一**能判断"这个要不要排期"的线索就是
+    它。只印 `node_type` 的话,`capability` 既可能是"要练出来的能力"也可能是"我了解到的
+    情况" —— 同一个词两种相反的排期语义,模型只能猜。猜错的后果是它给一条信息配上
+    工时,然后被服务端拒掉整批。
+
+    印成 `·信息` 而不是多一个中括号:它是**同一个节点的两个维度**,不是两个标签。
+    """
+    node_type = str(node.get("node_type") or "")
+    if str(node.get("purpose") or "planning") == "information":
+        return f"{node_type}·{INFORMATION_MARK}"
+    return node_type
+
+
 def _node_line(node: dict[str, object]) -> str:
     indent = "  " * int(node.get("depth") or 0)
-    bits = [f"{indent}- {node.get('handle')} [{node.get('node_type')}] {node.get('title')}"]
+    bits = [
+        f"{indent}- {node.get('handle')} [{_type_label(node)}] {node.get('title')}"
+    ]
     if node.get("parent_handle"):
         bits.append(f"(上级 {node['parent_handle']})")
     if node.get("deadline"):

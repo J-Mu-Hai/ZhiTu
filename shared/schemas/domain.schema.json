@@ -901,6 +901,11 @@
           "title": "Priority",
           "type": "string"
         },
+        "purpose": {
+          "default": "planning",
+          "title": "Purpose",
+          "type": "string"
+        },
         "title": {
           "title": "Title",
           "type": "string"
@@ -1795,6 +1800,11 @@
         },
         "priority": {
           "title": "Priority",
+          "type": "string"
+        },
+        "purpose": {
+          "default": "planning",
+          "title": "Purpose",
           "type": "string"
         },
         "status": {
@@ -3932,6 +3942,18 @@
           ],
           "default": null,
           "title": "Priority"
+        },
+        "purpose": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Purpose"
         },
         "status": {
           "anyOf": [

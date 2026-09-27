@@ -92,6 +92,7 @@ from backend.db.models import (
 from backend.db.models.enums import (
     DependencyType,
     NodeOrigin,
+    NodePurpose,
     NodeRelationType,
     NodeStatus,
     NodeType,
@@ -107,6 +108,7 @@ from backend.services.context import WorkspaceContext
 from backend.services.errors import (
     ConcurrencyConflict,
     DependencyRejected,
+    InformationNodeNotSchedulable,
     InvalidInput,
     NodeNotFound,
     NodePurged,
@@ -126,6 +128,7 @@ EDITABLE_FIELDS = frozenset(
         "description",
         "acceptance_criteria",
         "node_type",
+        "purpose",
         "status",
         "priority",
         "estimate_minutes",
@@ -166,6 +169,7 @@ def touch_content_version(node: PlanNode, fields: Iterable[str]) -> bool:
 #: 和"状态"毫无关系的数据库异常。在这里挡掉,报错才指向真正填错的那个字段。
 _ENUM_FIELDS: dict[str, tuple[type, str]] = {
     "node_type": (NodeType, "节点类型"),
+    "purpose": (NodePurpose, "用途"),
     "status": (NodeStatus, "状态"),
     "priority": (Priority, "优先级"),
 }
@@ -303,6 +307,7 @@ async def create_node(
     parent_id: uuid.UUID,
     title: str,
     node_type: str = NodeType.TASK.value,
+    purpose: str = NodePurpose.PLANNING.value,
     description: str | None = None,
     acceptance_criteria: str | None = None,
     priority: str = Priority.MEDIUM.value,
@@ -312,6 +317,7 @@ async def create_node(
     """在 `parent_id` 下面挂一个新节点。**用户自己建的,所以 `origin=user`。**"""
     clean_title = title.strip()
     parsed_type = _parse_enum("node_type", node_type)
+    parsed_purpose = _parse_enum("purpose", purpose)
     parsed_priority = _parse_enum("priority", priority)
     if not clean_title:
         raise InvalidInput("标题不能为空。")
@@ -340,6 +346,7 @@ async def create_node(
             description=_clean(description),
             acceptance_criteria=_clean(acceptance_criteria),
             node_type=parsed_type,
+            purpose=parsed_purpose,
             status=NodeStatus.PENDING,
             priority=parsed_priority,
             estimate_minutes=estimate_minutes,
@@ -881,6 +888,16 @@ async def restore_node(
         )
 
 
+def _reject_information_endpoints(predecessor: PlanNode, successor: PlanNode) -> None:
+    """依赖的两端都不能是信息主题。理由见 `InformationNodeNotSchedulable`。"""
+    for role, node in (("前置", predecessor), ("后继", successor)):
+        if node.purpose is NodePurpose.INFORMATION:
+            raise InformationNodeNotSchedulable(
+                f"「{node.title}」是信息主题,不参与排期,不能作为{role}节点。"
+                "要让它参与排期,先把它的用途改成「行动」。"
+            )
+
+
 async def add_dependency(
     db: AsyncSession, ctx: WorkspaceContext, *, predecessor_id: uuid.UUID, successor_id: uuid.UUID
 ) -> Dependency:
@@ -891,6 +908,7 @@ async def add_dependency(
     async with _each_change(db, ctx, trigger_detail="") as change:
         predecessor = await load_node(db, ctx, predecessor_id)
         successor = await load_node(db, ctx, successor_id)
+        _reject_information_endpoints(predecessor, successor)
 
         existing = await db.scalar(
             select(Dependency).where(

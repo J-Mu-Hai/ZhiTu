@@ -75,7 +75,7 @@ from backend.db.models import (
     UserCapacityProfile,
     Workspace,
 )
-from backend.db.models.enums import ScheduledSessionStatus, WorkspaceStatus
+from backend.db.models.enums import NodePurpose, ScheduledSessionStatus, WorkspaceStatus
 from backend.scheduler import diff as scheduler_diff
 from backend.scheduler.calendar import build_day_pools
 from backend.scheduler.schedule import recovery_options, simulate
@@ -207,11 +207,23 @@ async def load_schedule(db: AsyncSession, ctx: WorkspaceContext) -> LoadedSchedu
             session_workspaces={},
         )
 
+    # **信息主题在这里被排除,而且只在这里。** 这是"哪些节点参与排期"的唯一收口 ——
+    # 预览与应用走的是同一个函数,所以不存在"预览里没有它、应用时却给它排了场次"。
+    #
+    # 为什么不过滤在 `_schedule_node` 里、或者给 `ScheduleNode.is_open` 加一种取值:
+    # 那个标志是"这个任务还开着吗"(状态维度),排期器对不 open 的节点的处理是
+    # `_cancel_all` —— **取消它的场次**。信息主题要的是"根本别管它",不是"把它的
+    # 场次取消掉"。混进去的后果是排期器会去动一批它不该碰的场次。
+    #
+    # 连带效应(是设计,不是副作用):`live_ids` 由这个列表推出,所以挂在信息主题上的
+    # 场次和边也会一起从排期里消失。边在**写入时**就被拒了(见 `add_dependency`),
+    # 所以这里不会静默吞掉一条用户看得见的连线。
     nodes = list(
         await db.scalars(
             select(PlanNode).where(
                 PlanNode.workspace_id.in_(workspace_ids),
                 PlanNode.deleted_at.is_(None),
+                PlanNode.purpose == NodePurpose.PLANNING,
             )
         )
     )

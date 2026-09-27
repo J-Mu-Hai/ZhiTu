@@ -49,7 +49,7 @@ from backend.contracts.plan import (
     SessionPayload,
 )
 from backend.db.models import Dependency, NodeRelation, PlanNode, ScheduledSession
-from backend.db.models.enums import NodeStatus, ScheduledSessionStatus
+from backend.db.models.enums import NodePurpose, NodeStatus, ScheduledSessionStatus
 from backend.services import brief_service
 from backend.services.context import WorkspaceContext
 
@@ -70,6 +70,7 @@ def node_to_dict(node: PlanNode) -> dict[str, object]:
         "description": node.description,
         "acceptance_criteria": node.acceptance_criteria,
         "node_type": node.node_type.value,
+        "purpose": node.purpose.value,
         "status": node.status.value,
         "priority": node.priority.value,
         "estimate_minutes": node.estimate_minutes,
@@ -270,6 +271,12 @@ async def build_plan(db: AsyncSession, ctx: WorkspaceContext) -> PlanPayload:
     brief = await brief_service.load_brief(db, ctx.id)
 
     titles = {node.id: node.title for node in nodes}
+    # 完成度只数**要排期**的节点。信息主题没有"做完"这回事(§2.5:不需要完成勾选),
+    # 把它算进分母会让进度条永远到不了 100%,而用户没有任何办法让它到 —— 一个
+    # 永远差一点的进度条会教用户忽略进度条。
+    #
+    # `nodes` 本身**不筛**:画布要把信息主题画出来,只是不把它当任务统计。
+    planning_nodes = [node for node in nodes if node.purpose is NodePurpose.PLANNING]
 
     return PlanPayload(
         workspace_id=ctx.id,
@@ -291,8 +298,8 @@ async def build_plan(db: AsyncSession, ctx: WorkspaceContext) -> PlanPayload:
             )
             for session in sessions
         ],
-        total_nodes=len(nodes),
-        completed_nodes=sum(1 for node in nodes if node.status is NodeStatus.COMPLETED),
+        total_nodes=len(planning_nodes),
+        completed_nodes=sum(1 for node in planning_nodes if node.status is NodeStatus.COMPLETED),
     )
 
 

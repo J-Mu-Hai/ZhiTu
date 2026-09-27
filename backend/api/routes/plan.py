@@ -107,6 +107,7 @@ async def create_node(
         parent_id=payload.parent_id,
         title=payload.title,
         node_type=payload.node_type,
+        purpose=payload.purpose,
         description=payload.description,
         acceptance_criteria=payload.acceptance_criteria,
         priority=payload.priority,

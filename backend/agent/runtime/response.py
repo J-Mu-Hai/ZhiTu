@@ -127,6 +127,7 @@ def render_turn(turn: TurnContext) -> str:
             "handle": n.handle,
             "title": n.title,
             "node_type": n.node_type,
+            "purpose": n.purpose,
             "status": n.status,
             "depth": n.depth,
             "deadline": n.deadline,

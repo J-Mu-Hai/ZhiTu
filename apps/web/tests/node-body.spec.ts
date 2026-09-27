@@ -45,6 +45,7 @@ import {
   waitForRealPlan,
   type TestAccount,
 } from './support/session';
+import { pointOnEdge } from './support/edge';
 
 test.beforeEach(async ({ request }) => {
   await assertBackendRunning(request);
@@ -152,6 +153,55 @@ test('单击节点打开正文与详情，但不会顺带进入子空间', async
   // 不是当前这一层的根(那个是 `.growth-node.goal`,见 `PathView.tsx` 的 `root`)。
   await expect.poll(() => renderedNodeIds(page)).toEqual([rootId, stageId].sort());
   await expect(card(page, stageId).locator('.growth-node.goal'), '单击把子空间也进去了').toHaveCount(0);
+});
+
+// ---------------------------------------------------------------------------------
+// 1B. 双击语义(§9.1.1):这一批新加的"空白处双击建节点"不能从别的手势漏进来
+// ---------------------------------------------------------------------------------
+/**
+ * 这一条防的是**新建节点从别的手势里漏出来**。
+ *
+ * 双击空白处建节点是这一批新加的,而它挂在一个很宽的容器上(整个画布)。判定写松一点
+ * ——比如"只要不是点在工具栏上就算空白"—— 双击节点、双击连线、在正文编辑框里双击
+ * 选一个词,都会冒出新建表单。**而它长得很正常**:一个标题写着「新建节点」的弹窗,
+ * 用户以为是自己点错了。
+ *
+ * 所以这里逐个手势验一遍,而且**判据是弹窗的标题**:详情弹窗的标题是「编辑节点」,
+ * 新建表单的标题是「…中新建节点」。只数"有几个弹窗"是不够的 —— 一个把详情换成新建
+ * 表单的实现,数量同样是 1。
+ */
+test('双击节点只开详情、双击边与编辑框里都不建节点', async ({ page }) => {
+  const { workspaceId, rootId, stageId } = await scene(page, 'body-dblclick');
+  await openSpacePage(page, '/workbench', workspaceId);
+  await waitForRealPlan(page);
+  await expect.poll(() => renderedNodeIds(page)).toEqual([rootId, stageId].sort());
+
+  const dialogs = page.getByRole('dialog');
+  const headings = () => dialogs.getByRole('heading').allInnerTexts();
+
+  // --- 双击节点:只开**详情**,不是新建表单 ---------------------------------
+  await card(page, stageId).dblclick();
+  await expect(dialogs.getByRole('heading')).toContainText('编辑节点');
+  expect((await headings()).filter((text) => text.includes('新建节点')), '双击节点弹出了新建表单').toEqual([]);
+
+  // --- 双击正文编辑框:什么都不开(用户是在选一个词) -------------------------
+  const text = '这段正文里双击一下,是在选词。';
+  await bodyField(dialogs).fill(text);
+  const box = await bodyField(dialogs).boundingBox();
+  if (!box) throw new Error('正文编辑框不在');
+  await page.mouse.dblclick(box.x + box.width / 2, box.y + box.height / 2);
+  await expect(dialogs).toHaveCount(1);
+  expect((await headings()).filter((item) => item.includes('新建节点')), '在编辑框里双击建了节点').toEqual([]);
+  await expect(bodyField(dialogs)).toHaveValue(text);
+  await page.keyboard.press('Escape');
+  await expect(dialogs).toHaveCount(0);
+
+  // --- 双击那条分支连线:什么都不开 -----------------------------------------
+  // 点在**真的落在笔画上**的那一点 —— 曲线包围盒的中心在画布空白上(见 `support/edge.ts`)。
+  const onLine = await pointOnEdge(page);
+  await page.mouse.dblclick(onLine.x, onLine.y);
+  await page.waitForTimeout(300);
+  expect(await headings(), '双击连线开出了弹窗').toEqual([]);
 });
 
 // ---------------------------------------------------------------------------------

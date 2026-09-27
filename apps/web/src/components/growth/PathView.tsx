@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Background,
   BaseEdge,
@@ -24,11 +24,13 @@ import {
   Archive,
   ArrowUpRight,
   CheckSquare,
+  Crosshair,
   FileText,
   Flag,
   Focus,
   FolderOpen,
   GitBranch,
+  MoreHorizontal,
   Plus,
   Redo2,
   RotateCcw,
@@ -36,8 +38,9 @@ import {
   Undo2,
 } from 'lucide-react';
 import { NodeAnalysisPanel } from '@/components/growth/NodeAnalysisPanel';
+import { ContextMenu, type ContextMenuState } from '@/components/ui/ContextMenu';
 import { Dialog } from '@/components/ui/Dialog';
-import { useCanvasDraft } from '@/features/growth/drafts';
+import { CREATE_KINDS, useCanvasDraft, type CreateKind } from '@/features/growth/drafts';
 import { useDemo } from '@/features/growth/provider';
 import type { GrowthEdge, GrowthNode, GrowthRelationType } from '@/types/growth';
 import { SpaceFiles } from './SpaceFiles';
@@ -48,6 +51,18 @@ type FlowNode = Node<{
   children: number;
   files: number;
   vertical: boolean;
+  /**
+   * 打开这个节点的右键菜单。
+   *
+   * 为什么走 `data` 而不是让节点组件自己拿一份菜单状态:菜单要夹紧在**画布容器**里
+   * (见 `ContextMenu` 的说明),而容器是 `Canvas` 才知道的东西。节点组件自己渲染菜单
+   * 的话,它得先想办法找到那个容器,而 `data` 这条路本来就是 ReactFlow 给子组件传
+   * 上下文的方式。
+   *
+   * `trigger` 是"关掉之后焦点还给谁"—— 用键盘(`Shift+F10`)或点「更多」打开时给按钮,
+   * 鼠标右键时给 `null`(点右键的位置本来就没有焦点可言)。
+   */
+  onMore: (node: GrowthNode, trigger: HTMLElement | null) => void;
 }, 'growth'>;
 
 const colors = {
@@ -75,23 +90,59 @@ function isTextEntry(target: EventTarget | null): boolean {
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
 }
 
+/**
+ * 这一次指针事件是不是落在**真正的空白画布**上。
+ *
+ * ## 为什么不能写 `closest('.react-flow__pane')`
+ *
+ * 那个写法在本仓的 React Flow 版本里**是错的,而且错得看不出来**。实测的 DOM 结构是:
+ *
+ * ```
+ * div.react-flow__pane
+ *   div.react-flow__viewport
+ *     div.react-flow__nodes
+ *       div.react-flow__node      <- 节点在这里面
+ * ```
+ *
+ * 也就是说节点、边、以及我们自己那些浮层**全都是 `.react-flow__pane` 的后代** ——
+ * `closest` 对它们一律返回真。于是"双击节点不会建节点"这句话不成立:双击一张卡片
+ * 会弹出一个新建表单,而它看起来像"这个产品偶尔会乱建东西"。
+ *
+ * ## 判据是"目标**就是**那一层",而 React Flow 自己也是这么判的
+ *
+ * 它内部的 `wrapHandler` 是 `if (event.target !== containerRef.current) return;` ——
+ * 同一个意思。空白处双击/右键时目标是 pane 元素本身(背景那层 SVG 是
+ * `pointer-events: none`,不会把事件截走);点中任何东西时目标是那件东西。
+ * 所以这一条**按构造**排除了节点、边、连接点、工具栏、缩略图、菜单与编辑器,
+ * 而不是靠一份要维护的排除名单。
+ *
+ * 将来若升级 React Flow 且它的类名变了,这里会**整体失效**(什么都建不出来),
+ * 而不是悄悄放开 —— 那种失败方向是对的,端到端验收也会当场红。
+ */
+function onEmptyPane(event: { target: EventTarget | null }): boolean {
+  const target = event.target as HTMLElement | null;
+  return Boolean(target?.classList?.contains('react-flow__pane'));
+}
+
 function GrowthNodeComponent({ data, selected }: NodeProps<FlowNode>) {
   // 这里**不挂 `onDoubleClick`**,而"双击进子空间"这件事本身也已经没有了(步骤 4):
   // 单击开正文与详情,进子空间只走右上角那个箭头按钮(下面那个 `node-enter`)。
   // 两件事拆开之后,节点上就不该再有任何"看时间/看次数"的隐藏语义。
-  const { enterSpace, askArchive } = useDemo();
+  const { enterSpace } = useDemo();
   const node = data.object;
   const sourcePosition = data.vertical ? Position.Bottom : Position.Right;
   const targetPosition = data.vertical ? Position.Top : Position.Left;
+  /** 信息主题不画任务勾选框 —— 它没有"做完"这回事(见 `GrowthNode.purpose`)。 */
+  const isInformation = node.purpose === 'information';
 
   return (
     <div
-      className={`growth-node ${data.root ? 'goal' : node.type} ${node.category ?? ''} ${selected ? 'is-selected' : ''} ${node.status === 'completed' ? 'is-complete' : ''}`}
+      className={`growth-node ${data.root ? 'goal' : node.type} ${isInformation ? 'is-information' : ''} ${node.category ?? ''} ${selected ? 'is-selected' : ''} ${node.status === 'completed' ? 'is-complete' : ''}`}
     >
       {!data.root && <Handle type="target" position={targetPosition} />}
       <div className="node-heading">
         <span className="node-marker" aria-hidden="true">
-          {data.root ? <Flag size={21} /> : node.type === 'task'
+          {data.root ? <Flag size={21} /> : node.type === 'task' && !isInformation
             ? (node.status === 'completed' ? <CheckSquare size={14} /> : <span className="node-task-box" />)
             : <span className="node-title-dot" />}
         </span>
@@ -99,21 +150,43 @@ function GrowthNodeComponent({ data, selected }: NodeProps<FlowNode>) {
       </div>
       {(node.description || data.root) && <p className="node-description">{node.description || '根目标'}</p>}
       {node.status === 'doing' && <span className="node-doing" />}
-      {!data.root && (
-        <button
-          className="node-delete nodrag nopan"
-          aria-label={`归档${node.title}及其子节点`}
-          title={data.children > 0 ? `归档该节点及 ${data.children} 个直接子节点(可以恢复)` : '归档该节点(可以恢复)'}
-          onClick={(event) => {
+      {/*
+        节点上原来常驻一个垃圾桶。**它现在收进菜单里了**(§9.1.1:低频操作收进菜单,
+        让画布更整洁),这个「更多」按钮是那个菜单的入口 —— 也是**触屏唯一的入口**:
+        触屏没有右键,`@media (hover: none)` 下它恒显(见 dark-theme.css)。
+
+        归档那一下没有丢,只是挪了一层:菜单里点「归档」走的还是同一个
+        `askArchive`(先问"这一下会带走什么"),不是直接删。
+
+        **根目标上也有这个按钮**,虽然它那颗垃圾桶原来是有的、后来又不渲染了。
+        理由不是"对称":根目标的归档是**禁用且写明原因**的(§9.1.1),而那句话
+        得有个地方能读出来。少了这个按钮,根目标上唯一能读到原因的路是**右键** ——
+        触屏没有右键,键盘也没有等价入口,于是那句"根目标不能归档"对触屏和键盘
+        用户根本不存在,他们看到的只是"这个节点没有更多操作"。
+      */}
+      <button
+        className="node-more nodrag nopan"
+        aria-haspopup="menu"
+        aria-label={`${node.title}的更多操作`}
+        title="更多操作（右键这个节点也可以）"
+        onClick={(event) => {
+          event.stopPropagation();
+          // 菜单的落点由 `onMore` 那一侧从按钮的 rect 算(见 `openNodeMenu`)——
+          // 键盘那条路(`Shift+F10`)传的是同一个元素,所以两条路落在同一个地方。
+          data.onMore(node, event.currentTarget);
+        }}
+        onKeyDown={(event) => {
+          // `Shift+F10` 是"打开右键菜单"的标准键盘操作。不接的话,键盘用户拿不到
+          // 这个菜单里的任何一项(归档、进入子路径),而那些是这里才有的功能。
+          if (event.key === 'F10' && event.shiftKey) {
+            event.preventDefault();
             event.stopPropagation();
-            // **不直接删。** 先问一句"这一下会带走什么" —— 后代、关系、依赖、场次。
-            // 那些数字由后端算(见 `askArchive`),不是从画布上这份计划里数的。
-            askArchive(node.id);
-          }}
-        >
-          <Trash2 size={12} />
-        </button>
-      )}
+            data.onMore(node, event.currentTarget);
+          }
+        }}
+      >
+        <MoreHorizontal size={13} />
+      </button>
       {!data.root && (
         <button
           className="node-enter nodrag"
@@ -256,9 +329,10 @@ const CANVAS_LIFECYCLE_LIMIT = 50;
 function Canvas() {
   const {
     growth, selectedId, select, positions, commitNodeMove, spaceId, workspaceId, canvasKey, viewports, setScopeViewport,
-    // `enterSpace` **不在这里取**:进入子空间只剩节点右上角那个按钮(在自己的
-    // 子组件里取,见 `GrowthNodeComponent`)和面包屑。画布本身不再需要它 ——
-    // 这是拆开单击语义之后顺带掉下来的一处:那条双击路径是它在这里唯一的用处。
+    // `enterSpace` / `askArchive` 又回到这里了:**节点的右键菜单**是它们的第三个入口
+    // (前两个是节点上那个箭头按钮和工具栏)。它们都在**画布这一层**打开菜单,所以
+    // 取在这里;节点子组件里那一份只管自己那个箭头。
+    enterSpace, askArchive,
     addNode, updateNode, saveNodeBody, addRelation, updateRelation, removeRelation,
     files, isRealSpace, planSaving, planLoading, planError, setPlanError,
     layoutReady, layoutError, retryLayoutSave,
@@ -267,7 +341,7 @@ function Canvas() {
     archiveOpen, setArchiveOpen, archived, archiveListError, archiveNote, setArchiveNote,
     restoreArchived, restoringId,
   } = useDemo();
-  const { fitView, setViewport } = useReactFlow();
+  const { fitView, setViewport, screenToFlowPosition } = useReactFlow();
   const nodesInitialized = useNodesInitialized();
   const fittedScope = useRef<string | null>(null);
   /** 正在被拖的那个节点**动手前**在哪。见 `onNodeDragStart` / `commitNodeMove`。 */
@@ -395,7 +469,7 @@ function Canvas() {
    */
   const { draft, patch: patchDraft } = useCanvasDraft(workspaceId, canvasKey);
   const {
-    dialog, title, description, type, estimate,
+    dialog, title, description, createKind, estimate, createPosition,
     detailNodeId, detailTitle, detailDescription, detailPriority, detailDeadline, detailEstimate, detailStart, detailEnd,
     relationId, relationType, relationNote, relationSource, relationTarget,
   } = draft;
@@ -409,7 +483,9 @@ function Canvas() {
    * 两个编辑器各清各的:它们理论上可以同时存在(点节点打开详情,再点"新建节点"),
    * 一起清会让另一个跟着没。
    */
-  const closeCreateDialog = () => patchDraft({ dialog: null, title: '', description: '', type: 'task', estimate: '' });
+  const closeCreateDialog = () => patchDraft({
+    dialog: null, title: '', description: '', createKind: 'action', estimate: '', createPosition: null,
+  });
   const closeDetailEditor = () => patchDraft({
     detailNodeId: null, detailTitle: '', detailDescription: '', detailPriority: 'medium',
     detailDeadline: '', detailEstimate: '', detailStart: '', detailEnd: '',
@@ -456,6 +532,25 @@ function Canvas() {
   // 那时退回空间名 —— 对话框上写着「在「」中新建节点」是一句废话。
   const spaceTitle = growth.nodes[spaceId]?.title || growth.title;
 
+  /**
+   * 节点组件拿到的 `onMore`,以及它转手的那个真正的开关。
+   *
+   * 为什么要绕一个 ref:`onMore` 要进下面那个 `useMemo` 的 `data`,而给 `useMemo`
+   * 的依赖加上 `openNodeMenu` 会让它**每次渲染都重算** —— `openNodeMenu` 用到
+   * `enterSpace` / `askArchive`,那两个是 provider 每次渲染都新建的普通函数,身份
+   * 永远不稳定。而那份 memo 走的是整张图的节点与边,不值当为它每帧重算。
+   *
+   * ref 里的那一份在**每次渲染**时被重新赋值(见 `openNodeMenu` 之后那行),
+   * 所以 `handleMore` 调到的永远是最新的闭包,但它自己的身份是恒定的。
+   *
+   * 这两个声明必须在 `useMemo` **之前**:`const` 有暂时性死区,放到后面的话
+   * 这里引用它会直接抛 `TS2448`,而不是悄悄退化成一个过期闭包。
+   */
+  const openNodeMenuRef = useRef<((node: GrowthNode, trigger: HTMLElement | null, point?: { x: number; y: number }) => void) | null>(null);
+  const handleMore = useCallback((node: GrowthNode, trigger: HTMLElement | null) => {
+    openNodeMenuRef.current?.(node, trigger);
+  }, []);
+
   const { nodes, edges } = useMemo(() => {
     const nextNodes: FlowNode[] = [];
     const nextEdges: Edge[] = [];
@@ -482,6 +577,7 @@ function Canvas() {
           children: all.filter((child) => child.parentId === node.id).length,
           files: files.filter((file) => file.ownerId === node.id).length,
           vertical,
+          onMore: handleMore,
         },
         position: dragging[key] ?? positions[key] ?? { x, y },
         selected: selectedId === node.id,
@@ -557,7 +653,7 @@ function Canvas() {
       });
     });
     return { nodes: nextNodes, edges: nextEdges };
-  }, [growth, spaceId, isRootSpace, selectedId, selectedEdgeId, positions, dragging, files, measurements]);
+  }, [growth, spaceId, isRootSpace, selectedId, selectedEdgeId, positions, dragging, files, measurements, handleMore]);
 
   // Initial fit must wait for wrapped text to be measured and layout to settle.
   // Do not re-fit while the user drags or edits an already opened scope.
@@ -601,6 +697,83 @@ function Canvas() {
    * 先跳一下再回来。少这一次跳动,也让"视口是哪来的"只有一个答案。
    */
   const rememberedViewport = viewports[spaceId];
+
+  /* ---------------------------------------------------------------------------
+     右键菜单(§9.1.1)
+     ---------------------------------------------------------------------------
+     两处 `preventDefault`,而且**只有这两处**:
+
+     - `onNodeContextMenu` / `onPaneContextMenu` 是 ReactFlow 给的回调,它们只在
+       画布与节点上触发。**不挂全局 `contextmenu` 监听** —— 那样详情弹窗里的正文
+       textarea、说明输入框都会被吃掉原生菜单,而"选中一段字然后用系统菜单查一下"
+       是这两个框里最正常的操作之一。
+
+     `paneMenu` 里的**不清 `selectedId`**:用户在空白处右键是想在那儿建个东西,
+     不是想取消选中另一个节点。清掉的话菜单关掉之后画布上没有选中项,他会以为
+     自己刚才那一下把选中弄丢了。
+  --------------------------------------------------------------------------- */
+  const [nodeMenu, setNodeMenu] = useState<ContextMenuState | null>(null);
+  const [paneMenu, setPaneMenu] = useState<ContextMenuState | null>(null);
+  /** 菜单挂靠哪个元素夹紧 —— 画布那一层,见 `ContextMenu` 的 `boundary`。 */
+  const canvasRef = useRef<HTMLDivElement>(null);
+
+  /**
+   * 打开一个节点的菜单。
+   *
+   * `trigger` 给了就按**那个元素的 rect** 定位(点「更多」按钮、或键盘 `Shift+F10`),
+   * 没给就用鼠标的 `clientX/clientY`(右键)。两条路都落在"用户刚才指的那个东西"旁边。
+   *
+   * **菜单里的操作对象是传进来的这个 `node`,不是 `selectedId`。** 差别是可测的:
+   * 先点选 A、再右键 B,菜单上那一项必须作用于 **B**。读 `selectedId` 的话它会去归档 A
+   * —— 而用户在菜单上看到的名字是 B,于是"我删了 B,结果 A 没了"。
+   */
+  function openNodeMenu(node: GrowthNode, trigger: HTMLElement | null, point?: { x: number; y: number }) {
+    const at = point ?? (() => {
+      const rect = trigger?.getBoundingClientRect();
+      return rect ? { x: rect.right, y: rect.bottom } : { x: 0, y: 0 };
+    })();
+    const isRoot = node.id === growth.goalId;
+    setPaneMenu(null);
+    setNodeMenu({
+      x: at.x,
+      y: at.y,
+      restoreFocusTo: trigger,
+      items: [
+        // 根目标上不摆「进入子路径」:根目标的子空间**就是**你现在看的这一层
+        // (`spaceId === growth.goalId`),点下去什么都不会发生。一份菜单里摆一项
+        // 按了没反应的,和根目标归档原来那句静默 return 是同一种毛病。
+        ...(isRoot ? [] : [{
+          key: 'enter',
+          label: '进入子路径',
+          icon: <ArrowUpRight size={13} />,
+          onSelect: () => enterSpace(node.id),
+        }]),
+        {
+          key: 'focus',
+          label: '聚焦这个节点',
+          icon: <Crosshair size={13} />,
+          onSelect: () => { void fitView({ nodes: [{ id: node.id }], duration: 220, maxZoom: 1.2, padding: 0.8 }); },
+        },
+        {
+          key: 'archive',
+          label: '归档(可以恢复)',
+          icon: <Trash2 size={13} />,
+          // 根目标删不掉。**禁用要说原因** —— 只给一个灰项的话,用户没有任何办法
+          // 知道为什么。以前这里是**静默 return**(见 `provider.askArchive`),那
+          // 更糟:菜单点下去什么都不会发生,看起来像坏了。
+          disabled: isRoot,
+          disabledReason: isRoot ? '根目标不能归档' : undefined,
+          onSelect: () => askArchive(node.id),
+        },
+      ],
+    });
+  }
+
+  // 每次渲染都把**最新的那一份**放进 ref —— `handleMore` 只认这个 ref,
+  // 而它自己的身份是恒定的(见上面那段说明)。这一行必须在每次渲染都跑,
+  // 所以它是一条普通的赋值语句,不在任何回调或条件里。
+  openNodeMenuRef.current = openNodeMenu;
+
   function openDetail(node: GrowthNode) {
     select(node.id);
     // 真实的预计工时读**原样的分钟数**(`estimateMinutes`),不读那个四舍五入过的小时
@@ -813,11 +986,28 @@ function Canvas() {
   }
 
   return (
-    <div className={`path-canvas ${isRootSpace ? 'root-path' : 'leaf-path'}`}>
+    <div className={`path-canvas ${isRootSpace ? 'root-path' : 'leaf-path'}`} ref={canvasRef}>
       <div className="space-floating-tools">
         {/* 提示里必须写清"怎么连线" —— 拖线这件事没有任何别的入口在教。
-            也说明**点线**能打开编辑器:线很细,不提示的话没人会去点它。 */}
-        <span>单击看正文与详情 · 右上角箭头进入子路径 · 拖动节点右侧圆点连线 · 点线可改关系</span>
+            也说明**点线**能打开编辑器:线很细,不提示的话没人会去点它。
+
+            **双击建节点与右键菜单也必须写在这里。** 这两件事在界面上没有任何
+            可见的形状(空白处没有按钮,节点上的垃圾桶还刚被收进了菜单),不教
+            就真的没人会发现 —— 而"用户不知道能双击"和"这个功能没做"在他那里
+            是同一件事。 */}
+        <span>双击空白处新建节点 · 右键节点打开菜单 · 单击看正文与详情 · 右上角箭头进入子路径 · 拖动节点右侧圆点连线 · 点线可改关系</span>
+        {/*
+          工具栏上这几个按钮与右键菜单**并存,是刻意的**,不是没收干净:
+
+          - 「新建节点」/「添加树叶」:双击空白处那条路要求用户先知道它能双击,
+            而且他可能想建在一个**看得见的位置**(滚动到画布某处),而工具栏这个
+            按钮是"我看得见的一直在那儿的那个入口"。
+          - 「建立关系」「空间文件」**:空间级**操作,不是节点级 —— 它们不属于任何
+            一个节点的右键菜单(在哪个节点上右键都不对)。所以它们没有别的地方可去。
+
+          收进菜单的是**节点级**的低频操作(归档)。判据是"这个操作是不是只对某一个
+          节点成立",不是"这个操作常不常用"。
+        */}
         <button disabled={!canCreate} title={canCreate ? undefined : '正在读取计划…'} onClick={() => { setPlanError(null); patchDraft({ dialog: 'node' }); }}>
           <Plus size={15} />
           {createLabel}
@@ -916,6 +1106,61 @@ function Canvas() {
           if (relation) openRelationEditor(relation);
         }}
         onPaneClick={() => { select(null); setSelectedEdgeId(null); }}
+        /*
+          `screenToFlowPosition` —— **不手搓** `(clientX - rect.left - panX) / zoom`。
+          手搓的那一份在缩放不为 1、或者画布有 padding 的时候就会偏,而偏差是
+          按比例放大的:用户缩到 0.5 倍双击一下,节点落在离指针两倍远的地方。
+          库的这个函数本来就处理了 `transform`,没有理由自己再推一遍。
+        */
+        onDoubleClick={(event) => {
+          // 与工具栏那个按钮**同一个闸门**。用 `isRealSpace` 是不够的:计划还没到的时候
+          // `spaceId` 是哨兵值 `'goal'`,那时建节点发出去就是 422(见 `canCreate`)。
+          if (!canCreate || dialog !== null) return;
+          // **正向判定**:双击必须落在画布空白处。写成"排除节点、排除边、排除工具栏"
+          // 那种名单是维护不完的 —— 加一个浮层就漏一个。判据见 `onEmptyPane`:
+          // 目标是"那一层本身"才算,于是节点、边、连接点、工具栏、菜单、编辑器
+          // 全都按构造不满足。
+          if (!onEmptyPane(event)) return;
+          setPlanError(null);
+          const point = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+          // 建出来的是**当前层级的同级主题**节点,不是新建一个独立工作空间 ——
+          // 所以父节点是 `spaceId`(当前这一层),不是根目标。
+          patchDraft({ dialog: 'node', createKind: 'topic', createPosition: point });
+        }}
+        onNodeContextMenu={(event, node) => {
+          event.preventDefault();
+          openNodeMenu(node.data.object, null, { x: event.clientX, y: event.clientY });
+        }}
+        onPaneContextMenu={(event) => {
+          event.preventDefault();
+          // **这个回调不只在空白处触发。** 实测:右键工具栏那一条也会走到这里
+          // —— 因为工具栏是画在 `.react-flow__pane` **里面**的(见 `onEmptyPane`)。
+          // 所以这里必须自己再判一次,否则用户在某个按钮上右键会得到一个
+          // 悬在工具栏上的"在这里新建节点"。
+          if (!onEmptyPane(event)) return;
+          setPlanError(null);
+          // 流坐标**在开菜单这一步就算好**,不在 `onSelect` 里算 —— 后者是在菜单已经
+          // 开着、可能过了几秒之后才跑的,那时用户若顺手滚过滚轮,算出来的位置就不是
+          // 他右键的那一点了。
+          const point = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+          setNodeMenu(null);
+          setPaneMenu({
+            x: event.clientX,
+            y: event.clientY,
+            restoreFocusTo: null,
+            items: [
+              {
+                key: 'create',
+                label: '在这里新建节点',
+                icon: <Plus size={13} />,
+                onSelect: () => {
+                  // **不清 `selectedId`** —— 右键空白处不是"取消选中"。
+                  patchDraft({ dialog: 'node', createKind: 'topic', createPosition: point });
+                },
+              },
+            ],
+          });
+        }}
         onNodeDragStart={(_, node) => {
           // 拖动开始那一刻它在哪儿。撤销要把它摆回**这一帧**,而不是"删掉它的位置" ——
           // 节点第一次被拖动时位置表里没有它,删键只在本地看着对,刷新就会被库里那份
@@ -993,6 +1238,16 @@ function Canvas() {
           </button>
         </div>
       )}
+      {/*
+        两个菜单都渲染在这里(而不是在节点组件里),因为定位要按**画布容器**夹紧,
+        而容器是这一层才知道的。同一时刻只可能开一个 —— 打开任一个都会把另一个关掉。
+      */}
+      {nodeMenu && (
+        <ContextMenu state={nodeMenu} onClose={() => setNodeMenu(null)} boundary={canvasRef.current} />
+      )}
+      {paneMenu && (
+        <ContextMenu state={paneMenu} onClose={() => setPaneMenu(null)} boundary={canvasRef.current} />
+      )}
       <button
         className="focus-button"
         disabled={!selectedId || !nodes.some((node) => node.id === selectedId)}
@@ -1016,12 +1271,28 @@ function Canvas() {
               setSubmitting(true);
               // **失败了就不关弹窗。** 关掉的话用户看到的是"我填了、点了、没了",
               // 而失败原因在下面那行红字里 —— 他得看得见才谈得上重试。
-              const created = await addNode(title, type, description, parseEstimate(estimate));
+              const kind = CREATE_KINDS[createKind];
+              const created = await addNode({
+                title,
+                nodeType: kind.nodeType,
+                purpose: kind.purpose,
+                description,
+                // 信息主题**不带工时** —— 它不进排期,工时对它没有意义(§4.1)。
+                // 界面上那个输入框对它是隐藏的,这里再挡一次:用户先填了工时、
+                // 再把类型改成「主题 / 方向」,那一串数字还在草稿里,不该跟着提交上去。
+                estimateMinutes: kind.purpose === 'planning' ? parseEstimate(estimate) : null,
+                position: createPosition,
+              });
               setSubmitting(false);
               if (!created) return;
               // 建成了才丢草稿:这一份已经变成库里的节点了。
               closeCreateDialog();
-              setTimeout(() => void fitView({ duration: 200, padding: 0.2, maxZoom: 1 }), 80);
+              // **双击那条路不再自动 fit。** 用户刚刚亲手指定了位置,把画面重新摆一遍
+              // 等于把他自己那一下抹掉 —— 而且他双击之后节点就在眼前,不需要"带我去看"。
+              // 工具栏那条路仍然 fit:那里没有指定过位置,节点可能落在视野之外。
+              if (!createPosition) {
+                setTimeout(() => void fitView({ duration: 200, padding: 0.2, maxZoom: 1 }), 80);
+              }
             }}
           >
             <label>
@@ -1034,13 +1305,25 @@ function Canvas() {
                 placeholder="一个想法、一个行动，或新的方向"
               />
             </label>
+            {/*
+              选择器问的是**"你要加的是什么"**,不是"节点类型"。
+              每一项映射到一对 `(purpose, nodeType)`(见 `CREATE_KINDS`)——
+              用户不需要知道这两个后端字段的区别,而不问用途的后果是:
+              他建了一个"主题",然后在那里填工时、看见勾选框、最后发现它排不进日历。
+            */}
             <label>
               {isRootSpace ? '节点类型' : '树叶类型'}
-              <select value={type} onChange={(event) => patchDraft({ type: event.target.value as GrowthNode['type'] })}>
-                <option value="task">行动</option>
-                <option value="capability">能力 / 方向</option>
-                <option value="milestone">里程碑</option>
+              <select
+                value={createKind}
+                onChange={(event) => patchDraft({ createKind: event.target.value as CreateKind })}
+              >
+                {(Object.keys(CREATE_KINDS) as CreateKind[]).map((key) => (
+                  <option key={key} value={key}>{CREATE_KINDS[key].label}</option>
+                ))}
               </select>
+              <small className="field-hint">{CREATE_KINDS[createKind].purpose === 'information'
+                ? '记下来的一件事或一个方向,不排进日历。'
+                : '要去做的一件事,可以排进日历。'}</small>
             </label>
             <label>
               {isRootSpace ? '节点说明（可选）' : '树叶说明'}
@@ -1054,8 +1337,12 @@ function Canvas() {
             {/* 预计工时。**只有真实空间问它** —— 示例空间没有排期算法,问了也
                 没有东西会用它,而一个填了却没有下文的输入框是在骗人。
                 放在这里而不是"建完再说",是因为排期读的正是这个字段:一个没有
-                工时的任务排不进任何一天。 */}
-            {isRealSpace && (
+                工时的任务排不进任何一天。
+
+                **信息主题根本不问。** 它不是"暂时留空",是这个问题对那一类节点
+                不成立 —— 给一个不进日历的东西问"要做多久",用户会开始怀疑
+                自己刚才选的是什么。 */}
+            {isRealSpace && CREATE_KINDS[createKind].purpose === 'planning' && (
               <label>
                 预计要做多久（分钟）
                 <input
@@ -1276,7 +1563,37 @@ function Canvas() {
             </div>
             <p>{isRealSpace ? '正文边写边存（停手即存）；下面这个按钮保存名称、优先级与时间，会产生一个新的计划版本。进入子路径请用节点右上角的箭头。' : '在这里保存的说明会保留在当前成长空间。'}</p>
             {isRealSpace && planError && <p className="form-error" role="alert">{planError}</p>}
-            <button className="primary-button" disabled={!detailTitle.trim() || planSaving}>{planSaving ? '保存中…' : '保存节点'}</button>
+            {/* 详情里**也要**有一个归档入口(§9.1.1:「节点详情中保留可发现的『更多/归档』入口」)。
+                它的必要性不在"多一个入口",而在**右键菜单在触屏上不存在** —— 节点上那个
+                「更多」按钮是触屏的入口,而这个按钮在**弹窗里**,弹窗打开时节点已经被盖住了。
+                要把一个节点收起来的人,正看着它的资料时应该就能做到,不用先关掉弹窗。 */}
+            <div className="node-form-actions">
+              <button className="primary-button" disabled={!detailTitle.trim() || planSaving}>{planSaving ? '保存中…' : '保存节点'}</button>
+              {isRealSpace && (
+                <>
+                  <button
+                    type="button"
+                    className="danger-button"
+                    disabled={detailNode.id === growth.goalId}
+                    title={detailNode.id === growth.goalId ? '根目标不能归档' : '收起来,以后可以在「归档」里恢复'}
+                    onClick={() => { closeDetailEditor(); askArchive(detailNode.id); }}
+                  >
+                    <Trash2 size={13} />
+                    归档
+                  </button>
+                  {/*
+                    原因要**印出来**,不能只写在那句 `title` 上。
+                    这里是个原生 `disabled` 按钮,而原生禁用的按钮**不触发鼠标事件、
+                    也没法聚焦** —— 于是那句 title 在 Chrome 上根本弹不出来,屏幕阅读器
+                    也读不到。结果就是"一个灰掉的按钮,用户没有任何办法知道为什么",
+                    和菜单里那条禁用项要写 `disabledReason` 是同一件事。
+                  */}
+                  {detailNode.id === growth.goalId && (
+                    <small className="field-hint">根目标不能归档</small>
+                  )}
+                </>
+              )}
+            </div>
           </form>
           {/* AI 分析。**在表单外面** —— 它不是这个节点的一个字段,提交那个按钮
               跟它没有关系;混进 `<form>` 里会让"保存节点"的含义变得含糊。

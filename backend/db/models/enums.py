@@ -28,6 +28,31 @@ class NodeType(StrEnum):
     MILESTONE = "milestone"
 
 
+class NodePurpose(StrEnum):
+    """这个节点是**用来排期的**,还是**只用来记事**的。
+
+    **与 `NodeType` 正交,不是它的第六个成员。** 规范 §2.5 把这件事说得很清楚:
+    "信息用途"与 Goal/Project/Task 的规划层级是不同维度。一个 `task` 可以是待办,
+    也可以是一份"我知道了这个事实"的记录 —— 前者要占日历,后者不能。
+
+    为什么必须单独一列而不是只靠 `node_type` 推断:`capability` 今天既被用来表示
+    "我要练出这个能力"(要排期),也被用来表示"我了解到的情况"(不要排期)。**同一个
+    类型值承载两种相反的排期语义**,靠类型推断就一定要在某个地方写一张猜的表,
+    而那张表没法回答"用户到底想要哪一种"。让用户建的时候明说,问题就消失了。
+
+    排期语义(§5.2、§4.1):
+    - `PLANNING`:参与排期。要有工时才有得排,可以被依赖。
+    - `INFORMATION`:信息主题。**不需要工时、完成勾选或截止日期**,不进排期预览、
+      不计入完成度,也不能作为硬排期依赖的端点。
+
+    默认 `PLANNING` —— 存量节点在加这一列之前全都按可排期对待,默认值必须保持
+    它们的行为不变(见迁移 docstring:"升级后没有任何节点的排期行为发生变化")。
+    """
+
+    PLANNING = "planning"
+    INFORMATION = "information"
+
+
 class NodeStatus(StrEnum):
     PENDING = "pending"
     DOING = "doing"

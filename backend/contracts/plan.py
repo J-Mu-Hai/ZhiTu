@@ -44,6 +44,10 @@ class PlanNodePayload(ApiModel):
     description: str | None = None
     acceptance_criteria: str | None = None
     node_type: str
+    #: 用途轴(`planning` / `information`)。与 `node_type` **正交** ——
+    #: "这是什么事"和"这件事要不要占日历"是两个问题。
+    #: 见 `db/models/enums.py` 的 `NodePurpose`。
+    purpose: str = "planning"
     status: str
     priority: str
     #: 预计工时(分钟)。是排期的输入,不是排期结果。
@@ -251,6 +255,11 @@ class PlanPayload(ApiModel):
     sessions: list[SessionPayload] = Field(default_factory=list)
     #: 计划里有多少个节点、多少个已完成。由服务端算 —— 前端数 `nodes.length` 的话,
     #: 一旦将来按需分页,这两个数字就会悄悄变成"当前这一页的数量"。
+    #:
+    #: **两者都只数 `purpose == planning` 的节点**(§2.5)。它们回答的是"我还有多少事
+    #: 要做",而一个信息主题(「我排名 38」)没有"做不做完"这回事 —— 把它算进去,
+    #: 进度条会永远差那么几格,而用户找不到那几格是什么。于是它们**不等于**
+    #: `len(nodes)`,这两个数各自要按用途过滤。
     total_nodes: int = 0
     completed_nodes: int = 0
 
@@ -266,6 +275,9 @@ class CreateNodeRequest(ApiModel):
     parent_id: uuid.UUID
     title: str
     node_type: str = "task"
+    #: 默认 `planning`:不传就是"这是个要排期的东西",与加这一列之前的语义一致。
+    #: 双击空白处建出来的"主题/方向"传 `information`(见 `PathView.tsx`)。
+    purpose: str = "planning"
     description: str | None = None
     acceptance_criteria: str | None = None
     priority: str = "medium"
@@ -285,6 +297,9 @@ class UpdateNodeRequest(ApiModel):
     description: str | None = None
     acceptance_criteria: str | None = None
     node_type: str | None = None
+    #: 可以把一个节点改成信息主题,也可以改回来。改过去不需要先清掉工时/截止 ——
+    #: 清理由调用方决定(见 `information_node_conflicts`),不是隐式副作用。
+    purpose: str | None = None
     status: str | None = None
     priority: str | None = None
     estimate_minutes: int | None = None

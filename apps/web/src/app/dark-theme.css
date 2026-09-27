@@ -35,7 +35,7 @@
 :root{color-scheme:light;--bg:#f8f7f2;--sidebar:#fffefa;--surface:#ffffff;--line:#d9e3e9;--text:#23364c;--muted:#6f8293;--blue:#5e93c7;--academic:#6c9bd1;--research:#73a99c;--experience:#d99b62;--personal:#9a8ccb;--ink-0:#f8f7f2;--ink-1:#fffefa;--ink-2:#f2f7f8;--ink-3:#eaf2f6;--ink-4:#e1edf2;--line-soft:rgba(93,124,145,.18);--line-strong:rgba(93,124,145,.3);--shadow-panel:0 12px 30px rgba(76,101,119,.12)}
 html,body,.app-shell,.app-main,.workbench,.workbench-body{background:#f8f7f2;color:#23364c}body{background-image:radial-gradient(circle at 24% -15%,rgba(194,220,237,.68),transparent 36%),radial-gradient(circle at 90% 0,rgba(220,235,225,.55),transparent 29%)}
 .top-navigation,.space-topbar{background:rgba(255,254,250,.9);border-color:#dce6e8;box-shadow:0 5px 20px rgba(73,101,120,.08)}.top-brand,.space-breadcrumb button,.space-breadcrumb>span:last-child button{color:#29445f}.top-brand small,.top-goal,.top-navigation nav a,.space-breadcrumb>span{color:#688096}.top-navigation nav a:hover,.top-navigation nav a.active{color:#356693;background:#edf6fc}.top-profile{background:#edf6fc;border-color:#c8deeb;color:#376b96}.workspace{background-color:#fbfaf6;background-image:radial-gradient(#cddde3 .7px,transparent .7px);background-size:17px 17px}.space-floating-tools button,.focus-button{background:#fffefa;border-color:#d5e2e7;color:#4f6b83;box-shadow:0 6px 16px rgba(83,111,130,.08)}
-.growth-node{color:#31485e}.growth-node.goal{background:linear-gradient(145deg,#e4f1ff,#d3e9fc);border-color:#9bc6e7;box-shadow:0 12px 26px rgba(86,139,183,.16);color:#4a82b6}.growth-node.goal strong{color:#2b4d6e}.growth-node.goal span{color:#66849e}.growth-node.capability{background:#f8fbfb;background-image:none;border-color:color-mix(in srgb,var(--semantic) 42%,#dce8e7);box-shadow:0 7px 18px rgba(87,111,125,.08)}.growth-node.capability strong{color:#30475c}.growth-node.capability span,.leaf-summary{color:#728596}.growth-node.task,.growth-node.milestone{background:#fffefa;background-image:none;border-color:#d9e5e8;border-left-color:var(--semantic);box-shadow:0 5px 14px rgba(83,106,119,.08);color:#385066}.growth-node.is-selected{background:#eef7fc;border-color:#85b8dc;box-shadow:0 0 0 3px rgba(119,176,215,.17),0 8px 18px rgba(86,123,148,.1)}.node-bullet{color:var(--semantic);display:grid;place-items:center;width:15px;height:15px}.node-category-dot{width:9px;height:9px;border-radius:50%;background:var(--semantic);box-shadow:0 0 0 4px color-mix(in srgb,var(--semantic) 13%,transparent);flex-shrink:0}.node-enter{background:#eef6fb;border-color:#c3dce9;color:#4c80aa;box-shadow:0 4px 10px rgba(83,113,132,.12)}.node-delete{background:#fff4f0;border-color:#e6bdb2;color:#bd6d5d}.react-flow__minimap,.react-flow__controls-button{background:#fffefa!important;border-color:#d6e2e7!important}.react-flow__controls{border-color:#d6e2e7!important;box-shadow:0 6px 16px rgba(83,111,130,.1)!important}.react-flow__controls-button{fill:#56738d!important}.conversation-overlay{background:linear-gradient(90deg,transparent,rgba(244,250,250,.72))}.floating-conversation .conversation-panel{background:transparent}.floating-conversation .message{background:#fffefa;border:1px solid #d9e8ed;box-shadow:0 7px 20px rgba(79,106,123,.08)}.message-text,.floating-conversation .message-text{color:#395168}.composer{background:#fffefa;border-color:#cddfe7}.composer textarea{color:#2d465d}.demo-dialog{background:#fffefa;border-color:#d2e1e7;box-shadow:0 18px 48px rgba(73,99,117,.18)}.node-editor-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}.node-editor-grid label{min-width:0}.node-editor-grid input,.node-editor-grid select{width:100%}
+.growth-node{color:#31485e}.growth-node.goal{background:linear-gradient(145deg,#e4f1ff,#d3e9fc);border-color:#9bc6e7;box-shadow:0 12px 26px rgba(86,139,183,.16);color:#4a82b6}.growth-node.goal strong{color:#2b4d6e}.growth-node.goal span{color:#66849e}.growth-node.capability{background:#f8fbfb;background-image:none;border-color:color-mix(in srgb,var(--semantic) 42%,#dce8e7);box-shadow:0 7px 18px rgba(87,111,125,.08)}.growth-node.capability strong{color:#30475c}.growth-node.capability span,.leaf-summary{color:#728596}.growth-node.task,.growth-node.milestone{background:#fffefa;background-image:none;border-color:#d9e5e8;border-left-color:var(--semantic);box-shadow:0 5px 14px rgba(83,106,119,.08);color:#385066}.growth-node.is-selected{background:#eef7fc;border-color:#85b8dc;box-shadow:0 0 0 3px rgba(119,176,215,.17),0 8px 18px rgba(86,123,148,.1)}.node-bullet{color:var(--semantic);display:grid;place-items:center;width:15px;height:15px}.node-category-dot{width:9px;height:9px;border-radius:50%;background:var(--semantic);box-shadow:0 0 0 4px color-mix(in srgb,var(--semantic) 13%,transparent);flex-shrink:0}.node-enter{background:#eef6fb;border-color:#c3dce9;color:#4c80aa;box-shadow:0 4px 10px rgba(83,113,132,.12)}.node-more{background:#eef6fb;border-color:#c3dce9;color:#4c80aa}.react-flow__minimap,.react-flow__controls-button{background:#fffefa!important;border-color:#d6e2e7!important}.react-flow__controls{border-color:#d6e2e7!important;box-shadow:0 6px 16px rgba(83,111,130,.1)!important}.react-flow__controls-button{fill:#56738d!important}.conversation-overlay{background:linear-gradient(90deg,transparent,rgba(244,250,250,.72))}.floating-conversation .conversation-panel{background:transparent}.floating-conversation .message{background:#fffefa;border:1px solid #d9e8ed;box-shadow:0 7px 20px rgba(79,106,123,.08)}.message-text,.floating-conversation .message-text{color:#395168}.composer{background:#fffefa;border-color:#cddfe7}.composer textarea{color:#2d465d}.demo-dialog{background:#fffefa;border-color:#d2e1e7;box-shadow:0 18px 48px rgba(73,99,117,.18)}.node-editor-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}.node-editor-grid label{min-width:0}.node-editor-grid input,.node-editor-grid select{width:100%}
 
 html,
 body {
@@ -249,7 +249,15 @@ select {
   box-shadow: 0 5px 15px rgba(0, 0, 0, 0.32);
 }
 
-.node-delete {
+/**
+ * 节点上那个「更多」按钮 —— 右键菜单的可见入口(§9.1.1)。
+ *
+ * 它取代了原来的 `.node-delete`(常驻垃圾桶)。**配色跟着换了**:原来那套红底
+ * 是在说"按我会删东西",而现在这个按钮只负责**打开菜单**,菜单里三件事有两件
+ * (进入子路径、聚焦)是无害的。留红色的话,用户会以为节点上还挂着一个删除键,
+ * 而它现在只是一个菜单把手。
+ */
+.node-more {
   position: absolute;
   z-index: 3;
   top: -10px;
@@ -259,26 +267,167 @@ select {
   width: 24px;
   height: 24px;
   padding: 0;
-  border: 1px solid #673d45;
+  border: 1px solid #38516f;
   border-radius: 50%;
-  color: #d18a94;
-  background-color: #2b1820;
+  color: #aecbf1;
+  background-color: #182638;
   box-shadow: 0 6px 16px rgba(0, 0, 0, 0.38);
   opacity: 0;
   transform: translateY(2px) scale(0.9);
   transition: opacity 0.16s ease, transform 0.16s ease, background-color 0.16s ease;
 }
 
-.growth-node:hover .node-delete,
-.node-delete:focus-visible {
+.growth-node:hover .node-more,
+.node-more:focus-visible {
   opacity: 1;
   transform: translateY(0) scale(1);
 }
 
-.node-delete:hover {
+.node-more:hover {
+  color: #e8f2ff;
+  background-color: #22364f;
+  border-color: #4c6a8e;
+}
+
+/**
+ * 菜单开着的时候,入口按钮**必须一直亮着**。
+ *
+ * 菜单开在按钮的右下方,指针一挪过去就离开了节点 —— `:hover` 没了,于是按钮淡成
+ * `opacity: 0`,而它旁边正挂着一个菜单。看起来像"按钮自己消失了"。`aria-expanded`
+ * 由菜单自己写上(见 `ContextMenu.tsx`),这里只是把那个状态画出来。
+ */
+.node-more[aria-expanded='true'] {
+  opacity: 1;
+  transform: none;
+}
+
+/**
+ * **触屏上它必须一直看得见。**
+ *
+ * 上面那套"悬停才显露"在触屏上等于不存在 —— 没有悬停这回事,所以那个按钮永远
+ * 是 `opacity: 0`:看得见画布、点得到节点,但删不掉任何东西,而且看不出少了什么。
+ * 触屏也没有右键,所以这个按钮是**唯一的**菜单入口;藏起来就是把这个功能取消了。
+ */
+@media (hover: none) {
+  .node-more {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/**
+ * 右键菜单本体。**`position: fixed`** —— 它挂在 `document.body` 上,坐标是屏幕坐标
+ * (指针的 `clientX/clientY`),不是某个祖先的坐标系。用 `absolute` 的话落点会随
+ * 最近的定位祖先漂移,而那个祖先是谁取决于画布外面套了几层。
+ */
+.context-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 168px;
+  padding: 4px;
+  border: 1px solid #2b3a4d;
+  border-radius: 9px;
+  background-color: #111a26;
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.46);
+  outline: none;
+  /* 初始藏着,由 `ContextMenu` 的 layout effect 在**画出来之前**定位并显形。
+     写在 CSS 而不是内联 `style` 上,是因为那个组件刻意不持有 `style` 属性 ——
+     理由见它里面那段注释(内联 style 会让 React 把显形这件事抹回去)。
+     元素即使 hidden 也照常有布局,所以定位那一量还是量得准的。 */
+  visibility: hidden;
+}
+
+.context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 6px;
+  color: #d5e2f2;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.context-menu-item:hover:not(.is-disabled),
+.context-menu-item:focus-visible:not(.is-disabled) {
+  background-color: #1d2c3f;
+  outline: none;
+}
+
+.context-menu-item.is-disabled {
+  color: #6b7b90;
+  cursor: not-allowed;
+}
+
+.context-menu-icon {
+  display: grid;
+  place-items: center;
+  color: #8fa7c4;
+}
+
+.context-menu-item.is-disabled .context-menu-icon {
+  color: #5a6879;
+}
+
+.context-menu-label {
+  flex: 1;
+}
+
+/**
+ * 禁用原因。**印出来,不只放 `title`** —— title 要悬停几百毫秒才出现,而触屏
+ * 根本没有悬停,可触屏恰恰是这个菜单唯一的入口(见上面 `@media (hover: none)`)。
+ */
+.context-menu-why {
+  color: #6b7b90;
+  font-size: 0.78em;
+}
+
+/** 详情弹窗底部的两个动作。归档与保存并排,但**保存是主、归档是次**。 */
+.node-form-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.danger-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 14px;
+  border: 1px solid #673d45;
+  border-radius: 8px;
+  color: #d18a94;
+  background-color: #2b1820;
+  font: inherit;
+  cursor: pointer;
+}
+
+.danger-button:hover:not(:disabled) {
   color: #ffe5e8;
   background-color: #5a2732;
   border-color: #92515d;
+}
+
+.danger-button:disabled {
+  color: #6b7b90;
+  border-color: #34404f;
+  background-color: #1a2028;
+  cursor: not-allowed;
+}
+
+/**
+ * 信息主题(用途轴上的 `information`)。
+ *
+ * 它不排期、不勾完成,所以视觉上要**与任务分开**:虚线边框说"这一条不是待办",
+ * 而实线边框在画布上已经等于"这是一件要做的事"了。边框颜色不去动 —— 那一条
+ * 是按 `category` 上色的,与用途无关。
+ */
+.growth-node.is-information {
+  border-style: dashed;
 }
 
 .node-file-count {
@@ -880,7 +1029,7 @@ body {
   box-shadow: 0 0 0 3px rgba(119, 176, 215, 0.17), 0 8px 18px rgba(86, 123, 148, 0.1);
 }
 .node-enter { color: #4c80a9; background-color: #edf6fb; border-color: #c3dce8; box-shadow: 0 4px 10px rgba(83, 113, 132, 0.12); }
-.node-delete { color: #b96859; background-color: #fff3ef; border-color: #e6bdb2; }
+.node-more { color: #4c80aa; background-color: #eef6fb; border-color: #c3dce9; }
 .node-file-count { color: #607b91; }
 
 .react-flow__minimap { background: rgba(255, 254, 250, 0.94) !important; border-color: #d6e2e6 !important; box-shadow: 0 8px 18px rgba(83, 111, 130, 0.1); }

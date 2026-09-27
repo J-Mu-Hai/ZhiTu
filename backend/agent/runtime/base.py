@@ -110,6 +110,14 @@ class PlanNodeView:
     depth: int
     deadline: str | None = None
     estimate_minutes: int | None = None
+    #: `planning`(要排期)还是 `information`(只记事)。**与 `node_type` 正交** ——
+    #: 模型需要它才能看懂"这个节点不该有工时、也不该被排进日历"。
+    #: 让模型看见只是告知;拦它的是服务端(`proposal_validation` 与 `node_service`)。
+    #:
+    #: 排在这里是为遵守 dataclass 的字段顺序:带默认值的字段必须在所有不带默认值的
+    #: 字段之后,否则 `@dataclass` 在**导入时**就抛 `TypeError` —— 症状是整个测试
+    #: 收集阶段直接中断,而不是某一条用例变红。
+    purpose: str = "planning"
     #: 父节点的记号。根目标为 None。用来让模型看清自己拿到的是一棵树,而不是一张表。
     parent_handle: str | None = None
     description: str | None = None
