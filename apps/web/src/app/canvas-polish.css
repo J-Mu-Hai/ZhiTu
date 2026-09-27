@@ -149,6 +149,25 @@
 }
 .layout-save-error button { background: #fff; color: #a85341; border-color: #d9a795; }
 .layout-save-error button:hover { background: #fbeae4; color: #8f3f2d; }
+/* 撤销那一步里有东西已经被归档了。**它不是错误**(撤销本身成了),所以沿用
+   `.space-floating-tools > button` 那一套浅雾蓝,而不是上面那一条的杏色 ——
+   用错误色会让用户以为自己操作错了,而他要做的是去「归档」里找回那一个。 */
+.layout-history-note {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 7px 6px 11px;
+  border: 1px solid #d4e2ec;
+  border-left-width: 2px;
+  border-radius: 0 4px 4px 0;
+  background: #f0f7fc;
+  color: #28577f;
+  font-size: 10px;
+  line-height: 1.7;
+}
+.layout-history-note button { background: #fff; color: #425e77; border-color: #d4e2ec; }
+.layout-history-note button:hover { background: #edf5fb; color: #28577f; }
 @media (max-width: 600px) {
   .path-canvas .growth-node { max-width: 270px; }
 }

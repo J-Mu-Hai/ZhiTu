@@ -1,9 +1,18 @@
 'use client';
-import { Suspense, createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode, type SetStateAction } from 'react';
+import { Suspense, createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import type { AISettings, Conversation, FileAsset, GrowthNode, GrowthRelationType, JournalEntry, Message, PlanAction } from '@/types/growth';
 import { dayNumber, todayInTimeZone } from './timeline';
 import { PLACEHOLDER_ROOT_ID, emptyGrowth, planToGrowth } from './planProjection';
+import {
+  applyPatch,
+  emptyHistory,
+  recordEdit,
+  redoEdit,
+  undoEdit,
+  type LayoutHistory,
+  type PositionMap,
+} from './layoutHistory';
 import { useAuth } from '@/features/auth/provider';
 import type { AccountProfile } from '@/features/auth/types';
 import { workspaceStorageKey } from './workspaces';
@@ -160,7 +169,7 @@ function loadLocalPrefs(user: AccountProfile | null, space: SpaceInfo): LocalPre
  */
 const LAYOUT_SAVE_DEBOUNCE_MS = 600;
 
-/** 两份位置表是不是一模一样。见 `setPositions` 里为什么需要它。 */
+/** 两份位置表是不是一模一样。见 `applyPositions` 里为什么需要它。 */
 function samePositions(
   a: Record<string, { x: number; y: number }>,
   b: Record<string, { x: number; y: number }>,
@@ -578,20 +587,25 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
   }, [flushLayout]);
 
   /**
-   * 节点位置。**值没变就不算改动。**
+   * 位置上所有写入口共用的那一段:**镜像 → state → 记下"用户动过" → 排一次保存**。
    *
-   * 这一条不是省事:拖动结束时 ReactFlow 会连着报几次,而"点了但没挪动"也会报一次。
-   * 不比较的话,那些都不会产生新的位置,却会各排一次保存 —— 库里那一行一个字节
-   * 都不会变,而界面上"刚才那下到底存上没有"变成了一个没有答案的问题。
+   * 抽出来是因为它现在有三个调用方(拖拽结束、撤销、重做),而这三条路
+   * 必须**一模一样**地落库 —— 尤其是撤销:它如果自己写一份 `PUT`,就会和正在飞的那
+   * 一趟抢着写,而"旧请求最后落地"的表现是"撤销之后刷新,节点又跳回拖到的位置"。
+   * 让它走同一个 `scheduleLayoutSave`,序列化就还是那一份(`inFlight` + `dirty` 的循环),
+   * 不需要第二个真相。
+   *
+   * 返回"真的改了吗":没改的话调用方不必当自己做过什么(撤销尤其需要 —— 补丁全被
+   * 跳过时,那一步什么都没发生)。
    */
-  const setPositions = useCallback((updater: SetStateAction<Record<string, { x: number; y: number }>>) => {
-    const next = typeof updater === 'function' ? updater(positionsRef.current) : updater;
-    if (next === positionsRef.current || samePositions(next, positionsRef.current)) return;
+  const applyPositions = useCallback((next: Record<string, { x: number; y: number }>): boolean => {
+    if (next === positionsRef.current || samePositions(next, positionsRef.current)) return false;
     // 立刻更新镜像:同一串连续改动里,后一次读到的是前一次的结果(而不是上一次渲染的)。
     positionsRef.current = next;
     setPositionsRaw(next);
     layoutTouched.current = true;
     scheduleLayoutSave();
+    return true;
   }, [scheduleLayoutSave]);
 
   /**
@@ -614,6 +628,91 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     layoutTouched.current = true;
     scheduleLayoutSave();
   }, [scheduleLayoutSave]);
+
+  // ---------------------------------------------------------------------------------
+  // 布局的撤销/重做(步骤 4 之前的那一小步)
+  // ---------------------------------------------------------------------------------
+  //
+  // **只管位置**,理由与"为什么不能借它恢复业务数据"都写在 `layoutHistory.ts` 的文件头。
+  // 这里只补一件那个文件看不到的事:**它和保存队列的关系**。
+  //
+  // 撤销走的是 `applyPositions` —— 也就是拖动走的那一条。于是"撤销时正好有一趟 PUT
+  // 在飞"这件事不需要任何新机制:`flushLayout` 那圈循环在每次 `await` 回来之后都要再看
+  // 一眼 `dirty`,而撤销把它置成了 true,所以那一趟回来之后会**用撤销后的位置再发一份**。
+  // 反过来做(给撤销单开一个 PUT)就会有两个写者,而谁最后落地是不确定的。
+  //
+  // 视口**不进历史**。它是"我正看着哪儿",不是"我把东西摆在哪":自动 fit 和切层级都会
+  // 写它,并进来的话,用户按 Ctrl+Z 有时是"把节点挪回去"、有时只是"把画面挪回去"——
+  // 而"我刚才那一下到底撤掉了什么"必须是可以预期的。
+
+  /** 这份历史属于谁:`<账号>:<空间>`。两边都变了才该丢历史,所以两个都进键。 */
+  const historyOwner = `${user?.id ?? 'anonymous'}:${space.id}`;
+  const [layoutHistory, setLayoutHistoryRaw] = useState<LayoutHistory>(() => emptyHistory(historyOwner));
+  /** 镜像。撤销/重做要在**最新的一份**上算,而不是这次渲染开始时的那一份。 */
+  const historyRef = useRef(layoutHistory);
+  const setLayoutHistory = useCallback((next: LayoutHistory) => {
+    historyRef.current = next;
+    setLayoutHistoryRaw(next);
+  }, []);
+  /** 「这一步里有东西已经不在了」那句话。和 `layoutError` 一样是给人看的,不是日志。 */
+  const [historyNote, setHistoryNote] = useState<string | null>(null);
+
+  /**
+   * 走一步撤销或重做。
+   *
+   * 补丁要落到**现在**这份位置表上,并且**先问一句"这个节点还在吗"**:
+   * 一个已经归档的节点没有画面可摆,它的位置只会被跳过 —— 跳过之后会明说,因为
+   * "这一步只恢复了一半"如果不说,用户看到的就是"撤销了但少了一个",而他会以为
+   * 是自己记错了。
+   */
+  const stepHistory = useCallback((direction: 'undo' | 'redo') => {
+    const stepped = direction === 'undo' ? undoEdit(historyRef.current) : redoEdit(historyRef.current);
+    if (!stepped) return;
+    setLayoutHistory(stepped.history);
+    const known = growthRef.current.nodes;
+    const { positions: next, skipped } = applyPatch(positionsRef.current, stepped.patch, (key) =>
+      Boolean(known[key.slice(key.indexOf(':') + 1)]),
+    );
+    setHistoryNote(
+      skipped.length === 0
+        ? null
+        : `这一步里有 ${skipped.length} 个东西已经不在这个空间里了,只恢复了还剩下的那些。` +
+          '归档节点请到「归档」里恢复,撤销布局不会把它们带回来。',
+    );
+    applyPositions(next);
+  }, [applyPositions, setLayoutHistory]);
+
+  const undoLayout = useCallback(() => { stepHistory('undo'); }, [stepHistory]);
+  const redoLayout = useCallback(() => { stepHistory('redo'); }, [stepHistory]);
+
+  /**
+   * 一次拖拽结束:**记一步,再落位**。
+   *
+   * `before` 由拖动的人(`PathView`)在**拖动开始那一刻**取好传进来,而不是这里从
+   * `positions` 里读 —— 节点第一次被拖动时 `positions` 里没有它的键,而撤销必须把
+   * 它摆回**画布上刚才那一帧**。删掉那个键(而不是写一个位置)在本地看着一样,
+   * 但 `PUT /layout` 不删除未提交的行,刷新之后库里那一份会把它拉回拖到的位置 ——
+   * 也就是"撤销了,但刷新就回来了"。所以撤销是一次**真实的写入**,不是一次删除。
+   */
+  const commitNodeMove = useCallback((moves: PositionMap, before: PositionMap) => {
+    const after: PositionMap = {};
+    const prev: PositionMap = {};
+    for (const [key, to] of Object.entries(moves)) {
+      const from = before[key];
+      // 不知道它原来在哪 → 这一键不进历史。记一条"撤销了但没动"的账比不记更坏。
+      if (!from) continue;
+      // 点了但没挪动:ReactFlow 也会报一次。那不是一次操作,不该占一步历史。
+      if (from.x === to.x && from.y === to.y) continue;
+      after[key] = { x: to.x, y: to.y };
+      prev[key] = { x: from.x, y: from.y };
+    }
+    if (Object.keys(after).length === 0) return;
+    setLayoutHistory(recordEdit(historyRef.current, historyOwner, { before: prev, after }));
+    setHistoryNote(null);
+    const next = { ...positionsRef.current };
+    for (const [key, value] of Object.entries(after)) next[key] = value;
+    applyPositions(next);
+  }, [applyPositions, historyOwner, setLayoutHistory]);
 
   // 后端那份布局。**读失败不报错**:位置退回 localStorage 那份(视口没有),画布照样
   // 能用,下一次保存会把这份推上去 —— 这不是用户做错了什么,不该给他一行红字。
@@ -1067,7 +1166,7 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     await sendReal(lastFailed.text, lastFailed.clientMessageId);
   }
 
-  return { growth, workspaceId: space.id, isRealSpace: space.kind === 'real', apply, selectedId, select, messages, send, retry, sending, sendError, retryable, brief, historyLoading, messagesTruncated, positions, setPositions,
+  return { growth, workspaceId: space.id, isRealSpace: space.kind === 'real', apply, selectedId, select, messages, send, retry, sending, sendError, retryable, brief, historyLoading, messagesTruncated, positions,
     // 计划。`revisionVersion` 是"你眼前这份是第几版" —— 界面上比对提案的
     // `baseRevisionVersion` 用它,能在发请求**之前**发现"你看的那份已经旧了"。
     plan, planLoading, planError, planSaving, setPlanError, revisionVersion: plan?.revisionVersion ?? 0,
@@ -1084,6 +1183,14 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     canvasKey,
     // 视口(用户偏好,不进版本账)。画布按层级存,时间线一份。
     viewports, setScopeViewport, timelineViewport, setTimelineViewport,
+    // 布局的撤销/重做。**`setPositions` 不再往外交了** —— 它是个不知道"之前在哪"的
+    // 设置器,外面拿着它就能绕过历史写一次位置(表现是"撤销之后刷新,节点又跳回去")。
+    // 现在外面只有两条路:`commitNodeMove`(一次拖拽 = 一步)和 `undoLayout`/`redoLayout`。
+    // `canUndo`/`canRedo` 派生于两条栈,按钮因此不用自己判断;`historyNote` 说的是
+    // "这一步里有东西已经被归档了,只恢复了一半"。
+    commitNodeMove, undoLayout, redoLayout, historyNote, setHistoryNote,
+    canUndo: layoutHistory.past.length > 0,
+    canRedo: layoutHistory.future.length > 0,
     // 布局落库的那三样。`layoutReady` 是"后端那份问过了",自动 fit 要等它;
     // `layoutError` 与 `retryLayoutSave` 是保存失败时界面上那一行和那个按钮。
     layoutReady, layoutError, retryLayoutSave,

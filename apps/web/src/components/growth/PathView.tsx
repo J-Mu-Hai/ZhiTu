@@ -30,8 +30,10 @@ import {
   FolderOpen,
   GitBranch,
   Plus,
+  Redo2,
   RotateCcw,
   Trash2,
+  Undo2,
 } from 'lucide-react';
 import { Dialog } from '@/components/ui/Dialog';
 import { useCanvasDraft } from '@/features/growth/drafts';
@@ -53,6 +55,24 @@ const colors = {
   experience: '#c7a06e',
   personal: '#a294ce',
 };
+
+/**
+ * 焦点是不是在一个**能写字的地方**。
+ *
+ * `Ctrl+Z` 在正文、说明、日期、搜索框里的意思是"撤销我刚写的那几个字" —— 那是浏览器的
+ * 本行工作,而画布的位置**不该**跟着动。用户在一个 textarea 里按撤销、结果画布上的节点
+ * 跳回去了,这是最难解释的一种 bug:他撤销的是文字,却看到别的东西变了。
+ *
+ * `contenteditable` 也要算进来(`isContentEditable`),将来正文换成富文本编辑器时
+ * 这一条就是唯一还拦着它的地方。
+ */
+function isTextEntry(target: EventTarget | null): boolean {
+  const element = target as HTMLElement | null;
+  if (!element || typeof element.tagName !== 'string') return false;
+  if (element.isContentEditable) return true;
+  const tag = element.tagName.toUpperCase();
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+}
 
 function GrowthNodeComponent({ data, selected }: NodeProps<FlowNode>) {
   // 这里**不挂 `onDoubleClick`**。双击进入子空间统一由 Canvas 的 `onNodeDoubleClick`
@@ -214,10 +234,11 @@ const edgeTypes = { branch: BranchEdge, relation: RelationEdge };
 const CANVAS_LIFECYCLE_LIMIT = 50;
 function Canvas() {
   const {
-    growth, selectedId, select, positions, setPositions, spaceId, workspaceId, canvasKey, viewports, setScopeViewport,
+    growth, selectedId, select, positions, commitNodeMove, spaceId, workspaceId, canvasKey, viewports, setScopeViewport,
     enterSpace, addNode, updateNode, addRelation, updateRelation, removeRelation,
     files, isRealSpace, planSaving, planLoading, planError, setPlanError,
     layoutReady, layoutError, retryLayoutSave,
+    undoLayout, redoLayout, canUndo, canRedo, historyNote, setHistoryNote,
     archiveConfirm, closeArchiveConfirm, confirmArchive,
     archiveOpen, setArchiveOpen, archived, archiveListError, archiveNote, setArchiveNote,
     restoreArchived, restoringId,
@@ -225,6 +246,37 @@ function Canvas() {
   const { fitView, setViewport } = useReactFlow();
   const nodesInitialized = useNodesInitialized();
   const fittedScope = useRef<string | null>(null);
+  /** 正在被拖的那个节点**动手前**在哪。见 `onNodeDragStart` / `commitNodeMove`。 */
+  const dragStart = useRef<{ id: string; position: { x: number; y: number } } | null>(null);
+
+  /**
+   * 画布上的撤销/重做快捷键。`Ctrl+Z` / `Ctrl+Shift+Z` / `Ctrl+Y`,Mac 上是 `Cmd`。
+   *
+   * 挂在 `window` 上而不是画布元素上:焦点几乎总在别处(刚点完按钮、刚点完节点),
+   * 要求用户先点一下画布才能按快捷键,等于这个快捷键一半的时候不管用。
+   *
+   * ## 两处**放行**,一处不放行
+   *
+   * - 焦点在能写字的地方 → **放行给浏览器**(见 `isTextEntry`),自己一步也不动。
+   * - 有模态弹窗开着 → 直接不管。焦点那时可能在弹窗里的某个按钮上(刚点过「保存节点」),
+   *   而用户看着的是弹窗 —— 那时画布在背后悄悄动一下,他根本不会知道发生过什么。
+   * - 其余情况:吃掉这一下(`preventDefault`),免得浏览器同时去撤销别的东西。
+   */
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+      const key = event.key.toLowerCase();
+      const undo = key === 'z' && !event.shiftKey;
+      const redo = (key === 'z' && event.shiftKey) || key === 'y';
+      if (!undo && !redo) return;
+      if (isTextEntry(event.target)) return;
+      if (document.querySelector('dialog[open]')) return;
+      event.preventDefault();
+      if (undo) undoLayout(); else redoLayout();
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [undoLayout, redoLayout]);
 
   /**
    * **组件生命周期记录**:这个层级在这一页里被挂载过几次。
@@ -274,6 +326,15 @@ function Canvas() {
   };
   useEffect(() => cancelPendingOpen, []);
   const [measurements, setMeasurements] = useState<Record<string, { width: number; height: number }>>({});
+  /**
+   * **拖动中**的位置预览。节点画的是 `dragging[key] ?? positions[key] ?? 自动排布`。
+   *
+   * 它存在的理由:拖动过程中 `positions` 一个字节都不变(位置是拖完那一下才提交的),
+   * 而画布会因为别的原因重渲染 —— 那时 ReactFlow 拿到的是旧的 `nodes`,节点会弹回原处。
+   *
+   * 它**必须**在拖动结束时被扔掉(`onNodeDragStop`),否则拖过一次的节点在画布上就永远
+   * 看这一份,`positions` 的真值被挡在后面 —— 撤销会因此"按了没反应"。
+   */
   const [dragging, setDragging] = useState<Record<string, { x: number; y: number }>>({});
   const [submitting, setSubmitting] = useState(false);
   /**
@@ -663,6 +724,28 @@ function Canvas() {
           <GitBranch size={15} />
           建立关系
         </button>
+        {/* 撤销/重做。**只管布局**,见 `layoutHistory.ts` —— 按钮的 `title` 里说清楚
+            管的是什么,因为"这个撤销会不会把我的节点也弄没"是用户按下去之前会问的问题。
+            没有东西可撤时**不只是禁用**:`title` 里说为什么不可用,否则一个灰按钮
+            和"坏了"长得一样。 */}
+        <button
+          disabled={!canUndo}
+          title={canUndo ? '撤销上一次移动节点（Ctrl+Z）' : '还没有可以撤销的移动'}
+          aria-label="撤销"
+          onClick={() => undoLayout()}
+        >
+          <Undo2 size={15} />
+          撤销
+        </button>
+        <button
+          disabled={!canRedo}
+          title={canRedo ? '重做上一次移动（Ctrl+Shift+Z）' : '没有可以重做的移动'}
+          aria-label="重做"
+          onClick={() => redoLayout()}
+        >
+          <Redo2 size={15} />
+          重做
+        </button>
         <button onClick={() => patchDraft({ dialog: 'files' })}>
           <FolderOpen size={15} />
           空间文件 <small>{files.filter((file) => file.ownerId === spaceId).length || ''}</small>
@@ -689,6 +772,15 @@ function Canvas() {
           <div className="layout-save-error" role="alert">
             <span>{layoutError}</span>
             <button onClick={retryLayoutSave}>重试</button>
+          </div>
+        )}
+        {/* 「这一步里有东西已经不在了」。它**不是错误**(撤销本身成功了),所以用另一种
+            颜色和 `role="status"`:用户需要知道的是"我这一步只恢复了一半,少的那部分
+            在归档里,不在撤销里",而不是"我操作错了"。 */}
+        {historyNote && (
+          <div className="layout-history-note" role="status">
+            <span>{historyNote}</span>
+            <button onClick={() => setHistoryNote(null)}>知道了</button>
           </div>
         )}
       </div>
@@ -721,9 +813,15 @@ function Canvas() {
           if (relation) openRelationEditor(relation);
         }}
         onPaneClick={() => { cancelPendingOpen(); select(null); setSelectedEdgeId(null); }}
+        onNodeDragStart={(_, node) => {
+          // 拖动开始那一刻它在哪儿。撤销要把它摆回**这一帧**,而不是"删掉它的位置" ——
+          // 节点第一次被拖动时位置表里没有它,删键只在本地看着对,刷新就会被库里那份
+          // 拉回拖到的位置。见 `commitNodeMove`。
+          dragStart.current = { id: node.id, position: { x: node.position.x, y: node.position.y } };
+        }}
         onNodesChange={(changes) => {
           for (const change of changes) {
-            if (change.type === 'position' && change.position) {
+            if (change.type === 'position' && change.position && change.dragging) {
               setDragging((old) => ({ ...old, [`${spaceId}:${change.id}`]: change.position! }));
             }
             if (change.type === 'dimensions' && change.dimensions) {
@@ -736,9 +834,28 @@ function Canvas() {
             }
           }
         }}
-        onNodeDragStop={(_, node) =>
-          setPositions((old) => ({ ...old, [`${spaceId}:${node.id}`]: node.position }))
-        }
+        onNodeDragStop={(_, node) => {
+          // **一次拖拽 = 一步历史。** 中途那几十帧在 `onNodesChange` 里只进 `dragging`
+          // (预览),一行历史都不占 —— 逐帧记的话,按一次撤销只往回挪一个像素。
+          const moved = { [`${spaceId}:${node.id}`]: node.position };
+          const started = dragStart.current;
+          dragStart.current = null;
+          // `before` 只有拖动的**起点**知道。没拿到(理论上不会)就不记这一步:
+          // 记一条"撤销了但没动"的账比不记更坏。
+          commitNodeMove(moved, started?.id === node.id ? { [`${spaceId}:${node.id}`]: started.position } : {});
+          // **拖完把预览扔掉。** `dragging` 只是"拖动中"的那一份(画节点用的是
+          // `dragging[key] ?? positions[key] ?? 自动排布`),而它以前从来不清 ——
+          // 于是拖过一次之后,这个节点在画布上永远看 `dragging` 那一份,**位置的
+          // 真值(`positions`)被它挡住**。从前看不出来,是因为拖完两者恰好相等;
+          // 撤销让它们分开了,表现是"撤销之后画布一动不动"(位置变了,画的是旧的那一份)。
+          const key = `${spaceId}:${node.id}`;
+          setDragging((old) => {
+            if (!(key in old)) return old;
+            const next = { ...old };
+            delete next[key];
+            return next;
+          });
+        }}
         onMoveEnd={(_, viewport) => {
           // **初始定位跑完之前不记。** 那之前的视口是 ReactFlow 的默认值(0,0,1),
           // 把它存下来会把用户真正的视口覆盖掉 —— 而"有记忆"的那一层本来就不该 fit,
