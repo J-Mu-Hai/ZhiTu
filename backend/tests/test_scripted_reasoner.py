@@ -6,7 +6,7 @@
 的假模型,最坏的失败方式是它悄悄变成了线上的一条真实路径 —— 或者反过来,它悄悄失效
 而验收照样通过。第 1 节管前者,第 2 节管后者。
 
-三件具体的事:
+四件具体的事:
 
 1. **配置不全要炸,不能退。** 只设了 `AGENT_REASONER=script` 而没设
    `ZHITU_SCRIPTED_ACTIONS` 时,如果安静地退回规则兜底,一次验收就会以"模型什么
@@ -19,6 +19,9 @@
    生成的",而它是脚本 —— 那正是 `ModelSource` 这个枚举存在的理由。
 3. **脚本绕不开校验。** 第 3 节把脚本接到真的 `/messages` 上:越界的动作照样逐条
    落进 `proposalErrors`。脚本替掉的只有"谁来想出这些动作"这一步。
+4. **游标按空间分,不按进程分。** 一个 spec 用掉的脚本不许算到另一个 spec 头上 ——
+   进程级游标会让"模型这一轮没提案"这种**假绿**长在一个本来干净的空间里,而它看起来
+   像产品坏了。第 3 节的最后一条钉它。
 """
 
 from __future__ import annotations
@@ -372,3 +375,62 @@ async def test_a_script_that_runs_out_quietly_stops_proposing(
     assert second.json()["proposalErrors"] == []
     # 回复不是上一轮的重复:脚本没话说了就说没话说了。
     assert "脚本已经跑完" in second.json()["reply"]
+
+
+async def test_the_script_cursor_is_per_space_not_per_process(
+    app_client: httpx.AsyncClient, make_account, use_reasoner
+) -> None:
+    """一个空间用掉第 1 轮,不该让**另一个空间**从第 2 轮开始。
+
+    脚本描述的是**一个空间里**的一段访谈(`apps/web/tests/fixtures/interview-script.json`
+    就写死了前两轮不提案、第三轮才把事实记下来),而 `get_reasoner` 是
+    `lru_cache(maxsize=1)` —— 一个进程一个 reasoner,隔离栈里所有 spec 又共用同一个
+    后端进程。游标要是进程级的,先开口的那个 spec 就把脚本吃掉了:后开口的 spec 拿到
+    "脚本已经跑完了",它的 `.proposal` 于是永远不出现,而失败信息看起来像产品坏了。
+
+    这不是假设 —— 2026-09-28 那次全量脚本化 e2e 就是这样红的(`interview-loop.spec.ts`
+    自己建的空间干净、`proposals` 表却是空的)。这条是那次 bug 的回归钉。
+    """
+    first = await make_account(email="cursor-first@example.com", workspace_title="先说话的空间")
+    second = await make_account(email="cursor-second@example.com", workspace_title="后说话的空间")
+    use_reasoner(
+        ScriptedReasoner.from_env(
+            json.dumps(
+                {
+                    "turns": [
+                        {
+                            "reply": "第一轮:我提案。",
+                            "actions": [
+                                {
+                                    "op": "create_node",
+                                    "localId": "n2",
+                                    "parentRef": "n1",
+                                    "title": "写文献综述",
+                                }
+                            ],
+                        },
+                        {"reply": "第二轮:我不提案。"},
+                    ]
+                }
+            )
+        )
+    )
+
+    async def _send(account, content: str) -> dict:
+        response = await app_client.post(
+            f"/api/workspaces/{account.workspace_id}/messages",
+            json={"content": content, "clientMessageId": content},
+            headers=account.headers,
+        )
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    # 第一个空间:第 1 轮提案,第 2 轮用完。
+    assert (await _send(first, "先来这里"))["proposal"] is not None
+    assert (await _send(first, "接着说"))["proposal"] is None
+
+    # 第二个空间**从头开始** —— 这才是"脚本是按空间写的"那句话的可证伪问法。
+    fresh = await _send(second, "换一个空间")
+    assert fresh["reply"] == "第一轮:我提案。", fresh["reply"]
+    assert fresh["proposal"] is not None, "换个空间应当重新从第 1 轮取脚本"
+    assert fresh["proposalErrors"] == []

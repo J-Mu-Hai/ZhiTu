@@ -54,6 +54,20 @@
 同一份动作,而它会被去重合并成第二次更新 —— 于是验收看到的是一个"不知道为什么多出来
 的更新",而真正的原因在脚本之外。
 
+### 游标按**空间**分,不按进程分
+
+`get_reasoner` 是 `lru_cache(maxsize=1)`,一个进程里只有一个 reasoner,所以"用到第几轮"
+一开始写成了一个进程级计数器。那是错的:一份脚本描述的是**一个空间里**的一段访谈
+(`apps/web/tests/fixtures/interview-script.json` 就写死了前两轮不提案、第三轮才把
+用户说的事实记下来),而隔离栈里所有 spec 共用同一个后端进程。按进程计数的话,先开口
+的那个 spec 会把脚本吃掉,访谈那个 spec 拿到的是"脚本已经跑完了"—— 它的 `.proposal`
+于是永远不出现,而那条失败信息看起来像产品坏了(实测见
+`artifacts/runs/20260928-001323-8ccfce7`:那个 spec 自己建的空间干净,`proposals` 表却是空的)。
+
+所以游标按**空间**分,钥匙是这一轮所在空间里 `depth == 0` 的那个节点 —— 根目标,
+一个空间只有一个(`workspace_service.create_workspace` 建它时写死 `depth=0`)。
+同一个空间的第 1、2、3 条消息各取一轮脚本,换个空间从头开始。
+
 ## 它走的是真实模型那条解析链
 
 `claims` 与 `analysis` 写的是**模型输出的那个形状**(而不是构造好的 `BriefClaim` /
@@ -146,12 +160,29 @@ def parse_script(raw: str) -> tuple[dict, ...]:
     return tuple(turns)
 
 
+def space_key(turn: TurnContext) -> str:
+    """这一轮属于哪个空间 —— 拿根目标的真实 id 当钥匙。
+
+    `TurnContext` 里没有空间 id:那个类**刻意**不给模型任何真实主键(见它的 docstring
+    「这里没有 UUID,是刻意的」)。但根目标一定在 `node_handles` 里,而一个空间只有一个
+    根 —— 它的 `depth` 是 0(`workspace_service.create_workspace` 写死的),
+    `load_nodes` 又按 `depth asc` 排,所以它总是 `nodes` 的第一个。真取不到就返回空串,
+    让那些没有节点的调用方共用一格,而不是把整个 reasoner 搞崩。
+    """
+    ids = dict(turn.node_handles)
+    for view in turn.nodes:
+        if view.depth == 0:
+            return ids.get(view.handle, "")
+    return ""
+
+
 class ScriptedReasoner:
     """按脚本回应。**只由 `build_reasoner` 在 `AGENT_REASONER=script` 时构造。**"""
 
     def __init__(self, turns: tuple[dict, ...]) -> None:
         self._turns = turns
-        self._used = 0
+        #: 每个**空间**各用各的游标。理由见模块 docstring 的「游标按空间分,不按进程分」。
+        self._used: dict[str, int] = {}
         #: 收到过的每一轮上下文。与 `conftest.FakeReasoner.calls` 同一个用途:
         #: "这一轮它到底看见了什么"是能查的,而不是靠猜。
         self.calls: list[TurnContext] = []
@@ -162,7 +193,8 @@ class ScriptedReasoner:
 
     @property
     def turns_used(self) -> int:
-        return self._used
+        """所有空间加起来用掉的轮数。**只是给断言看的**,推进游标的是 `_used` 里那一格。"""
+        return sum(self._used.values())
 
     @classmethod
     def from_env(cls, raw: str | None = None) -> ScriptedReasoner:
@@ -172,8 +204,10 @@ class ScriptedReasoner:
         started = time.monotonic()
         self.calls.append(turn)
 
-        scripted = self._turns[self._used] if self._used < len(self._turns) else {}
-        self._used += 1
+        key = space_key(turn)
+        used = self._used.get(key, 0)
+        scripted = self._turns[used] if used < len(self._turns) else {}
+        self._used[key] = used + 1
 
         return ReasoningResult(
             reply=str(scripted.get("reply") or _EXHAUSTED_REPLY),
