@@ -48,6 +48,22 @@ class NodeOrigin(StrEnum):
     AI = "ai"
 
 
+class AnalysisFreshness(StrEnum):
+    """一条分析的新鲜度。**由输入版本与结构摘要现算,不落库。**
+
+    规范里写的是三档"最新 / 过期 / 需要重新分析"。这里只有两档,因为第三档不是
+    另一个状态:它说的是**过期之后该做什么**,而不是数据本身多了一种处境。
+    把它做成第三个枚举值,就得额外存一个"用户点过重新分析、但还没做完"的标记
+    —— 而那个标记要么靠一次写入去维护、要么靠时间猜,两条都比"界面把 `stale`
+    说成「需要重新分析,点这里」"更容易出错。
+
+    所以:`FRESH` 是最新,`STALE` 是过期,是否需要重新分析由界面按 `STALE` 呈现。
+    """
+
+    FRESH = "fresh"
+    STALE = "stale"
+
+
 class DependencyType(StrEnum):
     FINISH_TO_START = "finish_to_start"
 

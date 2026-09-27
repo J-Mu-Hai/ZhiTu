@@ -175,13 +175,27 @@ def _digest(value: object) -> str:
 
 def _node_key(node: PlanNode) -> tuple:
     """结构摘要里一个节点的那一份。**存活的与已删除的用同一个形状** ——
-    归档、恢复、彻底删除都表现为这一份的变化。"""
+    归档、恢复、彻底删除都表现为这一份的变化。
+
+    ## 为什么这里**没有** `content_version`
+
+    因为它跟"结构"是两件事,而两者的失效范围不一样:
+
+        结构变化(新增/删除/移动/归档)  整个范围都要算  -> 摘要覆盖全部
+        内容变化(标题/正文)           只有读到过的才算 -> 逐个记的那批覆盖
+
+    把一个未被读取的分支的正文改动也算进来的后果,是用户改了别处一句话、这里
+    每一条分析都变成"已过期" —— 那正是规范点名不要的行为("没有读取也不影响本次
+    决策的无关分支,不应使所有分析一起失效")。
+
+    反过来,节点**在不在、挂在谁下面、归档没有**必须是全范围的事实:靠"我读到的
+    那 80 个"去判断"范围里有没有多出一个节点",在节点多起来的那天会开始漏。
+    """
     return (
         str(node.id),
         str(node.parent_id) if node.parent_id else None,
         node.depth,
         node.status.value,
-        node.content_version,
         node.deleted_at.isoformat() if node.deleted_at else None,
     )
 

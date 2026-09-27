@@ -41,7 +41,12 @@ from backend.agent.prompts.planning import (
     render_relations_section,
     render_scope_section,
 )
-from backend.agent.runtime.base import BriefClaim, ReasoningResult, TurnContext
+from backend.agent.runtime.base import (
+    AnalysisDraft,
+    BriefClaim,
+    ReasoningResult,
+    TurnContext,
+)
 from backend.db.models.enums import ModelSource
 
 logger = logging.getLogger(__name__)
@@ -203,6 +208,7 @@ def payload_to_result(
         source=source,
         brief_claims=tuple(parse_claims(payload.get("brief"))),
         actions=parse_actions(payload.get("actions")),
+        analysis=parse_analysis(payload.get("analysis")),
         request_id=request_id,
         prompt_version=prompt_version,
         model_name=model_name,
@@ -307,6 +313,99 @@ def parse_claims(raw_brief: Any) -> list[BriefClaim]:
     return claims
 
 
+# ---------------------------------------------------------------------------------
+# analysis
+# ---------------------------------------------------------------------------------
+#: `analysis` 里允许出现的栏,**顺序有意义**:它同时是渲染给用户看的顺序
+#: —— 从"我读到了什么"到"我建议怎么走",读起来就是一条推理链。
+#:
+#: 闭集:模型多想出来的栏直接丢掉。理由与 `ALLOWED_BRIEF_FIELDS` 相同 ——
+#: 不设闭集的话,某天它自创一个 `todo` 栏,里面的内容会被一路存进数据库,
+#: 而没有任何一处代码知道该怎么显示它。
+ANALYSIS_FIELD_ORDER = (
+    "known",
+    "unknowns",
+    "evidence",
+    "assumptions",
+    "diagnosis",
+    "strategy_options",
+    "risks",
+)
+
+ALLOWED_ANALYSIS_FIELDS = frozenset((*ANALYSIS_FIELD_ORDER, "confidence_note"))
+
+#: 每栏最多留几条。**不是分页,是防复读**:模型偶尔会开始把同一句话说十遍,
+#: 而一栏 500 条会把分析区变成一堵墙,用户一条都不会读。
+MAX_ANALYSIS_ITEMS = 12
+
+#: 每条最多多长。截断而不是丢弃 —— 写长了的判断仍然比没有判断有用。
+MAX_ANALYSIS_ITEM_CHARS = 400
+
+#: 可信度说明的长度上限。它被要求是"一句话",给到 400 是留足余地。
+MAX_CONFIDENCE_CHARS = 400
+
+
+def parse_analysis(raw_analysis: Any) -> AnalysisDraft | None:
+    """把模型给的 `analysis` 变成一份**已经校验过**的判断。
+
+    ## 三种"没有"都返回 `None`,但理由各不相同
+
+    - 没给这个键(`None`)、或者给的不是对象 —— 这一轮它没打算判断什么,
+      这是正常情况,不是失败。
+    - 给了对象但七栏全空、也没有可信度说明 —— 见 `is_empty`。
+    - 给了内容但**某一栏**的形状不对 —— 只丢那一栏,其余留下。
+      一条写坏的 `risks` 不该让整份判断消失。
+
+    **三种都必须是 `None`,不能是"一个七栏全空的 `AnalysisDraft`"。** 调用方
+    (`conversation_service.submit_turn` 与 `analysis_service.record`)判断的依据是
+    `is not None`,一个空壳会被当成"模型给了一份判断"照收,于是**每一轮不涉及分析
+    的对话都会在分析表里留下一行什么都没说的记录**。它会挤掉上一条真正有内容的
+    分析 —— 而那正是这个模块开头说的要防的事。空壳只应该活在日志里。
+
+    清洗规则与 `brief` 一致:逐项独立校验、独立丢弃,丢掉的东西不变成默认值。
+    """
+    if raw_analysis is None:
+        return None
+    if not isinstance(raw_analysis, dict):
+        logger.info("analysis 不是对象,已忽略: %r", type(raw_analysis).__name__)
+        return None
+
+    sections: dict[str, tuple[str, ...]] = {}
+    for field in ANALYSIS_FIELD_ORDER:
+        sections[field] = _clean_items(raw_analysis.get(field), field)
+
+    note = raw_analysis.get("confidence_note")
+    confidence = None
+    if isinstance(note, str) and note.strip():
+        confidence = note.strip()[:MAX_CONFIDENCE_CHARS]
+
+    draft = AnalysisDraft(confidence_note=confidence, **sections)
+    return None if draft.is_empty() else draft
+
+
+def _clean_items(raw: Any, field: str) -> tuple[str, ...]:
+    """一栏里的若干条文本。字符串与单元素对象都收 —— 模型有时候会把一条写成
+    `{"text": "..."}`,那仍然是它想说的话。"""
+    if raw is None:
+        return ()
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        logger.info("analysis.%s 不是数组,已忽略: %r", field, type(raw).__name__)
+        return ()
+
+    items: list[str] = []
+    for entry in raw[:MAX_ANALYSIS_ITEMS]:
+        if isinstance(entry, dict):
+            entry = entry.get("text") or entry.get("value") or entry.get("note")
+        if not isinstance(entry, str):
+            continue
+        text = entry.strip()
+        if text:
+            items.append(text[:MAX_ANALYSIS_ITEM_CHARS])
+    return tuple(items)
+
+
 def clean_value(field: str, value: Any) -> Any:
     """按字段类型清洗。返回 None 表示"这一项不可用"。"""
     if value is None:
@@ -351,13 +450,16 @@ def clean_value(field: str, value: Any) -> Any:
 
 
 __all__ = [
+    "ALLOWED_ANALYSIS_FIELDS",
     "ALLOWED_BRIEF_FIELDS",
+    "ANALYSIS_FIELD_ORDER",
     "BRIEF_FIELD_ORDER",
     "MAX_ACTIONS",
     "MINUTES_IN_WEEK",
     "PayloadInvalid",
     "clean_value",
     "parse_actions",
+    "parse_analysis",
     "parse_claims",
     "payload_from_chat_completion",
     "payload_to_result",

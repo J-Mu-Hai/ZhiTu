@@ -25,6 +25,249 @@
       "title": "ActionError",
       "type": "object"
     },
+    "AnalysisFreshness": {
+      "description": "一条分析的新鲜度。**由输入版本与结构摘要现算,不落库。**\n\n规范里写的是三档\"最新 / 过期 / 需要重新分析\"。这里只有两档,因为第三档不是\n另一个状态:它说的是**过期之后该做什么**,而不是数据本身多了一种处境。\n把它做成第三个枚举值,就得额外存一个\"用户点过重新分析、但还没做完\"的标记\n—— 而那个标记要么靠一次写入去维护、要么靠时间猜,两条都比\"界面把 `stale`\n说成「需要重新分析,点这里」\"更容易出错。\n\n所以:`FRESH` 是最新,`STALE` 是过期,是否需要重新分析由界面按 `STALE` 呈现。",
+      "enum": [
+        "fresh",
+        "stale"
+      ],
+      "title": "AnalysisFreshness",
+      "type": "string"
+    },
+    "AnalysisListResponse": {
+      "additionalProperties": false,
+      "description": "某个节点(或某个范围)的分析,新的在前。",
+      "properties": {
+        "analyses": {
+          "items": {
+            "$ref": "#/$defs/AnalysisView"
+          },
+          "title": "Analyses",
+          "type": "array"
+        },
+        "focusNodeId": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Focusnodeid"
+        },
+        "note": {
+          "default": "",
+          "title": "Note",
+          "type": "string"
+        },
+        "scopeRootId": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scoperootid"
+        }
+      },
+      "required": [
+        "analyses"
+      ],
+      "title": "AnalysisListResponse",
+      "type": "object"
+    },
+    "AnalysisView": {
+      "additionalProperties": false,
+      "description": "一条分析:模型当时看到了什么、判断了什么、现在还成不成立。",
+      "properties": {
+        "assumptions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Assumptions",
+          "type": "array"
+        },
+        "confidenceNote": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Confidencenote"
+        },
+        "coverageNote": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Coveragenote"
+        },
+        "createdAt": {
+          "format": "date-time",
+          "title": "Createdat",
+          "type": "string"
+        },
+        "diagnosis": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Diagnosis",
+          "type": "array"
+        },
+        "evidence": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence",
+          "type": "array"
+        },
+        "focusNodeId": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Focusnodeid"
+        },
+        "focusNodeTitle": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Focusnodetitle"
+        },
+        "freshness": {
+          "$ref": "#/$defs/AnalysisFreshness"
+        },
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "known": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Known",
+          "type": "array"
+        },
+        "modelSource": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelSource"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "promptVersion": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Promptversion"
+        },
+        "risks": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Risks",
+          "type": "array"
+        },
+        "scopeRootId": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scoperootid"
+        },
+        "scopeRootTitle": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scoperoottitle"
+        },
+        "staleReasons": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Stalereasons",
+          "type": "array"
+        },
+        "strategyOptions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Strategyoptions",
+          "type": "array"
+        },
+        "unknowns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Unknowns",
+          "type": "array"
+        },
+        "workspaceId": {
+          "format": "uuid",
+          "title": "Workspaceid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "workspaceId",
+        "createdAt",
+        "freshness"
+      ],
+      "title": "AnalysisView",
+      "type": "object"
+    },
     "ApiErrorBody": {
       "additionalProperties": false,
       "description": "错误体里 `error` 那一层。\n\n`code` 是接口的一部分,和字段名同级 —— 客户端按它分支。`message` 只是给人看的\n文案,会改;按文案分支的客户端会在某次\"把话说得更清楚\"的改动里静默失灵。",
@@ -1340,6 +1583,17 @@
       ],
       "title": "MessageView",
       "type": "object"
+    },
+    "ModelSource": {
+      "description": "这次回复到底是谁生成的。\n\n存在的意义:此前模型调用失败会静默回退到硬编码关键词规则,用户完全无法分辨。\n现在它必须落库,也必须出现在接口响应里。",
+      "enum": [
+        "openjiuwen",
+        "direct_llm",
+        "rule_fallback",
+        "unavailable"
+      ],
+      "title": "ModelSource",
+      "type": "string"
     },
     "NodeEditResponse": {
       "additionalProperties": false,
@@ -2973,6 +3227,11 @@
           ],
           "default": null,
           "title": "Degradedreason"
+        },
+        "inputChanged": {
+          "default": false,
+          "title": "Inputchanged",
+          "type": "boolean"
         },
         "latencyMs": {
           "anyOf": [

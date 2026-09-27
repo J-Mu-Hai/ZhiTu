@@ -223,6 +223,17 @@ export interface SendMessageResponse {
   proposal: ProposalView | null;
   /** 校验失败的原因。空数组表示这次没有被拒绝的东西。 */
   proposalErrors: { code: string; message: string; ordinal?: number }[];
+
+  /**
+   * **模型回答期间用户改了输入。**
+   *
+   * 为真时上面那段回复和那份分析都建立在一份已经过去的输入上。提案不会出现
+   * (那些动作逐条落在 `proposalErrors` 里,码是 `INPUT_CHANGED`)。
+   *
+   * 界面必须拿它给下一步指引 —— 只说"这次没有提案"的话,用户会以为 AI 什么都没
+   * 想出来,而真正该做的是点一下「根据最新内容重新分析」。
+   */
+  inputChanged: boolean;
 }
 
 export function getConversation(workspaceId: string): Promise<ConversationView> {
@@ -250,6 +261,104 @@ export function sendMessage(
     method: 'POST',
     body: payload,
   });
+}
+
+// ---------------------------------------------------------------------------------
+// AI 分析
+// ---------------------------------------------------------------------------------
+
+/**
+ * 一条分析的新鲜度。**由后端每次读的时候现算**,不是存在列里的标记。
+ *
+ * 只有两档。规范里提到的第三档"需要重新分析"不是另一种数据处境,它说的是
+ * **过期之后该做什么** —— 界面在 `stale` 上显示「根据最新内容重新分析」就够了,
+ * 不需要第三种枚举值。
+ */
+export type AnalysisFreshness = 'fresh' | 'stale';
+
+/**
+ * AI 对你写的内容做出的判断。
+ *
+ * **这不是用户说的话,也不是计划。** 它单独存一张表,是为了让"模型的一句猜测
+ * 悄悄变成计划的前提"这件事没有路径可走 —— 这里的每一栏都只是判断,要变成
+ * 计划必须走提案与确认。
+ *
+ * 七栏 + 可信度那句话。空数组表示模型这一栏没给内容,不表示"没有这一栏"。
+ */
+export interface AnalysisView {
+  id: string;
+  workspaceId: string;
+  scopeRootId: string | null;
+  focusNodeId: string | null;
+  /**
+   * 范围和焦点**现在**叫什么。节点被删掉之后退回分析当时记下的名字 ——
+   * 后者是为了不让一条分析变成"关于(已删除)的分析"。
+   */
+  scopeRootTitle: string | null;
+  focusNodeTitle: string | null;
+  promptVersion: string | null;
+  modelSource: 'openjiuwen' | 'direct_llm' | 'rule_fallback' | 'unavailable' | null;
+  createdAt: string;
+
+  freshness: AnalysisFreshness;
+  /**
+   * 具体变了什么。每一条都是给人看的一句话。**空数组 + `stale` 不会同时出现**;
+   * 但两档都会带上具体理由地说话,所以界面直接逐条显示即可,不必自己造句。
+   *
+   * 这一栏是"用户陈述"和"模型判断"之外的东西:它说的是**这份判断还成不成立**。
+   */
+  staleReasons: string[];
+  /**
+   * 这次分析只读到了范围的一部分时的说明。**与新鲜度无关** ——
+   * 它说的是"这份判断覆盖多大范围",不是"它过期了"。
+   */
+  coverageNote: string | null;
+
+  /** 用户陈述过的事实 */
+  known: string[];
+  /** 还缺什么 —— 模型接着要问的就是这些 */
+  unknowns: string[];
+  /** 依据 */
+  evidence: string[];
+  /** 模型自己的假设。**和"用户说的"必须分开显示** */
+  assumptions: string[];
+  /** 诊断 */
+  diagnosis: string[];
+  /** 可选的走法 */
+  strategyOptions: string[];
+  /** 风险。可以是"会排不开",但**绝不是"我已经调整了日程"** */
+  risks: string[];
+
+  /** 模型自己写的一句话可信度。不是算出来的分数 —— 一个 0.8 会被当成能比较的量。 */
+  confidenceNote: string | null;
+}
+
+export interface AnalysisListResponse {
+  analyses: AnalysisView[];
+  focusNodeId: string | null;
+  scopeRootId: string | null;
+  /** 这次返回为什么是这些。**空列表时界面必须用它说清是"没有"还是"没查到"。** */
+  note: string;
+}
+
+/**
+ * 某个节点(或整个空间)的分析记录,新的在前。
+ *
+ * `focusNodeId` 不给就是整个空间。**它不做"这个节点及其后代"的展开** ——
+ * 那会把一条关于祖辈的分析混进子节点的列表。
+ */
+export function getAnalyses(
+  workspaceId: string,
+  params: { focusNodeId?: string; scopeRootId?: string; limit?: number } = {},
+): Promise<AnalysisListResponse> {
+  const parts: string[] = [];
+  if (params.focusNodeId) parts.push(`focusNodeId=${params.focusNodeId}`);
+  if (params.scopeRootId) parts.push(`scopeRootId=${params.scopeRootId}`);
+  if (params.limit) parts.push(`limit=${params.limit}`);
+  const suffix = parts.length ? `?${parts.join('&')}` : '';
+  return apiFetch<AnalysisListResponse>(
+    `/api/workspaces/${workspaceId}/analyses${suffix}`,
+  );
 }
 
 // ---------------------------------------------------------------------------------

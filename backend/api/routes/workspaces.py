@@ -219,5 +219,6 @@ async def send_message(
             else None
         ),
         proposal_errors=list(outcome.proposal_errors),
+        input_changed=outcome.input_changed,
         replayed=outcome.replayed,
     )

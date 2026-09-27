@@ -377,7 +377,7 @@ async def test_an_out_of_scope_action_is_refused_and_nothing_is_written(
     account = await make_account()
     root = await _root_id(app_client, account)
     inside = await _create(app_client, account, root, "在范围内", description="原来的正文")
-    outside = await _create(app_client, account, root, "在范围外", description="不许动的正文")
+    await _create(app_client, account, root, "在范围外", description="不许动的正文")
 
     before = await _revisions(db)
     fake = use_reasoner(
@@ -420,7 +420,7 @@ async def test_creating_a_node_under_an_out_of_scope_parent_is_refused(
     inside = await _create(app_client, account, root, "在范围内")
     await _create(app_client, account, root, "在范围外")
 
-    fake = use_reasoner(
+    use_reasoner(
         FakeReasoner(
             actions=(
                 {"op": "create_node", "localId": "n9", "parentRef": "n3", "title": "挂到范围外"},
@@ -444,7 +444,7 @@ async def test_an_action_inside_the_scope_still_works(
     root = await _root_id(app_client, account)
     inside = await _create(app_client, account, root, "在范围内", description="原来的正文")
 
-    fake = use_reasoner(
+    use_reasoner(
         FakeReasoner(
             actions=({"op": "update_node", "targetRef": "n2", "description": "改好的正文"},)
         )
@@ -547,7 +547,14 @@ async def test_the_snapshot_changes_when_the_body_changes(
     after = fake.calls[1].input_snapshot
 
     assert after != before, "正文改了,快照却没变 —— 那么旧分析永远看起来是新的"
-    assert after.structure_digest != before.structure_digest
+
+    # **变化的不是结构摘要,这一点是有意的。** 结构摘要里刻意不含正文版本
+    # (见 services/input_snapshot.py 的 `_node_key`):混进去的话,某个**这次没读到**
+    # 的节点改了正文,会让整片范围里的分析一起作废 —— 正是规范点名要避免的
+    # "无关分支不应使所有分析一起失效"。正文改动走的是**逐行比较**那条路
+    # (`SnapshotNode.content_version`),能说出具体是哪个节点变了。
+    assert after.structure_digest == before.structure_digest
+    assert [n.content_version for n in after.nodes] != [n.content_version for n in before.nodes]
 
 
 async def test_layout_and_viewport_do_not_invalidate_an_analysis(

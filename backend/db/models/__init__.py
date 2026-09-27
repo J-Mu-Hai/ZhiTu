@@ -4,9 +4,11 @@
 漏掉任何一个模型模块,autogenerate 都会认为那张表该被删掉。
 """
 
+from backend.db.models.analysis import NodeAnalysis
 from backend.db.models.conversation import Conversation, Message
 from backend.db.models.enums import (
     FROZEN_SESSION_STATUSES,
+    AnalysisFreshness,
     AvailabilitySource,
     BriefStatus,
     ConversationKind,
@@ -48,6 +50,7 @@ __all__ = [
     # 枚举
     "FROZEN_SESSION_STATUSES",
     # 表
+    "AnalysisFreshness",
     "AuthSession",
     "AvailabilityException",
     "AvailabilityRule",
@@ -65,6 +68,7 @@ __all__ = [
     "Message",
     "MessageRole",
     "ModelSource",
+    "NodeAnalysis",
     "NodeOrigin",
     "NodePosition",
     "NodeRelation",

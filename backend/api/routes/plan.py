@@ -28,6 +28,7 @@ from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.dependencies.workspace import get_workspace_context
+from backend.contracts.analysis import MAX_ANALYSES, AnalysisListResponse
 from backend.contracts.plan import (
     ArchiveImpactPayload,
     ArchivedNodePayload,
@@ -52,8 +53,15 @@ from backend.contracts.proposal import (
     ProposalView,
     RejectProposalRequest,
 )
+from backend.db.models.enums import AnalysisFreshness
 from backend.db.session import get_db
-from backend.services import layout_service, node_service, plan_service, proposal_service
+from backend.services import (
+    analysis_service,
+    layout_service,
+    node_service,
+    plan_service,
+    proposal_service,
+)
 from backend.services.context import WorkspaceContext
 
 router = APIRouter()
@@ -438,6 +446,58 @@ async def list_proposals(
     """
     proposals = await proposal_service.list_proposals(db, ctx, limit=limit)
     return [await proposal_service.view_of(db, proposal) for proposal in proposals]
+
+
+@router.get(
+    "/{workspace_id}/analyses",
+    response_model=AnalysisListResponse,
+    summary="AI 的分析记录",
+)
+async def list_analyses(
+    focus_node_id: uuid.UUID | None = Query(default=None, alias="focusNodeId"),
+    scope_root_id: uuid.UUID | None = Query(default=None, alias="scopeRootId"),
+    limit: int = Query(default=analysis_service.DEFAULT_LIMIT, ge=1, le=MAX_ANALYSES),
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+) -> AnalysisListResponse:
+    """AI 对某个节点(或某个范围)做过的分析,新的在前。
+
+    **新鲜度是每次读现算的**(见 `analysis_service`):回去比一遍当时那份输入与现在
+    库里的样子。所以同一个 id 隔一会儿再来读,`freshness` 可能已经变了 ——
+    那是正确的,它描述的是"现在还成不成立",不是"它出生时成不成立"。
+
+    `focusNodeId` 不给就是整个空间的分析。**不做"这个节点及其后代"的展开**:
+    那会把一条关于祖辈的分析混进子节点的列表,而用户点开一个节点时想看的是
+    关于**这个**节点的判断。
+
+    **过期只标不改。** 这个接口不改任何东西:不重新生成分析、不动用户正文、
+    不碰计划。要拿到基于最新内容的判断,得显式发起一次重新分析。
+    """
+    analyses = await analysis_service.list_for(
+        db, ctx, focus_node_id=focus_node_id, scope_root_id=scope_root_id, limit=limit
+    )
+    views = [await analysis_service.view_of(db, ctx, analysis) for analysis in analyses]
+
+    if not views:
+        note = (
+            "这个节点还没有被分析过。跟 AI 聊一次,它对你写的内容做出的判断会记在这里。"
+            if focus_node_id is not None
+            else "这个空间里还没有分析记录。"
+        )
+    else:
+        stale = sum(1 for view in views if view.freshness is AnalysisFreshness.STALE)
+        note = (
+            f"共 {len(views)} 条,其中 {stale} 条基于已经变过的内容(标着原因的可以重新分析)。"
+            if stale
+            else f"共 {len(views)} 条,都是基于当前内容做出的。"
+        )
+
+    return AnalysisListResponse(
+        analyses=views,
+        focus_node_id=focus_node_id,
+        scope_root_id=scope_root_id,
+        note=note,
+    )
 
 
 @router.post(

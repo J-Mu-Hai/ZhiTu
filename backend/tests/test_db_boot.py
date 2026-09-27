@@ -30,6 +30,10 @@ EXPECTED_TABLES = {
     # 画布上的关系与用户偏好。三张都是**加法**:`dependencies` 与 `plan_nodes` 一行
     # 都没改,排期那条链路不受影响。这张清单是"库里有哪些表"的唯一出处,新表忘了
     # 登记会让这条测试红 —— 那正是它该做的。
+    # AI 做出的判断。**单独一张表,而且只增不改** —— 它既不是用户写的正文,也不是
+    # 计划的一部分;把它塞进 `plan_nodes` 就等于让模型的一句猜测有了成为计划前提的
+    # 路径(见 db/models/analysis.py)。
+    "node_analyses",
     "node_positions",
     "node_relations",
     "plan_nodes",

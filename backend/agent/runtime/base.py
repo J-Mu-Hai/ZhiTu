@@ -235,6 +235,49 @@ class BriefClaim:
 
 
 @dataclass(frozen=True, slots=True)
+class AnalysisDraft:
+    """模型对一块内容的判断。**和 `reply` 是两样东西。**
+
+    `reply` 是给用户看的一段话;这里是**结构化的判断**,存进 AI 分析层,下一次看
+    同一个节点时读得到。分成七栏不是分类癖 —— 它们的可靠程度完全不同:
+    `known` 是"我读到了",`evidence` 是"用户给的、带来源",`assumptions` 是
+    "我替用户假设的",`strategy_options` 是"可以怎么走"。混成一段自由文本之后,
+    读的人分不出哪句该信 —— 而他会拿它当事实用。
+
+    **每一项都是纯文本,不带 `source` 标签**:分栏本身已经表达了来源,再加一个标签
+    会出现"标签说 user_stated、内容读起来像猜测"这种自相矛盾的行。
+    """
+
+    known: tuple[str, ...] = ()
+    unknowns: tuple[str, ...] = ()
+    evidence: tuple[str, ...] = ()
+    assumptions: tuple[str, ...] = ()
+    diagnosis: tuple[str, ...] = ()
+    strategy_options: tuple[str, ...] = ()
+    risks: tuple[str, ...] = ()
+    confidence_note: str | None = None
+
+    def is_empty(self) -> bool:
+        """七栏全空、也没有可信度说明 —— 那这一轮其实什么都没判断。
+
+        单独存在是因为"模型给了 `analysis` 键但里面是空的"必须被识别出来:照收的话,
+        分析区会多出一条"什么也没说"的记录,而它会挤掉上一条真正有内容的分析。
+        """
+        return not any(
+            (
+                self.known,
+                self.unknowns,
+                self.evidence,
+                self.assumptions,
+                self.diagnosis,
+                self.strategy_options,
+                self.risks,
+                self.confidence_note,
+            )
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ReasoningResult:
     """一次模型调用的结果。**永远是可用的**,即使内容为空。"""
 
@@ -247,6 +290,8 @@ class ReasoningResult:
     retryable: bool = False
     brief_claims: tuple[BriefClaim, ...] = ()
     actions: tuple[dict, ...] = ()
+    #: 模型这一轮形成的判断。None = 它这轮没给(纯聊天、纯提问)。
+    analysis: AnalysisDraft | None = None
     request_id: str = ""
     prompt_version: str = ""
     model_name: str | None = None

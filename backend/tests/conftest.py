@@ -284,6 +284,10 @@ class FakeReasoner:
     degraded_reason: object | None = None
     retryable: bool = False
     source: object | None = None
+    #: 这一轮模型给出的分析判断(`AnalysisDraft`),或者 None 表示它这一轮没有实质判断。
+    #: **None 和"给了一个七栏全空的 draft"是两回事**:前者是"模型没提这件事",
+    #: 后者是"提了但什么都没说" —— 只有前者不该产生一条分析记录。
+    analysis: object | None = None
     calls: list = field(default_factory=list)
 
     async def reason(self, turn):
@@ -299,6 +303,7 @@ class FakeReasoner:
             retryable=self.retryable,
             brief_claims=tuple(self.claims),
             actions=tuple(self.actions),
+            analysis=self.analysis,
             request_id="fake-request",
             prompt_version="fake-v1",
             model_name="fake-model",

@@ -46,7 +46,7 @@ from backend.db.models.enums import (
     MessageRole,
     ModelSource,
 )
-from backend.services import proposal_service
+from backend.services import analysis_service, proposal_service
 from backend.services.brief_service import apply_claims
 from backend.services.context import WorkspaceContext
 from backend.services.errors import InvalidInput
@@ -97,6 +97,14 @@ class TurnOutcome:
     #: 改不了",后者是"这次没打算改"。界面上前者要如实说出来,后者什么都不用显示 ——
     #: 把"AI 提了但我没执行"吞掉,用户会以为他说的调整已经生效了。
     proposal_errors: tuple[ActionError, ...] = ()
+
+    #: **模型回答期间用户改了输入**,于是这一轮的结论建立在一份已经过去的输入上。
+    #:
+    #: 它和 `proposal_errors` 是两件事:这里的问题不在模型提了什么,而在**它看的
+    #: 东西已经旧了**。所以界面要说的不是"这几条没执行",而是"这段分析基于改动前的
+    #: 内容,重新分析一次才有用"。带上这个标记是因为界面上必须给得出那个入口 ——
+    #: 只把提案变成空,用户看到的是模型说了半天、什么都没有,而原因无从得知。
+    input_changed: bool = False
 
 
 async def find_primary_conversation(db, ctx: WorkspaceContext) -> Conversation | None:
@@ -246,29 +254,74 @@ async def submit_turn(
     # ---- 模型调用在两次提交之间。它失败不会影响上面已经落库的用户消息。----
     result = await reasoner.reason(turn)
 
+    # **模型刚回来,先比一次输入 —— 而且必须在这一轮自己写库之前比。**
+    #
+    # 上面那次调用可能花了几十秒,这期间用户完全可能改了正文、加了子节点、调了每周
+    # 可投入的时长 —— 那种情况下模型这段话说的已经不是现在的事,它不能再变成一份
+    # "点了确认就能生效"的提案。规范 §2.3:这种结果"只能作为标有「基于旧版本」的
+    # 历史分析,不冒充最新判断,也不能直接成为可应用提案"。所以这里不是提醒,
+    # 是**不生成提案**。
+    #
+    # **为什么位置这么讲究:** 紧接着的 `apply_claims` 会改 `brief.version` 和
+    # `weekly_available_minutes`,这两个都在快照里。把这次比较放到它后面的话,
+    # 模型**自己这一轮记下的条件**会被读成"用户在它回答时改了东西",于是每一个
+    # "一边记条件一边提方案"的回合都会自我作废 —— 而那正是最常见的那个回合
+    # (用户说"我每周能投 10 小时,帮我拆一下")。要量的是**别人的写入**,
+    # 窗口就该是"建完上下文 → 模型返回",这一轮之后写的任何东西都不在其中。
+    #
+    # 这一步也不能挪到确认那一步去做:等到用户点确认才拦,他已经读完一份基于旧数据的
+    # 建议了。而确认时那道版本校验仍然保留 —— 它管的是另一段时间(提案生成到用户
+    # 点确认),两段都要有,少一段就有一段窗口是空的。
+    input_changed = await analysis_service.input_changed_since(db, ctx, turn.input_snapshot)
+
     assistant_message = await _insert_assistant_message(db, ctx, conversation, user_message, result)
     brief, changed = await apply_claims(
         db, ctx.id, result.brief_claims, source_message_id=user_message.id
     )
 
+    if result.analysis is not None:
+        # 分析只增不改,重新分析一次不会抹掉上一次 —— 用户常问的是"它上次为什么
+        # 那么说",那需要上一次的原话还在。
+        await analysis_service.record(
+            db,
+            ctx,
+            conversation_id=conversation.id,
+            message_id=assistant_message.id,
+            snapshot=turn.input_snapshot,
+            draft=result.analysis,
+            prompt_version=result.prompt_version,
+            # 降级时 `source` 是 `rule_fallback` / `unavailable` —— 那段话不是模型
+            # 说的,而分析这一栏必须让人分得出来。
+            model_source=result.source,
+        )
+
     # 提案和助手消息在**同一个事务**里落地。分两次提交的话,中间那一刻库里会有一条
     # 写着"我给你排了个计划"、却找不到任何提案的回复 —— 而刷新页面正好赶上那一刻
     # 的请求,看到的就是一句没有下文的话。
-    outcome = await proposal_service.build_from_actions(
-        db,
-        ctx,
-        conversation_id=conversation.id,
-        actions=result.actions,
-        # **这一轮送给模型的那份记号表**,不是重新按当前库状态生成的。
-        # 重新生成的话,模型说的 n3 可能已经指向了另一个节点(见 turn_context 里的注释)。
-        handles=turn.node_handles,
-        # 提示词里说过的范围,在这里变成一条真的检查:范围外的动作逐条被拒,
-        # 落在 `proposal_errors` 里如实告诉用户。
-        writable_handles=turn.writable_handles,
-        # 程序性说明取自模型自己那段回复:用户点开提案卡片看到的"为什么这么排",
-        # 应该和它刚才在对话里说的话是同一句,而不是系统另写的一段。
-        reasoning=result.reply,
-        assistant_message=assistant_message,
+    #
+    # **输入变过时不走 `build_from_actions`。** 但动作也不能就这么丢掉:模型确实提了、
+    # 而它们确实没有执行(理由见下面的 `INPUT_CHANGED`),那正是这个模块开头说的
+    # "把'AI 提了但我没执行'吞掉,用户会以为他说的调整已经生效了"。所以每条动作
+    # 配一条错误,原样交给界面。
+    outcome = (
+        proposal_service.ProposalOutcome(proposal=None, errors=_input_changed_errors(result.actions))
+        if input_changed
+        else await proposal_service.build_from_actions(
+            db,
+            ctx,
+            conversation_id=conversation.id,
+            actions=result.actions,
+            # **这一轮送给模型的那份记号表**,不是重新按当前库状态生成的。
+            # 重新生成的话,模型说的 n3 可能已经指向了另一个节点(见 turn_context 里的注释)。
+            handles=turn.node_handles,
+            # 提示词里说过的范围,在这里变成一条真的检查:范围外的动作逐条被拒,
+            # 落在 `proposal_errors` 里如实告诉用户。
+            writable_handles=turn.writable_handles,
+            # 程序性说明取自模型自己那段回复:用户点开提案卡片看到的"为什么这么排",
+            # 应该和它刚才在对话里说的话是同一句,而不是系统另写的一段。
+            reasoning=result.reply,
+            assistant_message=assistant_message,
+        )
     )
     await db.commit()
 
@@ -281,6 +334,29 @@ async def submit_turn(
         replayed=False,
         proposal=outcome.proposal,
         proposal_errors=outcome.errors,
+        input_changed=input_changed,
+    )
+
+
+#: 输入变过时那几条错误的码。**不是校验错误** —— 校验根本没跑,
+#: 所以它不该混在 `OUT_OF_SCOPE` / `DANGLING_PROPOSAL_REF` 那一类里被当成"模型写错了"。
+INPUT_CHANGED = "INPUT_CHANGED"
+
+_INPUT_CHANGED_MESSAGE = (
+    "这一条没有执行:你在它回答之前改了正文或结构,这段建议是基于改动前的内容做出的。"
+    "让它根据最新内容重新分析一次,就能拿到现在成立的那一版。"
+)
+
+
+def _input_changed_errors(actions: tuple[dict, ...]) -> tuple[ActionError, ...]:
+    """每条被提出的动作配一条"没执行,因为输入变了"。
+
+    **一条都不漏。** 只报一句总述的话,界面上那份"这次打算改 5 处"和错误数就对不上,
+    而用户会以为剩下那几条已经生效了 —— 那正是这一整段要防的事。
+    """
+    return tuple(
+        ActionError(ordinal=index, code=INPUT_CHANGED, message=_INPUT_CHANGED_MESSAGE)
+        for index, _ in enumerate(actions, start=1)
     )
 
 

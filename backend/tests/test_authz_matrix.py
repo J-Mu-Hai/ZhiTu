@@ -67,6 +67,7 @@ AUTHENTICATED_ROUTES = {
     ("GET", "/api/workspaces/{workspace_id}/layout"),
     ("PUT", "/api/workspaces/{workspace_id}/layout"),
     ("GET", "/api/workspaces/{workspace_id}/proposals"),
+    ("GET", "/api/workspaces/{workspace_id}/analyses"),
     ("POST", "/api/workspaces/{workspace_id}/proposals/{proposal_id}/confirm"),
     ("POST", "/api/workspaces/{workspace_id}/proposals/{proposal_id}/reject"),
     ("POST", "/api/workspaces/{workspace_id}/schedule/preview"),
@@ -92,6 +93,11 @@ CROSS_ACCOUNT_ROUTES = {
     ("POST", "/api/workspaces/{workspace_id}/messages"): "workspace_id",
     ("GET", "/api/workspaces/{workspace_id}/plan"): "workspace_id",
     ("GET", "/api/workspaces/{workspace_id}/proposals"): "workspace_id",
+    # 分析列表进得来:它**只读**,而且刚建好的空间必然返回 200(空列表也是列表),
+    # 反向断言成立。这条的归属校验必须真的存在 —— 分析是按 `workspace_id` 查的,
+    # 而 `ctx` 已经在 SQL 的 WHERE 里写死了归属(见 get_workspace_context),
+    # 顺手写成"按 user_id 查"的话,B 拿 A 的空间 id 会读到空列表并返回 200。
+    ("GET", "/api/workspaces/{workspace_id}/analyses"): "workspace_id",
     # 预览是只读的,所以 A 用自己那个空间一定拿得到 200 —— 反向断言成立。
     ("POST", "/api/workspaces/{workspace_id}/schedule/preview"): "workspace_id",
     # 偏差检测同样是只读的,而且**不调模型**:一个刚建好的空间没有偏差,直接返回空列表。

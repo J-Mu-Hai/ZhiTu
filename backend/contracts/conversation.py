@@ -98,6 +98,15 @@ class SendMessageResponse(ApiModel):
     proposal: ProposalView | None = None
     proposal_errors: list[ActionError] = Field(default_factory=list)
 
+    #: **模型回答期间用户改了输入。**
+    #:
+    #: 为真时这一段内容建立在一份已经过去的输入上:提案不会生成(那些动作逐条落在
+    #: `proposal_errors` 里,码是 `INPUT_CHANGED`),分析记录也一出生就是过期的。
+    #:
+    #: 界面需要它来给出下一步 —— 只说"这次没有提案"的话,用户会以为模型什么都没想
+    #: 出来,而真正该做的是点一下"根据最新内容重新分析"。
+    input_changed: bool = False
+
     #: 这是一次重复提交,返回的是上次的结果,没有重新调用模型。
     replayed: bool = False
 
