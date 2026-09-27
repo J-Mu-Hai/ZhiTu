@@ -104,6 +104,17 @@ class NodeAnalysis(UuidPk, Base):
     #: 而它其实只是一句话。
     confidence_note: Mapped[str | None] = mapped_column(Text)
 
+    #: 这次判断的**正文**。§2.2:"分析的摘要可以短,正文不能被摘要替代。"
+    #:
+    #: 七栏是摘要 —— 每栏最多 12 条、每条 400 字,那是**给提示词和界面留的预算**
+    #: (见 `MAX_ANALYSIS_ITEMS`)。一段真正的推理("你这个阶段的问题不在时间不够,
+    #: 而在前两件事的顺序反了……")塞不进 400 字,而塞不进去的后果不是它写短了,
+    #: 是**它不写了** —— 模型会迁就形状,把判断压成一句能过关的话。
+    #:
+    #: 所以正文单独一列,上限 20,000 码点,而且**不截断**(见
+    #: `services/analysis_service.record`):七栏是索引,这一列是内容。
+    narrative: Mapped[str | None] = mapped_column(Text)
+
     created_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False)
 
     __table_args__ = (

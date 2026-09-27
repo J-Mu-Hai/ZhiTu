@@ -1,0 +1,32 @@
+{
+  "turns": [
+    {
+      "reply": "先说说你现在的情况吧：专业排名、有没有科研经历、每周大概能投入多少小时？",
+      "actions": []
+    },
+    {
+      "reply": "记下了。你刚说的那些我整理成一条信息主题挂在画布上，你看一眼再决定要不要留下。",
+      "actions": [
+        {
+          "op": "create_node",
+          "localId": "n9",
+          "parentRef": "n1",
+          "title": "学业情况",
+          "nodeType": "capability",
+          "purpose": "information",
+          "description": "专业排名 38；每周能投入 10 小时。"
+        }
+      ]
+    },
+    {
+      "reply": "那这条我就把它写成一段长正文，方便你以后往上加细节。",
+      "actions": [
+        {
+          "op": "update_note",
+          "targetRef": "n2",
+          "body": "原始回答：排名 38，每周 10 小时。\n\n待补：绩点、专业课、科研经历。"
+        }
+      ]
+    }
+  ]
+}

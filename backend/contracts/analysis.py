@@ -31,6 +31,17 @@ from backend.db.models.enums import AnalysisFreshness, ModelSource
 #: 不是让调用方一次拉全(要全的话得做分页,那是另一个决定)。
 MAX_ANALYSES = 20
 
+#: 分析正文(`narrative`)的码点上限。§2.2。
+#:
+#: 与七栏数组的预算完全不是一个量级,而那正是这一列存在的理由:七栏是**摘要**
+#: (每栏 12 条、每条 400 字),用来让界面一眼扫过;正文才是"它到底怎么想的"。
+#:
+#: 它不是"每条 400 字 × 7 栏"的放大,而是一条独立的、很宽的上限 —— 所以这里
+#: 说的是**单份正文**能到这里,不是七栏各自能到。
+#:
+#: 执行处只有一处:`services/analysis_service.record`。**超限不截断**(见那里)。
+MAX_ANALYSIS_NARRATIVE_CODEPOINTS = 20_000
+
 
 class AnalysisView(ApiModel):
     """一条分析:模型当时看到了什么、判断了什么、现在还成不成立。"""
@@ -68,6 +79,15 @@ class AnalysisView(ApiModel):
     risks: list[str] = Field(default_factory=list)
     #: 可信度说明。自由文本,**不是分数** —— 一个 0.8 会被当成可以比较的量。
     confidence_note: str | None = None
+
+    #: 这次判断的**正文**。§2.2。
+    #:
+    #: 七栏是索引,这里是内容:一段完整的推理塞不进七栏各自 400 字的形状里,
+    #: 而模型会迁就形状 —— 塞不进去就不写了。所以正文单独一列,最长 20,000 码点。
+    #:
+    #: 它排在**七栏之上**渲染(见 `NodeAnalysisPanel`),因为读一份判断的自然顺序
+    #: 是先看它怎么想的,再扫它列了什么。
+    narrative: str | None = None
 
 
 class AnalysisListResponse(ApiModel):

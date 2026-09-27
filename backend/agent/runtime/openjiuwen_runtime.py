@@ -107,6 +107,22 @@ _ANALYSIS_FIELD_DESCRIPTIONS: dict[str, str] = {
     "risks": "可能出问题的地方(不写'已经排好日程')",
 }
 
+#: `analysis` 里**不是数组**的那两个键。它们单独列出来,因为在上面那张
+#: `properties` 表里它们不是 `array` 而是标量 —— 而那张表是**由 `ANALYSIS_FIELD_ORDER`
+#: 现推的**,数组的假设写在循环里。
+#:
+#: `narrative` 就是 §2.2 的正文。**它必须在这里**,理由和整个 `analysis` 键必须
+#: 在 `OUTPUT_CONFIG` 里是同一条(见下面的长注释):没列进 `properties` 的键会被
+#: `_extract_configured_fields` pop 掉,而 openJiuwen 是装了 SDK 时的默认路径 ——
+#: 于是模型认真写的正文会在落库前消失,不报错、不打日志。
+_ANALYSIS_SCALAR_DESCRIPTIONS: dict[str, str] = {
+    "confidence_note": "一句话的可信度说明,不是分数",
+    "narrative": (
+        "这次判断的正文:完整讲清你怎么想的,可以很长(上限 20000 字)。"
+        "七栏是摘要,这里才是推理本身"
+    ),
+}
+
 #: 给模型看的输出形状。**它同时是给 SDK 的抽取声明**:
 #: 只有在这里列出的键会被带回来,模型多写的字段由 SDK 丢掉,
 #: 少写 `brief` / `actions` 不算失败(`required: False`,理由见模块开头)。
@@ -146,13 +162,28 @@ OUTPUT_CONFIG: dict[str, Any] = {
     #
     # 七个数组都**不设 `required`**(理由同 brief),`analysis` 整键也是可选的:
     # "这一轮只是打招呼"是正常情况,不能被判成失败。
+    #
+    # **不只有数组。** `confidence_note` 与 `narrative` 是标量,它们同样必须逐个列出
+    # —— 这条曾经漏过一次:`confidence_note` 从 C 批起就被 `parse_analysis` 接受,
+    # 却一直不在这张表里,于是 openJiuwen 那条路上它每次都被 pop 掉,而直连那条路
+    # 一切正常。所以那张 `_ANALYSIS_SCALAR_DESCRIPTIONS` 不是装饰:它是这段声明的
+    # 必要部分,漏一个键就是静默丢一份数据。
     "analysis": {
         "type": "object",
         "required": False,
         "description": "自己对这块内容的判断,没有实质判断时整个键都不要给",
         "properties": {
-            field: {"type": "array", "description": _ANALYSIS_FIELD_DESCRIPTIONS[field]}
-            for field in ANALYSIS_FIELD_ORDER
+            **{
+                field: {
+                    "type": "array",
+                    "description": _ANALYSIS_FIELD_DESCRIPTIONS[field],
+                }
+                for field in ANALYSIS_FIELD_ORDER
+            },
+            **{
+                field: {"type": "string", "description": description}
+                for field, description in _ANALYSIS_SCALAR_DESCRIPTIONS.items()
+            },
         },
     },
 }

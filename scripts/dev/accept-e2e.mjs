@@ -65,7 +65,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -85,6 +85,37 @@ const serve = argv.includes('--serve');
 const forwarded = argv.filter((arg) => arg !== '--keep' && arg !== '--serve');
 
 /**
+ * `--script=<file>`:让这一轮的后端用一个**测试脚手架**念稿(`AGENT_REASONER=script`,
+ * 见 `backend/agent/runtime/scripted.py`),而不是 `rule` 兜底。
+ *
+ * ## 为什么需要它
+ *
+ * `RuleFallbackReasoner` 永远返回"没有动作"(`rule_fallback.py`),所以隔离栈里
+ * **造不出任何提案** —— 而"访谈得到的信息真的会长到画布上"这件事,正是要验的那一条。
+ * 没有这个模式,那条链路上唯一能验的只有"请求返回了 200",那是假绿。
+ *
+ * ## 为什么默认不开
+ *
+ * 它会让**每一个**对话轮次都去念稿,而不是产品行为。开着它跑整个套件,别的用例
+ * 里那些"模型什么都没提"的断言就会变成在验脚本 —— 所以它是显式的、一次一轮的,
+ * 而且 `--script` 路径必须存在(fail fast):配错一个路径时后端会在第一次对话时
+ * 才报错,而那时现场已经跑到一半了。
+ */
+const scriptArg = argv.find((arg) => arg.startsWith('--script'));
+const scriptPath = scriptArg
+  ? (scriptArg.includes('=') ? scriptArg.slice(scriptArg.indexOf('=') + 1) : '')
+  : null;
+if (scriptArg) {
+  if (!scriptPath) {
+    console.error('--script 需要一个文件路径,写成 --script=apps/web/tests/fixtures/xxx.json');
+    process.exit(2);
+  }
+  // 从 `forwarded` 里摘掉:Playwright 不认识这个参数,留在里面会让它报"未知选项"。
+  const index = forwarded.indexOf(scriptArg);
+  if (index >= 0) forwarded.splice(index, 1);
+}
+
+/**
  * 并发数默认写死 1。
  *
  * 这不是"让测试跑快一点"的旋钮,而是**基线口径**:先要一个可重复的结果。
@@ -100,6 +131,23 @@ if (!existsSync(python)) {
   console.error(`找不到 Python 解释器:${python}\n用 ZHITU_PYTHON 指定 conda 环境 zhitu 的 python。`);
   process.exit(2);
 }
+
+/**
+ * 这一轮的推理来源。**它要出现在横幅和记录里** —— 一份"脚本念出来的提案"和一份
+ * "模型提出来的提案"在截图上一模一样,只有这一行字能把它们分开。
+ *
+ * 相对路径按**仓库根**解析,因为后端的工作目录是仓库根,而人写这个参数时想的是
+ * "仓库里哪个文件"。
+ */
+const scriptFile = scriptPath ? resolve(repoRoot, scriptPath) : null;
+if (scriptFile && !existsSync(scriptFile)) {
+  console.error(`--script 指向的文件不存在:${scriptFile}`);
+  process.exit(2);
+}
+const reasonerMode = scriptFile ? 'script' : 'rule';
+const reasonerLabel = scriptFile
+  ? `script —— **测试脚手架**,念的是 ${relative(repoRoot, scriptFile)},不是产品能力`
+  : 'rule（无模型 key,规则兜底）';
 
 const workDir = mkdtempSync(join(tmpdir(), 'zhitu-e2e-'));
 const dbPath = join(workDir, 'zhitu_e2e.db');
@@ -168,6 +216,9 @@ function writeSummary({ finishedAt, exitCode, report }) {
     `命令        npx playwright test ${forwarded.join(' ')}`,
     `前端        http://127.0.0.1:${webPort}  (production 构建, 不复用 5173)`,
     `后端        http://127.0.0.1:${apiPort}  (独立数据库, 无模型 key)`,
+    // **这一行是这一份记录里最容易漏、也最要紧的一行**:`script` 那几轮里,提案是
+    // 念出来的,不是模型想出来的。少了它,一份现场会被当成"模型能走通访谈闭环"。
+    `推理来源    ${reasonerLabel}`,
     `测试数据库  ${dbSnapshot ? join(runDir, basename(dbPath)) : dbPath}`,
     '',
     `Playwright 退出码  ${exitCode}`,
@@ -267,6 +318,17 @@ let cleanedUp = false;
 //: `summary.txt` 引用 —— 缺了前一个,一个提交号会被读成"跑的就是这份代码"。
 let treeState = '未取到';
 let dbSnapshot = false;
+/**
+ * 测试后端的全部输出。**收尾时要再写一次文件** —— 这个变量是活的,而
+ * `backend.log` 是某一刻的快照:只在"后端就绪"那一刻写的话,文件里就**只有启动**
+ * (实测 15 行、一条访问日志),而一次失败里最有用的恰恰是启动之后的东西 —— 那个
+ * 500 的 traceback、那几条 POST 到底有没有到。
+ *
+ * 代价是有人踩过:2026-09-27 排查一条 scripted 访谈用例失败时,先按这份日志得出
+ * "后端起来了、什么错都没有、一条 POST 都没有",三条结论全是从一份**早写好的**
+ * 文件里读出来的。
+ */
+let apiOutput = '';
 
 /** 只结束**我们自己起的**子进程,绝不按名字批量杀 node/python。 */
 function cleanup() {
@@ -294,6 +356,7 @@ try {
     `时间      ${startedAt.toISOString()}`,
     `前端      http://127.0.0.1:${webPort}  (production 构建, 不复用 5173)`,
     `后端      http://127.0.0.1:${apiPort}  (独立数据库, 无模型 key)`,
+    `推理来源  ${reasonerLabel}`,
     `数据库    ${dbPath}`,
     `并发      ${forwarded.find((a) => a.startsWith('--workers'))}`,
     `现场目录  ${runDir}`,
@@ -307,7 +370,7 @@ try {
   if (migrate.code !== 0) throw new Error(`alembic upgrade 失败:\n${migrate.output}`);
   console.log('      迁移完成');
 
-  console.log(`[2/4] 起测试后端 127.0.0.1:${apiPort}`);
+  console.log(`[2/4] 起测试后端 127.0.0.1:${apiPort}（推理来源:${reasonerMode}）`);
   apiProcess = spawn(python, ['-m', 'uvicorn', 'backend.api.main:app', '--host', '127.0.0.1', '--port', apiPort], {
     cwd: repoRoot,
     env: {
@@ -315,7 +378,11 @@ try {
       DATABASE_URL: databaseUrl,
       // 没有 key 就没有真实模型调用。`rule` 让降级路径也确定,不靠 auto 的探测结果。
       LLM_API_KEY: '',
-      AGENT_REASONER: 'rule',
+      AGENT_REASONER: reasonerMode,
+      // 只有 `script` 那一轮会带它。**两个环境变量缺一不可** —— 少了脚本时
+      // `ScriptedReasoner.from_env` 会直接抛错,而不是退回规则兜底:退回的话,
+      // 一个"忘了配脚本"的验收会以"模型什么都没提"的方式悄悄通过(见那个模块)。
+      ...(scriptFile ? { ZHITU_SCRIPTED_ACTIONS: scriptFile } : {}),
       APP_ENV: 'development',
       APP_SECRET_KEY: 'e2e-only-not-a-secret',
       // 只放行测试前端端口。放行 5173 会让"测试其实打到了开发后端"变得可能。
@@ -325,7 +392,6 @@ try {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   children.add(apiProcess);
-  let apiOutput = '';
   apiProcess.stdout.on('data', (c) => { apiOutput += c; });
   apiProcess.stderr.on('data', (c) => { apiOutput += c; });
   apiProcess.on('close', () => children.delete(apiProcess));
@@ -338,6 +404,8 @@ try {
     writeFileSync(apiLog, apiOutput);
     throw new Error(`${cause.message}\n后端日志(${apiLog}):\n${apiOutput.slice(-4000)}`);
   }
+  // 就绪这一刻先落一份(`--serve` 那条路只走到这儿就不动了,收尾那次写它享受不到)。
+  // **它不是最终那一份** —— 收尾时会重写,见 `apiOutput` 上面那段。
   writeFileSync(apiLog, apiOutput);
   console.log('      后端就绪');
 
@@ -391,6 +459,10 @@ try {
       // 不传的话配置会自己按时间戳建一个,那样日志、报告、截图就分散在两处了。
       ZHITU_RUN_DIR: runDir,
       PLAYWRIGHT_JSON_OUTPUT: reportPath,
+      // 给**测试**看的那一份(后端那份在 `[2/4]` 里另设)。为什么两边都要:
+      // 访谈闭环那一条用例只有在脚本真的配上了才跑得起来,没有它就该是 `skipped`
+      // —— **不能是"跑了但什么都没验"**,那种绿比红更难发现。
+      ZHITU_SCRIPTED_ACTIONS: scriptFile ?? '',
     },
     echo: true,
     shell: process.platform === 'win32',
@@ -399,7 +471,17 @@ try {
 } catch (cause) {
   console.error(`\n验收栈失败:${cause.message}`);
 } finally {
+  // 后端日志在这里**重写一遍**(见 `apiOutput` 上面那段)。两遍是有意的:kill 之前
+  // 先把已经收到的落盘,再给子进程 300 毫秒把管道里最后一段吐完,补一次。被
+  // `taskkill` 掉的进程,缓冲里剩下的那点是取不回来的 —— 这已经是它最好的情况。
+  writeFileSync(apiLog, apiOutput);
   cleanup();
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  try {
+    writeFileSync(apiLog, apiOutput);
+  } catch (cause) {
+    console.error(`后端日志没能补写(${cause.message}) —— 它仍是就绪那一刻那一份`);
+  }
 
   // 失败要留得下**完整**的现场:测试库也拷进现场目录,这样"当时库里是什么样"不用
   // 再从临时目录里找。库很小(几百 KB),而一个取不回来的失败现场代价很大。

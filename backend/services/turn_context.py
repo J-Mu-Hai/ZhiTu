@@ -75,6 +75,7 @@ from backend.db.models import (
     Dependency,
     ExecutionRecord,
     Message,
+    NodeNote,
     NodeRelation,
     PlanNode,
     ScheduledSession,
@@ -102,6 +103,46 @@ logger = logging.getLogger(__name__)
 #: 送进模型的节点数上限。超过之后按"离根近的优先"截断 ——
 #: 阶段和目标比第 40 个任务更能说明这个空间在干什么。
 MAX_NODES = 80
+
+
+async def load_note_budget(
+    db, workspace_id: uuid.UUID, focus_node_id: uuid.UUID | None
+) -> tuple[dict[uuid.UUID, int], uuid.UUID | None, str | None]:
+    """长笔记的预算:**每个节点有多少字** + 焦点节点那份正文。§2.2。
+
+    一次聚合查询加一次单行查询 —— **不是每节点一次**。N+1 在本地那几十个节点上
+    完全看不出来,而它会随着空间长大按节点数放大,且症状是"聊久了越来越慢",
+    没有一个地方会报错。
+
+    长度用 SQL 的 `length()` 数,不是把正文取回来再 `len()`:这个数只用来告诉模型
+    "那里有一片多大",而把最多 80 份、每份两万字的正文取回内存只为数个数,是为一个
+    展示用整数付一次全量的代价。两者在这里是**同一个定义**:SQLite 与 PostgreSQL 的
+    `length()` 对字符串数的都是**码点**(不是字节,也不是 UTF-16 码元),与 Python 的
+    `len()` 一致 —— 这正是契约里 `MAX_DESCRIPTION_CODEPOINTS` 那段说的那条计数规则。
+    **权威仍然是 Python 那一侧**(`note_service._checked` 的拒写),这里只是同一个数的
+    另一种读法。
+
+    正文只给**焦点节点**那一份:其余节点看到的是那几个事实(有笔记、多大、本次没读)。
+    返回 `(每个节点的字数, 焦点节点 id 或 None, 焦点那份正文或 None)`。
+    """
+    # 只收有正文的行 —— "长度为 0"与"没有这一行"是同一件事(见 `note_service.save`
+    # 里"不给用户两件看不出区别的事"那段),所以 0 字不进这张表,`notes_present`
+    # 随之是假。让两种"没有"在这里合成一种,是为了让下游的判断只有一条。
+    rows = await db.execute(
+        select(NodeNote.node_id, func.length(NodeNote.body)).where(
+            NodeNote.workspace_id == workspace_id
+        )
+    )
+    chars = {node_id: length for node_id, length in rows.all() if length}
+
+    if focus_node_id is None or focus_node_id not in chars:
+        return chars, None, None
+    body = await db.scalar(
+        select(NodeNote.body).where(
+            NodeNote.workspace_id == workspace_id, NodeNote.node_id == focus_node_id
+        )
+    )
+    return chars, focus_node_id, body
 
 
 def _weekday_cn(value) -> str:
@@ -669,6 +710,7 @@ async def build_turn_context(
     handle_of = {uuid.UUID(node_id): handle for handle, node_id in handles}
     order = {node.id: node.order_index for node in nodes}
     read_bodies = _bodies_read(scope, order)
+    note_chars, note_focus_id, note_body = await load_note_budget(db, ctx.id, scope.focus_id)
     scope_node = next((node for node in nodes if node.id == scope.scope_id), None)
     focus_node = next((node for node in nodes if node.id == scope.focus_id), None)
 
@@ -686,6 +728,9 @@ async def build_turn_context(
             description=node.description,
             acceptance_criteria=node.acceptance_criteria,
             body_read=node.id in read_bodies,
+            notes_present=node.id in note_chars,
+            notes_chars=note_chars.get(node.id, 0),
+            note_body=note_body if node.id == note_focus_id else None,
             layer=scope.layer_of.get(node.id, LAYER_SCOPE),
             in_scope=node.id in scope.in_scope,
         )

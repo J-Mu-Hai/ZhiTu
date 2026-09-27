@@ -46,7 +46,7 @@ from __future__ import annotations
 
 #: 写进每条助手消息的 prompt_version。改了这个文件就要改它——
 #: 事后排查"这轮回复为什么这么怪"时,能定位到当时用的是哪一版提示词。
-PROMPT_VERSION = "planning-v7"
+PROMPT_VERSION = "planning-v8"
 
 # ---------------------------------------------------------------------------------
 # 正文的预算。**这里定多少,模型就看到多少** —— 别处不再截一次
@@ -55,6 +55,11 @@ PROMPT_VERSION = "planning-v7"
 FOCUS_BODY_CHARS = 4000
 #: 祖先与子节点各自给多少字。它们要的是"够我判断",不是全文。
 CONTEXT_BODY_CHARS = 800
+#: 长笔记给多少字。**只有焦点节点那一份**,而且给得比它的简述宽 ——
+#: 简述是 300 字量级,笔记是两万字量级,用同一个 `FOCUS_BODY_CHARS` 去截一份
+#: 两万字的正文,等于每次只看得到它的开头。上限在这里定,渲染层按它截,
+#: 于是"模型实际看到多少"仍然只有一处答案(与 `description` 同一条纪律)。
+NOTES_BODY_CHARS = 6000
 #: 最多给几个子节点带正文。多出来的仍然列出标题,只是不展开。
 MAX_CHILD_BODIES = 20
 #: 祖先链里,给正文的那些:最上面一条(空间的根目标,最硬的约束)+ 最近的这么几条。
@@ -107,6 +112,12 @@ TRUNCATED_NOTE = "(只给了前 {shown} 字,原文共 {total} 字)"
 #: 一个节点的正文行前缀。写成常量是因为渲染与断言都要用到它。
 BODY_LABEL = "正文"
 ACCEPTANCE_LABEL = "验收标准"
+NOTES_LABEL = "长笔记"
+
+#: 有笔记但这个节点不是焦点时的说明。**必须带字数** —— 光说"有笔记"不足以让模型
+#: 判断该不该去要,而它下一轮要么问用户、要么发一个 `update_note` 去补,
+#: 两条路都需要知道那片有多大。
+NOTES_PRESENT_NOTE = "(有正文笔记 {chars} 字,本次没有读)"
 
 #: 用户在界面上正看着哪一页。`current_view` 一路传到这里**必须印出来** ——
 #: 它是"把这个阶段展开讲讲"里"这个"指谁的唯一外部线索,而这个字段以前传到了服务层
@@ -225,6 +236,27 @@ SYSTEM_PROMPT = """你是「知途」,帮助大学生把目标变成可执行计
   {"op": "create_dependency", "predecessorRef": "n5", "successorRef": "n6"}
   ```
 
+- `update_note` 把一段**长正文**写进某个节点的「长笔记」
+  ```json
+  {"op": "update_note", "targetRef": "n2", "body": "……"}
+  ```
+  「长笔记」是节点正文之外**单独的一格**:一个节点有一句几十字的简述(上面那个
+  `description`),还可以有一份几千到两万字的长笔记。它是**整份覆盖**的,所以要先
+  把现有内容一起写回去 —— 而上面写「有正文笔记 N 字,本次没有读」的节点,**你没有
+  读到它的正文,不要去写它**。
+
+  什么时候用它:用户一下子说了一大段(一次访谈的回答、一份成绩单、一段经历),
+  而它值得被原样记下来、不该被你概括成一句。**不要**把这一大段塞进 `description` ——
+  简述最多 300 字,而它要的是一句能画在卡片上的短句。
+  **不要写 `expectedNoteVersion`**:那是服务端记的,你写了也会被丢掉。
+
+### 同一个主题已经有了,就别再建一个
+
+提 `create_node` 之前,先看上面那份节点清单里**同一个父节点下面**有没有要说的同一件事
+(名字一样、或者只是全角半角与空格的区别)。有的话就发 `update_node` 把它补全,而不是
+再建一个同名的 —— 用户看到的是两个他分不清哪个是哪个的框。服务端会把这种重复合并成
+一次「补充已有节点」(你在预览里会看到这句话),但那不如你直接发一条修改来得清楚。
+
 ### 排期不由你决定,但它是存在的
 
 具体**哪一天做哪一项**,由系统的排期器算出来:它读 `estimateMinutes`、`deadline`、
@@ -311,6 +343,15 @@ AI 分析层(和用户的正文分开存),下次你再看这个节点时读得�
 - `risks` — 可能出问题的地方。**排期相关的风险只能写"会排不开、可能冲突"这种判断,
   不能写"我已经调整了日程"** —— 具体哪天做哪件事由排期器算,不经过你的手。
 - `confidence_note` — 一句话说清这份判断有多可靠、以及**为什么**。不要给分数。
+- `narrative` — **这次判断的正文**。七栏是摘要,这一项才是推理本身:整段讲清你
+  怎么想的、从哪几条推到哪一步、为什么这条走法比别的更值得先试。**可以很长**
+  (上限 20000 字),不要为了简短把中间那几步省掉 —— 省掉的正是用户最需要看的部分。
+  它和七栏**不是一件事**:七栏会被截短(见下),正文不会被截。
+
+**关于长度:七栏里每一条上限 400 字、每栏最多 12 条**(与 `response.py` 的
+`MAX_ANALYSIS_ITEM_CHARS` / `MAX_ANALYSIS_ITEMS` 是同一份预算)。写超了会被截断,
+而**截断之后的半句话在界面上和"你就说到这儿"长得一模一样** —— 所以需要展开的东西
+请写进 `narrative`,七栏留一句能独立读懂的要点。
 
 **这几栏绝不能混。** 把 `assumptions` 写进 `known`、把 `diagnosis` 写成 `evidence`,
 用户读到的是一份分不清哪句是事实、哪句是你的猜测的分析 —— 而他会拿它当事实用。
@@ -339,13 +380,14 @@ AI 分析层(和用户的正文分开存),下次你再看这个节点时读得�
    "diagnosis": ["你的判断与推理"],
    "strategy_options": ["可选的走法,说清代价"],
    "risks": ["可能出问题的地方"],
-   "confidence_note": "一句话说清这份判断有多可靠、为什么"
+   "confidence_note": "一句话说清这份判断有多可靠、为什么",
+   "narrative": "这次判断的正文,可以是一整段很长的推理"
  }}
 
 `brief` 里只放**这一轮新得到的或发生变化**的条件,没提到就不要放这个键。
 `actions` 没有内容时必须是 `[]`,不能省略这个键。
 `analysis` 没有实质判断时**整个键都不要给**;给了的话,里面每项都可以是空数组,
-但不要为了把八项填满而编内容。"""
+但不要为了把它填满而编内容。"""
 
 
 #: 上下文被拼成一段文本而不是塞进 JSON。理由:模型对"读一段结构化的说明"比
@@ -641,6 +683,8 @@ def _node_line(node: dict[str, object]) -> str:
         bits.append(READ_ONLY_NOTE)
     if not node.get("body_read"):
         bits.append(TITLE_ONLY_NOTE)
+    if node.get("notes_present") and not node.get("notes_read"):
+        bits.append(NOTES_PRESENT_NOTE.format(chars=node.get("notes_chars") or 0))
     return " ".join(bits)
 
 
@@ -650,23 +694,37 @@ def _body_lines(node: dict[str, object], limit: int) -> list[str]:
     **没读到就说没读到(在 `_node_line` 里逐条印出来),截断了就说截断了。**
     两种都不许留白:留白的话模型会把你没给它看的东西当成"那里什么都没有",
     然后照着想象往下排 —— 而这正是这一批要修的那个毛病换了个地方复发。
-    """
-    if not node.get("body_read"):
-        return []
 
+    长笔记排在这两行之后,用**它自己的**预算(`NOTES_BODY_CHARS`):两份文本的量级
+    差一个数量级(300 字 vs 20,000 字),共用一个 limit 会让笔记永远只露出开头。
+    """
     indent = "  " * (int(node.get("depth") or 0) + 1)
     lines: list[str] = []
-    for label, key in ((BODY_LABEL, "description"), (ACCEPTANCE_LABEL, "acceptance_criteria")):
-        text = str(node.get(key) or "").strip()
-        if not text:
-            continue
-        if len(text) > limit:
-            note = TRUNCATED_NOTE.format(shown=limit, total=len(text))
-            lines.append(f"{indent}{label}{note}:{text[:limit]}")
+    # 简述这一段只在读了的时候印;而那两句话(`未读到` / `这里没有`)的**区别**
+    # 正是靠 `body_read` 表达出来的,所以这一段整体跟着它走。
+    if node.get("body_read"):
+        for label, key in ((BODY_LABEL, "description"), (ACCEPTANCE_LABEL, "acceptance_criteria")):
+            text = str(node.get(key) or "").strip()
+            if not text:
+                continue
+            if len(text) > limit:
+                note = TRUNCATED_NOTE.format(shown=limit, total=len(text))
+                lines.append(f"{indent}{label}{note}:{text[:limit]}")
+            else:
+                lines.append(f"{indent}{label}:{text}")
+        if not lines:
+            lines.append(f"{indent}(这个节点没有正文 —— 这是读到的结果,不是没读)")
+
+    # 长笔记**不跟 `body_read` 走**:它有自己的"给没给"(`note_body` 是不是 None)。
+    # 绑在一起的话,以后只要有人调整了"哪些层给正文",长笔记就会跟着一起消失 ——
+    # 而那种消失没有任何地方会报错。
+    notes = node.get("note_body")
+    if isinstance(notes, str) and notes:
+        if len(notes) > NOTES_BODY_CHARS:
+            note = TRUNCATED_NOTE.format(shown=NOTES_BODY_CHARS, total=len(notes))
+            lines.append(f"{indent}{NOTES_LABEL}{note}:{notes[:NOTES_BODY_CHARS]}")
         else:
-            lines.append(f"{indent}{label}:{text}")
-    if not lines:
-        lines.append(f"{indent}(这个节点没有正文 —— 这是读到的结果,不是没读)")
+            lines.append(f"{indent}{NOTES_LABEL}:{notes}")
     return lines
 
 

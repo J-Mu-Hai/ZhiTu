@@ -70,20 +70,9 @@ def _clean_module_state() -> Iterator[None]:
     reset_runner_state()
 
 
-@pytest.fixture
-def settings_factory(monkeypatch: pytest.MonkeyPatch):
-    """造一份**不读 .env、不受进程环境影响**的配置。
-
-    直接用 `Settings()` 是危险的:它会去读仓库 `.env`,于是在你的机器上"有 key"
-    而在 CI 上"没 key",同一个用例两种行为。conftest 的 `_no_model_key` 只清了
-    模块级的那个单例,管不到这里新构造的对象。
-    """
-
-    def make(**overrides: Any) -> Settings:
-        monkeypatch.delenv("LLM_API_KEY", raising=False)
-        return Settings(_env_file=None, **overrides)  # type: ignore[call-arg]
-
-    return make
+# `settings_factory` 现在住在 `conftest.py` —— 装配 reasoner 的用例不止这一个模块
+# (`test_scripted_reasoner.py` 也要),而两份定义迟早会分叉。它仍然是同一个 fixture:
+# 造一份不读 `.env`、不受进程环境影响的配置。
 
 
 def test_available_only_asks_whether_the_package_is_there(

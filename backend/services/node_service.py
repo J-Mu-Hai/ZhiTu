@@ -77,7 +77,11 @@ from datetime import date, datetime
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.contracts.plan import DEPENDS_ON
+from backend.contracts.plan import (
+    DEPENDS_ON,
+    description_length_error,
+    information_node_conflicts,
+)
 from backend.db.base import utcnow
 from backend.db.locking import lock_workspace
 from backend.db.models import (
@@ -326,6 +330,20 @@ async def create_node(
     if estimate_minutes is not None and estimate_minutes <= 0:
         raise InvalidInput("预计工时必须是正数。")
 
+    # 新节点没有"存量",所以 300 码点这条规则在这里就是一条普通的上限
+    # (豁免只对**已经超长的老正文**成立,见 `description_length_error`)。
+    # 检查的是 `_clean` 之后的值 —— 那才是真正会写进库的那个字符串,否则
+    # "300 个字加一个换行"会在校验时是 301、存下来却是 300。
+    clean_description = _clean(description)
+    too_long = description_length_error(None, clean_description)
+    if too_long is not None:
+        raise InvalidInput(too_long)
+    # 手工建和 AI 提案走**同一个谓词**(§2.5)。两条路各写一份判断的话,
+    # 迟早有一条漏掉,而漏掉的表现是"我自己建的能带工时,AI 建的不行"。
+    conflicts = information_node_conflicts(parsed_purpose, estimate_minutes, deadline)
+    if conflicts is not None:
+        raise InvalidInput(conflicts)
+
     async with _each_change(db, ctx, trigger_detail=f"新建了「{clean_title}」") as change:
         # 父节点在**锁里面**读。放在锁外面读的话,"读到父节点 d=2 -> 另一个请求
         # 把父节点挪走了/删了 -> 我按旧数据写"就会算出错的 depth;而 depth 一旦
@@ -343,7 +361,7 @@ async def create_node(
             workspace_id=ctx.id,
             parent_id=parent.id,
             title=clean_title,
-            description=_clean(description),
+            description=clean_description,
             acceptance_criteria=_clean(acceptance_criteria),
             node_type=parsed_type,
             purpose=parsed_purpose,
@@ -429,6 +447,26 @@ async def update_node(
                 content_version=node.content_version,
                 expected_content_version=expected_content_version,
             )
+
+        if "description" in values:
+            # **这条检查在锁里面,而这个位置是必须的。** 300 码点是**一条条件
+            # 规则**:存量已经超过上限的说明继续想写多长写多长(那些是上限出现
+            # 之前用户唯一的表达方式,对它们收口等于追溯性地宣布他已经写下的东西
+            # 不合法)。要比的那一份"存量"只有读到节点才知道,而节点是在锁里读的。
+            too_long = description_length_error(node.description, values["description"])  # type: ignore[arg-type]
+            if too_long is not None:
+                raise InvalidInput(too_long)
+
+        # 用途、工时、截止**一起**看:只改其中一个也能造出"信息主题带着 90 分钟"
+        # 这种状态(比如把一个有工时的任务改成信息主题)。取的是**改完之后**的
+        # 值,不是 patch 里出现的字段 —— 判"结果合不合法",不判"这次动了几个字段"。
+        conflicts = information_node_conflicts(
+            values.get("purpose", node.purpose),
+            values.get("estimate_minutes", node.estimate_minutes),  # type: ignore[arg-type]
+            values.get("deadline", node.deadline),  # type: ignore[arg-type]
+        )
+        if conflicts is not None:
+            raise InvalidInput(conflicts)
 
         for field, value in values.items():
             setattr(node, field, value)

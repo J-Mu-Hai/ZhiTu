@@ -176,6 +176,18 @@ class ModelSource(StrEnum):
     DIRECT_LLM = "direct_llm"
     RULE_FALLBACK = "rule_fallback"
     UNAVAILABLE = "unavailable"
+    #: **测试脚手架,不是产品能力。** 只有 `AGENT_REASONER=script`(那要靠显式设的
+    #: `ZHITU_SCRIPTED_ACTIONS` 才启得来,见 `agent/runtime/scripted.py`)会产生它。
+    #: 产品里没有任何一条路径能落到这个值上。
+    #:
+    #: 为什么要单独一个成员,而不是让脚本化的实现借用 `DIRECT_LLM`:那个值会**落库**、
+    #: 会出现在接口响应里、会变成对话徽标上的一句话。借用它,隔离栈里那次演示就会在
+    #: 库里留下"这一轮是直连模型生成的",而它是脚本 —— 那正是这个枚举存在的全部理由
+    #: (见上面那段:静默回退到规则最危险的地方是它看起来像真的)。宁可让它一眼可辨。
+    #:
+    #: 新增**成员**不需要迁移:`SAEnum(native_enum=False)` 在 SQLAlchemy 2.x 上默认
+    #: `create_constraint=False`,列上没有 CHECK 约束(实测 DDL 就是 `VARCHAR(32)`)。
+    SCRIPTED = "scripted"
 
 
 class DegradedReason(StrEnum):
@@ -204,6 +216,10 @@ class ProposalOp(StrEnum):
     CREATE_NODE = "create_node"
     UPDATE_NODE = "update_node"
     DELETE_NODE = "delete_node"
+    #: 改写某个节点的**长正文**(`node_notes`),不是 `plan_nodes` 上的那一列。
+    #: §7 的矩阵里 Notes 只能提案 —— 所以它必须是一个动作,而不是让
+    #: `update_node` 多一个字段(`update_node` 的白名单是 `plan_nodes` 的列)。
+    UPDATE_NOTE = "update_note"
     CREATE_DEPENDENCY = "create_dependency"
     DELETE_DEPENDENCY = "delete_dependency"
     SCHEDULE_SESSIONS = "schedule_sessions"

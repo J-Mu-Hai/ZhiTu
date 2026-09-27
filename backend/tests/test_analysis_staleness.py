@@ -106,6 +106,16 @@ async def _patch(client: httpx.AsyncClient, account, node_id: str, **fields) -> 
     )
 
 
+async def _put_note(
+    client: httpx.AsyncClient, account, node_id: str, body: str
+) -> httpx.Response:
+    return await client.put(
+        f"/api/workspaces/{account.workspace_id}/nodes/{node_id}/notes",
+        json={"body": body},
+        headers=account.headers,
+    )
+
+
 async def _analyses(client: httpx.AsyncClient, account, **params) -> dict:
     response = await client.get(
         f"/api/workspaces/{account.workspace_id}/analyses",
@@ -213,6 +223,68 @@ async def test_the_source_of_a_degraded_reply_is_recorded(
 
     listed = await _analyses(app_client, account, focusNodeId=focus)
     assert listed["analyses"][0]["modelSource"] == "rule_fallback"
+
+
+async def test_the_narrative_is_stored_and_read_back_whole(
+    app_client: httpx.AsyncClient, make_account, use_reasoner
+) -> None:
+    """正文经 HTTP 走一个来回之后**一个字都不少**。
+
+    这条测的是三段路都通:`record` 存下来、`view_of` 读出来、契约里那个字段名对得上。
+    任何一段断了的表现都不一样 —— 存的时候被截了是"内容少了",读的时候漏了是
+    "字段是 null",字段名对不上则是**根本没有这个键**(`AnalysisView` 是 camelCase
+    的,漏掉的话前端拿到 undefined 而不是报错)。所以这里断言的是内容本身,不是
+    "有没有这个字段"。
+    """
+    account = await make_account("analysis-narrative@example.com")
+    focus = await _root_id(app_client, account)
+    body = "你这个阶段的问题不在时间不够。\n\n前两件事的顺序反了:" + "先跑通再补设计。" * 300
+
+    analysis = await _analyze(app_client, account, use_reasoner, focus=focus, narrative=body)
+
+    assert analysis["narrative"] == body
+    assert analysis["known"], "七栏被正文挤掉了"
+
+
+async def test_an_over_long_narrative_is_dropped_not_truncated(
+    app_client: httpx.AsyncClient, make_account, use_reasoner
+) -> None:
+    """正文超过 20,000 码点 -> **丢掉正文,留下七栏**,而不是存一份切过的。
+
+    截断在这里是最坏的一种处理:一份在句子中间停住的正文,读的人分不出是模型没说完
+    还是系统切了它 —— 而用户会拿它当完整判断用。丢掉则是一句可核对的话:"这次只有
+    摘要"。另一半是不能整条丢:模型给了判断,库里一行都没有,那才是真正的静默失败。
+
+    断言里同时钉住这两半 —— 正文为 `None`,而七栏还在。
+    """
+    from backend.contracts.analysis import MAX_ANALYSIS_NARRATIVE_CODEPOINTS
+
+    account = await make_account("analysis-long-narrative@example.com")
+    focus = await _root_id(app_client, account)
+    body = "长" * (MAX_ANALYSIS_NARRATIVE_CODEPOINTS + 1)
+
+    analysis = await _analyze(app_client, account, use_reasoner, focus=focus, narrative=body)
+
+    assert analysis["narrative"] is None
+    assert analysis["known"], "正文被丢掉之后,七栏也跟着没了"
+
+
+async def test_a_narrative_at_the_limit_is_kept(
+    app_client: httpx.AsyncClient, make_account, use_reasoner
+) -> None:
+    """正好 20,000 码点要留下 —— 边界是"超过"才丢。
+
+    没有这一条,上面那条用例在把上限改成 0 时也会过。
+    """
+    from backend.contracts.analysis import MAX_ANALYSIS_NARRATIVE_CODEPOINTS
+
+    account = await make_account("analysis-exact-narrative@example.com")
+    focus = await _root_id(app_client, account)
+    body = "长" * MAX_ANALYSIS_NARRATIVE_CODEPOINTS
+
+    analysis = await _analyze(app_client, account, use_reasoner, focus=focus, narrative=body)
+
+    assert analysis["narrative"] == body
 
 
 # ---------------------------------------------------------------------------------
@@ -334,6 +406,55 @@ async def test_a_change_to_the_input_makes_the_analysis_stale_with_a_reason(
     assert after["id"] == analysis["id"], "读回来的应该是同一条分析"
     assert after["freshness"] == "stale", f"{change.label} 之后它还算最新的"
     assert change.expected in _reasons(after), _reasons(after)
+
+
+async def test_a_changed_note_makes_the_analysis_stale_and_says_which_kind_changed(
+    app_client: httpx.AsyncClient, make_account, use_reasoner
+) -> None:
+    """长笔记改了 -> 这条分析作废,而且理由说的是**长笔记**,不是"正文"。
+
+    这是 `_note_versions` 那次查询存在的全部意义:少了它,用户把一段 20,000 字的
+    笔记从头重写,所有基于旧笔记做的分析仍然标着「最新」—— 没有报错、没有日志,
+    只是一条错误的结论。
+
+    理由的措辞单独断言,因为两份文本是不同的东西:说成"正文改过了",用户会去翻那个
+    300 字的简述,而他改的其实是长笔记 —— 他找错地方,然后以为系统在乱说。
+    """
+    account = await make_account("analysis-note-stale@example.com")
+    focus = await _root_id(app_client, account)
+
+    await _put_note(app_client, account, focus, "原来的笔记")
+    analysis = await _analyze(app_client, account, use_reasoner, focus=focus)
+    assert analysis["freshness"] == "fresh", _reasons(analysis)
+
+    await _put_note(app_client, account, focus, "重写过的笔记")
+
+    after = (await _analyses(app_client, account, focusNodeId=focus))["analyses"][0]
+    assert after["freshness"] == "stale"
+    assert "长笔记改过了" in _reasons(after), _reasons(after)
+    assert "的正文改过了" not in _reasons(after), "把长笔记说成了正文"
+
+
+async def test_saving_the_same_note_does_not_make_the_analysis_stale(
+    app_client: httpx.AsyncClient, make_account, use_reasoner
+) -> None:
+    """打开编辑器、什么都没改、自动保存一次 -> 版本号不动 -> 分析仍然有效。
+
+    这条钉的是 `touch_note_content_version` 的"真的变了才 +1"。版本号一旦在每次
+    保存时都前进,用户随手点开一次笔记就会让**所有**分析变成"已过期" —— 而那条
+    提示很快就没有人看了(与"拖一下画布就到处点重新分析"是同一个失败模式)。
+    """
+    account = await make_account("analysis-note-idempotent@example.com")
+    focus = await _root_id(app_client, account)
+
+    await _put_note(app_client, account, focus, "一样的笔记")
+    analysis = await _analyze(app_client, account, use_reasoner, focus=focus)
+    assert analysis["freshness"] == "fresh", _reasons(analysis)
+
+    await _put_note(app_client, account, focus, "一样的笔记")
+
+    after = (await _analyses(app_client, account, focusNodeId=focus))["analyses"][0]
+    assert after["freshness"] == "fresh", _reasons(after)
 
 
 async def test_a_changed_time_budget_makes_the_analysis_stale(

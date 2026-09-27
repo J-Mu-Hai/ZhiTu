@@ -196,6 +196,56 @@ def test_confidence_alone_is_enough_to_keep_the_analysis() -> None:
 
 
 # ---------------------------------------------------------------------------------
+# narrative(§2.2):正文不在这里截断
+# ---------------------------------------------------------------------------------
+def test_the_narrative_is_not_truncated_here() -> None:
+    """正文比"一条"的上限长得多时,**原样留下**。
+
+    解析器不是裁定长度的地方:上限在 `analysis_service.record` 执行,而且那边超限
+    是**丢掉正文并记 WARNING**,不是存一份截断的。如果这里先截一刀,那边就永远看不到
+    真实的长度 —— "为什么这份正文只有 400 字"会变成一个查不出来的问题。
+
+    用例刻意写成一个远超 `MAX_ANALYSIS_ITEM_CHARS` 的整段:它和 `risks` 里那条
+    被截断的文本走的是**两条不同的路**,这正是这个字段存在的理由。
+    """
+    body = "先把你现在这两件事的顺序反过来。" * 400  # 远超过 400 字
+    draft = parse_analysis({"risks": ["x"], "narrative": body})
+
+    assert draft is not None
+    assert draft.narrative is not None
+    assert draft.narrative == body
+    assert len(draft.narrative) > MAX_ANALYSIS_ITEM_CHARS
+
+
+def test_the_narrative_keeps_its_inner_lines() -> None:
+    """只去首尾空白。内部的空行与缩进是模型排版的一部分,折掉它读起来就不是一份东西了。"""
+    draft = parse_analysis({"risks": ["x"], "narrative": "\n第一段\n\n  第二段\n"})
+
+    assert draft is not None
+    assert draft.narrative == "第一段\n\n  第二段"
+
+
+def test_a_blank_or_non_string_narrative_becomes_none() -> None:
+    """空的、或者根本不是字符串的正文 —— 当成"没给",不编一个默认值。"""
+    for raw in ("", "   ", 123, ["正文"]):
+        draft = parse_analysis({"risks": ["x"], "narrative": raw})
+        assert draft is not None
+        assert draft.narrative is None, raw
+
+
+def test_a_narrative_alone_is_enough_to_keep_the_analysis() -> None:
+    """七栏全空、也没有可信度说明,但给了一整段正文 —— 这是**合法的一份判断**。
+
+    模型完全可能认为"这次要说的话归不进那七类"。把它当空壳丢掉,用户就什么也看不到
+    —— 而那正是 `is_empty` 存在的意义:它要挡住的是"什么都没说",不是"没按七栏说"。
+    """
+    draft = parse_analysis({"narrative": "你这个阶段的问题不在时间不够。"})
+
+    assert draft is not None
+    assert draft.narrative == "你这个阶段的问题不在时间不够。"
+
+
+# ---------------------------------------------------------------------------------
 # 结构上的两条护栏
 # ---------------------------------------------------------------------------------
 def test_unknown_keys_are_ignored_without_dropping_the_analysis() -> None:
@@ -216,11 +266,16 @@ def test_the_field_order_covers_every_column_of_the_draft() -> None:
     这个常量被三处共用(提示词的说明、这里的清洗、契约层的序列化)。将来加了第八栏
     而忘了改这里的话,那一栏就会被**静默丢掉** —— 模型说了、库里没有、界面上不显示,
     而且任何地方都不报错。所以这里用一个集合相等把它钉死。
+
+    排除掉的是**两个标量**,不是"栏":`confidence_note` 是一句话,`narrative` 是
+    正文(§2.2)。它们不走 `_clean_items` —— 数组的那套每栏 12 条、每条 400 字的
+    预算对它们不适用,而且正文**不许截断**。它们各有自己的清洗与上限,所以留在这个
+    集合之外。**新增标量时这两处要一起改**,改了这里才会红。
     """
     declared = {
         name
         for name in AnalysisDraft.__dataclass_fields__
-        if name != "confidence_note"  # 它不是"一栏",是一句话
+        if name not in {"confidence_note", "narrative"}
     }
 
     assert set(ANALYSIS_FIELD_ORDER) == declared

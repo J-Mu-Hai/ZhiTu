@@ -38,10 +38,13 @@ from backend.contracts.plan import (
     DependencyPayload,
     LayoutPayload,
     NodeEditResponse,
+    NoteEditResponse,
+    NotePayload,
     OverbookedDayPayload,
     PlanNodePayload,
     PlanPayload,
     PutLayoutRequest,
+    PutNoteRequest,
     RelationPayload,
     RestoreResponse,
     UpdateNodeRequest,
@@ -59,6 +62,7 @@ from backend.services import (
     analysis_service,
     layout_service,
     node_service,
+    note_service,
     plan_service,
     proposal_service,
 )
@@ -386,6 +390,59 @@ async def delete_relation(
     """
     await node_service.remove_relation(db, ctx, relation_id)
     return Response(status_code=204)
+
+
+# ---------------------------------------------------------------------------------
+# 长正文(笔记)
+#
+# 和布局一样,它**不写** `plan_revisions`、不发 `domain_events` —— 理由在
+# `services/note_service.py` 的开头,以及 `db/models/note.py` 里那段更硬的话:
+# 推进 `revision_version` 会让待确认的提案凭空失效。
+#
+# 和布局不一样的是,它要 `lock_workspace`:一条笔记是整个空间共享的一份,而位置是
+# 每人一份。于是两个标签页同时发第一次保存时,后者必须拿到 409 而不是撞唯一约束
+# 变成一次 500。
+#
+# 它也不在 `/plan` 载荷里:长文本按需取,别让四个视图每次渲染都拖着它。
+# ---------------------------------------------------------------------------------
+@router.get(
+    "/{workspace_id}/nodes/{node_id}/notes",
+    response_model=NotePayload,
+    summary="读一个节点的长正文",
+)
+async def read_note(
+    node_id: uuid.UUID,
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+) -> NotePayload:
+    """**没写过不是 404**:返回空正文 + `contentVersion: 0`。
+
+    编辑器打开时的第一件事就是这个 GET,而"这个节点还没有笔记"是完全正常的状态;
+    用 404 表达它,会把一次正常的初次加载变成界面上的错误路径。
+
+    节点本身仍然要过归属与归档检查(走 `node_service.load_node`)—— 拿别人的节点 id
+    读不到别人的笔记。
+    """
+    return await note_service.load_for(db, ctx, node_id)
+
+
+@router.put(
+    "/{workspace_id}/nodes/{node_id}/notes",
+    response_model=NoteEditResponse,
+    summary="存一个节点的长正文",
+)
+async def write_note(
+    node_id: uuid.UUID,
+    payload: PutNoteRequest,
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+) -> NoteEditResponse:
+    """整份覆盖。上限 20,000 码点,**超了拒绝而不是截断**。
+
+    `expectedContentVersion` 是前置条件(与 `PATCH /nodes/{id}` 的 `contentVersion`
+    同一套):把 GET 到的那一版带回来,对不上就是 409,这次写入一个字都不落。
+    """
+    return NoteEditResponse(note=await note_service.save(db, ctx, node_id, payload))
 
 
 # ---------------------------------------------------------------------------------

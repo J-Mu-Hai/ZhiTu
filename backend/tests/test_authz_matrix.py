@@ -57,6 +57,8 @@ AUTHENTICATED_ROUTES = {
     ("PATCH", "/api/workspaces/{workspace_id}/nodes/{node_id}"),
     ("DELETE", "/api/workspaces/{workspace_id}/nodes/{node_id}"),
     ("GET", "/api/workspaces/{workspace_id}/nodes/{node_id}/archive-impact"),
+    ("GET", "/api/workspaces/{workspace_id}/nodes/{node_id}/notes"),
+    ("PUT", "/api/workspaces/{workspace_id}/nodes/{node_id}/notes"),
     ("POST", "/api/workspaces/{workspace_id}/nodes/{node_id}/restore"),
     ("GET", "/api/workspaces/{workspace_id}/archive"),
     ("POST", "/api/workspaces/{workspace_id}/dependencies"),

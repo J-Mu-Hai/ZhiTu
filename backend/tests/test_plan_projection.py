@@ -334,3 +334,76 @@ async def test_completed_nodes_are_counted_by_the_server(
     assert after["totalNodes"] == before["totalNodes"], "勾完成不该改变节点总数"
     # 勾选完成是一次明确的用户操作,它确实产生一个新版本 —— 计划变了。
     assert after["revisionVersion"] == before["revisionVersion"] + 1
+
+
+#: 访谈共建那条路:一条行动 + 一条信息主题。信息主题**不带工时** ——
+#: 带了它会被 `INFORMATION_NODE_MUST_NOT_BE_SCHEDULABLE` 拒掉(见
+#: `test_proposal_dedup.py`),而这里要验的是投影,不是那道闸。
+INTERVIEW_TREE = (
+    {
+        "op": "create_node",
+        "localId": "n2",
+        "parentRef": "n1",
+        "title": "写文献综述",
+        "nodeType": "task",
+        "estimateMinutes": 120,
+    },
+    {
+        "op": "create_node",
+        "localId": "n3",
+        "parentRef": "n2",
+        "title": "我排名 38",
+        "nodeType": "capability",
+        "purpose": "information",
+    },
+)
+
+
+async def test_an_information_node_is_on_the_canvas_but_out_of_the_totals(
+    app_client: httpx.AsyncClient, make_account, use_reasoner
+) -> None:
+    """信息用途的节点**在画布上**,但不在计时里 —— 两件事必须同时成立。
+
+    ## 为什么这条在投影这一层
+
+    排除信息节点有两种做法,只有一种是对的:
+
+    - 把它从 `nodes` 里过滤掉 —— 用户看不到它,**而它正是他刚答出来的那个事实**;
+      §2.5 的访谈共建就白做了。
+    - 从**排期与统计**里排除它 —— 界面上它还在,只是不占日历、不进分子分母。
+
+    所以这里三件事一起断言:`purpose` 到了线格式上(前端靠它决定不画勾选框)、
+    它没进 `totalNodes`、而它的父链**照常连到根**(画布上仍然是一棵树,不会因为
+    用途不同就飘在外面)。
+    """
+    account = await make_account()
+    use_reasoner(FakeReasoner(actions=INTERVIEW_TREE, reply="访谈记下来了。"))
+    await _propose_and_confirm(app_client, account, key="interview-key")
+
+    plan = await _plan(app_client, account)
+    by_title = {node["title"]: node for node in plan["nodes"]}
+    assert "我排名 38" in by_title, "信息节点被从画布上过滤掉了 —— 它是个事实,不是一个不该显示的东西"
+    assert by_title["我排名 38"]["purpose"] == "information"
+    assert by_title["写文献综述"]["purpose"] == "planning", (
+        "没提用途的那一条应当默认是 planning"
+    )
+
+    # 每一个节点都带这个字段,而且值合法 —— 前端只需要读它,不需要兜底。
+    assert {node["purpose"] for node in plan["nodes"]} <= {"planning", "information"}
+
+    # 父链:信息节点挂在任务下面,一路连到根。
+    info = by_title["我排名 38"]
+    assert info["parentId"] == by_title["写文献综述"]["id"]
+    assert info["depth"] == by_title["写文献综述"]["depth"] + 1
+    parents = {node["id"]: node["parentId"] for node in plan["nodes"]}
+    chain = 0
+    cursor = info["parentId"]
+    while cursor is not None:
+        chain += 1
+        cursor = parents[cursor]
+        assert chain <= len(parents), "父链成环或者没有终止在根上"
+    assert chain == info["depth"]
+
+    # 统计只数 planning:根 + 任务 = 2,信息节点不进分母。
+    assert plan["totalNodes"] == 2, f"信息节点进了分母:totalNodes={plan['totalNodes']}"
+    assert plan["completedNodes"] == 0

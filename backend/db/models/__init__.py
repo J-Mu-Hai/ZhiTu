@@ -33,6 +33,7 @@ from backend.db.models.enums import (
 )
 from backend.db.models.event import DomainEvent
 from backend.db.models.layout import NodePosition, ScopeViewport
+from backend.db.models.note import NodeNote
 from backend.db.models.plan import Dependency, NodeRelation, PlanNode, PlanRevision
 from backend.db.models.proposal import Proposal, ProposalDecision, ProposalItem
 from backend.db.models.reminder import ReminderState
@@ -69,6 +70,7 @@ __all__ = [
     "MessageRole",
     "ModelSource",
     "NodeAnalysis",
+    "NodeNote",
     "NodeOrigin",
     "NodePosition",
     "NodeRelation",

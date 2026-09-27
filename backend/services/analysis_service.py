@@ -46,7 +46,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 
 from backend.agent.runtime.base import AnalysisDraft
-from backend.contracts.analysis import AnalysisView
+from backend.contracts.analysis import MAX_ANALYSIS_NARRATIVE_CODEPOINTS, AnalysisView
 from backend.db.base import utcnow
 from backend.db.models import NodeAnalysis, PlanNode
 from backend.db.models.enums import AnalysisFreshness, ModelSource
@@ -116,7 +116,23 @@ async def record(
 
     `scope_root_id` / `focus_node_id` 取自**快照**而不是参数:快照里那两个就是这一轮
     实际生效的范围,传两个来源进来迟早会出现"记的是这个、分析的是那个"。
+
+    ## 超长的正文丢掉,不截断
+
+    `narrative` 的上限是 `MAX_ANALYSIS_NARRATIVE_CODEPOINTS`(§2.2)。超了怎么办
+    有两种做法,这里选的是**丢掉正文、留下七栏、记一条 WARNING**:
+
+    - **不截断。** 一份 20,000 码点的正文截到 20,000 之后,读的人也看不出哪里断了
+      —— 它只是在一个句子的中间停住,而那和"模型就说到这儿"长得一模一样。
+    - **不整条丢弃。** 正文超限不代表七栏判断是错的,而"模型给了判断、库里一行都没有"
+      正是上面 ③ 那段注释里说过的、安静的失败。
+
+    丢掉的那一半是可查的:WARNING 里有原始码点数与上限,而这一行仍然留下了它的
+    `input_snapshot`、七栏与可信度说明 —— 用户看到"这次分析只有摘要",而运维查得到
+    为什么。**上限只在这一处执行**,解析器不碰它(见 `response.parse_analysis`)。
     """
+    narrative = _checked_narrative(draft.narrative, snapshot.focus_node_id)
+
     analysis = NodeAnalysis(
         user_id=ctx.owner_id,
         workspace_id=ctx.id,
@@ -128,6 +144,7 @@ async def record(
         model_source=model_source,
         input_snapshot=snapshot.to_payload(),
         confidence_note=draft.confidence_note,
+        narrative=narrative,
         created_at=utcnow(),
         **{
             field: list(getattr(draft, field)) or None
@@ -137,6 +154,27 @@ async def record(
     db.add(analysis)
     await db.flush()
     return analysis
+
+
+def _checked_narrative(body: str | None, focus_node_id: str | None) -> str | None:
+    """正文的长度闸。**超限丢掉它本身,不改写它。**
+
+    只做长度一件事,不做清洗 —— 正文是模型的原话(前端也照原样渲染),在这里
+    `strip()` 或者折行都会让"用户读到的"和"模型写的"不再是一份东西。
+
+    `focus_node_id` 只进日志:这条 WARNING 是"哪个节点的分析丢了正文"的唯一线索。
+    """
+    if body is None:
+        return None
+    if len(body) > MAX_ANALYSIS_NARRATIVE_CODEPOINTS:
+        logger.warning(
+            "分析正文 %d 字超过上限 %d,已丢掉正文、保留七栏(不截断):focus=%s",
+            len(body),
+            MAX_ANALYSIS_NARRATIVE_CODEPOINTS,
+            focus_node_id,
+        )
+        return None
+    return body
 
 
 def _as_uuid(raw: str | None) -> uuid.UUID | None:
@@ -232,6 +270,10 @@ def _diff(stored: InputSnapshot, current: InputSnapshot) -> tuple[str, ...]:
             reasons.append(f"「{label}」被归档了" if after.deleted else f"「{label}」被恢复了")
         if before.content_version != after.content_version:
             reasons.append(f"「{label}」的正文改过了")
+        if before.note_version != after.note_version:
+            # 与上面"正文改过了"分开说:它们是两份不同的文本,用户听到"正文改了"
+            # 会去翻 300 字的简述,而实际改的是长笔记 —— 那他就找错地方了。
+            reasons.append(f"「{label}」的长笔记改过了")
         if before.title != after.title:
             reasons.append(f"「{label}」的标题从「{before.title}」改成了「{after.title}」")
 
@@ -320,6 +362,7 @@ async def view_of(db, ctx: WorkspaceContext, analysis: NodeAnalysis) -> Analysis
         stale_reasons=list(staleness.reasons),
         coverage_note=staleness.coverage_note,
         confidence_note=analysis.confidence_note,
+        narrative=analysis.narrative,
         **{
             field: list(getattr(analysis, field) or ())
             for field in SECTION_FIELDS

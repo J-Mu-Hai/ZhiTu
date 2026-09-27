@@ -9,16 +9,19 @@
 所以这里的断言全都落在**排期与统计的产出**上,而不是"字段存下来了":
 字段存下来是必要条件,但不是那件真正要保证的事。
 
-## 为什么信息节点**故意**带着工时
+## 两道闸,分别验
 
-`INFORMATION_NODE_MUST_NOT_BE_SCHEDULABLE`(第二批 B2.5)会从写入时拦住"信息节点带工时"
-这条路。**这一批还没有那道闸**(见交付报告的"批次内的一致性缺口")。所以这里造的
-信息节点**带 120 分钟工时** —— 于是下面"它没被排进去"就只可能有一个原因:
-`schedule_service` 那个收口真的在按用途过滤,而不是"它没有工时所以排不进去"。
+第二批 B2.5 上线后,"信息节点带工时"这个状态**已经造不出来**了:写入时
+`information_node_conflicts` 就拒(见下面第 4 节)。所以现在验的是两道闸各自的功效:
 
-那份守卫上线之后,这个文件会红在"建不出来"上。**那时要改的是本文件的构造方式,
-不是删掉这些断言** —— "带工时的信息节点也排不进去"这条性质在守卫之后依然成立
-(守卫挡在门口,收口挡在排期里,两道都在)。
+1. **写入时**:带工时的信息节点建不出来,改也改不出来(第 4 节)。
+2. **排期时**:一个没有工时的信息节点**也不该**出现在 `gaps` 里 —— 而它本来会:
+   `scheduler/schedule.py` 对"叶子节点没有工时"的处理是**报一条 `NO_ESTIMATE` 缺口**。
+   于是"用途过滤还在不在"有了一个可证伪的问法:过滤没了,这个信息主题就会变成一条
+   天天催用户"给「我排名 38」估个工时"的提示。
+
+第一版这里造的信息节点**故意带着 120 分钟工时**,好让"它没被排进去"只可能有一个
+原因。那道守卫上线时这个用例如期红了(见那次提交),改的是构造方式,断言一条没删。
 """
 
 from __future__ import annotations
@@ -158,19 +161,16 @@ async def test_information_node_is_absent_from_schedule_and_counts(
     这种半对实现照样全绿 —— 而它在界面上是一条天天催用户"给「我排名 38」估个工时"
     的提示,比排进去还糟。
 
-    **信息节点带着 120 分钟工时**(见文件头):所以它出局只可能是用途那一道过滤起的作用。
+    **注意这个信息节点没有工时**(有工时的那个已经建不出来了,见第 4 节):于是
+    `gaps` 那一条断言问的是"用途过滤还在不在" —— 少了它,这个节点会以
+    `NO_ESTIMATE` 缺口的形式出现。
     """
     account = await make_account()
     todo = await _create(
         app_client, account, title="写文献综述", node_type="task", estimate_minutes=120
     )
     info = await _create(
-        app_client,
-        account,
-        title="我排名 38",
-        node_type="capability",
-        purpose="information",
-        estimate_minutes=120,
+        app_client, account, title="我排名 38", node_type="capability", purpose="information"
     )
 
     preview = await _preview(app_client, account)
@@ -263,3 +263,91 @@ async def test_information_node_cannot_be_a_dependency_endpoint(
     allowed = await _depend(task["id"], ok_task["id"])
     assert allowed.status_code == 201, allowed.text
     assert len((await _plan(app_client, account))["dependencies"]) == 1
+
+
+# ---------------------------------------------------------------------------------
+# 4. 写入时的闸:信息主题不能带工时/截止(§4.1,B2.5)
+# ---------------------------------------------------------------------------------
+async def test_an_information_node_cannot_carry_an_estimate_or_a_deadline(
+    app_client: httpx.AsyncClient, make_account
+) -> None:
+    """§4.1:信息主题不需要具备工时、完成勾选或截止日期。
+
+    ## 为什么这是在"写入"这一层挡,而不是排期时忽略
+
+    排期那一层已经把它过滤掉了(第 2 节)。留在库里的"信息主题 + 90 分钟"会在**别处**
+    冒出来:计划载荷里带着一个用户从没打算花的时间、AI 的上下文里它看起来像个任务、
+    而用户把它改回「行动」的那一刻,一个他早忘了的工时突然开始占日历。
+
+    ## 三条路都要堵
+
+    建的时候带、改的时候加上去、以及**把一个已经有工时的任务改成信息主题** ——
+    最后这条是最容易漏的:它一次都不提 `estimateMinutes`,而结果同样不合法。
+    """
+    account = await make_account()
+
+    async def _create_raw(**extra: object) -> httpx.Response:
+        body: dict = {
+            "parentId": await _root_id(app_client, account),
+            "title": "我排名 38",
+            "nodeType": "capability",
+            "purpose": "information",
+        }
+        body.update(extra)
+        return await app_client.post(
+            f"/api/workspaces/{account.workspace_id}/nodes", json=body, headers=account.headers
+        )
+
+    for label, extra in (("带工时", {"estimateMinutes": 90}), ("带截止", {"deadline": "2026-12-01"})):
+        refused = await _create_raw(**extra)
+        assert refused.status_code == 400, f"{label}:应当被拒,实际 {refused.status_code} {refused.text}"
+        error = refused.json()["error"]
+        assert error["code"] == "INVALID_INPUT", error
+        # 消息里要**同时**给出两条出路:用户想做的可能是"把它变成真的信息主题"
+        # (那就清掉),也可能只是点错了用途(那就改回去)。只骂一句"不能带工时",
+        # 他得自己猜该改哪一边。
+        assert "行动" in error["message"], error
+        assert "清掉" in error["message"], error
+
+    # 干净的建法当然要能过 —— 少了这一句,"所有带 purpose=information 的都拒掉"也全绿。
+    clean = await _create_raw()
+    assert clean.status_code == 201, clean.text
+    info = clean.json()["node"]
+
+    patch = f"/api/workspaces/{account.workspace_id}/nodes/{info['id']}"
+
+    # 改:给一个信息主题补上工时 —— 同样拒。
+    added = await app_client.patch(
+        patch, json={"estimateMinutes": 90}, headers=account.headers
+    )
+    assert added.status_code == 400, added.text
+    assert added.json()["error"]["code"] == "INVALID_INPUT"
+
+    # 反过来:把一个**已经有工时**的任务改成信息主题。这一条连 `estimateMinutes`
+    # 都没提,而结果一样不合法。
+    task = await _create(app_client, account, title="写文献综述", node_type="task", estimate_minutes=90)
+    flipped = await app_client.patch(
+        f"/api/workspaces/{account.workspace_id}/nodes/{task['id']}",
+        json={"purpose": "information"},
+        headers=account.headers,
+    )
+    assert flipped.status_code == 400, (
+        "把一个有工时的任务改成了信息主题 —— 库里于是留下一个『信息主题 + 90 分钟』,"
+        f"实际返回 {flipped.status_code} {flipped.text}"
+    )
+
+    # 而**同一次请求里清掉工时再改用途**要能过:这才是那句话教的走法,
+    # 只报错不给路的话用户只能自己试。
+    together = await app_client.patch(
+        f"/api/workspaces/{account.workspace_id}/nodes/{task['id']}",
+        json={"purpose": "information", "estimateMinutes": None},
+        headers=account.headers,
+    )
+    assert together.status_code == 200, together.text
+    assert together.json()["node"]["purpose"] == "information"
+    assert together.json()["node"]["estimateMinutes"] is None
+
+    # 一步都不能落地:被拒的那两次,库里必须原样。
+    stored = {node["id"]: node for node in (await _plan(app_client, account))["nodes"]}
+    assert stored[info["id"]]["estimateMinutes"] is None, "被拒的写入还是落了一半"
+    assert stored[task["id"]]["estimateMinutes"] is None

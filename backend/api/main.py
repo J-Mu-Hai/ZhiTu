@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.agent.runtime.openjiuwen_runtime import warm_up
+from backend.api.dependencies.agent import get_reasoner
 from backend.api.errors import register_exception_handlers
 from backend.api.routes import (
     auth,
@@ -71,6 +72,19 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
                 "openJiuwen 运行时不可用,规划请求将走直连模型;"
                 "响应里的 source 会如实标注,界面上显示「直连模型」。"
             )
+
+    # 脚本模式(**测试脚手架**,见 agent/runtime/scripted.py)的配置**在这里**验。
+    #
+    # `get_reasoner` 是懒构造的 —— 它要到第一条需要推理的请求才建。配置错只留在
+    # 构造里的话,它会在那条消息上炸成 500,而**跨域的浏览器把"500 且响应里没有
+    # CORS 头"显示成「连不上后端服务,请确认后端已经启动」**:验收的人去查进程,
+    # 而进程活得好好的。所以配坏脚本这件事必须在进程起来的那一刻说清楚 ——
+    # 也是 scripted.py 里"配了模式没配脚本 = 启动即失败"那句承诺的兑现处。
+    #
+    # 顺带把 `build_reasoner` 里那行"正在念一份写死的脚本"记进启动日志:进程一起来
+    # 就能看出这一轮没有模型参与。
+    if settings.agent_reasoner.strip().lower() == "script":
+        get_reasoner()
     yield
 
 

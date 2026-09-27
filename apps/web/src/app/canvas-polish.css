@@ -182,18 +182,64 @@
 
    为什么后两种共用一个颜色:它们对用户是同一件事 —— **你写的这段字现在不在库里**。
    区分它们的不是颜色,是那一行下面的按钮("重试" vs "覆盖/放弃")。 */
-.body-save-note {
+.body-save-note,
+/* 长正文那一行状态与说明那一行**共用同一套样式,但类名不同** —— 它们是两条独立的
+   保存路径(各带各的版本号,见 `PathView.tsx::flushNote`),而一个类名指两个元素
+   会让"这段正文的保存状态"变成一句读不准的话。 */
+.note-save-note {
   margin: 0;
   color: #7b8fa1;
   font-size: 11px;
   line-height: 1.8;
 }
-.body-save-note.is-saving { color: #28577f; }
-.body-save-note.is-saved { color: #3f6b52; }
+.body-save-note.is-saving,
+.note-save-note.is-saving { color: #28577f; }
+.body-save-note.is-saved,
+.note-save-note.is-saved { color: #3f6b52; }
 .body-save-note.is-failed,
-.body-save-note.is-conflict { color: #a85341; }
-.body-save-note button { margin-left: 6px; }
+.body-save-note.is-conflict,
+.note-save-note.is-failed,
+.note-save-note.is-conflict { color: #a85341; }
+.body-save-note button,
+.note-save-note button { margin-left: 6px; }
 .body-conflict-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* ---------------------------------------------------------------------------
+   长度计数与长正文编辑器(第二批 §2.1 / §2.2)
+   ---------------------------------------------------------------------------
+   计数是**给用户提前看一眼**的,不是守卫 —— 守卫在服务端。所以它要安静(它每一
+   次按键都在变),只在一件事上必须吵:**已经写超了**。那一档得同时做到两件事,
+   而它们缺一不可:
+
+   - 变色(`.is-over`):扫一眼就知道不对劲;
+   - 换词:光靠颜色的话,色觉障碍的用户看到的仍然是"300/301"这种让人以为还能写的
+     数字。所以文案也从"还可以写多少"变成"这样存不进去,改短才会自动保存"。
+
+   `.note-field` 是长正文那一整块。它与上面那段说明之间有一条分隔线:两块文本各存
+   各的、各带各的版本锁,视觉上分开才不会让人以为"下面这段也是这个节点的一个字段"。
+   那个头部行让标题与计数分居两端,计数才不会随着输入框宽度的变化跑来跑去。 */
+.body-count {
+  display: block;
+  color: #7b8fa1;
+  font-size: 11px;
+}
+.body-count.is-over { color: #a85341; }
+
+.note-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(120, 141, 163, 0.18);
+}
+.note-field-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.note-field textarea { min-height: 140px; }
 
 
 /* ---------------------------------------------------------------------------
@@ -269,6 +315,25 @@
   max-height: 46vh; overflow-y: auto;
 }
 .analysis-meta { margin: 0; color: #708294; font-size: 12px; line-height: 1.7; }
+/* 判断的正文。七栏是索引,这一块是内容(§2.2),所以它比七栏那几行**明显更亮**、
+   字号也大一档 —— 一份被读成"和下面那些小字一样"的正文,就会被当成又一条摘要。
+
+   `pre-wrap` 是必须的:正文是模型写的多段文本,换行是它自己排的版,而浏览器默认
+   会把换行压成空格 —— 那等于替它重新分段,一段论证的结构就没了。
+   `break-words` 那一行管的是另一件事:中文长行没问题,但正文里出现一长串没有空格的
+   英文/URL 时,它会撑破这个带 `max-height` 的滚动容器。 */
+.analysis-narrative {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 4px;
+  background: #ffffff;
+  border: 1px solid #e6ecf0;
+  color: #2b4257;
+  font-size: 13px;
+  line-height: 1.9;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .analysis-hint { margin: 0; color: #5d7a92; font-size: 11px; line-height: 1.7; }
 .analysis-section h4 {
   margin: 0 0 4px; color: #24506f; font-size: 12px; font-weight: 600;

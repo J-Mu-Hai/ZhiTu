@@ -41,6 +41,12 @@ import { NodeAnalysisPanel } from '@/components/growth/NodeAnalysisPanel';
 import { ContextMenu, type ContextMenuState } from '@/components/ui/ContextMenu';
 import { Dialog } from '@/components/ui/Dialog';
 import { CREATE_KINDS, useCanvasDraft, type CreateKind } from '@/features/growth/drafts';
+import {
+  MAX_DESCRIPTION_CODEPOINTS,
+  MAX_NOTE_CODEPOINTS,
+  codePointLength,
+  isDescriptionExempt,
+} from '@/lib/codepoints';
 import { useDemo } from '@/features/growth/provider';
 import type { GrowthEdge, GrowthNode, GrowthRelationType } from '@/types/growth';
 import { SpaceFiles } from './SpaceFiles';
@@ -219,6 +225,20 @@ function GrowthNodeComponent({ data, selected }: NodeProps<FlowNode>) {
 const BODY_SAVE_DEBOUNCE_MS = 700;
 
 /**
+ * 这一段说明此刻是不是**长到不该发出去**。
+ *
+ * 上限是一条**条件规则**,不是一把尺子(见 `lib/codepoints.ts` 与后端
+ * `contracts/plan.py` 的 `description_length_error`):库里那一份已经超过 300 码点的
+ * 说明继续想写多长写多长 —— 那些是上限出现之前用户唯一的表达方式。
+ *
+ * 所以第二个参数是**库里那一份**,不是输入框里那个数。拿输入框判的话,用户把一个
+ * 豁免节点的正文删到 200 字,界面就翻脸说"还可以写 300 字",而服务端那边仍然豁免它。
+ */
+function descriptionTooLong(text: string, stored: string | null | undefined): boolean {
+  return codePointLength(text) > MAX_DESCRIPTION_CODEPOINTS && !isDescriptionExempt(stored);
+}
+
+/**
  * 编辑器里那段正文此刻是什么状态。**这六种都要能显示出来** —— 少一种,用户就会
  * 在"没存上"的时候以为存上了。
  */
@@ -334,6 +354,9 @@ function Canvas() {
     // 取在这里;节点子组件里那一份只管自己那个箭头。
     enterSpace, askArchive,
     addNode, updateNode, saveNodeBody, addRelation, updateRelation, removeRelation,
+    // 长正文(笔记)。它**不是**节点的一个字段:两万字按需取、整份存,与自己一条
+    // 版本线 —— 见 `lib/backend.ts` 的 `NotePayload`。
+    loadNodeNote, saveNodeNote,
     files, isRealSpace, planSaving, planLoading, planError, setPlanError,
     layoutReady, layoutError, retryLayoutSave,
     undoLayout, redoLayout, canUndo, canRedo, historyNote, setHistoryNote,
@@ -456,6 +479,40 @@ function Canvas() {
   const bodySavedAt = useRef<string | null>(null);
   const [bodyNote, setBodyNote] = useState<BodyNote>({ kind: 'none' });
 
+  /* ------------------------- 长正文(笔记)的状态 -------------------------
+     与上面那一组**同构,但是另一套**:另一份文本、另一个版本号、另一条保存路径。
+     它不能和正文共用一套状态 —— 共用会让"正文正在保存"和"长正文正在保存"变成
+     屏幕上的同一句话,而用户改的是两个框里的东西。
+     -------------------------------------------------------------------- */
+  /** 编辑器里此刻的长正文。理由与 `detailDescriptionRef` 一样:`flushNote` 从定时器里被调用。 */
+  const noteBodyRef = useRef('');
+  /** 手上这份长正文是第几版(笔记自己的乐观锁)。见 `lib/backend.ts` 的 `NotePayload`。 */
+  const noteVersion = useRef<number | undefined>(undefined);
+  /** 库里那一份长正文此刻是什么 —— 用来判"有没有真的改动",以及冲突时那句话。 */
+  const noteServerBody = useRef('');
+  const noteInFlight = useRef(false);
+  const [noteNote, setNoteNote] = useState<BodyNote>({ kind: 'none' });
+  /**
+   * 上面那三样(正文 ref、版本号、库里那一份)**现在属于哪个节点**。`null` 是
+   * "不属于任何一个" —— 编辑器关着,或者这一份还在路上。
+   *
+   * **为什么必须单独有一个,而不是拿 `draft.noteNodeId` 充当**:`flushNote` 是从
+   * 定时器里被调用的,那时闭包里的 `draft` 可能已经旧了。少了这个守卫,"用户在 A 上
+   * 打了字、700 毫秒内切到 B"就会把 **B 的正文存到 A 头上** —— 两个节点都还在、
+   * 界面也不报错,是一笔查不出来的账。
+   */
+  const noteOwnerRef = useRef<string | null>(null);
+  /** 编辑器此刻开着哪个节点。同样是为了让 `flushNote` 在定时器里有一个"现在"可读。 */
+  const detailNodeIdRef = useRef<string | null>(null);
+  /** 读到第几次。重试按钮把它加一,下面那个效果就再读一遍。 */
+  const [noteReload, setNoteReload] = useState(0);
+  /**
+   * 读长正文失败了。**失败时不给编辑** —— 一个空白的编辑器配上一句"没读到"会让
+   * 用户以为自己没写过,然后把他新写的存上去,而那可能是对服务端那一份的覆盖。
+   * 所以这一条是"编辑器先别出现",不是"当作空的"。
+   */
+  const [noteLoadError, setNoteLoadError] = useState<string | null>(null);
+
   /**
    * 弹窗与编辑器里**还没提交的输入**。它们住在组件外面 —— 见 `drafts.ts` 的文件头。
    *
@@ -471,6 +528,7 @@ function Canvas() {
   const {
     dialog, title, description, createKind, estimate, createPosition,
     detailNodeId, detailTitle, detailDescription, detailPriority, detailDeadline, detailEstimate, detailStart, detailEnd,
+    noteNodeId, noteBody,
     relationId, relationType, relationNote, relationSource, relationTarget,
   } = draft;
 
@@ -489,6 +547,10 @@ function Canvas() {
   const closeDetailEditor = () => patchDraft({
     detailNodeId: null, detailTitle: '', detailDescription: '', detailPriority: 'medium',
     detailDeadline: '', detailEstimate: '', detailStart: '', detailEnd: '',
+    // 长正文那一份也一起丢。**不清的话**下一次打开别的节点时,`noteNodeId` 会对不上
+    // 而显示"正在读取"直到那一份回来 —— 不难看,但把一个"关掉=不写了"的动作留在
+    // 了半途。它已经存过的部分在库里,这里丢的只是编辑器里那一份。
+    noteNodeId: null, noteBody: '',
   });
   /**
    * 关掉关系编辑器,并丢掉它那一组输入。
@@ -689,6 +751,20 @@ function Canvas() {
    */
   const canCreate = !isRealSpace || !planLoading;
   const detailNode = detailNodeId ? growth.nodes[detailNodeId] : null;
+  // 每次渲染都记一次"编辑器开着哪个节点"。`flushNote` 从定时器里被调用,而定时器的
+  // 闭包停在**排它那一帧**上 —— 没有这一行,它就不知道用户已经切走了(见 `noteOwnerRef`)。
+  detailNodeIdRef.current = detailNodeId;
+
+  /* ------------------- 三个长度上限此刻的状态(只用于界面提示) -------------------
+     真正的执行在服务端;这里的三行是为了让用户**在发出去之前**就知道自己写长了。
+     三个各算各的,因为它们是三条不同的规则:
+     - 创建表单:新建的节点一律受限 —— 它还没有库里那一份,谈不上豁免。
+     - 详情里的说明:受不受限看**库里那一份**(见 `descriptionTooLong`)。
+     - 长正文:一条固定的 20,000,与上面那条无关。
+     ------------------------------------------------------------------------ */
+  const createDescriptionOver = codePointLength(description) > MAX_DESCRIPTION_CODEPOINTS;
+  const detailDescriptionOver = descriptionTooLong(detailDescription, detailNode?.description);
+  const noteOver = codePointLength(noteBody) > MAX_NOTE_CODEPOINTS;
   /**
    * 这一层上一次看到的视口。
    *
@@ -801,6 +877,11 @@ function Canvas() {
     bodyVersion.current = node.contentVersion;
     bodySavedAt.current = null;
     setBodyNote({ kind: 'none' });
+    // 长正文那一份**不在这里赋值**:它不在 `/plan` 载荷里,要按需去取(见下面那个
+    // 效果)。这里只把状态清干净 —— 下一次渲染时 `noteNodeId` 与 `detailNodeId`
+    // 对不上,于是编辑器显示"正在读取",而不是上一个节点的正文顶着这个节点的标题。
+    setNoteNote({ kind: 'none' });
+    setNoteLoadError(null);
   }
 
   /* ---------------------------------------------------------------------------
@@ -825,6 +906,10 @@ function Canvas() {
     if (!node || bodyInFlight.current) return;
     const text = detailDescriptionRef.current;
     if (text === (node.description ?? '')) return;
+    // 超限不自动存。理由与 `flushNote` 里那一条一样:服务端会拒(400),而拒了之后
+    // 每 700 毫秒再撞一次,屏幕上只会来回闪"正在保存正文"。豁免的那一类不受这条约束
+    // —— 判据是**库里那一份**(见 `isDescriptionExempt`)。
+    if (descriptionTooLong(text, node.description)) return;
     bodyInFlight.current = true;
     setBodyNote({ kind: 'saving' });
     const result = await saveNodeBody(node.id, text, bodyVersion.current);
@@ -864,10 +949,100 @@ function Canvas() {
     if (bodyNote.kind === 'conflict') return;      // 冲突没解决之前不重发(见上)
     if (bodyInFlight.current) return;              // 上一次还在飞
     if (detailDescription === (node.description ?? '')) return;  // 没有差别
+    if (descriptionTooLong(detailDescription, node.description)) return;  // 超限,见 `flushBody`
     const timer = window.setTimeout(() => { void flushBody(); }, BODY_SAVE_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 见上:`bodyNote` 只做守卫,不进依赖
   }, [detailDescription, detailNode]);
+
+  /* ---------------------------------------------------------------------------
+     长正文(笔记)的读取与保存
+     ---------------------------------------------------------------------------
+     与上面那段**同构,但读的那一步不一样**。正文住在计划里,打开编辑器时它已经在手上
+     (`node.description`);长正文不在 `/plan` 载荷里(两万字会让每一次读计划都背着它),
+     所以打开一个节点要**按需去读一次**。于是这里多出一种状态:**还没读完** ——
+     那段时间屏幕上不能显示任何字,显示上一个节点那一份是这里最坏的一种错
+     (标题已经是 B,字还是 A)。
+
+     三件事的边界:
+     - **读** 失败不当成空:`noteLoadError` 让编辑器先不出现(理由见那个 state)。
+     - **写** 仍是停手 700 毫秒一次,带笔记自己的版本号 —— 它与正文那条锁互不牵连,
+       所以改一次 300 字的说明不会让两万字的笔记存不上(见 `saveNodeNote`)。
+     - **冲突** 回读的也是笔记那一份,而不是整份计划。
+  --------------------------------------------------------------------------- */
+  useEffect(() => {
+    if (!isRealSpace || !detailNodeId) return;
+    // **先把归属清掉**,再开始读:`noteBodyRef` 里现在装的还是上一个节点的字,
+    // 而"正在读"这段时间任何一次 `flushNote` 都必须什么都不做。
+    noteOwnerRef.current = null;
+    let cancelled = false;
+    void (async () => {
+      const fresh = await loadNodeNote(detailNodeId);
+      if (cancelled) return;                     // 用户已经切到别的节点/关掉了
+      if (!fresh) {
+        setNoteLoadError('这一份长正文没读到。');
+        return;
+      }
+      setNoteLoadError(null);
+      noteVersion.current = fresh.contentVersion;  // 没写过时是 0,见 `loadNodeNote`
+      noteServerBody.current = fresh.body;
+      noteOwnerRef.current = detailNodeId;
+      // **以库里那一份为准,不做"本地那份还没存,先留着"的合并。** 合并会让手上这份
+      // 的正文是旧的那一段、版本号却是新的那个 —— 而版本号正是用来发现这件事的。
+      // 与本文件对正文做的(`openDetail` 直接取 `node.description`)是同一件事。
+      patchDraft({ noteNodeId: detailNodeId, noteBody: fresh.body });
+      setNoteNote({ kind: 'none' });
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `patchDraft` 跟着草稿键走,键变时这个效果本来就该重跑
+  }, [detailNodeId, noteReload, isRealSpace]);
+
+  async function flushNote() {
+    const nodeId = noteOwnerRef.current;
+    // 编辑器里那份**属于**这个节点、**且**用户还开在这个节点上 —— 两个条件缺一不可。
+    // 前者挡"刚切过去、新的那份还在路上",后者挡"定时器排下之后用户就切走了"。
+    if (!nodeId || nodeId !== detailNodeIdRef.current || noteInFlight.current) return;
+    const text = noteBodyRef.current;
+    if (text === noteServerBody.current) return;
+    // 超限就不自动存。服务端会拒(400),而拒了之后每 700 毫秒再撞一次同一堵墙,
+    // 屏幕上那行状态会来回闪 —— 用户看到的是"一直在保存",不是"太长了,存不进去"。
+    if (codePointLength(text) > MAX_NOTE_CODEPOINTS) return;
+    noteInFlight.current = true;
+    setNoteNote({ kind: 'saving' });
+    const result = await saveNodeNote(nodeId, text, noteVersion.current);
+    noteInFlight.current = false;
+    if (result.status === 'saved') {
+      // 版本号用**后端回来的那一个**,理由与 `flushBody` 同:自己 `+1` 的话,
+      // 只要有一次写入不是"笔记 +1",本地那个号就会一路偏下去。
+      noteVersion.current = result.contentVersion;
+      noteServerBody.current = text;
+      setNoteNote({ kind: 'saved', at: new Date().toLocaleTimeString('zh-CN', { hour12: false }) });
+      return;
+    }
+    if (result.status === 'conflict') {
+      noteVersion.current = result.serverVersion;
+      setNoteNote({ kind: 'conflict', serverBody: result.serverBody, message: result.message });
+      return;
+    }
+    setNoteNote({ kind: 'failed', message: result.message });
+  }
+
+  /** 长正文改动后停手 700 毫秒存一次。守卫与依赖的理由同上面那段正文。 */
+  useEffect(() => {
+    if (!isRealSpace) return;
+    const node = detailNode;
+    // `noteNodeId` 而不是 `noteBody`:编辑器里那份是**哪个节点**的,由它说了算。
+    // 对不上就是"还没读完",那时候一个定时器都不该排。
+    if (!node || noteNodeId !== node.id) return;
+    noteBodyRef.current = noteBody;
+    if (noteNote.kind === 'conflict') return;
+    if (noteInFlight.current) return;
+    if (codePointLength(noteBody) > MAX_NOTE_CODEPOINTS) return;
+    if (noteBody === noteServerBody.current) return;
+    const timer = window.setTimeout(() => { void flushNote(); }, BODY_SAVE_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 见上:`noteNote` 只做守卫,不进依赖
+  }, [noteBody, noteNodeId, detailNode, isRealSpace]);
 
   /**
    * 这一层能连的节点 —— **就是画布上看得见的那些**,不是这个空间里的全部节点。
@@ -1327,12 +1502,20 @@ function Canvas() {
             </label>
             <label>
               {isRootSpace ? '节点说明（可选）' : '树叶说明'}
+              {/* **没有 `maxLength`。** 浏览器那个属性数的是 UTF-16 码元,一个 emoji
+                  会被它数成两个 —— 于是它会在服务端本来接受的输入上先拦住,而且用户
+                  看不见(输入框里的计数说"满了",服务端那边还有一半余量)。上限在
+                  服务端,这里只是**提前告知**,见下面的计数。 */}
               <textarea
-                maxLength={240}
                 value={description}
                 onChange={(event) => patchDraft({ description: event.target.value })}
                 placeholder="写清楚这片树叶要积累什么、下一步做什么"
               />
+              <small className={`body-count${createDescriptionOver ? ' is-over' : ''}`}>
+                {createDescriptionOver
+                  ? `说明最多 300 个字（按 Unicode 码点计），这一份有 ${codePointLength(description)} 个。`
+                  : `${codePointLength(description)}/${MAX_DESCRIPTION_CODEPOINTS}`}
+              </small>
             </label>
             {/* 预计工时。**只有真实空间问它** —— 示例空间没有排期算法,问了也
                 没有东西会用它,而一个填了却没有下文的输入框是在骗人。
@@ -1360,7 +1543,9 @@ function Canvas() {
             {/* 创建失败时**必须在这里说**。这条错误以前只出现在详情弹窗里,于是创建
                 失败看起来像"点了没反应",而用户会再点一次。 */}
             {isRealSpace && planError && <p className="form-error" role="alert">{planError}</p>}
-            <button className="primary-button" disabled={!title.trim() || submitting || planSaving}>
+            {/* 超限时**按钮就按不下去**,而不是发出去等一个 400 —— 那一下的观感是
+                "点了没反应",而原因写在上面那行计数里。 */}
+            <button className="primary-button" disabled={!title.trim() || submitting || planSaving || createDescriptionOver}>
               {submitting ? '正在保存…' : createLabel}
             </button>
           </form>
@@ -1497,29 +1682,52 @@ function Canvas() {
                 见 `flushBody`。 */}
             <label>
               详细说明
-              <textarea value={detailDescription} maxLength={1000} onChange={(event) => patchDraft({ detailDescription: event.target.value })} placeholder="记录这个节点的目标、约束、判断和下一步…" />
+              {/* **没有 `maxLength`**,理由与创建表单那一处同。 */}
+              <textarea value={detailDescription} onChange={(event) => patchDraft({ detailDescription: event.target.value })} placeholder="记录这个节点的目标、约束、判断和下一步…" />
+              {/* 两种话分开说(见 `isDescriptionExempt`):受限的报数,存量已经超过
+                  300 的那一类**如实说它不受限** —— 装作受限会让用户以为必须删掉自己
+                  写了很久的东西,而服务端其实照收。 */}
+              <small className={`body-count${detailDescriptionOver ? ' is-over' : ''}`}>
+                {isDescriptionExempt(detailNode.description)
+                  ? `${codePointLength(detailDescription)} 字（这份说明超过 300，不受上限约束）`
+                  : detailDescriptionOver
+                    ? `说明最多 300 个字（按 Unicode 码点计），这一份有 ${codePointLength(detailDescription)} 个。`
+                    : `${codePointLength(detailDescription)}/${MAX_DESCRIPTION_CODEPOINTS}`}
+              </small>
             </label>
             {isRealSpace && (
-              <p className={`body-save-note is-${bodyNote.kind}`} role="status">
-                {bodyNote.kind === 'saving' && '正在保存正文…'}
-                {bodyNote.kind === 'saved' && `正文已保存（${bodyNote.at}）`}
-                {bodyNote.kind === 'failed' && (
-                  <>
-                    正文没有保存上:{bodyNote.message}
-                    <button type="button" onClick={() => { setBodyNote({ kind: 'none' }); void flushBody(); }}>重试</button>
-                  </>
-                )}
-                {bodyNote.kind === 'conflict' && (
+              /* 这一段是**铺开写的一串 `? :`**,不是一串 `&&`。顺序在这里就是语义:
+
+                 **超限 > 保存结果 > 相不相符。** 超限不是一种保存结果,它是"这段话
+                 根本发不出去"—— 而状态机里没有"太长"这一档(它不该有:它是一个
+                 拒绝发出去的理由,不是一个后端回来的答复),所以它**必须**排在
+                 "已保存"前面。排在后面的话,用户把一个刚存成功的说明改到 400 字,
+                 屏幕上会一直挂着「正文已保存」,而那段多出来的字永远也存不进去。
+                 那是这个界面最容易骗到人的一句话。
+
+                 唯一排在它前面的是**冲突未决**:那一条带着两个按钮,说的是"你手上
+                 这份和库里那份不一样,你选一个",而"太长了"只是"现在发不出去"。 */
+              <p className={`body-save-note is-${detailDescriptionOver ? 'failed' : bodyNote.kind}`} role="status">
+                {bodyNote.kind === 'conflict' ? (
                   <>
                     <b>这段正文在别处被改过了,所以这次没有写进去。</b>
                     {bodyNote.serverBody
                       ? <>库里现在是:「{bodyNote.serverBody}」</>
                       : <>库里那份这一步没读到 —— 可以先用你这份覆盖,或者关掉重开再看一眼。</>}
                   </>
-                )}
-                {bodyNote.kind === 'none' && (detailDescription === (detailNode.description ?? '')
-                  ? '正文与库里一致。'
-                  : '正文有改动,停手后会自动保存。')}
+                ) : detailDescriptionOver
+                  ? `这段说明超过了 ${MAX_DESCRIPTION_CODEPOINTS} 个字，这样存不进去。把它改短一些才会自动保存。`
+                  : bodyNote.kind === 'saving' ? '正在保存正文…'
+                    : bodyNote.kind === 'saved' ? `正文已保存（${bodyNote.at}）`
+                      : bodyNote.kind === 'failed' ? (
+                        <>
+                          正文没有保存上:{bodyNote.message}
+                          <button type="button" onClick={() => { setBodyNote({ kind: 'none' }); void flushBody(); }}>重试</button>
+                        </>
+                      )
+                        : detailDescription === (detailNode.description ?? '')
+                          ? '正文与库里一致。'
+                          : '正文有改动,停手后会自动保存。'}
               </p>
             )}
             {isRealSpace && bodyNote.kind === 'conflict' && (
@@ -1543,6 +1751,105 @@ function Canvas() {
                   </button>
                 )}
               </div>
+            )}
+            {/* ------------------------------------------------------------------
+                长正文(笔记)。**它不是这个节点的一个字段。**
+                单独一张表、单独一条版本锁(见后端 `note_service` 与
+                `lib/backend.ts` 的 `NotePayload`),所以它有自己的编辑器、自己的
+                保存状态、自己的冲突两个按钮 —— 改一次 300 字的说明不该让两万字的
+                正文保存失败,反过来也一样。
+                ------------------------------------------------------------------ */}
+            {isRealSpace && (
+              /* `<label>` 而不是 `<div>`:那一行标题要是这个 textarea 的**可访问名字**。
+                 写成兄弟节点的话,读屏软件念到输入框时只会说"多行文本框" —— 而这个
+                 弹窗里有两个多行文本框,用户分不清自己在哪一个里面。 */
+              <label className="note-field">
+                <span className="note-field-head">
+                  <span>长正文（笔记）</span>
+                  <small className={`body-count${noteOver ? ' is-over' : ''}`}>
+                    {codePointLength(noteBody)}/{MAX_NOTE_CODEPOINTS}
+                  </small>
+                </span>
+                {noteLoadError ? (
+                  /* **读不到就不给编辑。** 摆一个空编辑器在这儿,用户会以为自己没写过,
+                     然后把他新写的存上去 —— 而服务端可能有一份,那一下就是覆盖。 */
+                  <span className="note-save-note is-failed">
+                    {noteLoadError}
+                    <button type="button" onClick={() => setNoteReload((times) => times + 1)}>重试</button>
+                  </span>
+                ) : noteNodeId === detailNode.id ? (
+                  <textarea
+                    value={noteBody}
+                    onChange={(event) => patchDraft({ noteBody: event.target.value })}
+                    placeholder="资料、引文、长一点的思考都可以写在这里，最多两万字，停手就存。"
+                  />
+                ) : (
+                  /* 归属对不上 = 这一份还在路上。这段时间**一个字都不显示** ——
+                     显示上一个节点那份是这里最坏的一种错(标题已经是 B,字还是 A)。 */
+                  <span className="note-save-note">正在读取这一份长正文…</span>
+                )}
+                {/* 顺序与上面那段说明**逐条相同**,理由也在那里写了:超限不是一种
+                    保存结果,它是"这段话发不出去",所以要排在"已保存"前面 —— 否则
+                    一份存过、随后又被写到超长的正文会一直挂着「长正文已保存」。
+                    这里的 `role="status"` 挪到了 `<span>` 上,因为 `<label>` 里面
+                    不能再嵌一块会被读屏单独念出来的区域名(`<p>` 会)。 */}
+                {!noteLoadError && (
+                  /* **类名与上面那段说明的不一样**(`note-save-note` 而不是
+                     `body-save-note`)。同一个类名会让"这段正文的保存状态"变成一个
+                     可能指两个元素的说法 —— 而既有的用例里 `.body-save-note` 指的是
+                     说明那一段(见 `node-body.spec.ts`),它们会立刻变成 strict mode
+                     违规。样式上两者共用一套(见 `canvas-polish.css`),所以这里区分的
+                     是**语义**,不是长相。 */
+                  <span
+                    className={`note-save-note is-${noteOver ? 'failed' : noteNote.kind}`}
+                    role="status"
+                  >
+                    {noteNote.kind === 'conflict' ? (
+                      <>
+                        <b>这份长正文在别处被改过了,所以这次没有写进去。</b>
+                        {noteNote.serverBody
+                          ? <>库里现在是:「{noteNote.serverBody}」</>
+                          : <>库里那份这一步没读到 —— 可以先用你这份覆盖,或者关掉重开再看一眼。</>}
+                      </>
+                    ) : noteOver
+                      ? `超过 ${MAX_NOTE_CODEPOINTS} 个字了，这样存不进去。把这一份改短一些才会自动保存。`
+                      : noteNote.kind === 'saving' ? '正在保存长正文…'
+                        : noteNote.kind === 'saved' ? `长正文已保存（${noteNote.at}）`
+                          : noteNote.kind === 'failed' ? (
+                            <>
+                              长正文没有保存上:{noteNote.message}
+                              <button type="button" onClick={() => { setNoteNote({ kind: 'none' }); void flushNote(); }}>重试</button>
+                            </>
+                          )
+                            : noteBody === noteServerBody.current
+                              ? '长正文与库里一致。'
+                              : '长正文有改动,停手后会自动保存。'}
+                  </span>
+                )}
+                {!noteLoadError && noteNote.kind === 'conflict' && (
+                  <span className="body-conflict-actions">
+                    {/* 与正文那一组同形同义:覆盖带的也是**冲突那一刻**从库里读回来的
+                        版本号,所以它不是"无条件写入";放弃则是把库里那份读回编辑器。
+                        读回来的同时要把 `noteServerBody` 一起更新 —— 不更新的话,
+                        下面那个自动保存效果会认为"与库里不一致",转头又存一遍。 */}
+                    <button type="button" onClick={() => { setNoteNote({ kind: 'none' }); void flushNote(); }}>
+                      用我的草稿覆盖
+                    </button>
+                    {Boolean(noteNote.serverBody) && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          patchDraft({ noteBody: noteNote.serverBody });
+                          noteServerBody.current = noteNote.serverBody;
+                          setNoteNote({ kind: 'none' });
+                        }}
+                      >
+                        放弃我的改动,载入库里那份
+                      </button>
+                    )}
+                  </span>
+                )}
+              </label>
             )}
             <div className="node-editor-grid"><label>优先级<select value={detailPriority} onChange={(event) => patchDraft({ detailPriority: event.target.value as GrowthNode['priority'] })}><option value="high">高</option><option value="medium">中</option><option value="low">低</option></select></label>
               {/* 真实空间只给"截止时间"这一个日期 —— 后端有这个概念,别的没有。
@@ -1599,9 +1906,13 @@ function Canvas() {
               跟它没有关系;混进 `<form>` 里会让"保存节点"的含义变得含糊。
               `refreshToken` 换一个值就重读一次:正文保存成功时徽标必须当场变,
               而"变没变"是服务端现算的,不能让本地猜。 */}
+          {/* 两个保存成功都要让面板重读一次:说明与长正文**都是**分析的输入
+              (笔记那一条还进了 `input_snapshot`,见后端 `services/input_snapshot.py`),
+              所以任何一边刚存上,那个"分析是不是过时了"的徽标都可能已经变了。 */}
           <NodeAnalysisPanel
             nodeId={detailNode.id}
-            refreshToken={bodyNote.kind === 'saved' ? bodyNote.at : ''}
+            refreshToken={bodyNote.kind === 'saved' ? bodyNote.at
+              : noteNote.kind === 'saved' ? noteNote.at : ''}
           />
         </Dialog>
       )}

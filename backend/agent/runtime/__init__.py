@@ -8,10 +8,17 @@
 
 ```
 AGENT_REASONER=rule         -> 规则兜底(不问模型)
+AGENT_REASONER=script       -> **测试脚手架**:念一份写好的脚本(见 runtime/scripted.py)
 AGENT_REASONER=direct       -> 直连 DeepSeek(绕开 SDK)
 AGENT_REASONER=openjiuwen   -> openJiuwen;它用不了时**降级**,并留下一条日志
 AGENT_REASONER=auto(默认)   -> 装了 openJiuwen 就用它,否则直连;没 key 则规则兜底
 ```
+
+`script` 是这份清单里**唯一一个不是产品模式**的选项:它不连模型,念的是
+`ZHITU_SCRIPTED_ACTIONS` 里那段 JSON。它的存在理由、以及为什么必须单独有一个
+`ModelSource.SCRIPTED` 而不是借用 `direct_llm`,写在 `runtime/scripted.py` 的开头。
+它排在 `llm_api_key` 那道判断**之前** —— 那段脚本不需要也没有密钥。剩下的四条路
+一条都没变。
 
 `auto` 之所以优先 openJiuwen:它是这个产品的既定技术路线,"没装就直连"是一条
 **可用的退路**,而不是默认选择。
@@ -37,6 +44,7 @@ from backend.agent.runtime.base import (
 from backend.agent.runtime.direct_llm import DirectLLMReasoner
 from backend.agent.runtime.openjiuwen_runtime import OpenJiuwenReasoner, available
 from backend.agent.runtime.rule_fallback import RuleFallbackReasoner
+from backend.agent.runtime.scripted import ScriptedReasoner
 from backend.core.config import Settings
 
 logger = logging.getLogger(__name__)
@@ -50,6 +58,7 @@ __all__ = [
     "Reasoner",
     "ReasoningResult",
     "RuleFallbackReasoner",
+    "ScriptedReasoner",
     "TurnContext",
     "build_reasoner",
 ]
@@ -61,6 +70,16 @@ def build_reasoner(settings: Settings) -> Reasoner:
 
     if choice == "rule":
         return RuleFallbackReasoner()
+
+    if choice == "script":
+        # **测试脚手架**(见 runtime/scripted.py)。配置不全时**直接抛错**,不是退回
+        # 规则兜底:退回兜底的话,一个"忘了配脚本"的验收会以"模型什么都没提"的
+        # 方式悄悄通过 —— 那是最贵的一种假绿。
+        logger.warning(
+            "AGENT_REASONER=script:正在念一份写死的脚本,没有模型参与。"
+            "这**不是**产品模式,只应该出现在隔离栈的验收里。"
+        )
+        return ScriptedReasoner.from_env()
 
     if not settings.llm_api_key:
         # 没 key 时给规则兜底而不是让直连实现返回一个死胡同:规则兜底能问出

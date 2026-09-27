@@ -128,6 +128,13 @@ export interface PlanNode {
   parentId: string | null;
   title: string;
   nodeType: string;
+  /**
+   * 用途(`planning` / `information`)。与 `nodeType` **正交** —— 「主题/方向」那一个
+   * 选项建出来的就是 `nodeType: capability` + `purpose: information`。
+   *
+   * 它决定三件事:排期里不出现、`totalNodes` 里不计数、画布上不画任务勾选框。
+   */
+  purpose: string;
   deadline: string | null;
   status: string;
   /**
@@ -243,7 +250,7 @@ export async function createNode(
   page: Page,
   token: string,
   workspaceId: string,
-  data: { parentId: string; title: string; nodeType?: string; deadline?: string; description?: string; estimateMinutes?: number },
+  data: { parentId: string; title: string; nodeType?: string; purpose?: string; deadline?: string; description?: string; estimateMinutes?: number },
 ): Promise<string> {
   const created = await api<{ node: PlanNode }>(page, token, `/api/workspaces/${workspaceId}/nodes`, {
     method: 'POST',

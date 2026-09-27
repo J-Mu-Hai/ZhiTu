@@ -55,6 +55,10 @@ function judgementSource(modelSource: string | null): string {
       return '模型给的判断';
     case 'rule_fallback':
       return '本地规则给的 —— 这一条不是模型的判断';
+    case 'scripted':
+      // 脚本回放(测试脚手架)。和上面一条同理:一份不是模型给的判断长得和真的
+      // 一模一样,是这一层最容易骗到人的地方,所以这句必须把来源说穿。
+      return '脚本回放的 —— 这一条不是模型的判断';
     case 'unavailable':
       return '当时模型不可用 —— 这一条不含模型的判断';
     default:
@@ -213,6 +217,20 @@ export function NodeAnalysisPanel({
                       看起来像读全了。 */}
                   {latest.coverageNote}
                 </p>
+              )}
+
+              {/* 正文。**排在七栏之上** —— 那是读一份判断的自然顺序:先看它怎么想的,
+                  再扫它列了什么。§2.2 那句"摘要不能替代正文"在这里的形状就是:上面
+                  这一块是内容,下面七栏是索引,少了任何一块这份判断都不完整。
+
+                  `whitespace: pre-wrap`(在 CSS 里):正文是模型写的多段文本,换行是
+                  它自己排的版;浏览器默认会把它们压成一整段,那等于替它重新排版。
+
+                  没有正文时**不编一句话出来**。七栏还在下面,读到的东西一样不少 ——
+                  而"这一段是空的"和"这一条本来就没有正文"在界面上长得一样,不如
+                  什么都不说。 */}
+              {latest.narrative && (
+                <div className="analysis-narrative">{latest.narrative}</div>
               )}
 
               {SECTION_LABELS.map(([field, label, hint]) => {

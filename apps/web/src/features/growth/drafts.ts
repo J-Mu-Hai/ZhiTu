@@ -99,6 +99,18 @@ export interface CanvasDraft {
   detailStart: string;
   detailEnd: string;
   /**
+   * 节点**长正文**(笔记)编辑器。两个字段一起用:
+   *
+   * - `noteNodeId` 是这份长正文**属于哪个节点**。它在 `detailNodeId` 之外单列一个,
+   *   是因为两者会短暂地不一致:用户从节点 A 切到 B 时,编辑器已经挂上去了,而
+   *   B 那一份还在路上。少了它,那一刻屏幕上显示的是 **A 的正文**,标题却是 B ——
+   *   而"看起来像是 B 的内容"是这里最坏的一种错。不一致时显示"正在读取",不显示字。
+   * - `noteBody` 是还没提交的那份正文。与 `detailDescription` 同一条规则:只有
+   *   用户明确关掉编辑器才丢(见下面 `useCanvasDraft` 的说明),卸载不丢。
+   */
+  noteNodeId: string | null;
+  noteBody: string;
+  /**
    * 关系编辑器。**两种模式共用这一组字段**,靠 `relationId` 区分:
    *
    * - `relationId` 为空 = 「建立关系」表单:起点、终点、类型都是**还没提交**的选择,
@@ -139,6 +151,8 @@ export const EMPTY_DRAFT: CanvasDraft = Object.freeze({
   detailEstimate: '',
   detailStart: '',
   detailEnd: '',
+  noteNodeId: null,
+  noteBody: '',
   relationId: null,
   relationType: 'related_to',
   relationNote: '',

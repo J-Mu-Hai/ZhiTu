@@ -902,6 +902,71 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
   }
 
   /**
+   * 读一个节点的**长正文**(笔记)。
+   *
+   * **没写过不是错误**:后端返回空正文 + 第 0 版,`loadNodeNote` 因此不需要一条
+   * "还没写过"的分支 —— 编辑器打开时的第一件事就是它,而那是完全正常的状态。
+   *
+   * 与 `saveNodeBody` 不同,这里**不进本地计划**:长正文本来就不在 `/plan` 载荷里
+   * (两万字的正文会让每次读计划都背着它),所以它没有"就地打补丁"这一说 ——
+   * 读到的那一份直接交给编辑器。
+   */
+  async function loadNodeNote(nodeId: string): Promise<backend.NotePayload | null> {
+    if (!isReal) return null;
+    try {
+      return await backend.getNodeNote(space.id, nodeId);
+    } catch {
+      // 读不到就是"这一份现在拿不到",不是"它是空的" —— 返回 null 让调用方
+      // 说"没读到",而不是拿一个空串冒充一份真的空的正文。
+      return null;
+    }
+  }
+
+  /**
+   * 保存一个节点的长正文。**与 `saveNodeBody` 是两条独立的账**(各带各的版本号)。
+   *
+   * 共用 `plan_nodes.content_version` 的话,冲突检测的范围会大于冲突本身 ——
+   * "有人改了 300 字的简述"会让"你两万字的笔记"保存失败。所以这里发的是笔记
+   * 自己的 `expectedContentVersion`,冲突时回读的也是笔记那一份(不是整份计划)。
+   */
+  async function saveNodeNote(
+    nodeId: string,
+    body: string,
+    contentVersion: number | undefined,
+  ): Promise<BodySaveResult> {
+    if (!isReal) {
+      return { status: 'failed', message: '这个空间里的长正文还不支持保存。' };
+    }
+    try {
+      const result = await backend.updateNodeNote(space.id, nodeId, {
+        body,
+        ...(contentVersion === undefined ? {} : { expectedContentVersion: contentVersion }),
+      });
+      return { status: 'saved', contentVersion: result.note.contentVersion };
+    } catch (cause) {
+      if (cause instanceof ApiError && cause.code === 'CONCURRENCY_CONFLICT') {
+        // **先把服务端那一份读回来再回话**:只说"冲突了"是没用的,用户要知道
+        // 他手上这份和库里那份差在哪儿,才能决定留哪个。读的是笔记那一条,
+        // 比回读整份计划便宜得多 —— 而整份计划里根本没有笔记正文。
+        let serverBody = '';
+        let serverVersion = 0;
+        try {
+          const fresh = await backend.getNodeNote(space.id, nodeId);
+          serverBody = fresh.body;
+          serverVersion = fresh.contentVersion;
+        } catch {
+          // 连回读都失败了 —— 那就不谎报版本号(留 0),让界面只能说"库里那份取不到"。
+        }
+        return { status: 'conflict', serverBody, serverVersion, message: cause.message };
+      }
+      return {
+        status: 'failed',
+        message: cause instanceof ApiError ? cause.message : '长正文没有保存上,请重试。',
+      };
+    }
+  }
+
+  /**
    * 新建一个节点。**返回后端真正建出来的那一个**(失败是 `null`)。
    *
    * 返回值从 `boolean` 改成节点本身,是因为双击空白处那条路要**紧接着用它的 id 写位置**
@@ -1394,6 +1459,9 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     // `layoutError` 与 `retryLayoutSave` 是保存失败时界面上那一行和那个按钮。
     layoutReady, layoutError, retryLayoutSave,
     enterSpace, updateNode, setNodeStatus, addNode, saveNodeBody,
+    // 长正文(笔记)按需读、整份存。**与 `saveNodeBody` 是两条独立的账**:
+    // 各带各的版本号,互不让对方的保存失败 —— 见 `saveNodeNote`。
+    loadNodeNote, saveNodeNote,
     // 归档与恢复。`deleteNode` 那个直接写库的入口**改名成了 `askArchive`** ——
     // 名字换掉是有意的:它的语义从"删"变成了"先问一句",留着旧名字会让下一个改动
     // 的人以为它还是原来那件事。

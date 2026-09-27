@@ -69,6 +69,7 @@ from backend.db.locking import lock_workspace
 from backend.db.models import (
     Dependency,
     DomainEvent,
+    NodeNote,
     PlanNode,
     PlanRevision,
     Proposal,
@@ -85,7 +86,7 @@ from backend.db.models.enums import (
     RevisionActor,
     RevisionTrigger,
 )
-from backend.services import plan_service, turn_context
+from backend.services import note_service, plan_service, turn_context
 from backend.services.context import WorkspaceContext
 from backend.services.node_service import touch_content_version
 from backend.services.errors import (
@@ -180,16 +181,7 @@ async def build_from_actions(
         return ProposalOutcome(proposal=None)
 
     nodes = await turn_context.load_nodes(db, ctx.id)
-    snapshots = {
-        node.id: NodeSnapshot(
-            id=node.id,
-            parent_id=node.parent_id,
-            title=node.title,
-            depth=node.depth,
-            order_index=node.order_index,
-        )
-        for node in nodes
-    }
+    snapshots = await _snapshots(db, ctx, nodes)
     handle_map = _handles_to_ids(handles)
     dependencies = await _load_dependency_pairs(db, ctx.id)
     # 记号表里认不出来的记号直接落空 —— 那一条会在校验里按悬空引用被拒,
@@ -351,6 +343,7 @@ def to_view(proposal: Proposal, items: list[ProposalItem]) -> ProposalView:
                 target_title=meta.get("targetTitle"),
                 payload=item.payload if isinstance(item.payload, dict) else {},
                 affected_children=int(meta.get("affectedChildren") or 0),
+                coalesced_from=meta.get("coalescedFrom"),
             )
         )
 
@@ -550,16 +543,7 @@ async def _revalidate(
     "这批变更放到现在的数据上还成立吗",用现在的记号表才问得对。
     """
     nodes = await turn_context.load_nodes(db, ctx.id)
-    snapshots = {
-        node.id: NodeSnapshot(
-            id=node.id,
-            parent_id=node.parent_id,
-            title=node.title,
-            depth=node.depth,
-            order_index=node.order_index,
-        )
-        for node in nodes
-    }
+    snapshots = await _snapshots(db, ctx, nodes)
     handles = {f"n{index}": node.id for index, node in enumerate(nodes, start=1)}
     dependencies = await _load_dependency_pairs(db, ctx.id)
 
@@ -595,6 +579,7 @@ async def _apply(
             description=_clean(action.description),
             acceptance_criteria=_clean(action.acceptance_criteria),
             node_type=action.node_type,
+            purpose=action.purpose,
             status=NodeStatus.PENDING,
             priority=action.priority,
             estimate_minutes=action.estimate_minutes,
@@ -646,6 +631,27 @@ async def _apply(
             .execution_options(synchronize_session=False)
         )
 
+    # -- 长笔记 -------------------------------------------------------------
+    # 走 `note_service`(而不是在这里 setattr)的理由与上面那句 `touch_content_version`
+    # 是同一条:**推进笔记版本号的地方全仓只有一处**,那是版本号还能被相信的前提。
+    #
+    # `origin=AI` 与新建节点那处的理由一致:用户要分得出哪一段是模型写的。
+    # 版本号用校验时存下的那个(`expectedNoteVersion` 已经写回 payload,重校验
+    # 也按它比过一遍),所以这里是一道**兜底**:正常情况下到不了,留着是因为
+    # "校验与写入之间没有窗口"依赖调用顺序,而顺序会被人改。
+    notes_updated = 0
+    for patch in plan.notes:
+        written = await note_service.apply_body(
+            db,
+            ctx,
+            patch.node_id,
+            body=patch.body,
+            expected_version=patch.expected_version,
+            origin=NodeOrigin.AI,
+        )
+        if written is not None:
+            notes_updated += 1
+
     # -- 依赖 ---------------------------------------------------------------
     for predecessor, successor in plan.dependencies_remove:
         await db.execute(
@@ -691,6 +697,9 @@ async def _apply(
             "createdNodeIds": [str(node.id) for node in created_nodes],
             "updatedNodeIds": [str(patch.node_id) for patch in plan.updates],
             "deletedNodeIds": [str(node_id) for node_id in plan.deletes],
+            # 笔记另列一栏,不混进 `updatedNodeIds`:那一栏的语义是"计划节点被改过",
+            # 而笔记不改变计划(见 `db/models/note.py` 的模块 docstring)。
+            "notedNodeIds": [str(patch.node_id) for patch in plan.notes],
             "addedDependencies": [
                 {"predecessorId": str(a), "successorId": str(b)}
                 for a, b in plan.dependencies_add
@@ -728,6 +737,7 @@ async def _apply(
             nodes_updated=len(plan.updates),
             # 这里报的是**用户理解的"删掉了几个"**,也就是包含被连带删除的子节点。
             nodes_deleted=len(plan.deletes),
+            notes_updated=notes_updated,
             dependencies_added=len(plan.dependencies_add),
             dependencies_removed=len(plan.dependencies_remove),
             revision_version=revision_version,
@@ -752,8 +762,7 @@ def _handles_to_ids(handles: tuple[tuple[str, str], ...]) -> dict[str, uuid.UUID
     return converted
 
 
-async def _load_dependency_pairs(
-    db: AsyncSession, workspace_id: uuid.UUID
+async def _load_dependency_pairs(    db: AsyncSession, workspace_id: uuid.UUID
 ) -> set[tuple[uuid.UUID, uuid.UUID]]:
     """这个空间里**两端都还活着**的依赖边。校验环时用的就是它。
 
@@ -775,6 +784,46 @@ async def _load_dependency_pairs(
         )
     )
     return {(row[0], row[1]) for row in result.all()}
+
+
+async def _snapshots(db, ctx: WorkspaceContext, nodes: list[PlanNode]) -> dict:
+    """给校验器的那份节点快照。**生成时与确认时用同一个函数。**
+
+    两个调用点各拼一遍字典是最容易分叉的地方:去重(§4.4)靠 `title` / `purpose`、
+    写笔记的版本闸靠 `note_version`、「信息主题不能带工时/截止」靠
+    `estimate_minutes` / `deadline` —— 少填一个,行为就变成"生成时能合并、确认时合并不了",
+    或者更坏的一种:**版本闸永远比的是默认值 0**,于是"生成之后笔记被人改过"
+    这件事永远不会被发现。
+
+    所以这里多一次查询(每个节点当前的长笔记版本号),换两处输入按构造相等。
+    与 `input_snapshot._note_versions` 用的同一套读法:只取 `node_id` 与
+    `content_version` 两列,**不读正文** —— 校验要的只是一个号。
+    """
+    ids = [node.id for node in nodes]
+    note_versions: dict[uuid.UUID, int] = {}
+    if ids:
+        rows = await db.execute(
+            select(NodeNote.node_id, NodeNote.content_version).where(
+                NodeNote.workspace_id == ctx.id, NodeNote.node_id.in_(ids)
+            )
+        )
+        note_versions = {node_id: version for node_id, version in rows.all()}
+
+    return {
+        node.id: NodeSnapshot(
+            id=node.id,
+            parent_id=node.parent_id,
+            title=node.title,
+            depth=node.depth,
+            order_index=node.order_index,
+            node_type=node.node_type.value,
+            purpose=node.purpose.value,
+            note_version=note_versions.get(node.id, 0),
+            estimate_minutes=node.estimate_minutes,
+            deadline=node.deadline,
+        )
+        for node in nodes
+    }
 
 
 async def _current_revision_version(db: AsyncSession, workspace_id: uuid.UUID) -> int:
@@ -897,6 +946,7 @@ def _change_summary(plan: ValidatedPlan) -> dict:
         "deleteNode": 0,
         "addDependency": 0,
         "removeDependency": 0,
+        "updateNote": 0,
     }
     bucket = {
         ProposalOp.CREATE_NODE.value: "createNode",
@@ -904,6 +954,7 @@ def _change_summary(plan: ValidatedPlan) -> dict:
         ProposalOp.DELETE_NODE.value: "deleteNode",
         ProposalOp.CREATE_DEPENDENCY.value: "addDependency",
         ProposalOp.DELETE_DEPENDENCY.value: "removeDependency",
+        ProposalOp.UPDATE_NOTE.value: "updateNote",
     }
 
     for item in plan.items:
@@ -919,6 +970,9 @@ def _change_summary(plan: ValidatedPlan) -> dict:
                 "targetNodeId": str(item.target_node_id) if item.target_node_id else None,
                 "targetTitle": item.target_title,
                 "affectedChildren": item.affected_children,
+                # 这一条本来是"新建"、被合并成了"补充"。**必须存、也必须显示**:
+                # 悄悄把新建改成更新,用户确认的就是一件他没看过的事(§7.2)。
+                "coalescedFrom": item.coalesced_from,
             }
         )
 

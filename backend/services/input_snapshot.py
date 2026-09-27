@@ -14,7 +14,8 @@
 
 ## 什么算"变了"
 
-- 范围内节点的**新增、删除、归档、恢复、移动、正文版本变化、标题变化** → 算。
+- 范围内节点的**新增、删除、归档、恢复、移动、正文版本变化、标题变化、
+  长笔记版本变化** → 算。
 - 范围内节点的**关系边**(前置 / 关联 / 影响)增删 → 算。
 - 本次分析用到的**时间预算**(每周可投入、个人容量、可用时段)变化 → 算。
 - 范围内节点的**已排场次与执行记录**变化 → 算。
@@ -46,6 +47,7 @@ from backend.db.models import (
     AvailabilityRule,
     Dependency,
     ExecutionRecord,
+    NodeNote,
     NodeRelation,
     PlanNode,
     PlanningBrief,
@@ -67,6 +69,20 @@ class SnapshotNode:
 
     `content_version` 是重点:它是正文的版本号,正文改了它就变了。标题、位置、状态
     也一起记 —— 它们都在这份分析"读到过"的东西里。
+
+    ## `note_version` 与 `content_version` 并排,不是一个
+
+    300 字简述与 20,000 字长笔记是**两份不同的文本、两个不同的版本号**
+    (`node_notes` 有自己的 `content_version`,理由见那个模型的 docstring:
+    冲突检测的范围要和冲突的范围一样大)。所以快照里也是两个字段。
+
+    少了 `note_version` 的后果不是"比较不准",是**整整一类编辑对失效判定隐形**:
+    用户把一段长笔记从头写过,而所有基于旧笔记做的分析仍然显示「最新」。
+    这不是一个漏报,它是一条没有报错、也没有日志的错误结论。
+
+    语义与 `note_service.payload_of` 对齐:还没有写过笔记 = 第 0 版。于是"没有笔记"
+    与"笔记是空的"在快照里是同一个值 —— 它们本来就是同一件事(见 `note_service.save`
+    里那段"不给用户两件看不出区别的事")。
     """
 
     node_id: str
@@ -76,6 +92,7 @@ class SnapshotNode:
     content_version: int
     title: str
     deleted: bool
+    note_version: int = 0
 
     def to_payload(self) -> dict:
         return {
@@ -86,6 +103,7 @@ class SnapshotNode:
             "contentVersion": self.content_version,
             "title": self.title,
             "deleted": self.deleted,
+            "noteVersion": self.note_version,
         }
 
     @classmethod
@@ -98,6 +116,10 @@ class SnapshotNode:
             content_version=int(raw.get("contentVersion") or 0),
             title=str(raw.get("title") or ""),
             deleted=bool(raw.get("deleted")),
+            # 老行里没有这个键(这一列是随本次改进加的)。缺了就是 0 —— 而 0 在这里
+            # 恰好是正确的那一侧:它说的是"那份笔记没有变过",于是老分析不会因为
+            # 一次升级而集体变成"已过期"。
+            note_version=int(raw.get("noteVersion") or 0),
         )
 
 
@@ -182,11 +204,14 @@ def _node_key(node: PlanNode) -> tuple:
     因为它跟"结构"是两件事,而两者的失效范围不一样:
 
         结构变化(新增/删除/移动/归档)  整个范围都要算  -> 摘要覆盖全部
-        内容变化(标题/正文)           只有读到过的才算 -> 逐个记的那批覆盖
+        内容变化(标题/正文/长笔记)     只有读到过的才算 -> 逐个记的那批覆盖
 
     把一个未被读取的分支的正文改动也算进来的后果,是用户改了别处一句话、这里
     每一条分析都变成"已过期" —— 那正是规范点名不要的行为("没有读取也不影响本次
     决策的无关分支,不应使所有分析一起失效")。
+
+    **长笔记的版本号(`note_version`)属于"内容变化"这一栏**,所以它在
+    `SnapshotNode` 上而不在这里 —— 同一条理由,一个字都不用改。
 
     反过来,节点**在不在、挂在谁下面、归档没有**必须是全范围的事实:靠"我读到的
     那 80 个"去判断"范围里有没有多出一个节点",在节点多起来的那天会开始漏。
@@ -307,6 +332,8 @@ async def capture(
     digest_rows = [node for node in rows if node.id in coverage]
     structure = _digest([_node_key(node) for node in digest_rows])
 
+    note_versions = await _note_versions(db, ctx.id, [node.id for node in kept])
+
     return InputSnapshot(
         scope_root_id=None if scope_id is None else str(scope_id),
         focus_node_id=None if focus_node_id is None else str(focus_node_id),
@@ -320,6 +347,7 @@ async def capture(
                 content_version=node.content_version,
                 title=(node.title or "")[:TITLE_LIMIT],
                 deleted=node.deleted_at is not None,
+                note_version=note_versions.get(node.id, 0),
             )
             for node in kept
         ),
@@ -333,6 +361,28 @@ async def capture(
         execution_digest=await _execution_digest(db, ctx, in_scope),
         truncated=truncated or window_truncated,
     )
+
+
+async def _note_versions(
+    db, workspace_id: uuid.UUID, node_ids: Sequence[uuid.UUID]
+) -> dict[uuid.UUID, int]:
+    """这一批节点的长笔记版本号。**一次聚合查询,不是每节点一次。**
+
+    没有行的节点不在这个字典里,由调用方当成 0 版(与
+    `note_service.payload_of` 对"从来没写过"的处理一致)。
+
+    这里刻意只读 `node_id` 与 `content_version` 两列 —— **不读正文**。快照会被
+    序列化成一个 JSON 列,每个节点的 20,000 字笔记塞进去会让每一次分析都给
+    `node_analyses` 添上一份几十万字符的副本,而比较用到的只是一个整数。
+    """
+    if not node_ids:
+        return {}
+    result = await db.execute(
+        select(NodeNote.node_id, NodeNote.content_version).where(
+            NodeNote.workspace_id == workspace_id, NodeNote.node_id.in_(node_ids)
+        )
+    )
+    return {node_id: version for node_id, version in result.all()}
 
 
 async def _edges(db, workspace_id: uuid.UUID, coverage: set[uuid.UUID]) -> tuple[str, ...]:

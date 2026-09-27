@@ -136,6 +136,12 @@ def render_turn(turn: TurnContext) -> str:
             "description": n.description,
             "acceptance_criteria": n.acceptance_criteria,
             "body_read": n.body_read,
+            # 长笔记:三个事实 + (只对焦点节点)那份正文本身。正文同样是原样的,
+            # 截到多少由渲染层决定 —— 与上面两行同一条纪律。
+            "notes_present": n.notes_present,
+            "notes_chars": n.notes_chars,
+            "notes_read": n.notes_read,
+            "note_body": n.note_body,
             "layer": n.layer,
             "read_only": n.read_only,
         }
@@ -352,7 +358,9 @@ ANALYSIS_FIELD_ORDER = (
     "risks",
 )
 
-ALLOWED_ANALYSIS_FIELDS = frozenset((*ANALYSIS_FIELD_ORDER, "confidence_note"))
+ALLOWED_ANALYSIS_FIELDS = frozenset(
+    (*ANALYSIS_FIELD_ORDER, "confidence_note", "narrative")
+)
 
 #: 每栏最多留几条。**不是分页,是防复读**:模型偶尔会开始把同一句话说十遍,
 #: 而一栏 500 条会把分析区变成一堵墙,用户一条都不会读。
@@ -372,7 +380,7 @@ def parse_analysis(raw_analysis: Any) -> AnalysisDraft | None:
 
     - 没给这个键(`None`)、或者给的不是对象 —— 这一轮它没打算判断什么,
       这是正常情况,不是失败。
-    - 给了对象但七栏全空、也没有可信度说明 —— 见 `is_empty`。
+    - 给了对象但七栏全空、也没有可信度说明与正文 —— 见 `is_empty`。
     - 给了内容但**某一栏**的形状不对 —— 只丢那一栏,其余留下。
       一条写坏的 `risks` 不该让整份判断消失。
 
@@ -383,6 +391,13 @@ def parse_analysis(raw_analysis: Any) -> AnalysisDraft | None:
     分析 —— 而那正是这个模块开头说的要防的事。空壳只应该活在日志里。
 
     清洗规则与 `brief` 一致:逐项独立校验、独立丢弃,丢掉的东西不变成默认值。
+
+    ## `narrative` 在这里**不截断**
+
+    它是这次判断的正文(§2.2),而上限是 20,000 码点 —— 由
+    `analysis_service.record` 在执行(**超限丢掉正文并记日志,不存一份截断的**,
+    见那里)。这里只去首尾空白:解析器的职责是把模型的原话取出来,不是裁定它多长。
+    在这一层截断会让"截了多少"变成一件没人知道的事。
     """
     if raw_analysis is None:
         return None
@@ -399,13 +414,26 @@ def parse_analysis(raw_analysis: Any) -> AnalysisDraft | None:
     if isinstance(note, str) and note.strip():
         confidence = note.strip()[:MAX_CONFIDENCE_CHARS]
 
-    draft = AnalysisDraft(confidence_note=confidence, **sections)
+    body = raw_analysis.get("narrative")
+    narrative = body.strip() if isinstance(body, str) and body.strip() else None
+
+    draft = AnalysisDraft(confidence_note=confidence, narrative=narrative, **sections)
     return None if draft.is_empty() else draft
 
 
 def _clean_items(raw: Any, field: str) -> tuple[str, ...]:
     """一栏里的若干条文本。字符串与单元素对象都收 —— 模型有时候会把一条写成
-    `{"text": "..."}`,那仍然是它想说的话。"""
+    `{"text": "..."}`,那仍然是它想说的话。
+
+    ## 截断必须留下痕迹
+
+    每栏 12 条、每条 400 字是**面向提示词的预算**(见 `MAX_ANALYSIS_ITEMS`),
+    超出就切掉。但"切掉"和"模型只说了这么多"在库里长得一模一样:用户看到一句
+    戛然而止的话,而没有任何地方说得出它是被切的。
+
+    所以每一次**真的**切到时按 INFO 记一条:字段名 + 原始长度 + 上限。这不是给
+    用户看的,是给"这一栏怎么总是半句话"这类提问留一条可查的线索。
+    """
     if raw is None:
         return ()
     if isinstance(raw, str):
@@ -413,6 +441,14 @@ def _clean_items(raw: Any, field: str) -> tuple[str, ...]:
     if not isinstance(raw, list):
         logger.info("analysis.%s 不是数组,已忽略: %r", field, type(raw).__name__)
         return ()
+
+    if len(raw) > MAX_ANALYSIS_ITEMS:
+        logger.info(
+            "analysis.%s 有 %d 条,只留前 %d 条(上限见 MAX_ANALYSIS_ITEMS)",
+            field,
+            len(raw),
+            MAX_ANALYSIS_ITEMS,
+        )
 
     items: list[str] = []
     for entry in raw[:MAX_ANALYSIS_ITEMS]:
@@ -422,6 +458,13 @@ def _clean_items(raw: Any, field: str) -> tuple[str, ...]:
             continue
         text = entry.strip()
         if text:
+            if len(text) > MAX_ANALYSIS_ITEM_CHARS:
+                logger.info(
+                    "analysis.%s 的一条有 %d 字,截到 %d 字(上限见 MAX_ANALYSIS_ITEM_CHARS)",
+                    field,
+                    len(text),
+                    MAX_ANALYSIS_ITEM_CHARS,
+                )
             items.append(text[:MAX_ANALYSIS_ITEM_CHARS])
     return tuple(items)
 

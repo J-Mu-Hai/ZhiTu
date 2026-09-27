@@ -26,18 +26,22 @@ from __future__ import annotations
 import uuid
 
 import httpx
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from backend.agent.prompts.planning import (
     FOCUS_BODY_CHARS,
     MAX_CHILD_BODIES,
+    NOTES_BODY_CHARS,
+    NOTES_LABEL,
+    NOTES_PRESENT_NOTE,
     READ_ONLY_NOTE,
     TITLE_ONLY_NOTE,
     TRUNCATED_NOTE,
 )
 from backend.agent.runtime.base import LAYER_ANCESTOR, LAYER_CHILD, LAYER_FOCUS, LAYER_OUTSIDE
 from backend.agent.runtime.response import render_turn
-from backend.db.models import PlanRevision
+from backend.db.models import PlanNode, PlanRevision
+from backend.db.session import SessionLocal
 from backend.tests.conftest import FakeReasoner
 
 
@@ -99,6 +103,15 @@ async def _patch(client: httpx.AsyncClient, account, node_id: str, **fields) -> 
         json=fields,
         headers=account.headers,
     )
+
+
+async def _put_note(client: httpx.AsyncClient, account, node_id: str, body: str) -> None:
+    response = await client.put(
+        f"/api/workspaces/{account.workspace_id}/nodes/{node_id}/notes",
+        json={"body": body},
+        headers=account.headers,
+    )
+    assert response.status_code == 200, response.text
 
 
 async def _chain(
@@ -269,11 +282,29 @@ async def test_child_bodies_are_capped_and_the_cap_is_stated(
 async def test_a_long_body_is_cut_and_the_cut_is_stated(
     app_client: httpx.AsyncClient, make_account, use_reasoner
 ) -> None:
-    """超长正文要截,而且**说得出截了多少** —— 悄悄截断等于让模型以为那就是全文。"""
+    """超长正文要截,而且**说得出截了多少** —— 悄悄截断等于让模型以为那就是全文。
+
+    ## 这份正文是**直接写库**造出来的,不是 `POST /nodes`
+
+    因为 300 码点的简述上限(§2.1)落地之后,没有接口能写出一份 4,500 字的正文了
+    —— 而这恰好是**豁免**那条规则描述的情形:存量超限的节点继续合法地存在,
+    没人能再造一个。所以这个前提现在只能由"库里本来就有一行"来表达。
+
+    顺带也就扎住了豁免节点最容易被忘掉的一面:**豁免的是能不能写,不是提示词预算。**
+    一份两万字的正文照样要在 `FOCUS_BODY_CHARS` 处被截断并说明,否则"旧正文完全豁免"
+    会被读成"旧正文可以无限地灌进提示词"。
+    """
     account = await make_account()
     root = await _root_id(app_client, account)
     body = "开头标记" + "甲" * (FOCUS_BODY_CHARS + 500) + "结尾标记"
-    node = await _create(app_client, account, root, "长正文", description=body)
+    node = await _create(app_client, account, root, "长正文")
+    async with SessionLocal() as session:
+        await session.execute(
+            update(PlanNode)
+            .where(PlanNode.id == uuid.UUID(node))
+            .values(description=body)
+        )
+        await session.commit()
 
     fake = use_reasoner(FakeReasoner())
     assert (
@@ -285,6 +316,67 @@ async def test_a_long_body_is_cut_and_the_cut_is_stated(
     assert "结尾标记" not in prompt, "超长正文被整段塞进提示词了"
     assert TRUNCATED_NOTE.format(shown=FOCUS_BODY_CHARS, total=len(body)) in prompt, (
         "截断了却没说 —— 模型会把读到的半段当成全文"
+    )
+
+
+async def test_a_note_on_another_node_is_counted_but_not_read(
+    app_client: httpx.AsyncClient, make_account, use_reasoner
+) -> None:
+    """别的节点有长笔记 -> 提示词里只说**有多大**,正文一个字都不进去。
+
+    两种做法各有各的坏处,这里是两边都要挡住的那条线:正文全都塞进去会让提示词
+    随节点数线性膨胀(80 个节点 × 两万字);而完全不提会让模型**根本不知道那里有
+    一片内容** —— 它于是会重新问一遍用户已经写下来的事。
+
+    所以只给一个数。模型拿到"有 12 字"之后该做什么是它自己的判断:够小就直接问,
+    够大就先要。而 `notes_read` 是假,所以它不会声称自己读过了。
+    """
+    account = await make_account()
+    root = await _root_id(app_client, account)
+    sibling = await _create(app_client, account, root, "旁边那个")
+    focus = await _create(app_client, account, root, "正在聊的那个")
+    await _put_note(app_client, account, sibling, "只有这一段话在笔记里")
+
+    fake = use_reasoner(FakeReasoner())
+    assert (
+        await _send(app_client, account, "看看这个", contextNodeId=focus, scopeRootId=root)
+    ).status_code == 200
+
+    prompt = render_turn(fake.calls[0])
+    assert NOTES_PRESENT_NOTE.format(chars=len("只有这一段话在笔记里")) in prompt, (
+        "有笔记却一个字都没提 —— 模型会去重新问用户已经写下来的事"
+    )
+    assert "只有这一段话在笔记里" not in prompt, "没读的笔记正文漏进提示词了"
+
+
+async def test_the_focus_nodes_note_is_read_and_the_cut_is_stated(
+    app_client: httpx.AsyncClient, make_account, use_reasoner
+) -> None:
+    """焦点节点的长笔记要读,而且**用它自己的预算**截、截了要说。
+
+    与上面那条一起构成"读什么"的两半。这里额外钉住预算是分开的:长笔记是两万字量级,
+    用 `FOCUS_BODY_CHARS`(给 300 字简述用的那个)去截它,等于每次只看到开头 ——
+    而 `TRUNCATED_NOTE` 里的两个数会把这件事说清楚,所以断言里两个数都要对。
+    """
+    account = await make_account()
+    root = await _root_id(app_client, account)
+    focus = await _create(app_client, account, root, "正在聊的那个")
+    body = "笔记开头" + "乙" * (NOTES_BODY_CHARS + 200) + "笔记结尾"
+    await _put_note(app_client, account, focus, body)
+
+    fake = use_reasoner(FakeReasoner())
+    assert (
+        await _send(app_client, account, "看看这个", contextNodeId=focus, scopeRootId=root)
+    ).status_code == 200
+
+    prompt = render_turn(fake.calls[0])
+    # 只断言标签出现,不写 `长笔记:` —— 截断时那一行是「长笔记(只给了前 … 字…):」,
+    # 标签和冒号之间夹着那句说明。写成带冒号的话,这条用例会在**它正想验的那条路上**红。
+    assert NOTES_LABEL in prompt, "焦点节点的长笔记没有被读"
+    assert "笔记开头" in prompt
+    assert "笔记结尾" not in prompt, "长笔记被整段塞进提示词了"
+    assert TRUNCATED_NOTE.format(shown=NOTES_BODY_CHARS, total=len(body)) in prompt, (
+        "长笔记截断了却没说"
     )
 
 

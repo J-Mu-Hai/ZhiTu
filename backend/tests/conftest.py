@@ -20,6 +20,7 @@ import tempfile
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 # --------------------------------------------------------------------------------------
 # 必须在 backend.* 被导入之前执行。
@@ -43,7 +44,7 @@ from sqlalchemy import func, select, text  # noqa: E402
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: E402
 
 import backend.db.models  # noqa: E402,F401  导入即注册全部模型
-from backend.core.config import settings  # noqa: E402
+from backend.core.config import Settings, settings  # noqa: E402
 from backend.db.base import Base  # noqa: E402
 from backend.db.session import SessionLocal, engine  # noqa: E402
 
@@ -343,6 +344,25 @@ def use_reasoner(app_client: httpx.AsyncClient):
 
     yield _use
     app.dependency_overrides.pop(get_reasoner, None)
+
+
+@pytest.fixture
+def settings_factory(monkeypatch: pytest.MonkeyPatch):
+    """造一份**不读 .env、不受进程环境影响**的配置。
+
+    直接用 `Settings()` 是危险的:它会去读仓库 `.env`,于是在你的机器上"有 key"
+    而在 CI 上"没 key",同一个用例两种行为。`_no_model_key` 只清了模块级的那个
+    单例,管不到这里新构造的对象。
+
+    住在 conftest 而不是某一个测试模块里:装配 reasoner 的用例有好几处
+    (`build_reasoner` 按 `AGENT_REASONER` 挑实现),两份定义迟早会分叉。
+    """
+
+    def make(**overrides: Any) -> Settings:
+        monkeypatch.delenv("LLM_API_KEY", raising=False)
+        return Settings(_env_file=None, **overrides)  # type: ignore[call-arg]
+
+    return make
 
 
 @pytest.fixture

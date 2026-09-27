@@ -101,6 +101,23 @@ class PlanNodeView:
 
     正文的截断不在这里做:`description` 是原样的事实,截到多少字由渲染层决定,
     因此"模型实际看到多少"只有一处答案(见 `agent/prompts/planning.py`)。
+
+    ## 长笔记(`notes_*`)为什么不与 `description` 合并
+
+    它们是**两份不同的文本**(§2.1 / §2.2):一份是 300 字的简述,一份可以到
+    20,000 码点。合并成一个字段的话,模型的"这段内容偏长"就同时意味着两个意思,
+    而它下一步的选择(改写简述 / 补充长笔记)取决于它分不分得清。
+
+    三个字段沿用 `body_read` 那条纪律 —— **"没读到"与"没有"必须是两件事**:
+    `notes_present` 是"那里有一份笔记",`notes_read` 是"本次我把它交给你了"。
+    只有前者为真时后者才可能为真;而 `notes_chars` 是**那份笔记有多少字**,
+    所以它说的是"那里有多大一片",不是"你看到了多少"。
+
+    `note_body` **只在本轮真的把它交给模型时才有值,而这一批里只有焦点节点会**。
+    它不是"每一个节点都带一份正文"——那会让提示词随节点数线性膨胀,而模型真正
+    需要的是"那里有一片我没看到"这一个事实(由 `notes_chars` 说出来)。
+    `notes_read` 因此是一个**派生属性**而不是第四个字段:它问的正是"正文在手边吗",
+    多存一个布尔列,就会有"布尔说是读了、正文却是 None"这种自相矛盾的行。
     """
 
     handle: str
@@ -124,6 +141,14 @@ class PlanNodeView:
     acceptance_criteria: str | None = None
     #: 本次读了它的正文吗?**与"有没有正文"不是一回事**。
     body_read: bool = False
+    #: 这个节点有没有**非空**的长笔记。有的话模型该知道"那里还有一大片我可能没看到"。
+    #: 空笔记(写过又清空)不算有 —— 那和"没有"在用户那边是同一件事。
+    notes_present: bool = False
+    #: 那份笔记有多少字(Unicode 码点)。**说的是那片有多大,不是你看到了多少。**
+    notes_chars: int = 0
+    #: 本次交给模型的那份长笔记正文。**原样**,截到多少字由渲染层决定 ——
+    #: 与 `description` 同一条纪律:"模型实际看到多少"只有一处答案。
+    note_body: str | None = None
     #: 见本文件顶部那组 `LAYER_*`。
     layer: str = LAYER_SCOPE
     #: 是否在本次的作用范围之内。范围外的默认只读(服务端强制,不是靠提示词)。
@@ -132,6 +157,11 @@ class PlanNodeView:
     @property
     def read_only(self) -> bool:
         return not self.in_scope
+
+    @property
+    def notes_read(self) -> bool:
+        """本次读了它的长笔记正文吗。**不与 `notes_present` 同义** —— 同 `body_read`。"""
+        return self.note_body is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -375,6 +405,16 @@ class AnalysisDraft:
 
     **每一项都是纯文本,不带 `source` 标签**:分栏本身已经表达了来源,再加一个标签
     会出现"标签说 user_stated、内容读起来像猜测"这种自相矛盾的行。
+
+    ## 七栏之上还有一个 `narrative`
+
+    §2.2:"分析的摘要可以短,正文不能被摘要替代。"七栏是**摘要**,它们各自的形状
+    (每栏 12 条、每条 400 字,见 `response.MAX_ANALYSIS_ITEM_CHARS`)是一份面向提示词
+    的预算 —— 而一段真正的推理塞进 400 字里,后果不是它写短了,是**它不写了**。
+
+    所以正文单独一个自由文本字段,和七栏并排。它**不在这里截断**(上限由
+    `analysis_service.record` 执行,超限丢掉正文并记日志),理由见
+    `response.parse_analysis`。
     """
 
     known: tuple[str, ...] = ()
@@ -385,12 +425,17 @@ class AnalysisDraft:
     strategy_options: tuple[str, ...] = ()
     risks: tuple[str, ...] = ()
     confidence_note: str | None = None
+    #: 这次判断的正文,§2.2。**它不是"更长的 diagnosis"** —— 七栏是索引,这是内容。
+    narrative: str | None = None
 
     def is_empty(self) -> bool:
-        """七栏全空、也没有可信度说明 —— 那这一轮其实什么都没判断。
+        """七栏全空、也没有可信度说明与正文 —— 那这一轮其实什么都没判断。
 
         单独存在是因为"模型给了 `analysis` 键但里面是空的"必须被识别出来:照收的话,
         分析区会多出一条"什么也没说"的记录,而它会挤掉上一条真正有内容的分析。
+
+        `narrative` 也算数:一份只有正文、七栏全空的分析是**合法**的一种判断
+        (模型可能认为"一栏也归不进这七类"),把它当成空壳丢掉,等于用户什么也看不到。
         """
         return not any(
             (
@@ -402,6 +447,7 @@ class AnalysisDraft:
                 self.strategy_options,
                 self.risks,
                 self.confidence_note,
+                self.narrative,
             )
         )
 

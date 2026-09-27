@@ -162,6 +162,21 @@ export type DegradedReason =
   | 'MODEL_UNAVAILABLE'
   | 'CIRCUIT_OPEN';
 
+/**
+ * 这一轮回复是谁生成的。
+ *
+ * `'scripted'` **是测试脚手架**,不是产品能力:只有 `AGENT_REASONER=script`
+ * (要靠显式设的 `ZHITU_SCRIPTED_ACTIONS`)会产生它,产品里没有任何一条路径能落到
+ * 这个值上。它在这里是为了让徽标**如实说**"脚本",而不是借用 `'direct_llm'`
+ * 把一次脚本演示说成模型生成的。见后端 `db/models/enums.py::ModelSource`。
+ */
+export type ModelSource =
+  | 'openjiuwen'
+  | 'direct_llm'
+  | 'rule_fallback'
+  | 'unavailable'
+  | 'scripted';
+
 export interface MessageView {
   id: string;
   role: 'user' | 'assistant' | 'system';
@@ -170,7 +185,7 @@ export interface MessageView {
   createdAt: string;
   contextNodeId: string | null;
   proposalId: string | null;
-  modelSource: 'openjiuwen' | 'direct_llm' | 'rule_fallback' | 'unavailable' | null;
+  modelSource: ModelSource | null;
   degraded: boolean;
   degradedReason: DegradedReason | null;
 }
@@ -200,7 +215,7 @@ export interface SendMessageResponse {
   userMessage: MessageView;
   assistantMessage: MessageView;
   reply: string;
-  source: 'openjiuwen' | 'direct_llm' | 'rule_fallback' | 'unavailable';
+  source: ModelSource;
   degraded: boolean;
   degradedReason: DegradedReason | null;
   retryable: boolean;
@@ -297,7 +312,7 @@ export interface AnalysisView {
   scopeRootTitle: string | null;
   focusNodeTitle: string | null;
   promptVersion: string | null;
-  modelSource: 'openjiuwen' | 'direct_llm' | 'rule_fallback' | 'unavailable' | null;
+  modelSource: ModelSource | null;
   createdAt: string;
 
   freshness: AnalysisFreshness;
@@ -331,6 +346,15 @@ export interface AnalysisView {
 
   /** 模型自己写的一句话可信度。不是算出来的分数 —— 一个 0.8 会被当成能比较的量。 */
   confidenceNote: string | null;
+  /**
+   * 这次判断的**正文**。七栏是索引,这里是内容 —— 一段完整的推理塞不进七栏各自
+   * 400 字的形状里,而模型会迁就形状:塞不进去就不写了。§2.2。
+   *
+   * 它渲染在**七栏之上**(见 `NodeAnalysisPanel`):读一份判断的自然顺序是先看它
+   * 怎么想的,再扫它列了什么。可能是 null(这一轮没给正文,或者更早的分析),
+   * **null 与空串在界面上一视同仁**:都表示"这一条没有正文可显示"。
+   */
+  narrative: string | null;
 }
 
 export interface AnalysisListResponse {
@@ -598,6 +622,56 @@ export function updateNode(
     method: 'PATCH',
     body: patch,
   });
+}
+
+/**
+ * 一个节点的**长正文**(「笔记」)。§2.2。
+ *
+ * ## 它为什么不在 `PlanNodePayload` 里
+ *
+ * 节点行上的 `description` 是**简述**(最多 300 码点,每次改计划都被快照进版本
+ * 账本),这里最多 20,000 码点、不进版本账本。把它塞进计划载荷的后果是每次读计划、
+ * 每次改计划、每一行版本记录都背着全部节点的全文 —— 而四个视图里没有一个需要正文。
+ *
+ * 所以它是**按需取**的:点开某个节点的详情时才 GET 这一条。
+ */
+export interface NotePayload {
+  nodeId: string;
+  body: string;
+  /**
+   * 笔记**自己**的乐观锁。**与 `PlanNodePayload.contentVersion` 是两个号** ——
+   * 共用会变成"有人改了 300 字的简述 → 你 20,000 字的笔记保存失败"。
+   *
+   * 从来没有写过笔记的节点是 **0**(而不是 404):"这个节点还没有笔记"是完全正常的
+   * 状态,用 404 表达它会把编辑器的初次加载变成一条错误路径。
+   */
+  contentVersion: number;
+  updatedAt: string | null;
+}
+
+/** 读一个节点的长正文。**没写过返回空正文 + 第 0 版,不是 404。** */
+export function getNodeNote(workspaceId: string, nodeId: string): Promise<NotePayload> {
+  return apiFetch<NotePayload>(`/api/workspaces/${workspaceId}/nodes/${nodeId}/notes`);
+}
+
+/**
+ * 整份覆盖一个节点的长正文。
+ *
+ * `expectedContentVersion` 是**前置条件,不是要写的字段**(与 `NodePatch.contentVersion`
+ * 同一个设计):把 GET 到的那一版原样带回来,对不上就是 409,这次写入一个字都不落。
+ *
+ * 它**不返回 `revisionVersion`**(而节点编辑一定返回):笔记不是计划的一部分 ——
+ * 带上一个不会因为这次写入而改变的版本号,调用方很容易读成"计划刚变了"。
+ */
+export function updateNodeNote(
+  workspaceId: string,
+  nodeId: string,
+  payload: { body: string; expectedContentVersion?: number },
+): Promise<{ note: NotePayload }> {
+  return apiFetch<{ note: NotePayload }>(
+    `/api/workspaces/${workspaceId}/nodes/${nodeId}/notes`,
+    { method: 'PUT', body: payload },
+  );
 }
 
 /**
@@ -1291,6 +1365,15 @@ export interface ProposalItemView {
   payload: Record<string, unknown>;
   /** `delete_node` 会连带删掉的子节点数量。 */
   affectedChildren: number;
+  /**
+   * 这一条本来是「新建」,被**合并**成了「补充已有节点」——值是那句"合并到哪里去了"
+   * 的标题,`null` 表示没有被改写。§2.5 / §4.4。
+   *
+   * **界面必须把它说出来。** 悄悄把一条"新建"改成"更新"是违反 §7.2 的:用户以为
+   * AI 给他加了一个新节点,实际发生的是它改了一个旧节点 —— 两者在画布上的样子完全
+   * 不同,而这个确认框是用户唯一能拦住它的地方。
+   */
+  coalescedFrom: string | null;
 }
 
 export interface ProposalView {
@@ -1313,6 +1396,13 @@ export interface AppliedChangeView {
   nodesCreated: number;
   nodesUpdated: number;
   nodesDeleted: number;
+  /**
+   * 被写进**长正文(笔记)**的节点数。
+   *
+   * **不能与 `nodesUpdated` 相加** —— 一个节点可能既改了说明、又补了笔记,两个
+   * 数字里各算一次。它们是"这几类写入各碰到了几个节点",不是一份划分。
+   */
+  notesUpdated: number;
   dependenciesAdded: number;
   dependenciesRemoved: number;
   revisionVersion: number;
@@ -1370,6 +1460,11 @@ export function sourceLabel(source: string): string {
       return 'AI 规划 · DeepSeek';
     case 'rule_fallback':
       return '本地规则 · 模型不可用';
+    case 'scripted':
+      // 说"脚本"就够了:这一条只可能来自隔离栈里的 `AGENT_REASONER=script`。
+      // 写成和别的模式一样的一句话(比如"AI 规划 · 本地脚本")就把它伪装成了
+      // 一次真实的模型调用 —— 那正是这个枚举要防的事。
+      return '测试脚手架 · 脚本回放';
     default:
       return '模型不可用';
   }

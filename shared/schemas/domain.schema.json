@@ -188,6 +188,18 @@
           ],
           "default": null
         },
+        "narrative": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Narrative"
+        },
         "promptVersion": {
           "anyOf": [
             {
@@ -334,6 +346,11 @@
         "nodesUpdated": {
           "default": 0,
           "title": "Nodesupdated",
+          "type": "integer"
+        },
+        "notesUpdated": {
+          "default": 0,
+          "title": "Notesupdated",
           "type": "integer"
         },
         "revisionVersion": {
@@ -770,7 +787,7 @@
         "description": {
           "anyOf": [
             {
-              "maxLength": 2000,
+              "maxLength": 300,
               "type": "string"
             },
             {
@@ -816,6 +833,10 @@
         "priority": {
           "$ref": "#/$defs/Priority",
           "default": "medium"
+        },
+        "purpose": {
+          "$ref": "#/$defs/NodePurpose",
+          "default": "planning"
         },
         "title": {
           "maxLength": 200,
@@ -1595,7 +1616,8 @@
         "openjiuwen",
         "direct_llm",
         "rule_fallback",
-        "unavailable"
+        "unavailable",
+        "scripted"
       ],
       "title": "ModelSource",
       "type": "string"
@@ -1634,6 +1656,15 @@
       "title": "NodeEditResponse",
       "type": "object"
     },
+    "NodePurpose": {
+      "description": "这个节点是**用来排期的**,还是**只用来记事**的。\n\n**与 `NodeType` 正交,不是它的第六个成员。** 规范 §2.5 把这件事说得很清楚:\n\"信息用途\"与 Goal/Project/Task 的规划层级是不同维度。一个 `task` 可以是待办,\n也可以是一份\"我知道了这个事实\"的记录 —— 前者要占日历,后者不能。\n\n为什么必须单独一列而不是只靠 `node_type` 推断:`capability` 今天既被用来表示\n\"我要练出这个能力\"(要排期),也被用来表示\"我了解到的情况\"(不要排期)。**同一个\n类型值承载两种相反的排期语义**,靠类型推断就一定要在某个地方写一张猜的表,\n而那张表没法回答\"用户到底想要哪一种\"。让用户建的时候明说,问题就消失了。\n\n排期语义(§5.2、§4.1):\n- `PLANNING`:参与排期。要有工时才有得排,可以被依赖。\n- `INFORMATION`:信息主题。**不需要工时、完成勾选或截止日期**,不进排期预览、\n  不计入完成度,也不能作为硬排期依赖的端点。\n\n默认 `PLANNING` —— 存量节点在加这一列之前全都按可排期对待,默认值必须保持\n它们的行为不变(见迁移 docstring:\"升级后没有任何节点的排期行为发生变化\")。",
+      "enum": [
+        "planning",
+        "information"
+      ],
+      "title": "NodePurpose",
+      "type": "string"
+    },
     "NodeStatus": {
       "enum": [
         "pending",
@@ -1654,6 +1685,59 @@
       ],
       "title": "NodeType",
       "type": "string"
+    },
+    "NoteEditResponse": {
+      "additionalProperties": false,
+      "description": "一次笔记写入的结果。\n\n**这里刻意没有 `revision_version`**(而节点编辑的响应里一定有)。笔记不是计划的\n一部分:它的写入不新增 `plan_revisions` 行、不推进 `revision_version`。带上一个\n不会因为这次写入而改变的版本号,客户端很容易读成\"计划刚变了\" —— 而它接下来\n就会拿这个号去比对提案的 `baseRevisionVersion`。",
+      "properties": {
+        "note": {
+          "$ref": "#/$defs/NotePayload"
+        }
+      },
+      "required": [
+        "note"
+      ],
+      "title": "NoteEditResponse",
+      "type": "object"
+    },
+    "NotePayload": {
+      "additionalProperties": false,
+      "description": "一个节点的**长正文**当前是什么。§2.2。\n\n## 为什么它不在 `PlanPayload` 里\n\n节点行上的 `description` 是**简述**(300 码点,进版本账本),这里的长正文最多\n20,000 码点,而且不进 `plan_revisions.snapshot`。把它塞进计划载荷的后果是每次\n读计划、每次改计划、每一行版本记录都背着全部节点的全文 —— 而四个视图里没有\n一个需要正文。\n\n于是客户端是**按需**取它:点开某个节点的笔记编辑器时才 GET 这一条。",
+      "properties": {
+        "body": {
+          "default": "",
+          "title": "Body",
+          "type": "string"
+        },
+        "contentVersion": {
+          "default": 0,
+          "title": "Contentversion",
+          "type": "integer"
+        },
+        "nodeId": {
+          "format": "uuid",
+          "title": "Nodeid",
+          "type": "string"
+        },
+        "updatedAt": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Updatedat"
+        }
+      },
+      "required": [
+        "nodeId"
+      ],
+      "title": "NotePayload",
+      "type": "object"
     },
     "OverbookedDayPayload": {
       "additionalProperties": false,
@@ -2003,6 +2087,18 @@
           "title": "Affectedchildren",
           "type": "integer"
         },
+        "coalescedFrom": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Coalescedfrom"
+        },
         "localId": {
           "anyOf": [
             {
@@ -2177,6 +2273,31 @@
         }
       },
       "title": "PutLayoutRequest",
+      "type": "object"
+    },
+    "PutNoteRequest": {
+      "additionalProperties": false,
+      "description": "写一个节点的长正文。\n\n`expected_content_version` 与 `UpdateNodeRequest.content_version` 是同一个\n设计:**前置条件,不是要写的字段**。客户端把 GET 到的那一版原样带回来,对不上\n就是 409 `CONCURRENCY_CONFLICT`,这一次写入整个不生效;不带(或带 `null`)表示\n\"不检查\",给内部调用方(提案确认)用 —— 它们本来就持有工作空间锁。",
+      "properties": {
+        "body": {
+          "default": "",
+          "title": "Body",
+          "type": "string"
+        },
+        "expectedContentVersion": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expectedcontentversion"
+        }
+      },
+      "title": "PutNoteRequest",
       "type": "object"
     },
     "QuietHoursView": {
@@ -3745,7 +3866,7 @@
     },
     "UpdateNodeAction": {
       "additionalProperties": false,
-      "description": "修改一个已有节点。只写要改的字段。\n\n**刻意没有 `parent_ref`。** 重新挂父节点是最容易造出环的操作,而它在\n\"AI 帮我排出阶段和任务\"这件事里并不需要。不做它,`PARENT_CYCLE` 这个错误码\n在阶段 4 就不是\"还没实现\",而是\"不可能发生\" —— 后者是可以对用户讲的,\n前者只是又一个待办。",
+      "description": "修改一个已有节点。只写要改的字段。\n\n**刻意没有 `parent_ref`。** 重新挂父节点是最容易造出环的操作,而它在\n\"AI 帮我排出阶段和任务\"这件事里并不需要。不做它,`PARENT_CYCLE` 这个错误码\n在阶段 4 就不是\"还没实现\",而是\"不可能发生\" —— 后者是可以对用户讲的,\n前者只是又一个待办。\n\n**也没有 `purpose`。** 把一个节点从\"行动\"改成\"主题\"会连带决定它的工时与截止\n怎么办(见 `information_node_conflicts`),而那是一个用户该做、也该看清楚的\n决定。让模型顺手改掉它,用户看到的是\"有个任务不见了\",而它其实还在画布上。\n用户自己在详情里改,走的是 `PATCH /nodes/{id}`。",
       "properties": {
         "acceptanceCriteria": {
           "anyOf": [
@@ -3776,7 +3897,7 @@
         "description": {
           "anyOf": [
             {
-              "maxLength": 2000,
+              "maxLength": 300,
               "type": "string"
             },
             {
@@ -3981,6 +4102,45 @@
         }
       },
       "title": "UpdateNodeRequest",
+      "type": "object"
+    },
+    "UpdateNoteAction": {
+      "additionalProperties": false,
+      "description": "把一段长正文写进某个节点的**笔记**(`node_notes`)。§2.2 与 §7。\n\n## 为什么不塞进 `UpdateNodeAction`\n\n`UpdateNodeAction` 的\"改了哪些字段\"是靠 `plan_nodes` 的列判定的,而笔记根本\n不在那张表上;两边还各有一个自己的乐观锁版本号。硬塞进去的后果是\"改笔记\"和\n\"改说明\"在预览里长得一模一样,而它们在确认时该比两个不同的号。\n\n## `expected_note_version` 是**服务端填的**,不是模型填的\n\n与 `content_version` 的纪律一致(\"模型不能自己设置版本列\"):模型写什么,\n校验器都会在 `_update_note` 里用**此刻库里的那个号**覆盖掉它,然后原样存进\n提案的 payload。到确认那一步,重校验拿库里最新的号再比一次 —— 于是\n\"生成提案之后、用户确认之前,这段笔记被人改过\"会变成一条明确的错误,\n而不是一次安静的文字替换。\n\n模型自己填的话,一个编出来的数字会让整份提案被拒;而这个字段真正要回答的\n问题是\"我这一份是照哪一版写的\",那个号只有服务端知道。所以 **`consume` 在\n任何校验之前就把模型写的这个键摘掉**,校验器看到的永远是 `None`;真正被比的\n那一份是服务端上一次校验写进 payload 的。声明这个字段而不是让它变成\"未知键\",\n是为了不让一个手滑写了它的模型撞上 `extra=\"forbid\"` —— 那一撞会连带丢掉整轮\n用户看得见的更新,而它想做的事一点没错。",
+      "properties": {
+        "body": {
+          "title": "Body",
+          "type": "string"
+        },
+        "expectedNoteVersion": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expectednoteversion"
+        },
+        "op": {
+          "const": "update_note",
+          "title": "Op",
+          "type": "string"
+        },
+        "targetRef": {
+          "pattern": "^n[0-9]{1,5}$",
+          "title": "Targetref",
+          "type": "string"
+        }
+      },
+      "required": [
+        "op",
+        "targetRef",
+        "body"
+      ],
+      "title": "UpdateNoteAction",
       "type": "object"
     },
     "UpdateProfileRequest": {

@@ -27,7 +27,13 @@ const fallsWithin = (node: GrowthNode, from: string, to: string) =>
 
 export function TaskView() {
   const { growth, selectedId, select, apply, spaceId } = useDemo(); const [filter, setFilter] = useState('全部');
-  const tasks = Object.values(growth.nodes).filter(n => n.type === 'task' && isInSpace(growth, n.id, spaceId));
+  // `purpose !== 'information'` 那一半不是可选的修饰:信息用途的节点**不进排期**
+  // (它在服务端的排期查询里就被排掉了,「今天」也不会给它安排时间),把它当任务列在
+  // 这里,用户会对着一个既没有勾选框、又永远不会出现在日历上的条目反复找原因。
+  // 后端那边 `totalNodes` / `completedNodes` 用的是同一条判据。
+  const tasks = Object.values(growth.nodes).filter(
+    n => n.type === 'task' && n.purpose !== 'information' && isInSpace(growth, n.id, spaceId),
+  );
   // "今天"和"本周"以前连着 `DEMO_TODAY` 和两个写死的日期 —— 见 timeline.ts 里
   // `todayInTimeZone` 的注释。现在跟着用户所在时区的真实日期走。
   const today = todayInTimeZone(); const week = weekBounds(today);

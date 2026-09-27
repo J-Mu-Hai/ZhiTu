@@ -34,6 +34,10 @@ EXPECTED_TABLES = {
     # 计划的一部分;把它塞进 `plan_nodes` 就等于让模型的一句猜测有了成为计划前提的
     # 路径(见 db/models/analysis.py)。
     "node_analyses",
+    # 节点长正文(§2.2 的「长笔记」)。**新表而不是 `plan_nodes` 上的新列** ——
+    # 理由写在 `db/models/note.py`:最硬的那条是版本账本(`plan_revisions.snapshot`
+    # 每次改计划都快照每个节点,两万字的正文会让每一行版本都背着它)。
+    "node_notes",
     "node_positions",
     "node_relations",
     "plan_nodes",

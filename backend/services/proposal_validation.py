@@ -23,6 +23,7 @@
 
 from __future__ import annotations
 
+import unicodedata
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -30,6 +31,7 @@ from datetime import date
 
 from pydantic import ValidationError
 
+from backend.contracts.plan import MAX_NOTE_CODEPOINTS, information_node_conflicts
 from backend.contracts.proposal import (
     ACCEPTED_OPS,
     DEFERRED_OPS,
@@ -41,9 +43,10 @@ from backend.contracts.proposal import (
     DeleteDependencyAction,
     DeleteNodeAction,
     UpdateNodeAction,
+    UpdateNoteAction,
     action_adapter,
 )
-from backend.db.models.enums import NodeType
+from backend.db.models.enums import NodePurpose, NodeType
 
 # ---------------------------------------------------------------------------------
 # 错误码。**这是对外的接口**,与 services/errors.py 里的 code 同级:
@@ -68,6 +71,16 @@ SELF_DEPENDENCY = "SELF_DEPENDENCY"
 DEPENDENCY_CYCLE = "DEPENDENCY_CYCLE"
 DEPENDENCY_ALREADY_EXISTS = "DEPENDENCY_ALREADY_EXISTS"
 DEPENDENCY_NOT_FOUND = "DEPENDENCY_NOT_FOUND"
+#: 同一个父节点下已经有一个**同一主题**的节点,而且用途不同,所以合并不了。
+#: 见 `_create`:合并键里含 `purpose`(信息用途与规划用途的"学业情况"是两回事),
+#: 但**拒绝**键里不含 —— 同一层里叫同一个名字的两样东西,正是 §4.4 与 §2.5 要消掉的重复。
+DUPLICATE_NODE_TITLE = "DUPLICATE_NODE_TITLE"
+#: 信息用途的节点带了工时或截止时间。§4.1:"信息主题不需要具备工时、完成勾选或截止日期"。
+INFORMATION_NODE_MUST_NOT_BE_SCHEDULABLE = "INFORMATION_NODE_MUST_NOT_BE_SCHEDULABLE"
+#: 提案写笔记时,那段笔记在生成之后被改过了。**与 `CONFLICTING_OPERATIONS` 分开**:
+#: 那个是"同一份提案内部自相矛盾",这个是"你读的那一版已经不是现在的这一版了",
+#: 用户该做的是重新生成,而不是去改提案。
+NOTE_CHANGED = "NOTE_CHANGED"
 
 #: `_Book.touched` 里那两个取值。用常量而不是就地写中文字符串:它们是要被比较的
 #: 哨兵值,写错一个字就会静默变成"没被碰过",而那种错误不会报错。
@@ -105,7 +118,21 @@ _FIELD_LABELS: dict[str, str] = {
     "deadline": "截止时间",
     "priority": "优先级",
     "status": "状态",
+    "purpose": "用途",
+    "body": "长正文",
+    #: 两种拼法都要留着:模型写这个字段时如果写错了类型(比如写成 `"第3版"`),
+    #: pydantic 那条英文报错要经 `_describe` 变成"笔记版本"才读得懂。它只在
+    #: **报错**里出现 —— 值本身不参与任何判断(见 `consume` 里那一段)。
+    "expectedNoteVersion": "笔记版本",
+    "expected_note_version": "笔记版本",
 }
+
+#: 服务端在 payload 里记的"这份提案生成时,那段笔记是第几版"。
+#:
+#: **它和 `expectedNoteVersion` 是两个东西**,尽管说的都是笔记版本:那一个是模型
+#: 可能写的字段(丢掉不认),这一个只有 `_update_note` 写得出来 —— 而"是不是我们
+#: 自己写的"正是确认时那道闸成立的前提(见 `_Book.consume`)。
+_NOTE_BASE_VERSION_KEY = "_noteBaseVersion"
 
 
 # ---------------------------------------------------------------------------------
@@ -117,6 +144,21 @@ class NodeSnapshot:
 
     只带校验需要的字段。刻意不是 ORM 对象:传 ORM 对象进来会让这个模块意外地
     依赖会话状态,而它的全部价值就在于"不依赖任何会变的东西"。
+
+    ## 后三个字段都是**后来才需要**的,各有各的用途
+
+    - `node_type` / `purpose`:去重(§4.4)要判断"这一层里是不是已经有同一个主题了",
+      而"同一个主题"是按 `(父节点, 用途, 规范化标题)` 认的(见 `coalesce_creates`)。
+      `node_type` 不是为了匹配,是为了**在拒绝的时候说得出对方是什么**
+      ("已经有一个同名的「能力」节点")—— 一句指不出对方的错误,用户没法行动。
+    - `note_version`:笔记的乐观锁号,`update_note` 用它判断"我这一份是照哪一版写的"。
+      它在这里的原因和 `content_version` 不在 `PlanNode` 上而在别处是一样的:
+      **笔记有自己的版本号**(见 `db/models/note.py`),拿节点的号去比是两个尺子。
+    - `estimate_minutes` / `deadline`:「信息主题不能带工时/截止」这条规则判的是**改完之后
+      的状态**,不是"这次动了哪几个字段"(与 `node_service.update_node` 同一个判法)。
+      而"改完之后"要有两侧:patch 里的新值与节点上的旧值。少一个字段,规则就退化成
+      "这次没提工时所以没问题" —— 于是"把一个已经排了期的任务改成信息主题"从
+      AI 这条路就过得去,而手工那条路会拒。这个不对称正是 §2.5 要消掉的那种。
     """
 
     id: uuid.UUID
@@ -124,6 +166,12 @@ class NodeSnapshot:
     title: str
     depth: int
     order_index: int
+    node_type: str = NodeType.TASK.value
+    purpose: str = NodePurpose.PLANNING.value
+    #: 这个节点当前的长笔记版本号。`0` = 还没有笔记(见 `note_service.payload_of`)。
+    note_version: int = 0
+    estimate_minutes: int | None = None
+    deadline: date | None = None
 
 
 # ---------------------------------------------------------------------------------
@@ -167,6 +215,30 @@ class ValidatedItem:
     target_title: str | None = None
     payload: dict = field(default_factory=dict)
     affected_children: int = 0
+    #: 这一条**是被合并出来的**,值是它合并到的那个东西的标题。
+    #:
+    #: 有值就说明模型说的是"新建",而实际会写的是"补充/并入"。§7.2 要求预览
+    #: 如实反映将要发生的事 —— 一条读作「新建「学业情况」」而实际改了一个已有节点的
+    #: 预览,让用户确认了一件他没看过的事。
+    coalesced_from: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class NotePatch:
+    """一份将要被写进**长笔记**的正文。§2.2。
+
+    与 `NodePatch` 并排而不是塞进去:它们写的是两张表、比的是两个版本号。
+    合成一个的后果是"改说明"和"改笔记"在预览与执行里长得一样,而它们在确认时
+    该比两个不同的号(见 `contracts/proposal.UpdateNoteAction`)。
+    """
+
+    node_id: uuid.UUID
+    body: str
+    #: **服务端认定的**那个版本号,不是模型填的。执行时用它再比一次 ——
+    #: 读 `action.expected_note_version` 是错的:那个值可能本来就是 None,
+    #: 拿它去比等于不设闸(见 `_Book._update_note`)。
+    expected_version: int
+    action: UpdateNoteAction
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,6 +249,7 @@ class ValidatedPlan:
     updates: tuple[NodePatch, ...] = ()
     #: 软删除的节点 id,**已包含被连带删除的全部子节点**。
     deletes: tuple[uuid.UUID, ...] = ()
+    notes: tuple[NotePatch, ...] = ()
     dependencies_add: tuple[tuple[uuid.UUID, uuid.UUID], ...] = ()
     dependencies_remove: tuple[tuple[uuid.UUID, uuid.UUID], ...] = ()
     items: tuple[ValidatedItem, ...] = ()
@@ -184,8 +257,8 @@ class ValidatedPlan:
     @property
     def is_empty(self) -> bool:
         return not (
-            self.creates or self.updates or self.deletes or self.dependencies_add
-            or self.dependencies_remove
+            self.creates or self.updates or self.deletes or self.notes
+            or self.dependencies_add or self.dependencies_remove
         )
 
 
@@ -197,6 +270,166 @@ class ValidationResult:
     @property
     def ok(self) -> bool:
         return self.plan is not None
+
+
+# ---------------------------------------------------------------------------------
+# 去重:同一主题不再建第二个节点(§4.4 / §2.5)
+# ---------------------------------------------------------------------------------
+#: 合并进既有节点时,从 `create_node` 搬过来的那些字段。
+#:
+#: **`title` 与 `node_type` 刻意不在其中。** 这两个描述的是"这是哪个东西",
+#: 而那个东西已经存在了 —— 搬过去就是把用户节点的名字按模型的拼法改一遍。
+#: 去重的匹配用的是**规范化**标题(全角折半角、大小写折叠、空白压平),匹配上
+#: 恰恰意味着两者的书写不同;而"不同"不该变成一次重命名。
+_MERGE_FIELDS = (
+    "description",
+    "acceptanceCriteria",
+    "acceptance_criteria",
+    "estimateMinutes",
+    "estimate_minutes",
+    "deadline",
+    "priority",
+)
+
+
+def normalize_title(title: str) -> str:
+    """标题的**比较形状**。只用来判断"这两个是不是同一个主题",不用来显示。
+
+    两步,缺一不可:
+
+    1. `NFKC` —— 这一半才是重点。这个产品的输入里全角与半角是混着来的
+       (「排名３８」与「排名38」是同一件事,前者往往是从别处粘进来的),
+       而它们在码点上完全不同。少了这一步,重复照样建出来,而"去重没生效"
+       这件事看起来和"模型又提了一个新节点"一模一样。
+    2. `casefold` + 空白压平 + 去掉两端 —— 大小写与排版差异同理。
+    """
+    folded = unicodedata.normalize("NFKC", title).casefold()
+    return " ".join(folded.split())
+
+
+def coalesce_creates(
+    actions: Sequence[Mapping[str, object]],
+    *,
+    handles: Mapping[str, uuid.UUID],
+    nodes: Mapping[uuid.UUID, NodeSnapshot],
+) -> tuple[tuple[dict, ...], dict[int, str]]:
+    """把"新建一个**已经有**的节点"改写成"补充那个节点"。**纯函数。**
+
+    返回改写后的动作,以及一张 `序号(从 1 数) -> 被合并到的那个对象的标题` 的表。
+    那张表最终会变成 `ValidatedItem.coalesced_from`,所以它说的必须是**用户认得的
+    东西的名字**(既有节点的标题),不是 id、不是一句内部说明。
+
+    ## 为什么必须在 `validate_actions` **之前**跑
+
+    因为 `_persist` 存的是校验后的 `item.payload`,而确认时会拿**同一份 payload**
+    再校验一遍。校验之后才改写的话:库里躺的 payload 与实际写入的行不一致,
+    而确认时的重校验看到的还是原件 —— 于是"预览说新建,应用时改了一个已有节点"。
+    两处跑同一个纯函数、输入也一致,预览与应用才不可能分叉。
+
+    ## 三种命中,三种处理
+
+    - **命中既有节点** → 改写成指向它的 `update_node`。预览里那条会读作
+      「补充已有节点「学业情况」」,合并这件事是**看得见**的(§7.2:悄悄把新建
+      改成更新,等于用户确认了一件他没看过的事)。
+    - **命中同一批里更早的一条 `create_node`** → 字段并进那一条、这一条**去掉**。
+      这是唯一一条真的会让条目数变少的路径,而它是安全的:写入本来就只有一个节点。
+      被并进去的那一条会在摘要里说明它吸收了谁。
+    - **没命中** → 原样不动。
+
+    ## 匹配键里为什么有 `purpose`
+
+    §2.5 说信息用途与规划层级是**两个维度**。"学业情况"既可以是一个信息主题,
+    也可以是一项行动 —— 那是两个不同的对象,不该互相撞。所以合并键含 `purpose`。
+
+    而**拒绝**键不含(见 `_Book._create`):同一层里叫同一个名字的两样东西,正是
+    §4.4 要消掉的重复;合并不了的那种,整份拒绝,而不是放一个重复进去。
+    """
+    seen: dict[tuple[str, str, str], int] = {}
+    absorbed: dict[int, str] = {}
+    notes: dict[int, str] = {}
+    rewritten: list[dict] = []
+
+    for raw in actions:
+        action = dict(raw)
+        if action.get("op") != "create_node":
+            rewritten.append(action)
+            continue
+
+        parent_ref = action.get("parentRef") or action.get("parent_ref")
+        title = action.get("title")
+        purpose = str(action.get("purpose") or NodePurpose.PLANNING.value)
+        if not isinstance(parent_ref, str) or not isinstance(title, str):
+            # 缺字段的那一条不是这里能修正的:它会在校验里报成"没填",而那是用户
+            # 看得懂的一条错误。在这里猜一个默认值只会把错误藏起来。
+            rewritten.append(action)
+            continue
+
+        key = (parent_ref, purpose, normalize_title(title))
+
+        if key in seen:
+            # 同一批里的第二条:字段并进第一条(**先说的算**),这一条不产出 ——
+            # 写入只有一个节点,预览也只该有一条。
+            earlier = rewritten[seen[key]]
+            for field in _MERGE_FIELDS:
+                if action.get(field) is not None and earlier.get(field) is None:
+                    earlier[field] = action[field]
+            absorbed[seen[key]] = str(earlier.get("title") or title)
+            continue
+
+        found = _find_same_topic(nodes, handles, parent_ref, purpose, key[2])
+        if found is None:
+            seen[key] = len(rewritten)
+            rewritten.append(action)
+            continue
+
+        handle, snapshot = found
+        merged: dict = {"op": "update_node", "targetRef": handle}
+        for field in _MERGE_FIELDS:
+            if action.get(field) is not None:
+                merged[field] = action[field]
+        # **把现有标题原样写回去。**
+        #
+        # 两个作用:一是这一条一定有一个显式字段,"没说要改什么"那道校验不会把它
+        # 拒掉(否则用户看到的是整轮更新一起失败);二是写回的与原值等价 ——
+        # 用户的标题一个字都不会变,变的只是它作为哪个字段被提到。
+        merged["title"] = snapshot.title
+        seen[key] = len(rewritten)
+        rewritten.append(merged)
+        notes[len(rewritten)] = snapshot.title
+
+    for index, title in absorbed.items():
+        notes[index + 1] = title
+    return tuple(rewritten), notes
+
+
+def _find_same_topic(
+    nodes: Mapping[uuid.UUID, NodeSnapshot],
+    handles: Mapping[str, uuid.UUID],
+    parent_ref: str,
+    purpose: str,
+    normalized: str,
+) -> tuple[str, NodeSnapshot] | None:
+    """这一层里有没有一个同主题的节点。有就返回**它的记号**与快照。
+
+    返回记号而不是 id:改写出来的 `update_node` 引用的必须是记号 —— 这一层的语言
+    只有记号。把一个真实 uuid 写进模型产出的那条 payload 里,等于让 `targetRef`
+    长得像 `n3` 却不是 `n3`,而那一层没有任何地方认得它。
+    """
+    parent_id = handles.get(parent_ref)
+    if parent_id is None:
+        return None
+    handle_of = {node_id: handle for handle, node_id in handles.items()}
+    for snapshot in nodes.values():
+        if snapshot.parent_id != parent_id:
+            continue
+        if snapshot.purpose != purpose:
+            continue
+        if normalize_title(snapshot.title) != normalized:
+            continue
+        handle = handle_of.get(snapshot.id)
+        if handle is not None:
+            return handle, snapshot
+    return None
 
 
 # ---------------------------------------------------------------------------------
@@ -226,6 +459,13 @@ def validate_actions(
     为什么不能只靠提示词说"范围外别动":提示词是一段建议,而范围是一条权限。
     模型被注入的输入带偏、或者只是自作主张地"顺手把上面那条也改了",提示词都拦不住 ——
     用户看到的结果会是"我明明只在看这个阶段,它把我整份计划改了"。
+
+    ## 去重在这里、也只在这里
+
+    同一个纯函数被两个地方调用(生成时、确认时),而**合并必须两处一致**:只有
+    生成时合并的话,确认时看到的还是原件,于是"预览说新建、应用时改了一个已有节点"。
+    放到别处(比如 `node_service.create_node`)是错的另一侧:手工建两个同名节点今天就是
+    合法的,§4.4 的去重针对的是**生成**。
     """
     if len(actions) > MAX_ACTIONS:
         return _fail(
@@ -235,6 +475,8 @@ def validate_actions(
                 message=f"这一次的变更太多了({len(actions)} 条),最多 {MAX_ACTIONS} 条。",
             )
         )
+
+    actions, coalesced = coalesce_creates(actions, handles=handles, nodes=nodes)
 
     book = _Book(
         handles=handles,
@@ -246,6 +488,7 @@ def validate_actions(
         },
         today=today,
         writable=None if writable is None else frozenset(writable),
+        coalesced=coalesced,
     )
     errors: list[ActionError] = []
 
@@ -289,6 +532,7 @@ class _Book:
         dependencies: set[tuple[uuid.UUID, uuid.UUID]],
         today: date,
         writable: frozenset[uuid.UUID] | None = None,
+        coalesced: Mapping[int, str] | None = None,
     ) -> None:
         self.today = today
         self.handles = dict(handles)
@@ -296,6 +540,8 @@ class _Book:
         self.existing_dependencies = dependencies
         #: None = 不设范围限制。见 `validate_actions` 的注释。
         self.writable = writable
+        #: 序号 -> 这一条是合并来的,合并到了谁。见 `coalesce_creates`。
+        self.coalesced = dict(coalesced or {})
 
         #: 记号 -> 真实 id。开始是已有的句柄,随着 create 逐条长大。
         #: **只增不改**:一个记号一旦绑定就不能再指向别的东西。
@@ -303,9 +549,13 @@ class _Book:
         self.creates: dict[str, PlannedNode] = {}
         self.updates: list[NodePatch] = []
         self.deletes: list[uuid.UUID] = []
+        self.notes: list[NotePatch] = []
         self.dep_add: list[tuple[uuid.UUID, uuid.UUID]] = []
         self.dep_remove: list[tuple[uuid.UUID, uuid.UUID]] = []
         self.items: list[ValidatedItem] = []
+        #: 已经被写过笔记的节点 -> 那条动作的 `expected_note_version`。
+        #: 同一个节点在一次提案里被写两次笔记是矛盾的(第二份照哪一版写?)。
+        self.touched_notes: dict[uuid.UUID, int | None] = {}
 
         #: 已经被改过或删过的节点 -> 到底做了什么(见 _TOUCH_*)。
         #:
@@ -330,7 +580,10 @@ class _Book:
     # -- 只读视图 ---------------------------------------------------------------
     @property
     def is_empty(self) -> bool:
-        return not (self.creates or self.updates or self.deletes or self.dep_add or self.dep_remove)
+        return not (
+            self.creates or self.updates or self.deletes or self.notes
+            or self.dep_add or self.dep_remove
+        )
 
     def title_of(self, node_id: uuid.UUID) -> str:
         for planned in self.creates.values():
@@ -356,8 +609,13 @@ class _Book:
         if op not in ACCEPTED_OPS:
             return [_err(ordinal, UNKNOWN_OP_TYPE, f"不认识「{op}」这种变更。")]
 
+        # 服务端自己记的账先摘出来再交给 pydantic:`extra="forbid"` 会把任何多余的键
+        # 当成模型的错,而它是**我们**写进去的(见 `_NOTE_BASE_VERSION_KEY`)。
+        source = dict(raw)
+        recorded_note_version = source.pop(_NOTE_BASE_VERSION_KEY, None)
+
         try:
-            action = action_adapter.validate_python(raw)
+            action = action_adapter.validate_python(source)
         except ValidationError as exc:
             return [_err(ordinal, PAYLOAD_SCHEMA_INVALID, _describe(exc))]
 
@@ -368,7 +626,19 @@ class _Book:
         #: 变成 null),于是"只改截止时间"到了确认那一步会变成"把所有没提过的
         #: 字段一起清空" —— 用户确认的是改一个日期,实际发生的是删掉了他的说明。
         #: 原样存下来,预览与执行读的就是同一份输入,不可能分叉。
-        payload = dict(raw)
+        payload = dict(source)
+
+        # 笔记版本是**唯一一个不"原样"的东西**,而它不原样是因为它根本不该由模型说:
+        # 它回答的是"这份提案生成时那段笔记是第几版",只有服务端知道,也只有服务端
+        # 能判断"生成之后有没有人改过"。所以这里把两件事分开:
+        #
+        # - 模型写的那一份(`expectedNoteVersion`,两种拼法都算)**丢掉**:它已经进过
+        #   pydantic(于是写错了类型会得到一条人看得懂的报错),但不进 payload、永不参与
+        #   比较。不丢的话,确认时的重校验会把模型编的数字当成"生成时的版本" ——
+        #   要么凭空拒掉一整轮(用户什么都没做错),要么把真正的冲突看漏(它碰巧写对了)。
+        # - 服务端自己记的账(`_noteBaseVersion`)是 `_update_note` 写进去的,也只认它。
+        payload.pop("expectedNoteVersion", None)
+        payload.pop("expected_note_version", None)
 
         if isinstance(action, CreateNodeAction):
             return self._create(ordinal, action, payload)
@@ -376,6 +646,8 @@ class _Book:
             return self._update(ordinal, action, payload)
         if isinstance(action, DeleteNodeAction):
             return self._delete(ordinal, action, payload)
+        if isinstance(action, UpdateNoteAction):
+            return self._update_note(ordinal, action, payload, recorded_note_version)
         if isinstance(action, CreateDependencyAction):
             return self._add_dependency(ordinal, action, payload)
         if isinstance(action, DeleteDependencyAction):
@@ -446,6 +718,19 @@ class _Book:
                 )
             ]
 
+        # 信息用途的节点不能带工时、不能带截止(§4.1)。手工那条路走的是**同一个**
+        # 判定函数(`node_service.create_node`),所以"手动与 AI 创建路径采用相同校验"
+        # 是结构性的,不是靠两处各写一遍、然后有一条忘了改。
+        conflict = information_node_conflicts(
+            action.purpose, action.estimate_minutes, action.deadline
+        )
+        if conflict is not None:
+            return [_err(ordinal, INFORMATION_NODE_MUST_NOT_BE_SCHEDULABLE, conflict)]
+
+        duplicate = self._duplicate_title(ordinal, parent_id, action)
+        if duplicate is not None:
+            return [duplicate]
+
         parent_depth = self._depth_of(parent_id)
         node_id = uuid.uuid4()
         order_index = self.next_order.get(parent_id, -1) + 1
@@ -466,12 +751,61 @@ class _Book:
             ValidatedItem(
                 ordinal=ordinal,
                 op=action.op,
-                summary=_create_summary(action),
+                summary=_create_summary(action, self.coalesced.get(ordinal)),
                 local_id=action.local_id,
                 payload=payload,
+                coalesced_from=self.coalesced.get(ordinal),
             )
         )
         return []
+
+    def _duplicate_title(
+        self, ordinal: int, parent_id: uuid.UUID, action: CreateNodeAction
+    ) -> ActionError | None:
+        """这一层里已经有一个**同名的、用途不同**的节点。
+
+        同用途的那种在 `coalesce_creates` 里就被改写成"补充"了,所以走到这里的
+        只可能是用途不同的那一类 —— 而它是 §4.4 与 §2.5 都要消掉的重复:
+        同一层里叫同一个名字的两样东西,用户看到的是两个他分不清哪个是哪个的框。
+
+        **拒绝键不含 `purpose`,合并键含** —— 这个不对称是刻意的:能合并的合并,
+        不能合并的整份拒绝,而不是放一个重复进去。
+
+        消息要给出出路(§7.2 的"用户要能行动"):改名,或者先去处理那一个。
+        """
+        normalized = normalize_title(action.title)
+        for planned in self.creates.values():
+            if planned.parent_id != parent_id:
+                continue
+            if normalize_title(planned.action.title) != normalized:
+                continue
+            if planned.action.purpose is action.purpose:
+                continue
+            return _err(
+                ordinal,
+                DUPLICATE_NODE_TITLE,
+                f"「{action.title}」在这一层里已经存在了(是"
+                f"{_purpose_label(planned.action.purpose)}用途的)。"
+                "同一个名字在同一层里只能有一个 —— 要新建就换个标题,"
+                "要补充它就把它写成一条修改。",
+            )
+
+        for snapshot in self.nodes.values():
+            if snapshot.parent_id != parent_id:
+                continue
+            if normalize_title(snapshot.title) != normalized:
+                continue
+            if snapshot.purpose == action.purpose:
+                continue
+            return _err(
+                ordinal,
+                DUPLICATE_NODE_TITLE,
+                f"「{snapshot.title}」在这一层里已经存在了(是"
+                f"{_purpose_label(NodePurpose(snapshot.purpose))}用途的)。"
+                "同一个名字在同一层里只能有一个 —— 要新建就换个标题,"
+                "要补充它就把它写成一条修改。",
+            )
+        return None
 
     def _update(
         self, ordinal: int, action: UpdateNodeAction, payload: dict
@@ -513,13 +847,124 @@ class _Book:
                 )
             ]
 
+        # 用途/工时/截止**一起**看改完之后的状态,与 `node_service.update_node` 同一个
+        # 判法(那里读的是 ORM 行上的旧值,这里读快照上的)。只判"这次提没提工时"是不够的:
+        # 节点上本来就有工时的话,一条只改了别的东西的修改也会把它带进去 ——
+        # 而"它现在是什么用途"是快照说的,不是这次的动作说的。
+        #
+        # **用途取快照,不取动作。** `UpdateNodeAction` 刻意没有 `purpose`(见那份契约
+        # 的注释:把行动改成主题是个用户该看清楚的决定),所以这里能变的只有工时与截止。
+        #
+        # **这条路径不只由 `update_node` 走到。** `coalesce_creates` 会把"新建一个已经有
+        # 的信息主题、还带着工时"改写成一条修改 —— 也就是说,一个本来会被 `_create`
+        # 拦下的 over-reach,会换一件衣服从这里进来。两处都判才是"拦得住"。
+        snapshot = self.nodes[node_id]
+        conflict = information_node_conflicts(
+            snapshot.purpose,
+            action.estimate_minutes
+            if action.estimate_minutes is not None
+            else snapshot.estimate_minutes,
+            action.deadline if action.deadline is not None else snapshot.deadline,
+        )
+        if conflict is not None:
+            return [_err(ordinal, INFORMATION_NODE_MUST_NOT_BE_SCHEDULABLE, conflict)]
+
         self.touched[node_id] = _TOUCH_UPDATE
         self.updates.append(NodePatch(node_id=node_id, changed_fields=changed, action=action))
+        title = self.title_of(node_id)
         self.items.append(
             ValidatedItem(
                 ordinal=ordinal,
                 op=action.op,
-                summary=_update_summary(action, self.title_of(node_id), changed),
+                summary=_update_summary(action, title, changed, self.coalesced.get(ordinal)),
+                target_node_id=node_id,
+                target_title=title,
+                payload=payload,
+                coalesced_from=self.coalesced.get(ordinal),
+            )
+        )
+        return []
+
+    def _update_note(
+        self,
+        ordinal: int,
+        action: UpdateNoteAction,
+        payload: dict,
+        recorded_note_version: object = None,
+    ) -> list[ActionError]:
+        """写一个节点的长笔记。§2.2 与 §7 的矩阵:**笔记只能提案**。
+
+        两处与"改说明"不同的地方,都在这里:
+
+        - **版本号是服务端记的。** `recorded_note_version` 是**上一次校验写进 payload
+          的那个号**(第一次校验时它是 `None` —— 模型写的那一份已经在 `consume` 里
+          被摘掉了)。它和此刻库里的号对不上,就说明"提案生成之后、用户点确认之前,
+          这段笔记被人改过",这一条不执行。比完再把此刻的号写回 payload —— 不写回去,
+          确认时的重校验只会重新记一次"此刻的号",于是那道闸永远不响。
+        - **长度用 `MAX_NOTE_CODEPOINTS` 先拒。** 理由是那份契约里写的那条:
+          截断一段用户/AI 写的长文比拒绝它糟得多 —— 两边都会以为存下来了。
+        """
+        node_id = self.resolved.get(action.target_ref)
+        if node_id is None or node_id not in self.nodes:
+            return [
+                _err(
+                    ordinal,
+                    DANGLING_PROPOSAL_REF,
+                    f"要写笔记的 {action.target_ref} 不是这个空间里已有的节点。",
+                )
+            ]
+        if len(action.body) > MAX_NOTE_CODEPOINTS:
+            return [
+                _err(
+                    ordinal,
+                    PAYLOAD_SCHEMA_INVALID,
+                    f"长正文最多 {MAX_NOTE_CODEPOINTS} 个字(按 Unicode 码点计),"
+                    f"这一份有 {len(action.body)} 个。",
+                )
+            ]
+
+        blocked_by_scope = self._out_of_scope(ordinal, node_id, action.target_ref)
+        if blocked_by_scope is not None:
+            return [blocked_by_scope]
+
+        if node_id in self.touched_notes:
+            return [
+                _err(
+                    ordinal,
+                    CONFLICTING_OPERATIONS,
+                    f"「{self.title_of(node_id)}」的笔记在同一次提案里被写了两次。",
+                )
+            ]
+
+        snapshot = self.nodes[node_id]
+        expected = snapshot.note_version
+        if isinstance(recorded_note_version, int) and recorded_note_version != expected:
+            # 生成之后、用户点确认之前,这段笔记被改过 —— 这份提案是照旧的那一版写的。
+            # 直接写下去就是一次安静的文字替换,而那正是版本号要防的事。
+            return [
+                _err(
+                    ordinal,
+                    NOTE_CHANGED,
+                    f"「{self.title_of(node_id)}」的长笔记在提案生成之后被改过了"
+                    f"(提案基于第 {recorded_note_version} 版,现在是第 {expected} 版),"
+                    "这一条没有执行。请重新生成一份。",
+                )
+            ]
+
+        # 把服务端此刻看到的那个号写回 payload。见本方法的 docstring:确认时的重校验
+        # 读的就是它,不写回去等于这道闸没有闸。
+        payload[_NOTE_BASE_VERSION_KEY] = expected
+        self.touched_notes[node_id] = expected
+        self.notes.append(
+            NotePatch(
+                node_id=node_id, body=action.body, expected_version=expected, action=action
+            )
+        )
+        self.items.append(
+            ValidatedItem(
+                ordinal=ordinal,
+                op=action.op,
+                summary=_note_summary(action, self.title_of(node_id), len(action.body)),
                 target_node_id=node_id,
                 target_title=self.title_of(node_id),
                 payload=payload,
@@ -778,6 +1223,7 @@ class _Book:
             creates=tuple(self.creates.values()),
             updates=tuple(self.updates),
             deletes=tuple(self.deletes),
+            notes=tuple(self.notes),
             dependencies_add=tuple(self.dep_add),
             dependencies_remove=tuple(self.dep_remove),
             items=tuple(self.items),
@@ -842,18 +1288,52 @@ def find_cycle(edges: set[tuple[uuid.UUID, uuid.UUID]]) -> list[uuid.UUID] | Non
 # ---------------------------------------------------------------------------------
 # 文案
 # ---------------------------------------------------------------------------------
-def _create_summary(action: CreateNodeAction) -> str:
-    bits = [f"新建{TYPE_LABELS.get(action.node_type.value, action.node_type.value)}「{action.title}」"]
+def _purpose_label(purpose: object) -> str:
+    """用途的中文名。**空字符串表示"规划用途"** —— 它是默认值,印出来是噪音。
+
+    用在重复拒绝的消息里:"它已经存在了(是信息用途的)"。少了这半截,用户不知道
+    该去改哪一个,而两个同名节点摆在一起时他本来就分不清。
+    """
+    return "信息" if getattr(purpose, "value", purpose) == NodePurpose.INFORMATION.value else ""
+
+
+def _create_summary(action: CreateNodeAction, coalesced_from: str | None = None) -> str:
+    """新建一条的预览文案。
+
+    信息用途单独印成「新建信息主题「学业情况」」而不是「新建阶段「学业情况」」:
+    这两件事在用户那边的后续完全不同(一个进排期、一个只是记事),而 `node_type`
+    是 `capability` 时会读成"能力",更看不出它其实是信息。
+    """
+    if getattr(action.purpose, "value", action.purpose) == NodePurpose.INFORMATION.value:
+        head = f"新建信息主题「{action.title}」"
+    else:
+        head = f"新建{TYPE_LABELS.get(action.node_type.value, action.node_type.value)}「{action.title}」"
+    bits = [head]
     if action.estimate_minutes:
         bits.append(f"预计 {action.estimate_minutes} 分钟")
     if action.deadline:
         bits.append(f"截止 {action.deadline.isoformat()}")
+    if coalesced_from:
+        # 模型想新建的是**已经存在**的那个主题,于是这一条会被并入它。预览必须
+        # 说出来 —— 不说的话用户确认的是一件他没看过的事(§7.2)。
+        bits.append(f"已并入同名的「{coalesced_from}」")
     return " · ".join(bits)
 
 
-def _update_summary(action: UpdateNodeAction, title: str, changed: frozenset[str]) -> str:
+def _update_summary(
+    action: UpdateNodeAction,
+    title: str,
+    changed: frozenset[str],
+    coalesced_from: str | None = None,
+) -> str:
     labels = [_FIELD_LABELS.get(field, field) for field in sorted(changed)]
+    if coalesced_from:
+        return f"补充已有节点「{coalesced_from}」的{'、'.join(labels)}"
     return f"修改「{title}」的{'、'.join(labels)}"
+
+
+def _note_summary(action: UpdateNoteAction, title: str, chars: int) -> str:
+    return f"把 {chars} 字写进「{title}」的长笔记"
 
 
 def _delete_summary(title: str, subtree_size: int) -> str:
@@ -890,6 +1370,13 @@ def _describe(exc: ValidationError) -> str:
         return f"{label}不是合法的日期(要写成 YYYY-MM-DD)。"
     if kind in {"greater_than", "greater_than_equal", "less_than", "less_than_equal"}:
         return f"{label}超出了允许范围。"
+    if kind == "string_too_long":
+        # 把上限说出来。pydantic 的 `max_length` 对 `str` 数的是 Python 的 `len()`,
+        # 也就是**码点数** —— 与 `MAX_DESCRIPTION_CODEPOINTS` 那条规则是同一个定义,
+        # 所以这句"按 Unicode 码点计"不是修辞。
+        limit = (first.get("ctx") or {}).get("max_length")
+        if isinstance(limit, int):
+            return f"{label}最多 {limit} 个字(按 Unicode 码点计)。"
     if kind in {"string_too_short", "string_too_long"}:
         return f"{label}的长度不合适。"
     if kind == "union_tag_invalid":
@@ -900,26 +1387,32 @@ def _describe(exc: ValidationError) -> str:
 __all__ = [
     "CANNOT_DELETE_ROOT",
     "CONFLICTING_OPERATIONS",
-    "OUT_OF_SCOPE",
     "DANGLING_PROPOSAL_REF",
     "DEADLINE_IN_PAST",
     "DEPENDENCY_ALREADY_EXISTS",
     "DEPENDENCY_CYCLE",
     "DEPENDENCY_NOT_FOUND",
     "DUPLICATE_LOCAL_ID",
+    "DUPLICATE_NODE_TITLE",
+    "INFORMATION_NODE_MUST_NOT_BE_SCHEDULABLE",
     "LOCAL_ID_CONFLICT",
     "NODE_NOT_IN_WORKSPACE",
+    "NOTE_CHANGED",
     "OP_NOT_YET_AVAILABLE",
+    "OUT_OF_SCOPE",
     "PAYLOAD_SCHEMA_INVALID",
     "SELF_DEPENDENCY",
     "TOO_MANY_ACTIONS",
     "UNKNOWN_OP_TYPE",
     "NodePatch",
     "NodeSnapshot",
+    "NotePatch",
     "PlannedNode",
     "ValidatedItem",
     "ValidatedPlan",
     "ValidationResult",
+    "coalesce_creates",
     "find_cycle",
+    "normalize_title",
     "validate_actions",
 ]

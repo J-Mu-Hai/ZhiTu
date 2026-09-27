@@ -34,7 +34,8 @@ from typing import Annotated, Literal
 from pydantic import Field, TypeAdapter
 
 from backend.contracts.common import ApiModel
-from backend.db.models.enums import NodeStatus, NodeType, Priority, ProposalOp
+from backend.contracts.plan import MAX_DESCRIPTION_CODEPOINTS, MAX_NOTE_CODEPOINTS
+from backend.db.models.enums import NodePurpose, NodeStatus, NodeType, Priority, ProposalOp
 
 #: 一次最多接受多少条变更。与 agent/runtime/direct_llm.py 的 MAX_ACTIONS 对齐 ——
 #: 两处不一致的话,agent 层放行的条数会在这里被整批拒绝,而用户看到的是
@@ -47,8 +48,17 @@ MAX_CREATED_NODES = 60
 
 MAX_ESTIMATE_MINUTES = 100_000
 MAX_TITLE_CHARS = 200
-MAX_TEXT_CHARS = 2000
 MAX_ACCEPTANCE_CHARS = 1000
+
+# 说明这个字段的上限**不在这里**,在 `backend/contracts/plan.py` 的
+# `MAX_DESCRIPTION_CODEPOINTS`(300 码点)。原来这里有一个 `MAX_TEXT_CHARS = 2000`:
+# 它和手工编辑那条路的检查是**两个数**,而 AI 提的说明和用户自己写的说明进的是
+# 同一列。同一个字段两个上限,结果就是"AI 能写的长度,我存不回去" —— 用户在编辑器里
+# 打开一段 AI 刚写的说明,一保存就被 400 拒掉,而界面上没有任何东西提示过这一点。
+#
+# 现在两条路读同一个常量。手工路径**还有一条豁免规则**(存量已经超长的说明继续
+# 想写多长写多长),那是给"上限之前就存在的文字"留的出路;AI 这边没有豁免:
+# 它写的是新内容,而且它有别的落点 —— 长文本走 `UpdateNoteAction`。
 
 #: 节点记号的形状。`n1`、`n12`;上界 5 位是给"句柄 + 新建"共用一个编号空间的余量。
 #: 约束形状而不是任其自由发挥,是为了让 `n1 x`、`节点1` 这类写法变成一条明确的
@@ -83,9 +93,15 @@ class CreateNodeAction(_ActionBase):
     local_id: Handle
     parent_ref: Handle
     title: str = Field(min_length=1, max_length=MAX_TITLE_CHARS)
-    description: str | None = Field(default=None, max_length=MAX_TEXT_CHARS)
+    description: str | None = Field(default=None, max_length=MAX_DESCRIPTION_CODEPOINTS)
     acceptance_criteria: str | None = Field(default=None, max_length=MAX_ACCEPTANCE_CHARS)
     node_type: NodeType = NodeType.TASK
+    #: 用途轴。§2.5 的访谈共建就是靠它:用户答了"我排名 38"、模型提一条
+    #: `purpose=information` 的节点把这件事记下来 —— 而它**不能带工时、不能带截止**
+    #: (见 `information_node_conflicts`),也不进排期。
+    #:
+    #: 默认 `planning`:模型没提这个字段时,它的行为和加这一列之前完全一样。
+    purpose: NodePurpose = NodePurpose.PLANNING
     estimate_minutes: int | None = Field(default=None, gt=0, le=MAX_ESTIMATE_MINUTES)
     deadline: date | None = None
     priority: Priority = Priority.MEDIUM
@@ -98,12 +114,17 @@ class UpdateNodeAction(_ActionBase):
     "AI 帮我排出阶段和任务"这件事里并不需要。不做它,`PARENT_CYCLE` 这个错误码
     在阶段 4 就不是"还没实现",而是"不可能发生" —— 后者是可以对用户讲的,
     前者只是又一个待办。
+
+    **也没有 `purpose`。** 把一个节点从"行动"改成"主题"会连带决定它的工时与截止
+    怎么办(见 `information_node_conflicts`),而那是一个用户该做、也该看清楚的
+    决定。让模型顺手改掉它,用户看到的是"有个任务不见了",而它其实还在画布上。
+    用户自己在详情里改,走的是 `PATCH /nodes/{id}`。
     """
 
     op: Literal["update_node"]
     target_ref: Handle
     title: str | None = Field(default=None, min_length=1, max_length=MAX_TITLE_CHARS)
-    description: str | None = Field(default=None, max_length=MAX_TEXT_CHARS)
+    description: str | None = Field(default=None, max_length=MAX_DESCRIPTION_CODEPOINTS)
     acceptance_criteria: str | None = Field(default=None, max_length=MAX_ACCEPTANCE_CHARS)
     estimate_minutes: int | None = Field(default=None, gt=0, le=MAX_ESTIMATE_MINUTES)
     deadline: date | None = None
@@ -135,12 +156,49 @@ class DeleteDependencyAction(_DependencyActionBase):
     op: Literal["delete_dependency"]
 
 
+class UpdateNoteAction(_ActionBase):
+    """把一段长正文写进某个节点的**笔记**(`node_notes`)。§2.2 与 §7。
+
+    ## 为什么不塞进 `UpdateNodeAction`
+
+    `UpdateNodeAction` 的"改了哪些字段"是靠 `plan_nodes` 的列判定的,而笔记根本
+    不在那张表上;两边还各有一个自己的乐观锁版本号。硬塞进去的后果是"改笔记"和
+    "改说明"在预览里长得一模一样,而它们在确认时该比两个不同的号。
+
+    ## `expected_note_version` 是**服务端填的**,不是模型填的
+
+    与 `content_version` 的纪律一致("模型不能自己设置版本列"):模型写什么,
+    校验器都会在 `_update_note` 里用**此刻库里的那个号**覆盖掉它,然后原样存进
+    提案的 payload。到确认那一步,重校验拿库里最新的号再比一次 —— 于是
+    "生成提案之后、用户确认之前,这段笔记被人改过"会变成一条明确的错误,
+    而不是一次安静的文字替换。
+
+    模型自己填的话,一个编出来的数字会让整份提案被拒;而这个字段真正要回答的
+    问题是"我这一份是照哪一版写的",那个号只有服务端知道。所以 **`consume` 在
+    任何校验之前就把模型写的这个键摘掉**,校验器看到的永远是 `None`;真正被比的
+    那一份是服务端上一次校验写进 payload 的。声明这个字段而不是让它变成"未知键",
+    是为了不让一个手滑写了它的模型撞上 `extra="forbid"` —— 那一撞会连带丢掉整轮
+    用户看得见的更新,而它想做的事一点没错。
+    """
+
+    op: Literal["update_note"]
+    target_ref: Handle
+    #: 长正文。上限在 `_update_note` 里用中文消息执行(见 `MAX_NOTE_CODEPOINTS`):
+    #: 这里**不写 `max_length`**,因为 pydantic 那句
+    #: `String should have at most 20000 characters` 会经 `_describe` 变成
+    #: "长正文的长度不合适" —— 没有数字的提示,用户只能猜。
+    body: str
+    #: 服务端记的前置条件。见上面那段:模型写的那一份会被摘掉,这一条只声明形状。
+    expected_note_version: int | None = None
+
+
 PlanAction = Annotated[
     CreateNodeAction
     | UpdateNodeAction
     | DeleteNodeAction
     | CreateDependencyAction
-    | DeleteDependencyAction,
+    | DeleteDependencyAction
+    | UpdateNoteAction,
     Field(discriminator="op"),
 ]
 
@@ -155,6 +213,7 @@ ACCEPTED_OPS: frozenset[str] = frozenset(
         ProposalOp.CREATE_NODE.value,
         ProposalOp.UPDATE_NODE.value,
         ProposalOp.DELETE_NODE.value,
+        ProposalOp.UPDATE_NOTE.value,
         ProposalOp.CREATE_DEPENDENCY.value,
         ProposalOp.DELETE_DEPENDENCY.value,
     }
@@ -211,6 +270,15 @@ class ProposalItemView(ApiModel):
     payload: dict = Field(default_factory=dict)
     #: delete_node 会连带删掉的子节点数量。0 表示没有子树。
     affected_children: int = 0
+    #: 这一条本来是"新建",被**合并**成了"补充已有节点"。§2.5/§4.4。
+    #:
+    #: 值是那句"合并到哪里去了"的标题(被指向的那个节点的标题,或同批更早那条
+    #: 新建的标题)。为 `None` 表示这一条没有被改写。
+    #:
+    #: **它必须存在。** 悄悄把一条"新建"改成"更新"是违反 §7.2 的:用户看到的是
+    #: "AI 给我加了一个新节点",实际发生的是"它改了我一个旧节点" —— 两者在画布上
+    #: 的样子完全不同,而确认框是用户唯一能拦住它的地方。
+    coalesced_from: str | None = None
 
 
 class ProposalView(ApiModel):
@@ -238,6 +306,10 @@ class AppliedChangeView(ApiModel):
     nodes_created: int = 0
     nodes_updated: int = 0
     nodes_deleted: int = 0
+    #: 被写进长正文(笔记)的节点数。**不是节点数之外的另一样东西** —— 一个节点
+    #: 可能既在 `nodes_updated` 里、又在 `notes_updated` 里(改说明的同时补了笔记),
+    #: 所以这两个数字不能相加。
+    notes_updated: int = 0
     dependencies_added: int = 0
     dependencies_removed: int = 0
     #: 这次写入**产生**的那一版(`plan_revisions` 里的那一行),不是写入之后空间的
@@ -294,5 +366,6 @@ __all__ = [
     "ProposalView",
     "RejectProposalRequest",
     "UpdateNodeAction",
+    "UpdateNoteAction",
     "action_adapter",
 ]

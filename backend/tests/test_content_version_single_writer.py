@@ -51,6 +51,16 @@ SCANNED = ("backend/services", "backend/api", "backend/agent")
 
 COLUMN = "content_version"
 
+#: 允许写这一列的函数。**闭集**(见那条用例的 docstring):多一处写入点,就要在这里
+#: 显式加一行并说明它管的是哪张表。
+ALLOWED_WRITERS = {
+    # 节点正文:`plan_nodes.content_version`。用户 PATCH 与提案确认共用。
+    "backend/services/node_service.py:touch_content_version",
+    # 笔记正文:`node_notes.content_version`。用户 PUT 笔记与提案里的
+    # `update_note` 共用同一份理由,只是对象换成了长正文。
+    "backend/services/note_service.py:touch_note_content_version",
+}
+
 
 def _sources() -> list[Path]:
     return sorted(path for part in SCANNED for path in (ROOT / part).rglob("*.py"))
@@ -86,11 +96,21 @@ def _writes_to_the_column(path: Path) -> list[tuple[str, int]]:
 
 
 def test_the_body_version_is_written_in_exactly_one_function() -> None:
-    """全仓只有 `node_service.touch_content_version` 能改这一列。
+    """全仓只有那两个函数能改**各自的** `content_version`,一个函数管一张表。
 
     这条断言不是洁癖:两条路径各写一遍 `+ 1`,迟早有一条被漏掉 —— 而漏掉的那条
     不会报错、不会变慢、也不会让任何测试红,它只会让某一次写入在版本上**不存在**。
     提案路径就是这么漏的。所以这里钉死"只有一个写入点",让它以后想漏都没地方漏。
+
+    ## 为什么是两张表、两条记录,而不是一条
+
+    `plan_nodes.content_version` 与 `node_notes.content_version` 是两列**同名**的
+    版本号,而且是刻意分开的:冲突检测的范围要和冲突的范围一样大,共用会让
+    "有人改了那个节点 300 字的简述"变成"你正在写的 20,000 字笔记保存失败"。
+
+    所以这里比的是一个**闭集**:以后每多一个版本列,就必须在这里显式加一行。
+    这行加得出来,但加不出来的是"顺手在某个服务里写一句 `x.content_version += 1`"
+    —— 那正是这条用例要挡的动作。
     """
     found = [
         (path.relative_to(ROOT).as_posix(), where, line)
@@ -98,10 +118,12 @@ def test_the_body_version_is_written_in_exactly_one_function() -> None:
         for where, line in _writes_to_the_column(path)
     ]
     writers = {f"{path}:{where}" for path, where, _line in found}
-    assert writers == {"backend/services/node_service.py:touch_content_version"}, (
-        "推进正文版本号的地方不止一处(或者挪了位置)。"
+    assert writers == ALLOWED_WRITERS, (
+        "推进版本号的地方和这张名单不一致(多了、少了,或者挪了位置)。"
         f"现在扫到:{[f'{p}:{w}:{n}' for p, w, n in found] or '一处都没有'}\n"
-        "用户编辑与 AI 提案确认必须共用同一个函数,否则总会有一条忘了写。"
+        "每一列版本号只允许一个推进函数,而且必须是两条写入路径共用的那一个"
+        "——否则总会有一条忘了写。加一个新版本列是允许的:在 ALLOWED_WRITERS 里"
+        "显式加一行,并写清楚它管的是哪张表。"
     )
 
 

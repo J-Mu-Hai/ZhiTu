@@ -34,6 +34,107 @@ from backend.contracts.common import ApiModel
 #: 而让其中一个 import 另一个会形成循环(写与读互相依赖)。
 DEPENDS_ON = "depends_on"
 
+# ---------------------------------------------------------------------------------
+# 长度限制与用途规则
+#
+# 这两样放契约层而不是某个服务里,是因为**每一条都要被不止一处用**,而两处各写一遍
+# 的代价不是"重复",是迟早只改一处 —— 那时候同一份输入在一条路上被拒、在另一条路上
+# 被存下来,而用户看不出区别。
+# ---------------------------------------------------------------------------------
+
+#: 简短说明(「简述」)的码点上限。§2.1。
+#:
+#: **计数单位是 Unicode 码点,而 Python 的 `len()` 就是码点数** —— 这不是巧合,
+#: 是这个上限能选在这里的理由。JS 那边必须用 `[...s].length`(见
+#: `apps/web/src/lib/codepoints.ts`),因为 `s.length` 数的是 UTF-16 码元,
+#: 一个星平面 emoji 会被数成 2 —— 那正是 §2.1 点名的错配。码点是唯一一条
+#: 两边能按构造相等的口径(`Intl.Segmenter` 数的是字素,`👨‍👩‍👧` 是 1 个字素、
+#: 5 个码点)。
+MAX_DESCRIPTION_CODEPOINTS = 300
+
+#: 长正文(节点笔记)的码点上限。§2.2。
+#:
+#: 它比 `MAX_DESCRIPTION_CODEPOINTS` 大两个数量级,而且**存的不是同一个地方**
+#: (见 `db/models/note.py`):简述进 `plan_nodes.description`(每次改计划都被
+#: 快照进版本账本),长正文进 `node_notes`。把长文塞进节点行会让每一行版本都背着
+#: 每个节点的全文。
+MAX_NOTE_CODEPOINTS = 20_000
+
+
+def description_length_error(existing: str | None, incoming: str | None) -> str | None:
+    """这次写入的说明是不是太长。返回**给用户看的那句话**,或者 `None`(可以写)。
+
+    ## 上限是一条条件规则,这是用户选的
+
+    存量已经超过上限的说明**继续想写多长写多长**;上限只落在"新写的说明"上。
+    理由是这批上限是后来才有的:那些在它之前写下的长说明是用户当时唯一的表达方式,
+    对它们收口等于**追溯性地宣布他已经写下的东西不合法** —— 而他会因此无法保存
+    任何一次修改,连改个错别字都不行。
+
+    代价要说清楚:同一个节点上"旧的能继续长、新的卡在 300"。它不是一把尺子,
+    但它是确定的、服务端执行的,而且有一条可走的出路(改到 300 以内之后,
+    从此按 300 算)。
+
+    两个数都报给用户(上限与这一份的实际长度) —— 只说"太长了"等于让他自己数。
+    """
+    if incoming is None:
+        return None
+    limit = MAX_DESCRIPTION_CODEPOINTS
+    if existing is not None and len(existing) > limit:
+        return None
+    if len(incoming) <= limit:
+        return None
+    return f"说明最多 {limit} 个字(按 Unicode 码点计),这一份有 {len(incoming)} 个。"
+
+
+def information_node_conflicts(
+    purpose: object,
+    estimate_minutes: int | None,
+    deadline: date | None,
+) -> str | None:
+    """信息用途的节点和工时/截止不能同时存在。返回原因,或者 `None`。
+
+    §4.1:信息主题不需要具备工时、完成勾选或截止日期。它回答的是"我了解到什么"
+    (「我排名 38」),不是"我要做什么" —— 而工时与截止是**排期的输入**。让一个
+    信息主题带着 90 分钟进排期,得到的是一个用户没打算做的日程;而它一旦排进去,
+    日历上就分不出哪些是"要做的事"、哪些只是"知道的情况"。
+
+    ## 为什么在契约层
+
+    两条完全不同的路都要拦它,而它们必须拦得一模一样:
+
+    - 手工编辑(`node_service.create_node` / `update_node`)→ 400 `INVALID_INPUT`;
+    - AI 提案(`proposal_validation._create`)→ 提案级错误码。
+
+    放服务里就要让 `proposal_validation` import 服务层,而那个模块的纪律是
+    "纯函数、一次写入都没有"(`proposal_validation` 的模块 docstring)。放这里
+    两边都只 import 契约,谁也不欠谁。
+
+    ## 不传 `purpose` 的调用方
+
+    `purpose` 收的是 `object` 而不是 `NodePurpose`:两个调用方手里一个是枚举、
+    一个是动作里那个字段,而"值是不是 `information`"只跟字符串相等有关。
+    用 `getattr(value, "value", value)` 取值,于是枚举与字符串两条路都成立 ——
+    少写这一个转换,调用方就会各自写一次,而写漏的那次会让规则静默失效。
+    """
+    if getattr(purpose, "value", purpose) != "information":
+        return None
+    fields: list[str] = []
+    if estimate_minutes is not None:
+        fields.append("预计工时")
+    if deadline is not None:
+        fields.append("截止日期")
+    if not fields:
+        return None
+    what = "和".join(fields)
+    # **两条出路都给**。这句话会被渲染三处(创建表单、详情编辑器、提案预览),
+    # 而这三处用户想做的事不一定是同一件:有人是想把它变成信息主题,有人是
+    # 手滑点错了用途。只说"不能带工时",他得自己猜该改哪一边。
+    return (
+        f"信息主题不进排期,所以不能带{what}。"
+        f"要给它排期,就把用途改回「行动」;要让它当信息主题,就把{what}清掉。"
+    )
+
 
 class PlanNodePayload(ApiModel):
     """一个计划节点。**不含任何排期字段** —— "哪天做"在 sessions 里。"""
@@ -417,6 +518,56 @@ class ArchivedNodePayload(ApiModel):
     blocked_reason: str | None = None
 
 
+class NotePayload(ApiModel):
+    """一个节点的**长正文**当前是什么。§2.2。
+
+    ## 为什么它不在 `PlanPayload` 里
+
+    节点行上的 `description` 是**简述**(300 码点,进版本账本),这里的长正文最多
+    20,000 码点,而且不进 `plan_revisions.snapshot`。把它塞进计划载荷的后果是每次
+    读计划、每次改计划、每一行版本记录都背着全部节点的全文 —— 而四个视图里没有
+    一个需要正文。
+
+    于是客户端是**按需**取它:点开某个节点的笔记编辑器时才 GET 这一条。
+    """
+
+    node_id: uuid.UUID
+    body: str = ""
+    #: 笔记自己的乐观锁。**与 `PlanNodePayload.content_version` 是两个号** ——
+    #: 共用会变成"有人改了 300 字的简述 → 你 20,000 字的笔记保存失败",而冲突检测
+    #: 的范围必须和冲突的范围一样大(`db/models/plan.py` 里那条注释)。
+    #:
+    #: **从来没有写过笔记的节点是 `0`**,而不是 404。
+    content_version: int = 0
+    #: 最后一次写入的时刻。没写过就是 `null`。
+    updated_at: datetime | None = None
+
+
+class PutNoteRequest(ApiModel):
+    """写一个节点的长正文。
+
+    `expected_content_version` 与 `UpdateNodeRequest.content_version` 是同一个
+    设计:**前置条件,不是要写的字段**。客户端把 GET 到的那一版原样带回来,对不上
+    就是 409 `CONCURRENCY_CONFLICT`,这一次写入整个不生效;不带(或带 `null`)表示
+    "不检查",给内部调用方(提案确认)用 —— 它们本来就持有工作空间锁。
+    """
+
+    body: str = ""
+    expected_content_version: int | None = None
+
+
+class NoteEditResponse(ApiModel):
+    """一次笔记写入的结果。
+
+    **这里刻意没有 `revision_version`**(而节点编辑的响应里一定有)。笔记不是计划的
+    一部分:它的写入不新增 `plan_revisions` 行、不推进 `revision_version`。带上一个
+    不会因为这次写入而改变的版本号,客户端很容易读成"计划刚变了" —— 而它接下来
+    就会拿这个号去比对提案的 `baseRevisionVersion`。
+    """
+
+    note: NotePayload
+
+
 __all__ = [
     "ArchiveImpactPayload",
     "ArchivedNodePayload",
@@ -428,10 +579,13 @@ __all__ = [
     "LayoutPayload",
     "LayoutPositionPayload",
     "NodeEditResponse",
+    "NoteEditResponse",
+    "NotePayload",
     "OverbookedDayPayload",
     "PlanNodePayload",
     "PlanPayload",
     "PutLayoutRequest",
+    "PutNoteRequest",
     "RelationPayload",
     "RestoreResponse",
     "ScopeViewportPayload",
