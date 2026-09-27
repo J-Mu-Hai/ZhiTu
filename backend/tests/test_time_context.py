@@ -57,6 +57,7 @@ from backend.db.models import (
 )
 from backend.db.models.enums import ExecutionResult, ScheduledSessionStatus
 from backend.db.session import SessionLocal
+from backend.services.timeutil import today_in
 from backend.tests.conftest import FakeReasoner
 
 
@@ -693,7 +694,11 @@ async def test_the_horizon_follows_the_furthest_deadline(
     容量和预览报的容量是同一个口径。
     """
     account = await make_account()
-    deadline = date(2026, 9, 27) + timedelta(days=200)
+    # 截止日必须**从今天**往后算。"今天"取的是服务端那一个(`today_in`,用户的时区),
+    # 不是这台机器的 —— 两边差一天的话,下面那个数会少 1。写成一个固定日期的话,这条
+    # 断言只在写它的那一天成立:2026-09-27 写下的 `date(2026, 9, 27) + 200 天`,第二天
+    # 跑就成了 207,而失败信息说的是"余量没有被算进去" —— 与真实原因毫不相干。
+    deadline = today_in("Asia/Shanghai") + timedelta(days=200)
     root_id = await _root_id(app_client, account)
 
     async def _set_deadline(session) -> None:
@@ -706,6 +711,8 @@ async def test_the_horizon_follows_the_furthest_deadline(
     assert (await _send(app_client, account, "继续")).status_code == 200
     time = (await _turn(fake)).time
 
+    # `8` 就是 `schedule_service._DEADLINE_SLACK_DAYS`。**故意写死**:从那个常量 import
+    # 过来断言的话,有人把余量改成 1 天,这里会跟着一起变绿。
     assert time.horizon_days == 200 + 8, "截止日的余量没有被算进去"
     assert time.horizon_last_day == deadline.isoformat()
     assert time.capacity_minutes > 0
