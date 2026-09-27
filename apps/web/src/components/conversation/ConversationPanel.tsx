@@ -38,7 +38,7 @@ const PROPOSAL_STATUS_LABEL: Record<string, string> = {
  *    它跟模型能不能用没关系。
  */
 export function ConversationPanel() {
-  const { growth, selectedId, select, messages, remoteProposals, proposalErrors, deciding, confirmRemote, rejectRemote, replan, replanState, send, retry, sending, sendError, retryable, brief, historyLoading, messagesTruncated, spaceId } = useDemo();
+  const { growth, selectedId, select, messages, remoteProposals, proposalErrors, inputChanged, deciding, confirmRemote, rejectRemote, replan, replanState, send, retry, sending, sendError, retryable, brief, historyLoading, messagesTruncated, spaceId } = useDemo();
   const [input, setInput] = useState('');
   const [showContexts, setShowContexts] = useState(false);
   const bottom = useRef<HTMLDivElement>(null);
@@ -165,6 +165,24 @@ export function ConversationPanel() {
             </article>
           );
         })}
+
+        {/* 这一轮是在一份**已经过去的输入**上回答的。
+            它必须单独说一句,而且必须在"没有提案"那一片空白之前说:
+            `INPUT_CHANGED` 拦下来的那一轮通常什么都不提,于是界面上"这次没有提案"
+            与"模型什么都没想出来"长得一模一样 —— 用户会以为自己白问了,而真正该做
+            的是改完之后让 AI 重看一遍。
+            **不给按钮。** 入口在那些内容的旁边(节点详情的「AI 分析」块里),
+            在对话末尾再放一个的话,用户看不出它要重新分析的是哪个节点。 */}
+        {inputChanged && (
+          <div className="turn-error" role="status">
+            <AlertCircle size={14} />
+            <span>
+              它回答的时候，你说的情况已经变了（正文、条件或计划被改过），所以这一轮
+              没有给出可应用的变更。要看基于最新内容的判断，请到那个节点的「AI 分析」里
+              点「根据最新内容重新分析」。
+            </span>
+          </div>
+        )}
 
         {/* 模型提了变更、但校验没让过。**必须说出来。**
             不显示的话,用户看到的是"AI 回复了一段话,但计划什么都没变",而他会

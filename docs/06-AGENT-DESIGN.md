@@ -51,6 +51,37 @@ AgentResponse
 
 PlanAction 的取值见 [05-DATA-MODEL.md](05-DATA-MODEL.md)。
 
+## Analysis（分析层，2026-09-27 加）
+
+回复与动作之外，模型还可以给一份**结构化的判断**。它和 `PlanAction[]` 是两件事：
+
+```
+AgentResponse
+├── reply          (自然语言回复)
+├── PlanAction[]   (要用户确认才生效的结构化变更)
+└── analysis       (可选) 对这一轮读到的内容的判断 —— 不改变任何东西
+    ├── known / unknowns / evidence / assumptions
+    ├── diagnosis / strategy_options / risks
+    └── confidence_note
+```
+
+**它不是约束。** 这一层存在的唯一理由是让"模型对现状的理解"变成一份**可以挑错的记录**，
+而不是藏在回复的一段文字里。三条硬边界，写在 `backend/services/analysis_service.py` 与
+`backend/services/conversation_service.py` 的注释里，改动前先读：
+
+1. **要变成计划必须走提案与确认。** 分析里写着"这个任务缺一个时长"不产生任何写入；
+   模型必须另提一条 `PlanAction`，由用户点确认。直接拿分析当约束会让模型的猜测
+   悄悄变成计划的前提。
+2. **过期是读的时候现算的，不是落一个标记。** 每次读都拿"当时读到的输入"跟库里的现状比。
+   输入在模型思考期间变过（`input_changed`）时，**这一轮不生成提案**、分析一出生就带着过期。
+3. **降级不落行，也不许长得像真的。** 规则兜底与"模型不可用"那两档不产生分析记录；
+   已经存在的记录会带上 `model_source`，界面上必须看得出"这一条不是模型的判断"。
+
+**重新分析走的是同一条对话工作流**（`POST /workspaces/{id}/nodes/{nid}/analysis/refresh`
+内部仍调 `submit_turn`），只是替用户说了一句"根据最新内容重新分析一下这个节点"。
+所以它会在对话里留下两条消息 —— 按钮与对话不是两个真相。那句话常量只有一个来源：
+`analysis_service.REANALYZE_MESSAGE`。
+
 ## Example
 
 **User:**

@@ -361,6 +361,27 @@ export function getAnalyses(
   );
 }
 
+/**
+ * 「根据最新内容重新分析」。
+ *
+ * **返回的是整整一轮对话**(和 `sendMessage` 同一个形状),因为服务端走的就是同一条
+ * 工作流:它会替用户说一句"根据最新内容重新分析一下这个节点",并把用户消息与助手回复
+ * 都落进对话。所以调用方必须把这两条消息也放进对话里 —— 只把分析块刷新一下的话,
+ * 对话与画布就成了两个真相。
+ *
+ * 那一句话**不在这里拼**:它是产品文案,写在服务层(`analysis_service.REANALYZE_MESSAGE`),
+ * 前端再写一份的话,换个客户端(或以后加个快捷键)说的就是另一句了。
+ */
+export function refreshAnalysis(
+  workspaceId: string,
+  nodeId: string,
+): Promise<SendMessageResponse> {
+  return apiFetch<SendMessageResponse>(
+    `/api/workspaces/${workspaceId}/nodes/${nodeId}/analysis/refresh`,
+    { method: 'POST' },
+  );
+}
+
 // ---------------------------------------------------------------------------------
 // 计划
 // ---------------------------------------------------------------------------------

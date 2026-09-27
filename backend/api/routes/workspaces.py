@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+import uuid
+
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -36,8 +38,10 @@ from backend.contracts.workspace import (
 from backend.db.models import Message, PlanningBrief
 from backend.db.session import get_db
 from backend.services import (
+    analysis_service,
     brief_service,
     conversation_service,
+    node_service,
     proposal_service,
     workspace_service,
 )
@@ -191,6 +195,66 @@ async def send_message(
         current_view=payload.current_view,
         scope_root_id=payload.scope_root_id,
     )
+    return await _turn_response(db, ctx, outcome)
+
+
+@router.post(
+    "/{workspace_id}/nodes/{node_id}/analysis/refresh",
+    response_model=SendMessageResponse,
+    summary="让 AI 根据最新内容重新分析这个节点",
+)
+async def refresh_analysis(
+    node_id: uuid.UUID,
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+    reasoner: Reasoner = Depends(get_reasoner),
+) -> SendMessageResponse:
+    """「根据最新内容重新分析」按钮。**它走的是同一条对话工作流,不是另一条。**
+
+    内部就是 `submit_turn`,只不过那句"根据最新内容重新分析一下这个节点"由服务端替
+    用户说了。理由是这个按钮**必须**在对话里留下痕迹:否则用户点完之后,对话停在他
+    上一次说话的地方,而画布上多了一条分析 —— 两处记录对不上,下次他自己也说不清
+    那条分析是哪来的。所以这一次调用**真的会追加一条用户消息和一条助手消息**,
+    和手打那句话完全一样。
+
+    **那句话写在服务层而不是前端**(见 `analysis_service.REANALYZE_MESSAGE`):
+    按钮与对话不能有两个真相,换个客户端说的也得是同一句。
+
+    路径挂在节点下面是因为它分析的是**这个节点**(`context_node_id`,它决定这条分析
+    记录的 `focusNodeId`);但这一轮的范围仍然是整个空间 —— 重新分析要的是"把最新的
+    前因后果都看一遍",把范围缩到某个子空间只会让它少读一半。
+
+    **失败与降级的表现与发消息完全相同**:模型不可用时返回 `degraded=true` 的正常
+    响应,那一轮不会留下分析记录。界面上要如实显示成"这次没分析成",不能拿上一次的
+    旧分析顶替 —— 那正是这一批要拦的那种假象。
+
+    **节点要先在这里查一次,`submit_turn` 不查。** 这不是重复校验,是两条路径的请求
+    含义本来就不同:发消息那条里节点只是"用户此刻看着谁"的一个提示,节点刚好被删了
+    也该把他那句话答完;而这一条里**节点就是请求本身**,它不存在的时候没有任何
+    合理的事可做,只能 404。查不到与不属于当前空间返回同一个错误(理由见
+    `NodeNotFound` 的注释)。
+    """
+    await node_service.load_node(db, ctx, node_id)
+
+    outcome = await conversation_service.submit_turn(
+        db,
+        ctx,
+        reasoner,
+        content=analysis_service.REANALYZE_MESSAGE,
+        context_node_id=node_id,
+    )
+    return await _turn_response(db, ctx, outcome)
+
+
+async def _turn_response(
+    db: AsyncSession, ctx: WorkspaceContext, outcome: conversation_service.TurnOutcome
+) -> SendMessageResponse:
+    """把一次回合的结果拼成响应体。**发消息与重新分析共用这一个。**
+
+    两条路径的响应形状必须逐字段一致,不然前端就得为"按钮那次"写第二套读取逻辑,
+    而两套逻辑的差异会体现在最不起眼的地方:`inputChanged` 少读一次,用户在按钮那条
+    路径上永远看不到"这次是基于旧输入"的提示。
+    """
     # 简报在这里重新取一次,而不是用 outcome.brief:重复提交时服务层不会去解析条件,
     # 那条路径上 outcome.brief 是 None,直接用它会让重试的响应里简报突然消失。
     brief = await brief_service.load_brief(db, ctx.id)

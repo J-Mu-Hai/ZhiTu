@@ -377,6 +377,70 @@ test('资料编辑表单在暖白主题下不是一块黑色卡片', async ({ pa
   }
 });
 
+/**
+ * 节点详情里的「AI 分析」块 —— 整页扫描同样看不见它。
+ *
+ * 它是**单击一个节点之后、再点开一个折叠区**才挂上来的,比上面那块资料表单还深一层。
+ * 样式在 `canvas-polish.css` 里(排在 `dark-theme.css` 之后,见 `layout.tsx`),
+ * 所以这一层"后写的赢"的规则对它同样成立 —— 逐个色号写死就会在这里出事。
+ *
+ * **读接口在这里被换成了固定载荷。** 只有这一读:隔离栈里没有模型 key,降级不产生
+ * 分析记录(这条边界本身是对的),于是真实路径下每一栏都画不出来 —— 而配色扫描要
+ * 覆盖到才作数。载荷里的每一栏都填了内容,漏掉哪一栏就等于漏扫哪一栏。
+ */
+test('节点详情的 AI 分析在暖白主题下不是一块深色面板', async ({ page }) => {
+  const token = await signIn(page);
+  const { workspaceId, nodeIds } = await seedSpace(page, token, {
+    title: '分析面板主题空间',
+    nodes: [{ title: '要被分析的节点', nodeType: 'task' }],
+  });
+  const nodeId = nodeIds['要被分析的节点'];
+
+  await page.route('**/api/workspaces/*/analyses*', (route) =>
+    route.fulfill({
+      status: 200,
+      json: {
+        analyses: [{
+          id: '00000000-0000-4000-8000-000000000003',
+          workspaceId,
+          scopeRootId: null,
+          focusNodeId: nodeId,
+          scopeRootTitle: null,
+          focusNodeTitle: '要被分析的节点',
+          promptVersion: 'v1',
+          modelSource: 'direct_llm',
+          createdAt: '2026-09-20T10:00:00Z',
+          freshness: 'stale',
+          staleReasons: ['「要被分析的节点」的正文改过了'],
+          coverageNote: '只读到这个节点本身,没有读它的子节点',
+          known: ['先跑一组对照实验'],
+          unknowns: ['一组要跑多久'],
+          evidence: ['用户正文里写了对照实验'],
+          assumptions: ['假设实验室周末开放'],
+          diagnosis: ['这个任务还缺一个时长'],
+          strategyOptions: ['先估一个时长再排'],
+          risks: ['估不准会让这一周排不开'],
+          confidenceNote: '正文很短,把握不大',
+        }],
+        focusNodeId: nodeId,
+        scopeRootId: null,
+        note: '共 1 条,其中 1 条基于已经变过的内容(标着原因的可以重新分析)。',
+      },
+    }),
+  );
+
+  await page.locator(`.react-flow__node[data-id="${nodeId}"]`).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByRole('button', { name: 'AI 分析' }).click();
+  // 先等最里面那几块都在,再量颜色 —— 量早了量到的可能是还没挂上来的状态。
+  await expect(dialog.locator('.analysis-stale')).toBeVisible();
+  await expect(dialog.locator('.analysis-coverage')).toBeVisible();
+  await expect(dialog.locator('.analysis-section')).toHaveCount(7);
+  await page.waitForTimeout(400);
+
+  expect(await darkPaint(page), '节点详情的 AI 分析块里有深色涂装').toEqual([]);
+});
+
 test('时间线画布与信息卡使用同一套表面', async ({ page }) => {
   const token = await signIn(page);
   // 时间线上的卡片来自**有日期**的节点。没有 deadline 的节点画不出信息卡 ——

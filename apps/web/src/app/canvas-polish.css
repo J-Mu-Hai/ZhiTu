@@ -234,3 +234,55 @@
 .archive-row-meta { margin: 0; color: #6f8497; font-size: 11px; }
 .archive-blocked { margin: 0; color: #8a7a63; font-size: 11px; line-height: 1.6; }
 .archive-list li > button { align-self: flex-start; }
+
+/* ---------------------------------------------------------------------------
+   AI 分析(步骤 D)
+
+   节点详情里那一块折叠区。它有三件事必须在样式上说得清:
+
+   - **收起时也要能看出过期** —— 徽标在那一行上,不在折叠区里面(见
+     `NodeAnalysisPanel` 的文件头)。过期的配色用**杏色**(`--experience:#dfa36d`
+   这一族),它是这套暖白里已经存在的语义色;"基于当前内容"用鼠尾草绿那一族
+   (`#79aa9d`),与归档提示条 `.archive-note` 同一组值。**不引入新色。**
+   - **判断与正文长得不一样。** 正文是用户写的东西,判断是给用户挑错的 ——
+   所以判断整块有自己的底与边框,而不是与 `.node-form` 里那些输入框同一种表面。
+   - **边界那句话要显眼到不会被跳过**(「这是 AI 的判断,不在你的正文里」)。
+   见 `tests/dark-theme.spec.ts` 扫整页的那条断言:这里的每一处背景都必须是浅色。
+--------------------------------------------------------------------------- */
+.analysis-panel {
+  display: flex; flex-direction: column; gap: 8px;
+  margin-top: 12px; padding-top: 10px; border-top: 1px solid #e2e7e6;
+}
+.analysis-head { display: flex; align-items: center; gap: 8px; }
+.analysis-toggle { font-size: 13px; }
+.analysis-badge {
+  padding: 1px 8px; border: 1px solid #d9e3e8; border-radius: 10px;
+  background: #fffefa; color: #708294; font-size: 11px; line-height: 1.7;
+}
+/* 过期:杏色。它说的是"这份东西还成不成立",不是"出错了" —— 所以不用红。 */
+.analysis-badge.is-stale { border-color: #eccfa8; background: #fdf3e7; color: #8a6134; }
+.analysis-badge.is-fresh { border-color: #cfe0d6; background: #f2f8f4; color: #3f6b52; }
+.analysis-badge.is-muted { border-style: dashed; }
+.analysis-body {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 10px 12px; border: 1px solid #dfe7ea; border-radius: 6px; background: #fbfaf6;
+  max-height: 46vh; overflow-y: auto;
+}
+.analysis-meta { margin: 0; color: #708294; font-size: 12px; line-height: 1.7; }
+.analysis-hint { margin: 0; color: #5d7a92; font-size: 11px; line-height: 1.7; }
+.analysis-section h4 {
+  margin: 0 0 4px; color: #24506f; font-size: 12px; font-weight: 600;
+}
+.analysis-section ul { margin: 0; padding-left: 18px; color: #3d5a75; font-size: 12px; line-height: 1.85; }
+.analysis-stale {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 8px 10px; border: 1px solid #eccfa8; border-left-width: 2px;
+  border-radius: 0 4px 4px 0; background: #fdf3e7; color: #8a6134; font-size: 12px; line-height: 1.7;
+}
+.analysis-stale b { color: #7a5225; }
+.analysis-stale ul { margin: 0; padding-left: 18px; }
+/* 只读了一部分。**不能压暗或折叠** —— 它限制的是"这份判断能覆盖多大范围"。 */
+.analysis-coverage { margin: 0; padding: 6px 10px; border-radius: 4px; background: #eef3f8; color: #44618a; font-size: 11px; line-height: 1.7; }
+.analysis-confidence { margin: 0; color: #4a6478; font-size: 12px; line-height: 1.7; }
+.analysis-actions { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+.analysis-actions .text-button { font-size: 12px; }

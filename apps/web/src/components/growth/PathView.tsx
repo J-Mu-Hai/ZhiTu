@@ -35,6 +35,7 @@ import {
   Trash2,
   Undo2,
 } from 'lucide-react';
+import { NodeAnalysisPanel } from '@/components/growth/NodeAnalysisPanel';
 import { Dialog } from '@/components/ui/Dialog';
 import { useCanvasDraft } from '@/features/growth/drafts';
 import { useDemo } from '@/features/growth/provider';
@@ -1277,6 +1278,14 @@ function Canvas() {
             {isRealSpace && planError && <p className="form-error" role="alert">{planError}</p>}
             <button className="primary-button" disabled={!detailTitle.trim() || planSaving}>{planSaving ? '保存中…' : '保存节点'}</button>
           </form>
+          {/* AI 分析。**在表单外面** —— 它不是这个节点的一个字段,提交那个按钮
+              跟它没有关系;混进 `<form>` 里会让"保存节点"的含义变得含糊。
+              `refreshToken` 换一个值就重读一次:正文保存成功时徽标必须当场变,
+              而"变没变"是服务端现算的,不能让本地猜。 */}
+          <NodeAnalysisPanel
+            nodeId={detailNode.id}
+            refreshToken={bodyNote.kind === 'saved' ? bodyNote.at : ''}
+          />
         </Dialog>
       )}
       {/* 归档确认。**先给数字,再给按钮。**

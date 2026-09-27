@@ -325,6 +325,17 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
    * 不在他说的话上。
    */
   const [proposalErrors, setProposalErrors] = useState<backend.SendMessageResponse['proposalErrors']>([]);
+  /**
+   * **上一轮是在一份已经过去的输入上回答的。**
+   *
+   * 那一轮通常没有提案(`INPUT_CHANGED` 逐条落在 `proposalErrors` 里),而"没有提案"
+   * 与"模型什么都没想出来"在界面上长得一模一样。用户该做的是点一下"根据最新内容
+   * 重新分析",所以他得先被告知这件事发生过 —— 这个字段就是那句话的来源。
+   *
+   * 与别的"上一轮"状态一样,只描述**最近这一轮**:下一轮开始时会按新响应重置,
+   * 不会一直挂着。
+   */
+  const [inputChanged, setInputChanged] = useState(false);
   const [deciding, setDeciding] = useState(false);
   /** 「按执行情况调整」的状态。`message` 是给用户看的那句话,成败都有。 */
   const [replanState, setReplanState] = useState<{ busy: boolean; message: string | null; degraded: boolean }>(
@@ -1233,6 +1244,7 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
       ]);
       setBrief(result.brief);
       setProposalErrors(result.proposalErrors);
+      setInputChanged(result.inputChanged);
       setLastFailed(null);
       // 这一轮可能产出了一份新的待确认提案。重新拉一次,而不是把 `result.proposal`
       // 塞进数组:后者会和"打开空间时那一份"用两套代码维护同一个列表。
@@ -1243,6 +1255,46 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
       setSendError(error?.message ?? '发送失败。');
       setRetryable(error ? error.retryable : true);
       setLastFailed({ clientMessageId, text });
+    } finally {
+      setSending(false);
+    }
+  }
+
+  /**
+   * 「根据最新内容重新分析」按钮。
+   *
+   * **它不是一条捷径,就是一轮对话。** 服务端替用户说了那句话、往对话里落了两条
+   * 消息,然后把整整一轮的结果返回回来 —— 所以这里必须和发消息做**同一件事**:
+   * 把那两条消息放进对话、更新简报、重拉提案。只刷新分析块的话,画布上多了一条分析
+   * 而对话里什么都没发生,用户下次看到它时说不清它是哪来的。
+   *
+   * 与 `sendReal` 的区别只有一处:**没有乐观气泡**。那句话是服务端说的,用户消息的
+   * 真实 id 和正文都在响应里,先编一条上屏再替换只会让那个瞬间的气泡与库里的不一样。
+   */
+  async function reanalyze(nodeId: string) {
+    if (sending) return;
+    setSending(true);
+    setSendError(null);
+    setRetryable(false);
+    setProposalErrors([]);
+    try {
+      const result = await backend.refreshAnalysis(space.id, nodeId);
+      setMessages(old => [
+        ...old,
+        toMessage(result.userMessage),
+        toMessage(result.assistantMessage),
+      ]);
+      setBrief(result.brief);
+      setProposalErrors(result.proposalErrors);
+      setInputChanged(result.inputChanged);
+      setLastFailed(null);
+      await refreshProposals();
+    } catch (cause) {
+      // 失败要**说出来**。一次"点了没反应"的重新分析会被读成"已经分析过了,
+      // 内容没变" —— 而真实情况是这次压根没问到模型。
+      const error = cause instanceof ApiError ? cause : null;
+      setSendError(error?.message ?? '重新分析失败。');
+      setRetryable(error ? error.retryable : true);
     } finally {
       setSending(false);
     }
@@ -1274,6 +1326,10 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     // 提案
     remoteProposals, proposalErrors, deciding, confirmRemote, rejectRemote,
     replan, replanState,
+    // 上一轮是不是基于已经变过的输入(见 `inputChanged` 的注释),以及"重新分析"
+    // 那个入口。**两者一起给出去**:只有这个字段而没有入口,用户知道出事了却没法
+    // 处理;只有入口而没有字段,他不知道自己为什么要点。
+    inputChanged, reanalyze,
     // 对外给的是**算出来**的那个(见 `currentSpaceId`)。调用方拿它去
     // `growth.nodes[spaceId]` 是安全的,这是这个字段的契约。
     spaceId: currentSpaceId,

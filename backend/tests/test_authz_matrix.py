@@ -68,6 +68,7 @@ AUTHENTICATED_ROUTES = {
     ("PUT", "/api/workspaces/{workspace_id}/layout"),
     ("GET", "/api/workspaces/{workspace_id}/proposals"),
     ("GET", "/api/workspaces/{workspace_id}/analyses"),
+    ("POST", "/api/workspaces/{workspace_id}/nodes/{node_id}/analysis/refresh"),
     ("POST", "/api/workspaces/{workspace_id}/proposals/{proposal_id}/confirm"),
     ("POST", "/api/workspaces/{workspace_id}/proposals/{proposal_id}/reject"),
     ("POST", "/api/workspaces/{workspace_id}/schedule/preview"),
@@ -125,6 +126,13 @@ CROSS_ACCOUNT_ROUTES = {
 # `{relation_id}`,拿一个假的 id 时 A 自己也是 404。它们的归属校验由
 # `test_relations_are_scoped_to_the_workspace` 单独覆盖:A 先真的连出一条边,
 # 再让 B 拿那个 id 去改去删。
+#
+# `POST /nodes/{node_id}/analysis/refresh` 同理,而且理由更硬一层:这张表的占位符
+# `{node_id}` 填的是**一个格式合法的假 UUID**,所以"A 用同一路径必须成功"这一条对
+# A 自己也不成立(节点不存在 -> 404)。要让它成立就得拿 A 真实的根节点 id,而那次
+# 调用是**真的会走到模型**的 —— 反向断言会因为一次模型调用而变得又慢又不稳定。
+# 它的归属校验由 `test_analysis_refresh.py::test_b_cannot_refresh_through_someone_elses_workspace`
+# 单独覆盖:B 拿 A 的节点 id 去调 -> 404,而 A 用同一个 id 是真的能刷新出来的。
 
 # 执行反馈那两条(`/api/sessions/{session_id}/executions`)**不能进上面这张表**:
 # 路径里的 `{session_id}` 在这里指的是**排期场次**,而 `_fill` 那个占位符已经被
