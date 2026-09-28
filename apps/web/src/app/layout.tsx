@@ -15,6 +15,9 @@ import './auth.css';
 import './today-live.css';
 import './canvas-polish.css';
 import './ui-refresh.css';
+// 排在**最后**:统一 Motion Tokens 与 reduced-motion 总开关要盖掉前面那些文件里
+// 散落的临时时长(`.18s` / `.2s` / `.15s`)。见 `motion.css` 顶部。
+import './motion.css';
 export const metadata: Metadata = { title: '知途 · 对话成长空间', description: '面向大学生的长期成长规划工作台' };
 export default function Layout({ children }: { children: ReactNode }) {
   return <html lang="zh-CN"><body><AuthProvider><DemoProvider><AppShell>{children}</AppShell></DemoProvider></AuthProvider></body></html>;

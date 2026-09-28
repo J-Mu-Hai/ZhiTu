@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { AlertCircle, ArrowRight, Bot, CheckCircle2, FolderPlus, Layers3, ListTodo, Plus } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { Dialog } from '@/components/ui/Dialog';
+import { AmbientGlow } from '@/components/ui/AmbientGlow';
 import { useAuth } from '@/features/auth/provider';
 import * as backend from '@/lib/backend';
 import { ApiError } from '@/lib/api';
@@ -86,6 +87,7 @@ export default function SpacesPage() {
 
   return (
     <section className="spaces-page">
+      <AmbientGlow />
       <header className="spaces-hero">
         <div>
           <span className="eyebrow">MY GROWTH SPACES</span>

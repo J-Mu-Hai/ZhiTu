@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ArrowUpRight, Check, Clock3, Sparkles } from 'lucide-react';
 import type { ExecutionResult, TodayItemView } from '@/lib/backend';
@@ -40,8 +40,19 @@ function clockLabel(startMinute: number | null, endMinute: number | null): strin
 
 type RecordFn = (sessionId: string, result: ExecutionResult, extra?: { actualMinutes?: number; delayReason?: string }) => Promise<boolean>;
 
-/** 今天的一场安排。自己管自己那份"展开记录表单"的状态,父组件不必按 sessionId 存一堆布尔。 */
-function TodayItem({ item, saving, onRecord }: { item: TodayItemView; saving: boolean; onRecord: RecordFn }) {
+/**
+ * 今天的一场安排。自己管自己那份"展开记录表单"的状态,父组件不必按 sessionId 存一堆布尔。
+ *
+ * `justCompleted` 由父组件给,不由这里自己算 —— 理由见 `RealToday` 里那段说明:
+ * 完成的那一刻这一行会换一个父容器,DOM 是重挂的,组件自己的 state 活不过去。
+ */
+function TodayItem({ item, saving, onRecord, justCompleted, onSettled }: {
+  item: TodayItemView;
+  saving: boolean;
+  onRecord: RecordFn;
+  justCompleted: boolean;
+  onSettled: () => void;
+}) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [minutes, setMinutes] = useState('');
@@ -58,7 +69,24 @@ function TodayItem({ item, saving, onRecord }: { item: TodayItemView; saving: bo
   }
 
   return (
-    <div className={`today-item${item.recorded ? ' recorded' : ''}`}>
+    <div
+      className={`today-item${item.recorded ? ' recorded' : ''}${justCompleted ? ' is-just-completed' : ''}`}
+      /*
+       * 收缩回弹 + 落进完成色这两段跑完就把标记摘掉。
+       *
+       * **不看"是不是 recorded"**,只看这一次写入。已经记过的那些在打开页面时
+       * 不会重播任何东西 —— 它们没有任何"刚刚发生"可以表现。
+       *
+       * 按**动画名**判断,而不是"这个元素里有什么动画结束了"。`animationend` 会从
+       * 子元素冒泡上来,而这一行里有两条动画:勾选框先跑(100ms),文字与结果那一段
+       * 晚 100ms 才开始(`today-settle` 的 `animation-delay`)。不写名字的话,勾选框
+       * 那一条结束时就把标记摘了 —— 文字的完成色**一次都不会落下**(它的延迟还没走完,
+       * 动画就被取消了)。PathView 里 `node-create` 那处是同一个理由。
+       */
+      onAnimationEnd={justCompleted ? (event) => {
+        if (event.animationName === 'today-settle') onSettled();
+      } : undefined}
+    >
       <div className="today-item-main">
         <button
           className="task-check"
@@ -121,6 +149,37 @@ export function RealToday() {
   const { data, error, loading, savingSession, refresh, record, clearError } = useToday(true);
   const [answering, setAnswering] = useState<string | null>(null);
 
+  /*
+   * 哪一场刚刚**真的**写进去了。
+   *
+   * ## 为什么这份标记在父组件而不是在 `TodayItem` 里
+   *
+   * 完成的那一刻,这一行会从「今天最重要的事」(`.focus-card`)挪进「接下来」
+   * (`rest`)—— 换父容器就是换 DOM 节点,React 会把它卸载再挂载一次,组件自己的
+   * state 活不过去。标记放在这一层,重新挂载的那一个也能拿到它。
+   *
+   * ## 为什么不能直接看 `item.result === 'completed'`
+   *
+   * 那个条件对**所有**已完成的场次都成立,包括上一次打开页面时就记过的那些 ——
+   * 拿它做动画条件,等于每次进首页都把历史记录当成刚刚发生的事重播一遍。
+   *
+   * ## 为什么它一定对应一次真实写入
+   *
+   * 唯一的赋值处是下面那个 `recordWithFeedback`,而且必须 `ok` 为真。`ok` 来自
+   * `useToday.record`:它只在响应 `saved` 为真、并成功重新拉取数据之后才返回 `true`。
+   * 写失败时这里什么都不会变,那一行也就不会有任何"完成"的样子,错误行照常在
+   * 上面显示。
+   */
+  const [justCompleted, setJustCompleted] = useState<string | null>(null);
+  const recordWithFeedback = useCallback<RecordFn>(async (sessionId, result, extra) => {
+    const ok = await record(sessionId, result, extra);
+    if (ok && result === 'completed') setJustCompleted(sessionId);
+    return ok;
+  }, [record]);
+  const settle = useCallback((sessionId: string) => {
+    setJustCompleted(current => (current === sessionId ? null : current));
+  }, []);
+
   const items = data?.workspaces.flatMap(workspace => workspace.items) ?? [];
   // 「最重要的事」= 还没记录的第一件。已经记过的那些不再是"待办",把它们留在
   // 最显眼的位置会挤掉真正还没交代的那一件。
@@ -157,7 +216,13 @@ export function RealToday() {
           {focusItem && (
             <div className="focus-card">
               <div className="focus-category"><span className="tiny-dot" />{focusItem.workspaceTitle}</div>
-              <TodayItem item={focusItem} saving={savingSession === focusItem.sessionId} onRecord={record} />
+              <TodayItem
+                item={focusItem}
+                saving={savingSession === focusItem.sessionId}
+                onRecord={recordWithFeedback}
+                justCompleted={justCompleted === focusItem.sessionId}
+                onSettled={() => settle(focusItem.sessionId)}
+              />
             </div>
           )}
 
@@ -169,7 +234,14 @@ export function RealToday() {
             <section className="up-next">
               <div className="section-label"><span>接下来</span><span>按自己的节奏</span></div>
               {rest.map(item => (
-                <TodayItem key={item.sessionId} item={item} saving={savingSession === item.sessionId} onRecord={record} />
+                <TodayItem
+                  key={item.sessionId}
+                  item={item}
+                  saving={savingSession === item.sessionId}
+                  onRecord={recordWithFeedback}
+                  justCompleted={justCompleted === item.sessionId}
+                  onSettled={() => settle(item.sessionId)}
+                />
               ))}
             </section>
           )}

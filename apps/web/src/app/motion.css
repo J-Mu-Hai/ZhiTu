@@ -1,0 +1,493 @@
+/* ============================================================================
+ * 知途 Motion & Liveness System —— 全局唯一的一份动效层
+ * ============================================================================
+ *
+ * 规范:`docs/12-MOTION-AND-LIVENESS-SYSTEM.md`。这里是它唯一落地的地方。
+ *
+ * ## 为什么必须是**最后**加载的一份 CSS
+ *
+ * `layout.tsx` 里的 import 顺序就是层叠顺序。这一份排在 `ui-refresh.css` 之后,
+ * 理由和 `ui-refresh.css` 排在 `dark-theme.css` 之后一样:前面那些文件里散着一堆
+ * `.18s` / `.2s` / `.15s` 的临时时长和一条粗糙的 reduced-motion 总开关,它们必须
+ * 被这里按令牌覆盖掉,而不是反过来。
+ *
+ * ## 三条不允许违反的线
+ *
+ * 1. **动画不改写业务状态。** 这一整个文件里没有一个动画是"业务上发生了什么"的
+ *    证明 —— 它只表现已经发生的事。节点创建动画的触发条件是 `addNode` **返回了
+ *    节点**;完成动画的触发条件是写入**返回了成功**。没有第二条路能让它们播出来。
+ * 2. **只动画 `transform` / `opacity` / 颜色。** 唯一两处会重绘的是节点 hover 的
+ *    `box-shadow` 和面板拖动时的阴影 —— 都是小面积、一次性的过渡,不是持续循环。
+ * 3. **`prefers-reduced-motion` 下全部降级。** 文件末尾那一段是总开关,不是补充。
+ *    它按"会移动"和"只变色"两类分开处理:前者一律压到 1ms,后者保留。
+ */
+
+/* ------------------------------------------------------------------ 1. 令牌 */
+/*
+ * 所有组件只能用这里面的时长与缓动,不许再就地发明 `.18s` 这种数字。
+ * 值与规范第 2 节那张表逐行对应。
+ */
+:root {
+  --motion-press: 100ms;
+  --motion-hover: 140ms;
+  --motion-state: 220ms;
+  --motion-panel: 260ms;
+  --motion-focus: 380ms;
+  --motion-space: 520ms;
+  --motion-ai: 680ms;
+  --motion-ambient: 32s;
+
+  --ease-ui: cubic-bezier(.22, .8, .32, 1);
+  --ease-space: cubic-bezier(.2, .72, .24, 1);
+}
+
+/* ------------------------------------------------------------ 2. 环境生命感 */
+/*
+ * 两层非常大的浅雾蓝/米白径向光晕,32 秒走完一个来回(2~4% 视口距离)。
+ *
+ * ## 它为什么是一个**独立元素**而不是某个页面自己的背景
+ *
+ * 三个页面要用同一份(成长空间列表、工作台画布、首页),而且都必须满足同一条:
+ * **不参与任何内容的布局与重绘**。做成一个 `pointer-events:none`、`z-index:-1`
+ * 的独立层之后,它既不会被正文盖住,也不会让任何卡片重新排版。
+ *
+ * ## 它为什么在画布上是 `absolute`、在页面上是 `fixed`
+ *
+ * 两个页面级的容器(`.spaces-page` / `.today-page`)各自都不滚动 —— 滚动的是它们的
+ * 父层 `.app-main`,而那是页面自己的滚动条。若把它 `absolute` 放进页面容器里,
+ * 它只会盖住"第一屏",往下滚就跟着滚走了。所以页面级用 `fixed`(视口大小,不随滚动
+ * 移动),由 `.app-main` 那个层叠上下文接住它。
+ *
+ * 画布不一样:`.path-canvas` 自己就是那块区域,而且画布下面那层 `.workspace` 是
+ * 不透明的暖白,`fixed` 的层会被它整个盖住。所以画布内用 `absolute`,并让
+ * `.path-canvas` 自己开一个层叠上下文(`z-index:0`)—— 这样 `z-index:-1` 的它
+ * 落在画布底色之上、ReactFlow 的所有图层(它们都是正的 z-index)之下。
+ */
+.app-main { z-index: 0; }
+.path-canvas { z-index: 0; }
+
+.ambient-glow {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+}
+.path-canvas .ambient-glow { position: absolute; }
+
+/*
+ * `inset:-25%` 让两层都比视口大一圈,位移时不会有任何一边露出空白。
+ * `will-change:transform` 把它们提到合成层上 —— 这是整个系统里唯一一处
+ * 持续动画,值得一个独立的合成层。
+ */
+.ambient-glow::before,
+.ambient-glow::after {
+  content: '';
+  position: absolute;
+  inset: -25%;
+  will-change: transform;
+}
+.ambient-glow::before {
+  background: radial-gradient(38% 36% at 26% 16%, rgba(150, 190, 220, .055), transparent 70%);
+  animation: ambient-drift-a var(--motion-ambient) var(--ease-space) infinite;
+}
+.ambient-glow::after {
+  background: radial-gradient(42% 40% at 78% 76%, rgba(196, 222, 206, .05), transparent 72%);
+  animation: ambient-drift-b var(--motion-ambient) var(--ease-space) infinite;
+  /* 两层错开相位,免得看起来像同一块布在整体平移。 */
+  animation-delay: -14s;
+}
+/*
+ * 首尾同值 —— 32 秒正好是一个**无缝**周期,而不是 64 秒的来回。
+ * 单层不透明度 0.055 / 0.05,合起来仍然在"关掉动画才略有察觉"的量级。
+ */
+@keyframes ambient-drift-a {
+  0%   { transform: translate3d(-1.4vw, -1vh, 0); }
+  50%  { transform: translate3d(1.6vw, 1.4vh, 0); }
+  100% { transform: translate3d(-1.4vw, -1vh, 0); }
+}
+@keyframes ambient-drift-b {
+  0%   { transform: translate3d(1.2vw, 1.2vh, 0); }
+  50%  { transform: translate3d(-1.6vw, -1.2vh, 0); }
+  100% { transform: translate3d(1.2vw, 1.2vh, 0); }
+}
+
+/*
+ * 页面不可见 / 失焦时停,画布平移时也停(规范 9.2:拖动期间暂停环境动画)。
+ * 两个类都由 JS 写在 `<html>` 上 —— 见 `AppShell` 与 `PathView`。
+ */
+html.is-backgrounded .ambient-glow::before,
+html.is-backgrounded .ambient-glow::after,
+html.is-canvas-panning .ambient-glow::before,
+html.is-canvas-panning .ambient-glow::after { animation-play-state: paused; }
+
+/* ------------------------------------------------------------ 3. 按钮与控件 */
+/*
+ * 基底:只换表面色/边框色,时长统一走 `--motion-hover`。
+ * 这一条覆盖 `globals.css` 里那三个 `.18s`。`transform` 一起进过渡表是为了按下的
+ * 0.985 —— 见下面那两条,只有实体按钮才有。
+ */
+button {
+  transition:
+    background-color var(--motion-hover) var(--ease-ui),
+    color var(--motion-hover) var(--ease-ui),
+    border-color var(--motion-hover) var(--ease-ui),
+    box-shadow var(--motion-hover) var(--ease-ui),
+    transform var(--motion-press) var(--ease-ui);
+}
+/*
+ * **禁用态不播放任何 hover / press 动画。**
+ *
+ * `transition:none` 而不是把时长设 0:时长设 0 只是"瞬间到达",而这个元素本来
+ * 就不该有变化 —— 它连"变过去"这件事都不该发生,包括从别处带着过渡状态变灰。
+ */
+button:disabled { transition: none; }
+
+/* press 只给实体按钮(有色块、看得出被按下去的那种)。图标按钮不缩放。 */
+.primary-button:not(:disabled):active,
+.send-button:not(:disabled):active,
+.journal-composer-footer .primary-button:not(:disabled):active { transform: scale(.985); }
+
+/* 焦点圈不参与动画 —— 键盘用户按 Tab 时定位环必须立刻出现。 */
+:focus-visible { transition: none; }
+
+/* -------------------------------------------------------------- 4. 菜单面板 */
+/*
+ * 菜单从**触发器方向**移进 5px 并淡入。
+ *
+ * 用独立的 `translate` 属性而不是 `transform`:`<dialog>` / 定位 / 第三方库都可能
+ * 已经在用 `transform`,那一个属性被这里改写的话,表现是"菜单跑到别处去了"。
+ * `translate` 与 `transform` 是两个属性,互不覆盖。
+ *
+ * **只有进场动画,没有退场动画。** 关闭是"立刻消失"。这不是省事:菜单关闭那一下
+ * 同时要做的是把焦点还给触发器(`ContextMenu.close`),给退场加 200ms 就等于让
+ * 键盘用户的焦点晚 200ms 回来 —— 规范第 8 节明确写着"动画不能延误键盘焦点"。
+ */
+@keyframes menu-in {
+  from { opacity: 0; translate: 0 -5px; }
+  to   { opacity: 1; translate: 0 0; }
+}
+.canvas-tools-popover,
+.canvas-help > p,
+.context-menu { animation: menu-in var(--motion-panel) var(--ease-ui) 1; }
+
+/* `<dialog>` 打开:背景只淡化,不缩放整个应用。 */
+@keyframes backdrop-in { from { opacity: 0; } to { opacity: 1; } }
+.demo-dialog::backdrop { animation: backdrop-in var(--motion-panel) var(--ease-ui) 1; }
+
+/* ------------------------------------------------------------------ 5. 节点 */
+/*
+ * ## 普通节点必须**完全静止**
+ *
+ * 所以这里没有给 `.growth-node` 任何默认动画。下面每一条都挂在一个**只在真实状态
+ * 变化时才出现**的类上(`is-created` / `:hover` / `.dragging` / `is-selected`)。
+ *
+ * ## 创建动画为什么用类而不是"新建了就播"
+ *
+ * 整张画布的节点数组来自 PathView 里那一份大 memo,它会因为拖动、选中、文件数变化
+ * 等各种原因重算。若动画挂在"节点存在"这件事上,每次重算都会让**全部**节点重新淡入
+ * 一次 —— 规范 4.1 最后一句点名禁止的就是它。所以 `is-created` 只在
+ * `addNode` 返回了那个具体节点时挂上,并由动画结束事件摘掉。
+ */
+@keyframes node-create {
+  from { opacity: 0; transform: translateY(5px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.path-canvas .growth-node.is-created {
+  animation: node-create var(--motion-state) var(--ease-space) 1;
+}
+
+/*
+ * hover:边框略清晰、阴影增加。过渡走 `--motion-hover`。
+ * 只过渡颜色与阴影,不过渡 `transform` —— 节点本体在 hover 时一动不动。
+ */
+.path-canvas .growth-node {
+  transition:
+    border-color var(--motion-hover) var(--ease-ui),
+    box-shadow var(--motion-hover) var(--ease-ui),
+    background-color var(--motion-hover) var(--ease-ui);
+}
+.path-canvas .growth-node:hover {
+  box-shadow: 0 9px 22px rgba(80, 110, 132, .14);
+}
+.path-canvas .growth-node.goal:hover {
+  box-shadow: 0 15px 30px rgba(86, 139, 183, .22);
+}
+
+/*
+ * 拖动中:节点提升 2px、阴影加深。
+ *
+ * 抬升用的是 `transform`,而 ReactFlow 的位移在**外层** `.react-flow__node` 上
+ * (它才是被 `translate(x,y)` 的那个),所以这里动 `transform` 不会和拖动打架 ——
+ * 拖到哪由外层决定,这里只负责"拿起来了"这 2px。
+ *
+ * `.dragging` 是 ReactFlow 自己加在节点包装层上的类,不是我算出来的。
+ */
+.path-canvas .react-flow__node.dragging .growth-node {
+  transform: translateY(-2px);
+  box-shadow: 0 14px 30px rgba(80, 110, 132, .2);
+}
+
+/*
+ * 被选中:柔和外环,**不缩放节点本体**。
+ * 环用 `box-shadow` 画(底色那一条已经在 `dark-theme.css` 里),这里只补过渡与
+ * 一圈更柔的描边。`--motion-state` 而不是 `--motion-focus`:选中是"状态"。
+ */
+.path-canvas .growth-node.is-selected {
+  box-shadow: 0 0 0 3px rgba(119, 176, 215, .2), 0 10px 22px rgba(86, 123, 148, .12);
+}
+
+/* 连接端点:靠近时放大到 1.18 倍。 */
+/*
+ * 用独立的 `scale` 属性,不是 `transform`。ReactFlow 自己用
+ * `transform: translate(±50%, ∓50%)` 把端点摆在节点边上,改写 `transform` 会把
+ * 端点挪到错的位置。`scale` 与 `transform` 是两个属性,互不覆盖。
+ *
+ * `::after` 把命中范围从 9px 撑到约 17px(规范 4.3 的"18px 范围")。它只挂在
+ * **端点**上,不在节点正文上,所以不会出现"点正文却拉出一条线"。
+ */
+.path-canvas .growth-node .react-flow__handle {
+  transition: opacity var(--motion-hover) var(--ease-ui), scale var(--motion-hover) var(--ease-ui);
+}
+.path-canvas .growth-node .react-flow__handle::after {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+}
+.path-canvas .growth-node:hover .react-flow__handle,
+.path-canvas .growth-node .react-flow__handle:hover {
+  scale: 1.18;
+}
+
+/* 保存失败:稳定地显示错误,**不抖动**。这一条是"不写代码"的提醒 —— 见
+   `.layout-save-error` / `.body-save-note.is-failed`,它们的过渡只改颜色。 */
+
+/* ------------------------------------------------------------------ 6. 连线 */
+/*
+ * hover 或拖动某个节点时,只有**与它直接相连**的线变清晰。
+ *
+ * 变清晰这件事在这里只负责"过渡"那一半;哪条线该变是 `RelationEdge` /
+ * `BranchEdge` 按真实 id 判断的(见 PathView 里的 `data.__focus`)。用 CSS 做不到
+ * 这件事:CSS 选不到"与 hover 的那个节点相连的边"。
+ */
+.path-canvas .react-flow__edge-path {
+  transition:
+    stroke-width var(--motion-hover) var(--ease-ui),
+    opacity var(--motion-hover) var(--ease-ui);
+}
+
+/*
+ * 新建关系:从 source 到 target 画一次(280ms)然后回到稳定。
+ *
+ * 靠 `pathLength=1` 把整条路径归一化成长度 1,再把 `stroke-dasharray` 设成 1、
+ * `stroke-dashoffset` 从 1 走到 0 —— 于是线是"长出来"的,不是淡出来的。方向就是
+ * 数据里的 source → target,没有翻转任何东西。
+ *
+ * 动画期间把这条边自己的虚线样式让开(`strokeDasharray` 由类提供),结束后
+ * `is-drawing` 被摘掉,虚线样式回来。
+ */
+@keyframes edge-draw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
+.path-canvas .react-flow__edge-path.is-drawing {
+  stroke-dasharray: 1;
+  animation: edge-draw 280ms var(--ease-space) 1;
+}
+
+/* ------------------------------------------------------------------ 7. AI Dock */
+/*
+ * 发送中的顶部状态标识。**只有 `sending` 为真时才渲染**(见 `FloatingConversation`),
+ * 所以它不可能在 AI 没跑的时候出现。
+ *
+ * ## 它为什么挂在 `.floating-title` 上
+ *
+ * 这里原来是挂在对话面板自己的 `.conversation-header` 里的 —— 而那一条路是死的:
+ * `demo2.css` 里 `.floating-conversation .conversation-header{display:none}`
+ * (specificity 0,2,0 压过 `globals.css` 的 0,1,0),而这个面板只在 Dock 里渲染过。
+ * 也就是说那个状态一次都不会显示出来。现在它和 `.floating-title` 同一行 ——
+ * Dock 上真正看得见的"顶部"。`margin-left:auto` 把它推到标题文字和关闭按钮之间。
+ *
+ * 一根 1px 的短线在做极小幅度的伸缩,不是旋转、不是三个跳点、不是整块面板发光。
+ * 规范 6.1 的"点 → 生长线 → 分叉 → 收束"是批次 C 的事;后端现在只暴露
+ * "等待回复"这一个阶段,所以这一版只有这一种形态,不假装知道走到哪一步了。
+ */
+.ai-thinking {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-left: auto;
+  font-size: 10px;
+  color: #6f8dab;
+  white-space: nowrap;
+}
+.ai-thinking > i {
+  display: block;
+  width: 18px;
+  height: 1px;
+  background: currentColor;
+  transform-origin: left center;
+  animation: ai-line 1.4s var(--ease-ui) infinite;
+}
+@keyframes ai-line {
+  0%   { transform: scaleX(.25); opacity: .45; }
+  50%  { transform: scaleX(1);   opacity: 1; }
+  100% { transform: scaleX(.25); opacity: .45; }
+}
+
+/* 输入框聚焦:边框提亮一档。只加过渡,颜色沿用原本的聚焦色。 */
+.composer { transition: border-color var(--motion-hover) var(--ease-ui), box-shadow var(--motion-hover) var(--ease-ui); }
+
+/*
+ * 打开/关闭用统一的面板令牌。
+ *
+ * 进场动画必须是关键帧而不是过渡:关闭走的是 `hidden` 属性(有既有测试断言
+ * `toBeHidden`),`hidden` 一摘,这条规则立刻重新成立,于是动画**重放**。
+ * 用过渡的话,元素从 `display:none` 变回来时没有"上一帧"可以过渡,会直接闪出来。
+ *
+ * 位移同样用独立的 `translate`,因为 `.floating-conversation` 把自己的拖动偏移
+ * 写在 `transform` 上 —— 用 `transform` 做进场会让用户拖过的卡片在开合时跳回去。
+ */
+@keyframes dock-in {
+  from { opacity: 0; translate: 6px 0; }
+  to   { opacity: 1; translate: 0 0; }
+}
+.conversation-overlay:not([hidden]) .floating-conversation {
+  animation: dock-in var(--motion-panel) var(--ease-ui) 1;
+}
+
+/*
+ * 平移画布时 Dock 的阴影与背景不透明度略降,指针释放后 220ms 内恢复。
+ * 类写在 `<html>` 上(见 PathView 的 `onMoveStart` / `onMoveEnd`)——
+ * **不进 React state**:平移每秒会触发几十次事件,为它重算一次画布那一层不值当。
+ */
+.open-workbench .floating-conversation {
+  transition:
+    box-shadow var(--motion-state) var(--ease-ui),
+    background-color var(--motion-state) var(--ease-ui);
+}
+html.is-canvas-panning .open-workbench .floating-conversation {
+  box-shadow: 0 4px 14px #365d7809;
+  background-color: #fcfefed6;
+}
+
+/* ------------------------------------------------------------- 8. 随笔 / 首页 */
+/*
+ * 输入区展开:只淡入并轻微落位,不推动页面横向位移。
+ * 草稿不会被清空 —— 那件事由 `Journal` 的状态位置决定(见该文件),与动画无关。
+ */
+@keyframes panel-drop-in {
+  from { opacity: 0; translate: 0 -4px; }
+  to   { opacity: 1; translate: 0 0; }
+}
+.journal-composer { animation: panel-drop-in var(--motion-panel) var(--ease-ui) 1; }
+
+/*
+ * 切换阅读对象:正文淡入,**不从左右滑动**。
+ * 由 `Journal` 给 `.journal-reader` 换 `key` 触发(换 key 才会重放)。
+ */
+@keyframes reader-in { from { opacity: 0; } to { opacity: 1; } }
+.journal-reader { animation: reader-in 160ms var(--ease-ui) 1; }
+
+/*
+ * 新随笔加入列表时淡入一次。
+ *
+ * 只有 `is-new` 那一条会播 —— 那个类是 `Journal` 比对"上一帧的 id 集合"算出来的,
+ * 而不是"列表里的每一条"。否则切筛选、切页面回来都会让整个列表重播一遍。
+ */
+@keyframes row-in { from { opacity: 0; translate: 0 4px; } to { opacity: 1; translate: 0 0; } }
+.journal-list-item.is-new { animation: row-in var(--motion-state) var(--ease-ui) 1; }
+
+/*
+ * 完成任务:checkbox 先收缩回弹(110ms),文字再落进完成色(220ms,晚 110ms 起)。
+ *
+ * **`is-just-completed` 只在真实写入返回成功时才加**(见 `RealToday` 的
+ * `recordWithFeedback`)。写失败时数据根本没变,这个类也就不可能加上去 ——
+ * 失败不会有任何"完成"的样子,错误行照常显示。
+ *
+ * 动画放在关键帧而不是过渡上,是因为完成的那一刻这一行会**换一个父容器**
+ * (从"今天最重要的事"挪进"接下来"),DOM 是重新挂载的 —— 重新挂载的节点没有
+ * "上一帧",过渡不会跑。关键帧在挂载时会跑。
+ */
+@keyframes check-settle { 0% { scale: 1; } 45% { scale: .82; } 100% { scale: 1; } }
+@keyframes today-settle {
+  from { color: var(--text); }
+  to   { color: var(--muted); }
+}
+.today-item.is-just-completed .task-check { animation: check-settle var(--motion-press) var(--ease-ui) 1; }
+.today-item.is-just-completed .today-item-title,
+.today-item.is-just-completed .today-item-result {
+  animation: today-settle var(--motion-state) var(--ease-ui) var(--motion-press) 1;
+}
+
+/* checkbox 按下去时收缩一下。**这一下属于"手指按下了",不是"存进去了"** ——
+   它由 `:active` 触发,不需要任何写入结果。禁用时不播(见上面 `button:disabled`)。 */
+.task-check:not(:disabled):active { transform: scale(.9); }
+
+/* 首页切换日期/周:轻量的状态过渡,不是滑屏。 */
+.week-day-strip > button { transition: background-color var(--motion-state) var(--ease-ui), color var(--motion-state) var(--ease-ui); }
+.week-selected-list { animation: reader-in 160ms var(--ease-ui) 1; }
+
+/* ------------------------------------------------- 9. Reduced Motion 总开关 */
+/*
+ * ## 这一整段替换掉了原来那条 `transition:none!important`
+ *
+ * 原来那条(`globals.css` 最后一行)把**所有**过渡都掐掉了,包括"只改颜色"的那些。
+ * 它的后果不是"更安全",而是与规范 9.1 直接冲突:规范要求面板仍然**改变透明度**、
+ * checkbox 仍然**换颜色和图标**。全掐掉之后这些反馈变成了"瞬间跳变",而
+ * `transition:none` 还会连"从当前值开始"这件事一起取消。
+ *
+ * ## 分成两类处理
+ *
+ * - **会移动的东西**(位移、缩放、循环动画):一律压到 1ms 且只播一次。元素因此
+ *   停在终点状态,页面上不存在任何持续移动的东西。
+ * - **只变色的东西**(颜色、边框、透明度、阴影):同样压到 1ms。规范要的是"不做
+ *   位移",不是"不许有状态";1ms 的颜色变化既没有运动,又保住了可读的状态区分。
+ *
+ * `scroll-behavior:auto` 保留 —— 平滑滚动本身就是一种位移。
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+    transition-delay: 0ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  /* 环境光:停止移动,并且连那 1ms 都不给它 —— 直接不播。 */
+  .ambient-glow::before,
+  .ambient-glow::after { animation: none !important; }
+
+  /* 面板不做位移,只改变透明度:把位移那一段从关键帧里去掉。 */
+  @keyframes menu-in { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes dock-in { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes panel-drop-in { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes row-in { from { opacity: 0; } to { opacity: 1; } }
+
+  /* 节点不做位移,只淡入;拖动中的 2px 抬升取消(它在 reduced motion 下也是一次位移)。 */
+  @keyframes node-create { from { opacity: 0; } to { opacity: 1; } }
+  .path-canvas .react-flow__node.dragging .growth-node { transform: none; }
+
+  /* checkbox 保留颜色与图标的变化,不做缩放回弹。 */
+  .today-item.is-just-completed .task-check { animation: none !important; }
+  .task-check:not(:disabled):active { transform: none; }
+
+  /* 端点不放大 —— 放大是位移的一种。 */
+  .path-canvas .growth-node:hover .react-flow__handle,
+  .path-canvas .growth-node .react-flow__handle:hover { scale: 1; }
+
+  /* 连线不做绘制动画,直接显示成最终那一根。 */
+  .path-canvas .react-flow__edge-path.is-drawing {
+    animation: none !important;
+    stroke-dashoffset: 0;
+  }
+
+  /* 按钮不缩放。 */
+  .primary-button:not(:disabled):active,
+  .send-button:not(:disabled):active { transform: none; }
+
+  /* AI 等待标识:停在一个可辨认的静态形态上,不伸缩。 */
+  .ai-thinking > i { animation: none !important; transform: scaleX(.7); opacity: .7; }
+}

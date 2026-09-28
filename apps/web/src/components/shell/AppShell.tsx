@@ -23,6 +23,33 @@ export function AppShell({ children }: { children: ReactNode }) {
     if (!user && !isLogin) router.replace('/login');
     if (user && isLogin) router.replace('/spaces');
   }, [blocked, isLogin, ready, router, user]);
+  /*
+   * 标签页不可见 / 窗口失焦时,把环境光晕停下来(规范 3.1)。
+   *
+   * 判据用的是 `visibilitychange` 加 `blur`/`focus` 这两个**事件**,不是
+   * `document.hasFocus()` 轮询:轮询要么白跑一个定时器,要么在"页面刚打开、
+   * 焦点还没落下来"的那一瞬间误判成失焦 —— 而误判的表现是背景看起来不動,
+   * 用户没有任何办法知道是自己错了。
+   *
+   * 写的是 `<html>` 上的一个类,不是 React state:这件事和渲染没有关系,
+   * 而且动画的启停本来就不该经过 React。
+   */
+  useEffect(() => {
+    const root = document.documentElement;
+    const hide = () => root.classList.add('is-backgrounded');
+    const show = () => root.classList.remove('is-backgrounded');
+    const sync = () => (document.visibilityState === 'hidden' ? hide() : show());
+    sync();
+    document.addEventListener('visibilitychange', sync);
+    window.addEventListener('blur', hide);
+    window.addEventListener('focus', show);
+    return () => {
+      document.removeEventListener('visibilitychange', sync);
+      window.removeEventListener('blur', hide);
+      window.removeEventListener('focus', show);
+      show();
+    };
+  }, []);
   if (!ready) return <div className="boot-screen"><BrandMark size={28}/><LoaderCircle className="auth-spinner" size={20}/><span>正在打开你的成长空间…</span></div>;
   if (blocked) return <div className="boot-screen is-blocked"><BrandMark size={28}/><strong>暂时连不上后端,你的登录状态还在。</strong><small className="boot-detail">{restoreProblem}</small><button className="primary-button" onClick={() => void retryRestore()}>重试</button></div>;
   if (!user && !isLogin) return <div className="boot-screen"><BrandMark size={28}/><LoaderCircle className="auth-spinner" size={20}/><span>正在打开你的成长空间…</span></div>;

@@ -40,6 +40,7 @@ import {
 import { NodeAnalysisPanel } from '@/components/growth/NodeAnalysisPanel';
 import { ContextMenu, type ContextMenuState } from '@/components/ui/ContextMenu';
 import { Dialog } from '@/components/ui/Dialog';
+import { AmbientGlow } from '@/components/ui/AmbientGlow';
 import { CREATE_KINDS, useCanvasDraft, type CreateKind } from '@/features/growth/drafts';
 import {
   MAX_DESCRIPTION_CODEPOINTS,
@@ -69,6 +70,17 @@ type FlowNode = Node<{
    * 鼠标右键时给 `null`(点右键的位置本来就没有焦点可言)。
    */
   onMore: (node: GrowthNode, trigger: HTMLElement | null) => void;
+  /**
+   * 这个节点**刚刚**被建出来。只有它为真才播那一次创建动画。
+   *
+   * 为什么不能写成"新节点就播":下面那份 memo 会因为拖动、选中、文件数变化等
+   * 各种原因整张重算,挂在"节点存在"上的动画会让**全部**节点一起重新淡入一次
+   * (规范 4.1 最后一句点名禁止)。所以标记只在 `addNode` 真的返回了一个节点时
+   * 挂上,并且由动画自己的结束事件摘掉。
+   */
+  created: boolean;
+  /** 创建动画播完了。参数是节点 id —— 摘标记前要确认摘的还是同一个。 */
+  onCreatedEnd: (id: string) => void;
 }, 'growth'>;
 
 const colors = {
@@ -130,7 +142,7 @@ function onEmptyPane(event: { target: EventTarget | null }): boolean {
   return Boolean(target?.classList?.contains('react-flow__pane'));
 }
 
-function GrowthNodeComponent({ data, selected }: NodeProps<FlowNode>) {
+function GrowthNodeComponent({ id, data, selected }: NodeProps<FlowNode>) {
   // 这里**不挂 `onDoubleClick`**,而"双击进子空间"这件事本身也已经没有了(步骤 4):
   // 单击开正文与详情,进子空间只走右上角那个箭头按钮(下面那个 `node-enter`)。
   // 两件事拆开之后,节点上就不该再有任何"看时间/看次数"的隐藏语义。
@@ -143,7 +155,13 @@ function GrowthNodeComponent({ data, selected }: NodeProps<FlowNode>) {
 
   return (
     <div
-      className={`growth-node ${data.root ? 'goal' : node.type} ${isInformation ? 'is-information' : ''} ${node.category ?? ''} ${selected ? 'is-selected' : ''} ${node.status === 'completed' ? 'is-complete' : ''}`}
+      className={`growth-node ${data.root ? 'goal' : node.type} ${isInformation ? 'is-information' : ''} ${node.category ?? ''} ${selected ? 'is-selected' : ''} ${node.status === 'completed' ? 'is-complete' : ''} ${data.created ? 'is-created' : ''}`}
+      // 建出来之后只播一次。按**动画名**判断,而不是"有动画结束就叫一次":
+      // 这个元素里将来多一条装饰动画时,不写名字的版本会顺手多摘一次标记,
+      // 于是创建动画就再也不会被摘掉。
+      onAnimationEnd={(event) => {
+        if (event.animationName === 'node-create') data.onCreatedEnd(id);
+      }}
     >
       {!data.root && <Handle type="target" position={targetPosition} />}
       <div className="node-heading">
@@ -299,6 +317,24 @@ function RelationEdge(props: EdgeProps) {
   const kind = (props.data?.kind as GrowthRelationType) ?? 'related_to';
   const note = (props.data?.note as string | undefined) ?? '';
   const look = relationLook[kind] ?? relationLook.related_to;
+  /*
+   * 这条线是不是**与当前 hover / 拖动的那一个节点直接相连**。
+   *
+   * 判断放在这里而不是交给 CSS:CSS 选不到"与 hover 的那个节点相连的边"。而这里
+   * 拿到的是真实的 `source`/`target` id,不是标题 —— 同名节点不会亮错。值由
+   * `Canvas` 那份 memo 按 hovered/dragging 的 id 算好传进来。
+   */
+  const focused = props.data?.__focus === true;
+  /**
+   * 这一条是不是刚建出来的那条,正在播一次绘制动画。
+   *
+   * 绘制靠 `pathLength=1` 把整条路径归一化成长度 1,再把 dasharray 设成 1、
+   * dashoffset 从 1 走到 0(`motion.css` 里的 `edge-draw`)。动画期间这条边自己的
+   * 虚线样式要让开 —— 所以下面 `strokeDasharray` 在绘制时**不写内联值**,由类提供。
+   * 方向就是数据里的 source → target,没有翻转任何东西。
+   */
+  const drawing = props.data?.__drawn === true;
+  const onDrawnEnd = props.data?.onDrawnEnd as ((id: string) => void) | undefined;
   const [path, labelX, labelY] = getBezierPath({
     sourceX: props.sourceX, sourceY: props.sourceY, sourcePosition: props.sourcePosition,
     targetX: props.targetX, targetY: props.targetY, targetPosition: props.targetPosition,
@@ -308,13 +344,18 @@ function RelationEdge(props: EdgeProps) {
     <BaseEdge
       id={props.id}
       path={path}
+      className={drawing ? 'is-drawing' : undefined}
+      pathLength={drawing ? 1 : undefined}
+      onAnimationEnd={drawing ? () => onDrawnEnd?.(props.id) : undefined}
       // 点得中比好看要紧:线只有一两像素宽,而"点这条线"是打开关系编辑器的入口。
       interactionWidth={24}
       style={{
         stroke: look.color,
-        strokeWidth: props.selected ? look.width + 1 : look.width,
-        strokeDasharray: look.dash,
-        opacity: props.selected ? 1 : 0.9,
+        // 选中最粗;其次是与当前节点直接相连的那一条。**其余的一律保持原样** ——
+        // 规范 4.2 要的是"只有相关的线变清晰",不是"别的线一起变暗"。
+        strokeWidth: props.selected ? look.width + 1 : focused ? look.width + 0.7 : look.width,
+        strokeDasharray: drawing ? undefined : look.dash,
+        opacity: props.selected ? 1 : focused ? 1 : 0.9,
       }}
       // 箭头**不能在这里现场造**:`<marker>` 的定义由 ReactFlow 按
       // **边对象上的 `markerEnd`** 生成,再把这个 `url(...)` 字符串传进来
@@ -369,6 +410,58 @@ function Canvas() {
   const fittedScope = useRef<string | null>(null);
   /** 正在被拖的那个节点**动手前**在哪。见 `onNodeDragStart` / `commitNodeMove`。 */
   const dragStart = useRef<{ id: string; position: { x: number; y: number } } | null>(null);
+
+  /*
+   * ----------------------------- 生命感的三个标记(批次 A)
+   *
+   * 三个都是"刚刚发生了什么"的一次性标记,而且**每一个都有一个真实的来源**:
+   *
+   * | 标记 | 谁来点亮 | 谁来熄灭 |
+   * | --- | --- | --- |
+   * | `createdId` | `addNode` 返回了节点 | 动画自己的 `animationend` |
+   * | `drawnEdgeId` | `addRelation` 返回了那条边 | 同一个 |
+   * | `hoveredId` | 指针真的进了这个节点 | 指针离开 |
+   *
+   * 没有任何一个是"等一会儿就当作发生了"。规范第 10 节禁止的正是那种写法:
+   * 用动画掩盖等待、失败或降级。
+   */
+  const [createdId, setCreatedId] = useState<string | null>(null);
+  const [drawnEdgeId, setDrawnEdgeId] = useState<string | null>(null);
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
+  /** 摘标记时确认摘的还是同一个 —— 连着建两个节点时,先建那个的结束事件不该把后一个的标记摘掉。 */
+  const clearCreated = useCallback((id: string) => setCreatedId((current) => (current === id ? null : current)), []);
+  const clearDrawn = useCallback((id: string) => setDrawnEdgeId((current) => (current === id ? null : current)), []);
+  /*
+   * 换一层空间就把两个标记扔掉。
+   *
+   * 不扔会怎样:在一个层级建了一条两端都在别处的边(那条边这一层不画,所以动画没播),
+   * 用户再走进能看见它的层级时,它会**突然自己画一遍** —— 看起来像刚刚发生了什么,
+   * 其实什么都没发生。
+   */
+  useEffect(() => {
+    setCreatedId(null);
+    setDrawnEdgeId(null);
+  }, [spaceId]);
+
+  /*
+   * 平移画布时给 `<html>` 挂一个类,让 Dock 的阴影/底色略降、环境光暂停
+   * (规范 6.2 与 9.2)。
+   *
+   * **不走 React state**:平移每秒会产生几十次事件,而这两件事的性质是"页面上的
+   * 一个开关",与 React 的渲染无关。走 state 的话每次平移都要把这一层重算一遍,
+   * 换来的只是同一个类名。
+   */
+  const panningRef = useRef(false);
+  const setPanning = useCallback((on: boolean) => {
+    if (panningRef.current === on) return;
+    panningRef.current = on;
+    document.documentElement.classList.toggle('is-canvas-panning', on);
+  }, []);
+  // 卸载时一定要摘掉:`is-canvas-panning` 挂在 `<html>` 上,不跟着组件走。
+  useEffect(() => () => {
+    panningRef.current = false;
+    document.documentElement.classList.remove('is-canvas-panning');
+  }, []);
 
   /**
    * 画布上的撤销/重做快捷键。`Ctrl+Z` / `Ctrl+Shift+Z` / `Ctrl+Y`,Mac 上是 `Cmd`。
@@ -620,6 +713,17 @@ function Canvas() {
     const directChildren = all.filter((node) => node.parentId === spaceId);
     const vertical = false;
 
+    /*
+     * 此刻"被指着"的是哪个节点 —— hover 的那个,或者正在被拖的那个(拖动优先:
+     * 拖的时候指针可能已经不在节点上了,而用户关心的还是手里这一个)。
+     *
+     * 拖动的那个从 `dragging` 那份预览里读,键是 `${spaceId}:${nodeId}`
+     * (见 `onNodesChange`)。它和 `hoveredId` 一起决定哪些线要变清晰 ——
+     * **按真实 id 判断**,不是按标题。
+     */
+    const draggingKey = Object.keys(dragging).find((key) => key.startsWith(`${spaceId}:`));
+    const focusId = draggingKey ? draggingKey.slice(spaceId.length + 1) : hoveredId;
+
     // 兜底:`spaceId` 的契约是"一定指得到一个节点"(见 provider 里的 `currentSpaceId`)。
     // 万一将来这个契约被破坏,**这里不画比整个页面崩掉好** —— 在渲染中抛异常会把整棵
     // React 树卸掉,用户看到的是 "Application error: a client-side exception has
@@ -640,6 +744,8 @@ function Canvas() {
           files: files.filter((file) => file.ownerId === node.id).length,
           vertical,
           onMore: handleMore,
+          created: node.id === createdId,
+          onCreatedEnd: clearCreated,
         },
         position: dragging[key] ?? positions[key] ?? { x, y },
         selected: selectedId === node.id,
@@ -648,6 +754,10 @@ function Canvas() {
     }
 
     function connect(parent: string, node: GrowthNode) {
+      // 父子连线也跟着 hover/拖动变清晰一点点 —— 它同样是"与这个节点相关的线"。
+      // 默认值一个字没改:不相关的线看起来和以前完全一样。
+      const base = selectedId === node.id ? 1.8 : 1.35;
+      const focused = focusId !== null && (parent === focusId || node.id === focusId);
       nextEdges.push({
         id: `${parent}-${node.id}`,
         source: parent,
@@ -656,7 +766,7 @@ function Canvas() {
         style: {
           stroke: colors[node.category ?? 'academic'],
           opacity: 1,
-          strokeWidth: selectedId === node.id ? 1.8 : 1.35,
+          strokeWidth: focused ? base + 0.7 : base,
         },
       });
     }
@@ -706,7 +816,13 @@ function Canvas() {
         source: edge.source,
         target: edge.target,
         type: 'relation',
-        data: { kind: edge.type, note: edge.note },
+        data: {
+          kind: edge.type,
+          note: edge.note,
+          __focus: focusId !== null && (edge.source === focusId || edge.target === focusId),
+          __drawn: edge.id === drawnEdgeId,
+          onDrawnEnd: clearDrawn,
+        },
         selected: selectedEdgeId === edge.id,
         // 箭头挂在这里,不在 `RelationEdge` 里 —— 见那边的注释。
         markerEnd: look.arrow
@@ -715,7 +831,7 @@ function Canvas() {
       });
     });
     return { nodes: nextNodes, edges: nextEdges };
-  }, [growth, spaceId, isRootSpace, selectedId, selectedEdgeId, positions, dragging, files, measurements, handleMore]);
+  }, [growth, spaceId, isRootSpace, selectedId, selectedEdgeId, positions, dragging, files, measurements, handleMore, hoveredId, createdId, drawnEdgeId, clearCreated, clearDrawn]);
 
   // Initial fit must wait for wrapped text to be measured and layout to settle.
   // Do not re-fit while the user drags or edits an already opened scope.
@@ -1108,6 +1224,10 @@ function Canvas() {
     setSubmitting(false);
     // 失败就**不关弹窗**:原因显示在下面那行红字里,他得看得见才谈得上重试。
     if (!created) return;
+    // 真实的那条边回来了 —— 让它从 source 画到 target 一次(280ms),然后回到稳定。
+    // 用的是**后端返回的** id 与两端:`related_to` 是无向的,库里按 UUID 排过序,
+    // 所以画出来的方向以后端那一份为准,不是用户拖动的那一头。
+    setDrawnEdgeId(created.id);
     closeRelationDialog();
     setSelectedEdgeId(created.id);
   }
@@ -1162,6 +1282,9 @@ function Canvas() {
 
   return (
     <div className={`path-canvas ${isRootSpace ? 'root-path' : 'leaf-path'}`} ref={canvasRef}>
+      {/* 画布这一块大面积空背景上的环境光晕。它在这一层是 `position:absolute`,
+          理由见 `AmbientGlow` 与 `motion.css` 里那段说明。 */}
+      <AmbientGlow />
       <div className="space-floating-tools">
         {/* 提示里必须写清"怎么连线" —— 拖线这件事没有任何别的入口在教。
             也说明**点线**能打开编辑器:线很细,不提示的话没人会去点它。
@@ -1212,6 +1335,13 @@ function Canvas() {
         // 单击 = 打开正文与详情,**立刻开**。进入子空间不再挂在这里(见上面那段注释:
         // 拆开之后这条路上没有任何计时器,按下去发生什么是一定的)。
         onNodeClick={(_, node) => openDetail(node.data.object)}
+        /*
+         * 指针进出节点。只记 id —— 一个字符串。让整张图按 hover 重算一次的代价
+         * 是有的,所以它必须换来看得见的东西:与这个节点直接相连的线在 140ms 内
+         * 变清晰(见 `focusId`)。不相关的一条都不动。
+         */
+        onNodeMouseEnter={(_, node) => setHoveredId(node.id)}
+        onNodeMouseLeave={() => setHoveredId(null)}
         // 拖线建边。**在节点上拖,不在空白处拖** —— 空白处拖动是平移画布。
         onConnect={(connection) => {
           if (!connection.source || !connection.target) return;
@@ -1321,7 +1451,11 @@ function Canvas() {
             return next;
           });
         }}
+        onMoveStart={() => setPanning(true)}
         onMoveEnd={(_, viewport) => {
+          // 先摘掉平移标记,**在下面那个早退之前** —— 否则"初始定位还没跑完"的
+          // 那几次平移会让这个类一直挂在 `<html>` 上,Dock 从此一直是淡的。
+          setPanning(false);
           // **初始定位跑完之前不记。** 那之前的视口是 ReactFlow 的默认值(0,0,1),
           // 把它存下来会把用户真正的视口覆盖掉 —— 而"有记忆"的那一层本来就不该 fit,
           // 两边一撞就是"切回来一看,画面跑到别处去了"。
@@ -1402,6 +1536,10 @@ function Canvas() {
               });
               setSubmitting(false);
               if (!created) return;
+              // **动画的唯一触发点就在这一行之后。** `created` 是 `addNode` 真的
+              // 返回了一个节点 —— 也就是说库里已经有了它。失败那条路(`!created`)
+              // 在上面就返回了,什么都不会播。
+              setCreatedId(created.id);
               // 建成了才丢草稿:这一份已经变成库里的节点了。
               closeCreateDialog();
               // **双击那条路不再自动 fit。** 用户刚刚亲手指定了位置,把画面重新摆一遍

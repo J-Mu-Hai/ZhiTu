@@ -41,7 +41,10 @@ export function WeekOverview({ revision }: { revision: unknown }) {
     <header><h2><CalendarDays size={20}/>本周时间线 <small>{days[0].slice(5)} — {days[6].slice(5)}</small></h2><div><button aria-label="上一周" onClick={() => move(-1)}><ChevronLeft size={17}/></button><button aria-label="下一周" onClick={() => move(1)}><ChevronRight size={17}/></button><button onClick={() => { setOffset(0); setSelected(today); }}>本周</button></div></header>
     {error ? <p role="alert">本周安排未能完整读取。<button onClick={() => setRetry(retry + 1)}>重试</button></p> : <>
       <div className="week-day-strip">{days.map((date, index) => <button key={date} aria-pressed={selected === date} className={selected === date ? 'selected' : ''} onClick={() => setSelected(date)}><span>{date.slice(5).replace('-', '.')}</span><small>周{'一二三四五六日'[index]}{date === today ? ' · 今天' : ''}</small><i/><span>{loading ? '读取中' : `${entries.filter(entry => entry.scheduledDate === date).length} 场安排`}</span></button>)}</div>
-      <div className="week-selected-list"><h3>{selected === today ? '今日' : selected.slice(5)}安排 <small>点击前往对应空间排期</small></h3>{loading ? <p>正在读取…</p> : dayEntries.length ? dayEntries.map(entry => <Link key={entry.id} href={`/workbench?workspace=${encodeURIComponent(entry.workspaceId)}&view=schedule`}><span>{entry.nodeTitle}<small>{entry.workspaceTitle}</small></span><span>{entry.status === 'done' ? '已完成' : entry.status === 'skipped' ? '已跳过' : `${entry.plannedMinutes} 分钟`}<ChevronRight size={14}/></span></Link>) : <p>这一天还没有排期，留一点空间给自己。</p>}</div>
+      {/* `key={selected}`:换一天就重挂一次,于是那一段淡入重放。
+          用 key 而不是在内容上做过渡 —— 内容变了但元素没换,CSS 动画不会重放。
+          焦点不在这个容器里(点的是上面那条日期带),所以重挂不会把焦点弄丢。 */}
+      <div className="week-selected-list" key={selected}><h3>{selected === today ? '今日' : selected.slice(5)}安排 <small>点击前往对应空间排期</small></h3>{loading ? <p>正在读取…</p> : dayEntries.length ? dayEntries.map(entry => <Link key={entry.id} href={`/workbench?workspace=${encodeURIComponent(entry.workspaceId)}&view=schedule`}><span>{entry.nodeTitle}<small>{entry.workspaceTitle}</small></span><span>{entry.status === 'done' ? '已完成' : entry.status === 'skipped' ? '已跳过' : `${entry.plannedMinutes} 分钟`}<ChevronRight size={14}/></span></Link>) : <p>这一天还没有排期，留一点空间给自己。</p>}</div>
     </>}
   </section>;
 }

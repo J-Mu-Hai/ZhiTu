@@ -1,6 +1,7 @@
 'use client';
 
 import { todayInTimeZone } from '@/features/growth/timeline';
+import { AmbientGlow } from '@/components/ui/AmbientGlow';
 import { RealToday } from './RealToday';
 
 /**
@@ -36,6 +37,7 @@ export function Today() {
 
   return (
     <div className="editorial-page today-page">
+      <AmbientGlow />
       <Header greeting={greeting} dateLabel={dateLabel} dateLabelEn={dateLabelEn} />
       {/* 这里原来还有一份 `DemoToday` —— 一份**完全不看后端**的"今天":它按本地
           计划的 `scheduledDate` 挑任务,旁边那段"来自知途的观察"是写死的文案

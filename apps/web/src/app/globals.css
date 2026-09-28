@@ -5,4 +5,7 @@
 @media(max-width:950px){.sidebar{width:76px;padding-left:10px;padding-right:10px}.brand{padding:0;justify-content:center}.brand>span:last-child,.nav-caption,.nav-link>span,.nav-link>svg:last-child:not(:first-child),.sidebar-goal,.sidebar-bottom>p,.profile-mini>div,.online-dot,.demo-tag{display:none}.nav-link{justify-content:center;padding:0}.sidebar nav{margin-top:40px}.profile-mini{padding:15px 0;justify-content:center}.conversation-panel{width:310px}.goal-year{display:none}.canvas-caption p{display:none}.view-tabs button{padding:8px 10px}.task-view{padding:20px 16px}.canvas-insights{display:none}}
 @media(max-width:720px){.workbench-header{height:113px;padding:17px}.header-main h1{font-size:20px}.header-main p{font-size:10px}.status-badge{display:none}.conversation-panel{position:absolute;right:0;top:113px;bottom:0;width:min(365px,calc(100vw - 76px));z-index:20}.toolbar-note{display:none}.workspace-footer>span:last-child{display:none}.canvas-caption{left:16px}.placeholder-page{padding:26px}.view-tabs button{padding:8px 13px}.timeline-tools{flex-wrap:wrap}.canvas-insights{display:none}}
 .canvas-insights{bottom:32px;left:160px;right:65px}.canvas-insights>div:last-child{display:none}.date-editor{align-items:flex-end}.react-flow__minimap svg{width:120px;height:78px}.react-flow__controls{flex-direction:row}
-@media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important}}
+/* reduced-motion 总开关搬到 `motion.css` 末尾了。原来这一行把**所有**过渡都掐掉,
+   连"只改颜色"的那些一起 —— 而规范要求 reduced motion 下面板仍然要淡入、checkbox
+   仍然要换颜色和图标。`transition:none` 还会取消"从当前值开始"这件事,于是状态变化
+   变成了跳变。分两类处理的那一版见 `motion.css` 第 9 节。 */

@@ -82,6 +82,17 @@ export function ConversationPanel() {
         {/* 「示例空间」这个标签没有了 —— 因为它指的那个东西没有了。
             留在这里最坏的情况是它**永远不显示**,而那种"看不出来坏了"的控件
             比明着报错更难发现。 */}
+        {/*
+          等待回复的状态标识**不在这里**。
+
+          它原来放在这个 `<header>` 里,而 `.floating-conversation .conversation-header`
+          在 `demo2.css` 里是 `display:none` —— 也就是说,在这个面板**唯一被渲染的地方**
+          (工作台那个浮动 Dock),它一次都不会显示。这不是"位置不够好",是一条
+          永远不执行的路径:看起来做了,实际什么都没有发生。
+
+          所以它挪到了 `.floating-title` —— Dock 上真正看得见的那一行(见
+          `FloatingConversation`)。这里只留一句说明,免得下一个人又把它加回来。
+        */}
       </header>
 
       <div className="conversation-history">
