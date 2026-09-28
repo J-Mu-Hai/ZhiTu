@@ -581,20 +581,17 @@ test('hover 一个节点,只有与它直接相连的线变清晰', async ({ page
   const related = plan.relations.find(row => isPair(row, account.ids['甲'], account.ids['乙']));
   const unrelated = plan.relations.find(row => isPair(row, account.ids['丙'], account.ids['丁']));
   if (!related || !unrelated) throw new Error('建立的两条关系没有从后端回来 —— 这条测试的前提没成立');
-  // 父子连线也一起看:它同样是"与这个节点相关的线"。
-  const branchOfFirst = `${account.root}-${account.ids['甲']}`;
-  const branchOfThird = `${account.root}-${account.ids['丙']}`;
+  // 甲、丙是**用户/接口建出来的节点**,按当前规则默认独立,不再自动连出父子结构线。
+  // 所以这里验证的是关系线的聚焦:与 hovered 直接相连的那条变清晰,另一条一个像素都不变。
+  // (AI 规划节点的结构线仍会自动生长,那一份在 `interview-loop.spec.ts` 里用 --script 验收。)
   await expect(edgePath(page, related.id), '这条关系没有画出来').toHaveCount(1);
-  await expect(edgePath(page, branchOfFirst)).toHaveCount(1);
+  await expect(edgePath(page, unrelated.id), '这条无关的关系没有画出来').toHaveCount(1);
 
   const before = {
     related: await edgeStroke(page, related.id),
     unrelated: await edgeStroke(page, unrelated.id),
-    branchOfFirst: await edgeStroke(page, branchOfFirst),
-    branchOfThird: await edgeStroke(page, branchOfThird),
   };
   expect(before.related.width).toBeCloseTo(1.6, 1);
-  expect(before.branchOfThird.width).toBeCloseTo(1.35, 1);
 
   const node = page.locator(`.react-flow__node[data-id="${account.ids['甲']}"]`);
   await node.hover();
@@ -606,14 +603,10 @@ test('hover 一个节点,只有与它直接相连的线变清晰', async ({ page
   const hovered = {
     related: await edgeStroke(page, related.id),
     unrelated: await edgeStroke(page, unrelated.id),
-    branchOfFirst: await edgeStroke(page, branchOfFirst),
-    branchOfThird: await edgeStroke(page, branchOfThird),
   };
   // **不相关的一条一个像素都不许变。** 判断必须走真实 id —— 按标题认的话,
   // 同名的节点会亮错,而界面上看不出来。
   expect(hovered.unrelated, '不相干的那条关系线也变亮了').toEqual(before.unrelated);
-  expect(hovered.branchOfThird, '不相干的父子连线也变亮了').toEqual(before.branchOfThird);
-  expect(hovered.branchOfFirst.width).toBeGreaterThan(before.branchOfFirst.width);
   // 节点本体在 hover 时一动不动。
   expect(await liftOf(page, `.react-flow__node[data-id="${account.ids['甲']}"] .growth-node`), 'hover 时节点本体动了').toBe(0);
   console.log('[motion] hover 前/后:', JSON.stringify({ before, hovered }));

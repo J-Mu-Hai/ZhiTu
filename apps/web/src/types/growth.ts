@@ -34,6 +34,12 @@ export interface GrowthNode {
    * 缺省当 `planning` 读:老数据与还没重取的载荷都没有这个字段。
    */
   purpose?: 'planning' | 'information';
+  /**
+   * 节点由谁创建。它不改变节点属于哪个 NodeSpace，只决定画布是否自动画出
+   * 父子结构线：AI 生成的规划沿树生长，用户手动放下的节点先保持独立，等用户
+   * 自己建立关系。
+   */
+  origin?: 'user' | 'ai';
   parentId?: string;
   category?: Category;
   /** 它所属的阶段(最近的 stage 祖先,没有就是根目标)。任务视图按它分组。 */

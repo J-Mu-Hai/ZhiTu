@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 import { artifactPath } from './support/artifacts';
 import { api, createWorkspace, registerAccount } from './support/session';
 
-test('品牌标识一致，长标题与正文完整排版，子空间沿用圆滑连线', async ({ page }) => {
+test('品牌标识一致，长标题与正文完整排版，手工子空间不自动连线', async ({ page }) => {
   test.slow();
   await page.goto('/login');
   await expect(page.locator('.auth-brand img')).toHaveAttribute('src', '/icon.svg');
@@ -44,8 +44,9 @@ test('品牌标识一致，长标题与正文完整排版，子空间沿用圆�
       && text.scrollHeight <= text.clientHeight + 1
       && text.scrollWidth <= text.clientWidth + 1;
   })).toBe(true);
-  await expect(page.locator('.react-flow__edge-branch')).toHaveCount(3);
-  expect(await page.locator('.react-flow__edge-path').first().getAttribute('d')).toContain('Q');
+  // 手工/接口建出来的节点默认独立,不再因为 parentId 自动连出结构线。
+  // (AI 规划节点仍自动生长连线,由 `interview-loop.spec.ts` 在脚本模式下验收。)
+  await expect(page.locator('.react-flow__edge-branch')).toHaveCount(0);
   await page.screenshot({ path: artifactPath('canvas-polish.png') });
   await stage.getByRole('button', { name: `进入${longTitle}空间` }).click();
   await expect(page.locator('.react-flow__node')).toHaveCount(2);
@@ -54,7 +55,7 @@ test('品牌标识一致，长标题与正文完整排版，子空间沿用圆�
     align: getComputedStyle(element).textAlign,
     maxWidth: getComputedStyle(element).maxWidth,
   }))).toEqual({ align: 'left', maxWidth: 'none' });
-  await expect(page.locator('.react-flow__edge-branch')).toHaveCount(1);
+  await expect(page.locator('.react-flow__edge-branch')).toHaveCount(0);
   await page.screenshot({ path: artifactPath('canvas-polish-subspace.png') });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/login');

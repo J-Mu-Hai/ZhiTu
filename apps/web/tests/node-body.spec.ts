@@ -8,7 +8,7 @@
  * 1. **单击要等 240 毫秒才开编辑器。** 因为"单击看详情"和"双击进子空间"挤在同一个
  *    手势上,只能靠一个计时器分开(`PathView.tsx` 里删掉的那一段 `pendingOpen`)。
  *    代价是每一次查看正文都要干等,而双击会不会被认出来取决于手速。
- * 2. **正文只能靠那个"保存节点"按钮存。** 它和标题、优先级、工时挤在同一条 PATCH 里,
+ * 2. **正文只能靠那个"保存节点"按钮存。** 它曾和标题、优先级、工时挤在同一条 PATCH 里,
  *    关掉弹窗会把没提交的正文连同草稿一起丢掉,而屏幕上没有任何东西说过这件事。
  * 3. **两个人同写一段正文,后保存的整段吃掉先保存的,两边都显示"保存成功"。**
  *    `contentVersion` 这一列和 `CONCURRENCY_CONFLICT` 这个错误码一直都在,
@@ -45,7 +45,6 @@ import {
   waitForRealPlan,
   type TestAccount,
 } from './support/session';
-import { pointOnEdge } from './support/edge';
 
 test.beforeEach(async ({ request }) => {
   await assertBackendRunning(request);
@@ -148,6 +147,10 @@ test('单击节点打开正文与详情，但不会顺带进入子空间', async
   const dialog = await openEditor(page, stageId);
   // 正文**就在这个弹窗里**,不用再按第二个按钮才看得到。
   await expect(bodyField(dialog)).toBeVisible();
+  // 详情只承担内容编辑。排期属性由时间线 / 任务视图负责，不在这里重复摆三套控件。
+  await expect(dialog.getByLabel('优先级')).toHaveCount(0);
+  await expect(dialog.getByLabel('截止时间')).toHaveCount(0);
+  await expect(dialog.getByLabel('预计工时（分钟）')).toHaveCount(0);
 
   // 而"进去"这件事没有发生:画布上还是根那一层,阶段也还是一张普通卡片,
   // 不是当前这一层的根(那个是 `.growth-node.goal`,见 `PathView.tsx` 的 `root`)。
@@ -162,7 +165,7 @@ test('单击节点打开正文与详情，但不会顺带进入子空间', async
  * 这一条防的是**新建节点从别的手势里漏出来**。
  *
  * 双击空白处建节点是这一批新加的,而它挂在一个很宽的容器上(整个画布)。判定写松一点
- * ——比如"只要不是点在工具栏上就算空白"—— 双击节点、双击连线、在正文编辑框里双击
+ * ——比如"只要不是点在工具栏上就算空白"—— 双击节点、在正文编辑框里双击
  * 选一个词,都会冒出新建表单。**而它长得很正常**:一个标题写着「新建节点」的弹窗,
  * 用户以为是自己点错了。
  *
@@ -170,7 +173,7 @@ test('单击节点打开正文与详情，但不会顺带进入子空间', async
  * 新建表单的标题是「…中新建节点」。只数"有几个弹窗"是不够的 —— 一个把详情换成新建
  * 表单的实现,数量同样是 1。
  */
-test('双击节点只开详情、双击边与编辑框里都不建节点', async ({ page }) => {
+test('双击节点只开详情，在编辑框里双击也不建节点', async ({ page }) => {
   const { workspaceId, rootId, stageId } = await scene(page, 'body-dblclick');
   await openSpacePage(page, '/workbench', workspaceId);
   await waitForRealPlan(page);
@@ -196,12 +199,8 @@ test('双击节点只开详情、双击边与编辑框里都不建节点', async
   await page.keyboard.press('Escape');
   await expect(dialogs).toHaveCount(0);
 
-  // --- 双击那条分支连线:什么都不开 -----------------------------------------
-  // 点在**真的落在笔画上**的那一点 —— 曲线包围盒的中心在画布空白上(见 `support/edge.ts`)。
-  const onLine = await pointOnEdge(page);
-  await page.mouse.dblclick(onLine.x, onLine.y);
-  await page.waitForTimeout(300);
-  expect(await headings(), '双击连线开出了弹窗').toEqual([]);
+  // 连线上的同一条手势边界由 `canvas-create.spec.ts` 用一条显式依赖关系覆盖。
+  // 手工节点不再自动产生父子线，所以这里不伪造一条只为测试存在的结构线。
 });
 
 // ---------------------------------------------------------------------------------

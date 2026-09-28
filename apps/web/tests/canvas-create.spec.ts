@@ -191,6 +191,13 @@ test('平移并缩放之后双击，节点落在指针那一格，刷新后还�
       `第 ${depth} 层建出来的节点挂错了父节点`,
     ).toBe(scope);
 
+    // `parentId` 只表示它归属当前 NodeSpace，不再等于“自动连向根节点”。用户在
+    // 空白处手动放下的节点应先独立存在，关系由用户随后明确建立。
+    await expect(
+      page.locator(`.react-flow__edge[data-id="${scope}-${created}"]`),
+      '手动创建的节点被自动连向了当前层级的根节点',
+    ).toHaveCount(0);
+
     // 位置:和测试自己算出来的那一个数比,容差是几个像素。
     const placed = await nodeAt(page, created);
     expect(close(placed.x, expected.x), `x 偏了:落在 ${placed.x},应当是 ${expected.x}`).toBe(true);

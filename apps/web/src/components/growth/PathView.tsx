@@ -627,7 +627,7 @@ function Canvas() {
   const { draft, patch: patchDraft } = useCanvasDraft(workspaceId, canvasKey);
   const {
     dialog, title, description, createKind, estimate, createPosition,
-    detailNodeId, detailTitle, detailDescription, detailPriority, detailDeadline, detailEstimate, detailStart, detailEnd,
+    detailNodeId, detailTitle, detailDescription,
     noteNodeId, noteBody,
     relationId, relationType, relationNote, relationSource, relationTarget,
   } = draft;
@@ -645,8 +645,7 @@ function Canvas() {
     dialog: null, title: '', description: '', createKind: 'action', estimate: '', createPosition: null,
   });
   const closeDetailEditor = () => patchDraft({
-    detailNodeId: null, detailTitle: '', detailDescription: '', detailPriority: 'medium',
-    detailDeadline: '', detailEstimate: '', detailStart: '', detailEnd: '',
+    detailNodeId: null, detailTitle: '', detailDescription: '',
     // 长正文那一份也一起丢。**不清的话**下一次打开别的节点时,`noteNodeId` 会对不上
     // 而显示"正在读取"直到那一份回来 —— 不难看,但把一个"关掉=不写了"的动作留在
     // 了半途。它已经存过的部分在库里,这里丢的只是编辑器里那一份。
@@ -794,11 +793,13 @@ function Canvas() {
       const center = cursorY + blockHeight / 2;
       centers.push(center);
       add(node, childX, center - height(node) / 2);
-      connect(spaceId, node);
+      // `parentId` 仍然保存“这个节点属于当前 NodeSpace”，但不再被误读成“用户
+      // 已经建立了一条线”。手动放下的节点先独立；AI 生成的规划结构仍自动生长。
+      if (node.origin !== 'user') connect(spaceId, node);
       let descendantY = cursorY;
       descendants.forEach((child) => {
         add(child, childX + width(node) + 170, descendantY);
-        connect(node.id, child);
+        if (child.origin !== 'user') connect(node.id, child);
         descendantY += height(child) + 32;
       });
       cursorY += blockHeight + 56;
@@ -987,24 +988,10 @@ function Canvas() {
 
   function openDetail(node: GrowthNode) {
     select(node.id);
-    // 真实的预计工时读**原样的分钟数**(`estimateMinutes`),不读那个四舍五入过的小时
-    // ——读后者的话,用户打开编辑器什么也不改、点一下保存,工时就会被改成另一个数。
-    // 示例数据里没有分钟那一档,退回小时再换算。空着就是空着:填 0 会让"没填"和
-    // "这件事不要时间"变成同一件事。
-    //
-    // 真实节点的 `startDate`/`endDate` 是从 `deadline` 映出来的(见 planProjection),
-    // 所以截止时间读的是同一个值。
     patchDraft({
       detailNodeId: node.id,
       detailTitle: node.title,
       detailDescription: node.description ?? '',
-      detailPriority: node.priority,
-      detailStart: node.startDate ?? '',
-      detailEnd: node.endDate ?? '',
-      detailEstimate: node.estimateMinutes ? String(node.estimateMinutes)
-        : node.estimatedHours ? String(Math.round(node.estimatedHours * 60))
-          : '',
-      detailDeadline: isRealSpace ? (node.endDate ?? '') : '',
     });
     // 打开的这一份是哪一版。**必须在打开的那一刻取**,不能等到保存的时候再去读
     // `detailNode.contentVersion`:那中间可能已经刷新过好几次计划,拿到的就是"最新
@@ -1777,9 +1764,7 @@ function Canvas() {
             // **这个按钮不再写 `description`。** 正文有自己的保存路径(带上乐观锁、
             // 边打边存,见 `flushBody`)—— 两边都写的话,这里发出去的那一份不带版本号,
             // 恰好就是"悄悄盖掉别人刚写的正文"那条路。一个字段只有一个写入口。
-            updateNode(detailNode.id, isRealSpace
-            ? { title: detailTitle.trim() || detailNode.title, priority: detailPriority, deadline: detailDeadline || null, estimateMinutes: parseEstimate(detailEstimate) }
-            : { title: detailTitle.trim() || detailNode.title, priority: detailPriority, startDate: detailStart || undefined, endDate: detailEnd || undefined }); closeDetailEditor(); }}>
+            updateNode(detailNode.id, { title: detailTitle.trim() || detailNode.title }); closeDetailEditor(); }}>
             <label>节点名称<input autoFocus value={detailTitle} maxLength={80} onChange={(event) => patchDraft({ detailTitle: event.target.value })} /></label>
             {/* 正文:边打边存。下面那一行状态是**真实结果**,不是"我发过一次请求" ——
                 见 `flushBody`。 */}
@@ -1954,24 +1939,7 @@ function Canvas() {
                 )}
               </label>
             )}
-            <div className="node-editor-grid"><label>优先级<select value={detailPriority} onChange={(event) => patchDraft({ detailPriority: event.target.value as GrowthNode['priority'] })}><option value="high">高</option><option value="medium">中</option><option value="low">低</option></select></label>
-              {/* 真实空间只给"截止时间"这一个日期 —— 后端有这个概念,别的没有。
-                  把开始/结束日期也画出来、保存时又悄悄丢掉,用户会以为改了日期而
-                  计划没动。排期(哪天做、做多久)在阶段 6。 */}
-              {isRealSpace
-                ? <>
-                    <label>截止时间<input type="date" value={detailDeadline} onChange={(event) => patchDraft({ detailDeadline: event.target.value })} /></label>
-                    {/* 预计工时是排期的输入:没有它,这个任务排不进任何一天,
-                        「排期」和「今天」都会是空的,而链路上没有一处会报错。 */}
-                    <label>
-                      预计工时（分钟）
-                      <input type="number" min={1} inputMode="numeric" value={detailEstimate} onChange={(event) => patchDraft({ detailEstimate: event.target.value })} placeholder="例如 90" />
-                      <small className="field-hint">{estimateHint(detailEstimate)}</small>
-                    </label>
-                  </>
-                : <><label>开始日期<input type="date" value={detailStart} onChange={(event) => patchDraft({ detailStart: event.target.value })} /></label><label>结束日期<input type="date" value={detailEnd} onChange={(event) => patchDraft({ detailEnd: event.target.value })} /></label></>}
-            </div>
-            <p>{isRealSpace ? '正文边写边存（停手即存）；下面这个按钮保存名称、优先级与时间，会产生一个新的计划版本。进入子路径请用节点右上角的箭头。' : '在这里保存的说明会保留在当前成长空间。'}</p>
+            <p>{isRealSpace ? '正文与长正文会在停手后自动保存；下面的按钮只保存节点名称。进入子路径请用节点右上角的箭头。' : '在这里保存的说明会保留在当前成长空间。'}</p>
             {isRealSpace && planError && <p className="form-error" role="alert">{planError}</p>}
             {/* 详情里**也要**有一个归档入口(§9.1.1:「节点详情中保留可发现的『更多/归档』入口」)。
                 它的必要性不在"多一个入口",而在**右键菜单在触屏上不存在** —— 节点上那个

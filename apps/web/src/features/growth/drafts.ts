@@ -8,7 +8,7 @@ import type { GrowthNode, GrowthRelationType } from '@/types/growth';
  *
  * ## 为什么它必须住在 React 组件外面
  *
- * 弹窗里打了一半的节点名、详情里改了一半的正文与工时,现在都是 `PathView` 里的一组
+ * 弹窗里打了一半的节点名、详情里改了一半的正文,现在都是 `PathView` 里的一组
  * `useState`。而"整棵画布子树被重建"这件事在这套界面里**每次切视图都在发生**:
  * `Workbench.tsx` 的四个视图是一个三元表达式,切一下页签,`PathView` 连同 ReactFlow
  * 内部的视口一起被卸载。组件里的 `useState` 在那一刻什么都没了 —— 用户看到的是
@@ -92,12 +92,6 @@ export interface CanvasDraft {
   detailNodeId: string | null;
   detailTitle: string;
   detailDescription: string;
-  detailPriority: GrowthNode['priority'];
-  /** 真实空间里编辑的是截止时间;占位/演示数据里是开始与结束日期。两个不同的东西。 */
-  detailDeadline: string;
-  detailEstimate: string;
-  detailStart: string;
-  detailEnd: string;
   /**
    * 节点**长正文**(笔记)编辑器。两个字段一起用:
    *
@@ -146,11 +140,6 @@ export const EMPTY_DRAFT: CanvasDraft = Object.freeze({
   detailNodeId: null,
   detailTitle: '',
   detailDescription: '',
-  detailPriority: 'medium',
-  detailDeadline: '',
-  detailEstimate: '',
-  detailStart: '',
-  detailEnd: '',
   noteNodeId: null,
   noteBody: '',
   relationId: null,

@@ -122,6 +122,15 @@ test('访谈里的那句回答会变成一条信息主题，确认之后真的�
   await waitForRealPlan(page);
   await expect(card(page, created!.id)).toBeVisible();
 
+  // AI 规划出来的节点**仍然**自动带一条父子结构线 —— 这与用户手工放下的节点相反
+  // (`PathView.tsx` 里只有 `origin !== 'user'` 才 `connect`)。这条线画的是曲线:
+  // 几乎同层时 `BranchEdge` 直接给一条三次贝塞尔(`C`),否则用圆角阶梯路径(`Q` 弧)
+  // —— 两者都不是直线的 `L`,所以断言 "d 里有 C 或 Q"。
+  await expect(page.locator('.react-flow__edge-branch')).toHaveCount(1);
+  expect(
+    await page.locator('.react-flow__edge-branch .react-flow__edge-path').first().getAttribute('d'),
+  ).toMatch(/ [CQ] /);
+
   // ---------------------------------------------------------------- 第三轮:长正文
   await say(page, '把刚才那些细节记下来。');
   const noteProposal = page.locator('.proposal').last();

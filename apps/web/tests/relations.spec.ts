@@ -265,10 +265,11 @@ test('同一对节点连两次是幂等的：不报错，也不多出一条线',
 
   const rows = await relations(page, token, workspaceId);
   expect(rows, '反着连一次不该变成两条线').toHaveLength(1);
-  // 画布上也只多出那一条:父子连线有两条(root -> A、root -> B),关系线一条。
-  // 少数一次就说明"幂等"是真的幂等,不是"库里没多、图上多了一条"。
+  // 画布上只有那一条关系线。A、B 是**用户手工/接口建出来的节点**,按当前规则它们默认
+  // 独立,不再因为 parentId 自动连出结构线(见 `PathView.tsx` 里 `origin === 'user'`
+  // 那处判断)。所以这里数 1:多了就说明"库里没多、图上多了一条",幂等没做到。
   await expect(page.locator(`[data-testid="rf__edge-${rows[0].id}"]`)).toHaveCount(1);
-  await expect(page.locator('.react-flow__edge')).toHaveCount(3);
+  await expect(page.locator('.react-flow__edge')).toHaveCount(1);
 });
 
 test('点线能打开编辑器，删掉关系之后两端节点一个不少', async ({ page }) => {
