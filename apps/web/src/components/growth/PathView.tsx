@@ -49,6 +49,7 @@ import {
   isDescriptionExempt,
 } from '@/lib/codepoints';
 import { useDemo } from '@/features/growth/provider';
+import { useMobileLayout } from '@/lib/media';
 import type { GrowthEdge, GrowthNode, GrowthRelationType } from '@/types/growth';
 import { SpaceFiles } from './SpaceFiles';
 
@@ -406,6 +407,12 @@ function Canvas() {
     restoreArchived, restoringId,
   } = useDemo();
   const { fitView, setViewport, screenToFlowPosition } = useReactFlow();
+  /*
+   * 手机那一档的画布参数要跟别处不一样(见下面 fit 那段和 `fitViewOptions`)。
+   * 用的是同一个断点源(`lib/media.ts`),和 `Workbench` 收起面板用的是同一个值 ——
+   * 两处各自写一个 `matchMedia` 迟早会漂。
+   */
+  const narrowScreen = useMobileLayout();
   const nodesInitialized = useNodesInitialized();
   const fittedScope = useRef<string | null>(null);
   /** 正在被拖的那个节点**动手前**在哪。见 `onNodeDragStart` / `commitNodeMove`。 */
@@ -858,10 +865,14 @@ function Canvas() {
       // `canvas-create.spec.ts` 用"连缩两次之后 zoom < 0.95"来验缩放真的生效 ——
       // 1.2 / 1.44 = 0.833,留得下余量;再往上(比如 1.35)那一档只剩 1 个百分点,
       // 而且放大会把文字一起拉毛。
-      else void fitView({ padding: 0.12, maxZoom: 1.2, duration: 0 });
+      //
+      // 手机那一档 `padding` 放到 0.2:这个数是**视口宽度的比例**,390 下 12% 两边
+      // 各留 47px,而节点自己有 220~240 的 `min-width` —— 树一宽就顶到画布边上,
+      // "打开就有一棵挤在边框上的图"。0.2 两边各留 78px,根节点完整、四周有呼吸。
+      else void fitView({ padding: narrowScreen ? 0.2 : 0.12, maxZoom: 1.2, duration: 0 });
     }, 180);
     return () => window.clearTimeout(timer);
-  }, [nodesInitialized, planLoading, layoutReady, spaceId, measurements, fitView, setViewport, viewports]);
+  }, [nodesInitialized, planLoading, layoutReady, spaceId, measurements, fitView, setViewport, viewports, narrowScreen]);
 
   const createLabel = isRootSpace ? '新建节点' : '添加树叶';
   /**
@@ -1340,7 +1351,7 @@ function Canvas() {
         // 有记忆时走上面那段 effect,没有记忆时走 ReactFlow 自带的这个属性。
         // 只改一处会让"第一次进这个空间"和"清掉记忆再进"长得不一样,
         // 而那种不一致最容易被当成随机故障。
-        fitViewOptions={{ padding: 0.12, maxZoom: 1.2 }}
+        fitViewOptions={{ padding: narrowScreen ? 0.2 : 0.12, maxZoom: 1.2 }}
         zoomOnDoubleClick={false}
         minZoom={0.25}
         maxZoom={1.7}

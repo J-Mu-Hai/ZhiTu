@@ -214,3 +214,70 @@
 @media(min-width:1600px) { .spaces-grid { grid-template-columns:repeat(4,minmax(0,1fr)); } }
 @media(max-width:1050px) { .top-brand small,.top-goal { display:none; } .top-navigation { gap:16px; padding:0 18px; } .top-navigation nav a { padding:9px; } .spaces-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .spaces-page,.editorial-page.journal-page,.editorial-page.today-page { padding:28px 24px 50px; } }
 @media(max-width:720px) { .top-navigation { height:54px; gap:10px; padding:0 12px; } .top-navigation nav { flex:1; justify-content:space-between; } .top-navigation nav a { padding:8px; } .top-brand strong { font-size:18px; } .top-navigation nav a span { display:none; } .top-profile { display:none; } .spaces-grid { grid-template-columns:1fr; } .space-stats { grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; } .space-stats>div { padding:12px 8px; flex-wrap:wrap; } .space-stats>div>span { font-size:10px; } .spaces-hero h1 { font-size:27px; } .journal-reading-layout,.today-page .today-columns { grid-template-columns:1fr; } .journal-reader { position:static; min-height:220px; padding:22px; } .journal-feed-header { flex-wrap:wrap; } .open-workbench .workspace { padding-right:0; } .open-workbench .conversation-overlay { top:auto; height:min(65dvh,540px); width:min(390px,94vw); } .open-workbench .floating-conversation { right:8px; } .space-topbar .space-breadcrumb { top:8px; left:8px; max-width:calc(100% - 58px); } .space-topbar .view-tabs { top:55px; left:8px; right:8px; transform:none; width:auto; justify-content:center; } .space-topbar .view-tabs button { flex:1; } .path-canvas .space-floating-tools { top:106px; left:8px; } .editorial-page .editorial-header h1 { font-size:25px; } }
+/*
+ * ============================ 手机工作台(≤480px) ============================
+ *
+ * 这一档原来不存在(最窄的一条断点是 720),桌面布局硬挤在 390 上,于是四件事一起坏:
+ * 顶部浮动组件竖排两层占掉画布顶上 140px;工具条悬在左上角,单手握不到;AI 面板默认
+ * 展开、占掉 y=288 往下全部(根节点在 y=400,正好盖住);画布剩的那点地方还挤在边框上。
+ *
+ * 所以这一档改的是**空间分配**,不是尺寸缩放:画布优先,能用拇指够到的东西贴到底部,
+ * AI 从底部升起。四个视图入口一个不少(图标还在,当前项带文字)。
+ *
+ * 两处兜底思路值得单独说:
+ *   - `.workbench` 上重设 `--float-clear`。时间线的 `.toolbar` 靠这个值让开顶部浮动条
+ *     (`TimelineView.module.css`),它按"顶距 + 行高 + 呼吸"算出来并在 `:root` 上求值 ——
+ *     这一档行高与顶距都变了,所以这里**直接给结果**,而不是改那三个输入量。改输入量
+ *     不会传播(自定义属性在**声明它的那个元素**上就完成替换了),给结果才是确定的。
+ *   - 工具条挪到右下角后,「更多空间操作」的弹层原本向下开(`top:100%`),会把整个菜单
+ *     开到屏幕外 —— 所以它跟着改成向上开、并从右边缘对齐。这不是装饰:不开在屏幕内,
+ *     那个菜单就等于不存在。
+ */
+@media(max-width:480px) {
+  /* 顶部三块收成一行:面包屑占剩下的宽度(超长横向滚动),视图切换与"展开对话"各自固定。 */
+  .space-topbar { height:auto; display:flex; align-items:center; gap:8px; padding:8px; }
+  .space-topbar .space-breadcrumb,.space-topbar .view-tabs,.space-topbar .reopen-chat { position:static; top:auto; left:auto; right:auto; transform:none; }
+  .space-topbar .space-breadcrumb { flex:1 1 auto; min-width:0; max-width:none; padding:3px 6px; }
+  .space-topbar .space-breadcrumb button,.space-topbar .space-breadcrumb>span { white-space:nowrap; }
+  .space-topbar .view-tabs { flex:0 0 auto; padding:4px; }
+  .space-topbar .view-tabs button { flex:0 0 auto; padding:7px 8px; }
+  /* 只留当前项的文字。`display:none` 的字不进可访问性树,所以按钮上始终挂着
+     `aria-label`(见 `Workbench.tsx` 里那段),读屏听到的还是四个名字。 */
+  .space-topbar .view-tabs button>span { display:none; }
+  .space-topbar .view-tabs button.selected>span { display:inline; }
+  .space-topbar .reopen-chat { flex:0 0 auto; width:38px; height:38px; }
+  /* 顶距 8 + 行高 39 + 呼吸 12。 */
+  .workbench { --float-clear:60px; }
+  /* 工具条挪到右下角,落在缩放按钮上面。
+     底距 61 是量出来的,不是 8+28+8 算出来的:ReactFlow 给每个面板还带一层 15px 的
+     外边距,和 `globals.css` 里那句 `bottom:8px!important` 叠在一起,缩放按钮的顶边
+     实际在**离画布下沿 53px** 的地方(390 下 791~821,不是 808~836)。按 8+28 算的话
+     工具条会压住上面 9px。 */
+  .path-canvas .space-floating-tools { top:auto; left:auto; right:8px; bottom:61px; }
+  /* 弹层向上开、贴右边缘:它挂在「更多」那个 `details` 上,而 `details` 现在靠画布右边缘。 */
+  .canvas-tools-popover,.canvas-help>p { top:auto; bottom:100%; left:auto; right:0; margin:0 0 10px; }
+  /* 「聚焦所选」放到小地图上方(小地图顶边离下沿 101px + 呼吸 8)。放右下角会和缩放
+     按钮、工具条三层叠在一起,放底部中间则会被时间线的底部检查器压住。 */
+  .open-workbench .focus-button { top:auto; left:8px; right:auto; bottom:109px; }
+  /* AI 面板:从底部升起的抽屉,留出顶部 15% 让画布看得见(844 上约 127px,足够到
+     `--float-clear` 那一条浮动组件)。宽度铺满:窄屏上"贴在右边的卡片"没有意义,
+     它要么占满一行,要么不出现。
+     它**要有自己的一张面**:桌面上这一层是"贴在画布右边的半透明渐变"
+     (`dark-theme.css` 里那条 `linear-gradient(90deg,transparent,…)`),铺满整行之后
+     那个渐变会把画布从左到右透出来 —— 一张偶尔半边透明的抽屉不是抽屉。所以这里
+     换成不透明的面板底 + 上边一条线 + 向上的阴影 + 上面两个圆角。
+     `pointer-events` 也要收回来:面板自己的底下面没有东西可点,点空了不该落到画布上。 */
+  .open-workbench .conversation-overlay {
+    inset:auto 0 0 0;
+    width:auto;
+    height:min(85dvh,720px);
+    background:var(--surface-panel);
+    border-top:1px solid var(--line-card);
+    border-radius:var(--radius-panel) var(--radius-panel) 0 0;
+    box-shadow:0 -14px 34px rgba(72,99,117,.16);
+    pointer-events:auto;
+  }
+  .open-workbench .floating-conversation { inset:12px 10px 8px; }
+  /* 抽屉里那一段历史的内边距:桌面上是给悬浮卡留的透明边,铺满之后不需要。 */
+  .open-workbench .floating-conversation .conversation-history { padding:8px 4px 20px; }
+}

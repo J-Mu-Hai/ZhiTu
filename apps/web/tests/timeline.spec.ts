@@ -279,11 +279,17 @@ test('语义缩放、锚点、平移、概览、卡片布局，以及改截止�
  * 2. **后果**:`elementFromPoint` 打在「年」按钮正中心,命中的必须是那个按钮自己。
  *    这条说的是"用户真的点得到",和上面那条是两件事 —— 一条守意图,一条守结果。
  *
- * ## 只看桌面
+ * ## 两档视口,同一组断言
  *
- * ≤720px 不在这一条里:那一档浮动组件是**竖排两层**(面包屑一行、视图切换一行),
- * 要让开的高度完全不同,和手机工作台一起重做。这里钉的是这一轮修好的那一档
- * (默认视口 1440,以及 `playwright.config.ts` 里那一档)。
+ * 这一条原来只跑默认视口(1440),注释里写着 ≤720 那一档"和手机工作台一起重做" ——
+ * 手机工作台就是这一批。<=480 那一档浮动组件收成了**一行**(见 `ui-refresh.css`
+ * 里那一档),但"工具栏要让开浮动组件的下沿"这件事没有变,于是同一组断言在两档上
+ * 都跑一遍:1440 先跑,再把视口收成 390 复跑。**不是两次点击,是同一个判据在两种
+ * 布局下都必须成立** —— 只钉一档的话,改窄屏样式的人没有任何东西会红。
+ *
+ * 断点生效的等待信号是".conversation-overlay 收起来了":≤480 那一档 AI 面板默认
+ * 收起(`Workbench.tsx` 里 `chatChoice ?? !narrow`),而桌面默认是展开的 —— 它变成
+ * `hidden` 就说明 `useMobileLayout` 真的重渲染过了,后面的几何才是新布局的几何。
  */
 test('时间线工具栏不被浮动路径与视图切换盖住', async ({ page }) => {
   const errors: string[] = [];
@@ -307,37 +313,59 @@ test('时间线工具栏不被浮动路径与视图切换盖住', async ({ page 
   const year = scales.getByRole('button', { name: '年', exact: true });
   await expect(year).toBeVisible();
 
-  // --- 1. 结构性不变量:工具栏顶边在浮动组件下沿之下 ------------------------------
-  //
-  // 比的是 `getBoundingClientRect` 意义上的**同一坐标系**(都以视口左上角为原点),
-  // 所以三个 `boundingBox()` 可以直接比。
-  const [toolbar, breadcrumb, tabs] = await Promise.all([
-    scales.boundingBox(), page.locator('.space-breadcrumb').boundingBox(), page.locator('.view-tabs').boundingBox(),
-  ]);
-  if (!toolbar) throw new Error('时间线工具栏没有尺寸,几何断言无从谈起');
-  for (const [name, floating] of [['空间路径', breadcrumb], ['视图切换', tabs]] as const) {
-    if (!floating) throw new Error(`浮动组件「${name}」没有尺寸,几何断言无从谈起`);
-    expect(
-      toolbar.y,
-      `时间线工具栏的顶边(${Math.round(toolbar.y)}px)落在「${name}」的下沿(${Math.round(floating.y + floating.height)}px)之上`,
-    ).toBeGreaterThanOrEqual(floating.y + floating.height);
-  }
+  /**
+   * 一档视口上把两件事都量一遍。两档共用它,是为了让"这一条到底主张什么"只有一处定义。
+   * @param label 报错时用来说清是**哪一档**红的 —— 只说"被盖住了"的话,读的人第一件
+   *   事是回去数视口宽度。
+   */
+  const assertToolbarClear = async (label: string) => {
+    // --- 1. 结构性不变量:工具栏顶边在浮动组件下沿之下 ----------------------------
+    //
+    // 比的是 `getBoundingClientRect` 意义上的**同一坐标系**(都以视口左上角为原点),
+    // 所以三个 `boundingBox()` 可以直接比。
+    const [toolbar, breadcrumb, tabs] = await Promise.all([
+      scales.boundingBox(), page.locator('.space-breadcrumb').boundingBox(), page.locator('.view-tabs').boundingBox(),
+    ]);
+    if (!toolbar) throw new Error(`${label}:时间线工具栏没有尺寸,几何断言无从谈起`);
+    for (const [name, floating] of [['空间路径', breadcrumb], ['视图切换', tabs]] as const) {
+      if (!floating) throw new Error(`${label}:浮动组件「${name}」没有尺寸,几何断言无从谈起`);
+      expect(
+        toolbar.y,
+        `${label}:时间线工具栏的顶边(${Math.round(toolbar.y)}px)落在「${name}」的下沿(${Math.round(floating.y + floating.height)}px)之上`,
+      ).toBeGreaterThanOrEqual(floating.y + floating.height);
+    }
 
-  // --- 2. 后果:按钮正中心的那一点,归按钮自己 ----------------------------------
-  const hit = await year.evaluate(element => {
-    const rect = element.getBoundingClientRect();
-    const top = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
-    return {
-      // `contains` 是给按钮内部那个文字/图标节点留的余地 —— 命中的是它自己或它的后代
-      // 都算"点得到它"。
-      self: top === element || element.contains(top),
-      // 没命中时把**到底盖着什么**报出来。只报一句 `expected true` 的话,下一个人
-      // 还得自己去猜是哪一个浮动组件压上来了。
-      blockedBy: top ? `${top.tagName.toLowerCase()}.${String((top as HTMLElement).className)}` : 'null',
-      covered: top ? (top.textContent ?? '').trim().slice(0, 20) : '',
-    };
-  });
-  expect(hit.self, `「年」按钮的中心被 ${hit.blockedBy}${hit.covered ? `(${hit.covered})` : ''} 盖住了`).toBe(true);
+    // --- 2. 后果:按钮正中心的那一点,归按钮自己 --------------------------------
+    const hit = await year.evaluate(element => {
+      const rect = element.getBoundingClientRect();
+      const top = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+      return {
+        // `contains` 是给按钮内部那个文字/图标节点留的余地 —— 命中的是它自己或它的后代
+        // 都算"点得到它"。
+        self: top === element || element.contains(top),
+        // 没命中时把**到底盖着什么**报出来。只报一句 `expected true` 的话,下一个人
+        // 还得自己去猜是哪一个浮动组件压上来了。
+        blockedBy: top ? `${top.tagName.toLowerCase()}.${String((top as HTMLElement).className)}` : 'null',
+        covered: top ? (top.textContent ?? '').trim().slice(0, 20) : '',
+      };
+    });
+    expect(hit.self, `${label}:「年」按钮的中心被 ${hit.blockedBy}${hit.covered ? `(${hit.covered})` : ''} 盖住了`).toBe(true);
+  };
+
+  await assertToolbarClear('桌面 1440');
+
+  // --- 3. 同一组断言,手机那一档再来一遍 ----------------------------------------
+  await page.setViewportSize({ width: 390, height: 844 });
+  /*
+   * 等到断点真的生效。**不用定时器**:`≤480` 那一档 AI 面板默认收起,而桌面默认展开,
+   * 它变成 `hidden` 就是"`useMobileLayout` 已经按新宽度重渲染过"的证据。
+   */
+  await expect(page.locator('.conversation-overlay')).toBeHidden();
+  // 四个视图入口一个不少 —— 窄屏只是把文字收进图标里,`aria-label` 还在
+  // (`Workbench.tsx` 里那段),所以这里按名字找仍然找得到。
+  for (const tab of ['路径', '时间线', '任务', '排期']) await expect(page.getByRole('tab', { name: tab, exact: true })).toBeVisible();
+  await assertToolbarClear('手机 390');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
 
   expect(errors).toEqual([]);
 });
