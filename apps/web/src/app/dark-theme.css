@@ -896,8 +896,18 @@ select {
   --surface: #ffffff;
   --line: #d9e3e8;
   --text: #24384d;
-  --muted: #708294;
-  --blue: #5f94c8;
+  /* `--muted` 原来是 `#708294`,压在暖白上只有 3.92:1 —— 不到 4.5:1,而这个变量
+     撑的是全站的次级文字(元信息、说明句、区块标签),是"字体偏小"之外的第二层
+     读不清。压深到 `#5b6e83` 是 5.20:1(`#fffefa`)/ 4.63:1(`--ink-3`),
+     四档浅底全部过线。这是**根因修**,不是逐条改:20 多处硬编码的浅灰蓝
+     (`#8195ae`、`#899db8`、`#8b9aae`…)本来就是它的走样副本,
+     下面逐条换回 `var(--muted)` 之后它们一起对。 */
+  --muted: #5b6e83;
+  /* 同理,`--blue` 原来是 `#5f94c8`(3.17:1)。它在全仓只做三件事:焦点环、
+     `.primary-button` 的描边、以及**四处文字**(随笔筛选、今天的动作按钮、
+     「按执行情况调整」)。前两件是图形,后一件是文字 —— 一支颜色同时干这两件事时
+     得按严的那条来,所以直接压深这一支(5.52:1),不另开一个名字。 */
+  --blue: #3f6b98;
   --academic: #6f9fd2;
   --research: #79aa9d;
   --experience: #dfa36d;
@@ -956,7 +966,9 @@ body {
 .top-navigation nav a,
 .top-profile-nav,
 .space-breadcrumb > span {
-  color: #687f93;
+  /* 顶栏这一组(`#687f93`,4.14:1)是同一支"次级文字"的走样本 —— 它出现在**每一个
+     页面**上,所以它是这套灰里最常被读到的一处。收回到 `--muted`。 */
+  color: var(--muted);
 }
 
 .top-navigation nav a:hover,
@@ -1357,6 +1369,52 @@ body {
 .report-body section,
 .hub-thread > header,
 .hub-linked { border-color: #dbe5e8; }
+
+/* ---------------------------------------------- 首页与随笔:深色时代的颜色没收干净
+ *
+ * 上面这一层是"暖白覆盖深色"出来的,而覆盖是按选择器逐条写的 —— 写在**更早的文件**
+ * (`globals.css` / `experience.css`)里的那些深色灰,只要暖白层没点名,就原样活着。
+ * 它们的共同长相是:一支偏蓝的浅灰(#8195ae / #899db8 / #8b9aae / #7e93ae / #859bab /
+ * #8198ad / #8098b3),压在暖白上是 2.7~3.0:1。**这不是"灰色不够黑",是深色主题的
+ * 灰被搬到了浅底上** —— 同一支灰在深底上是合理的,在浅底上就是读不清。
+ *
+ * 所以修法不是逐条调色,是让它们回到本层已经定好的那支次级文字色 `var(--muted)`
+ * (见上面 `:root`,已压到 5.20:1)。这一组是"同一支灰走样出来的七个副本"。
+ *
+ * 特异性说明:这些选择器在原文件里是 (0,1,0)/(0,2,0),本层写在后面且同特异度,
+ * 所以赢;带祖先的那两条(`.editorial-header > p`、`.today-aside > p`)必须照抄祖先,
+ * 写成裸 `.empty-note` 那种形式赢不了。
+ */
+.editorial-header > p,
+.editorial-header > .eyebrow,
+.today-aside > p,
+.empty-note,
+.portrait-trends,
+.portrait-trends b,
+.section-label,
+.section-label > span:last-child,
+.journal-date > strong,
+.asset-summary strong,
+.behavior-stats strong,
+.spaces-hero p,
+.text-button,
+.filter-row button,
+.scale-tabs button { color: var(--muted); }
+
+/* 焦点卡里的四行字。`#a4b5cd`(2.07:1)和 `#6f859f`(3.76:1)是同一批残留,
+   这张卡是首页最该被读到的一张,里面的话却最浅。
+   计时器单独走 `--blue`:它是倒数,要被看见,而 `#aec7e8` 只有 1.71:1。
+   分类那行跟着走 `--muted` —— 语义由前面那颗点承担,字不需要再淡一次。 */
+.today-page .focus-card > p,
+.today-page .focus-meta,
+.today-page .focus-category { color: var(--muted); }
+.today-page .focus-timer { color: var(--blue); }
+
+/* 勾选框的描边。`globals.css` 写的是 `#5b6a7e`(深石板灰),只有 `.task-view` 里的
+   那一种被暖白层收成了 `#8da9b9` —— 首页那一颗走的是裸 `.task-check`,于是暖白的
+   页面上坐着一个深灰的方框。`#6f8fa2` 是本层色系里的蓝灰,3.40:1,
+   过"非文字 3:1"这条线(方框是图形,不是字,4.5:1 那条不适用)。 */
+.task-check { border-color: #6f8fa2; }
 
 ::-webkit-scrollbar-thumb { background-color: #c7d7dd; }
 ::-webkit-scrollbar-thumb:hover { background-color: #aebfc7; }

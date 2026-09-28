@@ -5,6 +5,12 @@
 .top-brand strong { font-size:22px; }
 .top-brand small { font-size:9px; }
 .spaces-page,.editorial-page.journal-page,.editorial-page.today-page { width:100%; max-width:1440px; margin:0 auto; padding:40px 44px 64px; }
+/* 内容列。首页和随笔原来各走各的宽:首页里 `.week-overview` 铺满 1352px、
+   `.today-columns` 与提醒条各自 1100px,随笔一路铺到 1390px —— 同一屏里两三个右边界,
+   卡片看着像没对齐(那张浅杏色的提醒条"比上下的卡片窄一截"就是这么来的)。
+   上限收到**页面**这一层,里面的块一律不再自带上限,整页就只剩一个边界。
+   1268 = 内容列 1180 + 两侧各 44 的内边距(和 `.spaces-page` 同一套内边距)。 */
+.editorial-page.journal-page,.editorial-page.today-page { max-width:1268px; }
 .spaces-hero { padding-bottom:24px; margin-bottom:24px; border-bottom:1px solid #dbe5eb; }
 .spaces-hero h1 { font-size:34px; margin:12px 0; color:#193750; }
 .spaces-hero p { font-size:15px; }
@@ -22,51 +28,85 @@
 .editorial-page .editorial-header { margin-bottom:24px; }
 .editorial-page .editorial-header h1 { font-size:30px; margin:12px 0; line-height:1.4; }
 .editorial-page .editorial-header p { font-size:14px; }
-.journal-compose-trigger { display:flex; align-items:center; gap:14px; width:100%; padding:19px 22px; border:1px solid #d5e5f0; border-radius:12px; background:#f5faff; color:#577591; text-align:left; }
+.journal-compose-trigger { display:flex; align-items:center; gap:14px; width:100%; padding:19px 22px; border:1px solid #d5e5f0; border-radius:var(--radius-card); background:#f5faff; color:#577591; text-align:left; }
 .journal-compose-trigger span { flex:1; }
-.journal-page .journal-composer { padding:18px 22px; border-radius:14px; margin:0; background:#fff; }
+.journal-page .journal-composer { padding:16px 20px; border-radius:var(--radius-card); margin:0; background:var(--surface-panel); }
 .journal-compose-heading { display:flex; align-items:center; justify-content:space-between; color:#59748a; font-size:12px; }
-.journal-page .journal-composer textarea { min-height:110px; height:130px; resize:vertical; margin:12px 0; font-size:14px; }
-.journal-storage-note { margin:10px 2px 24px; color:#7b817d; font-size:12px; }
+/* 展开之后的输入区,是"一整块巨大的白色"的直接来源:原来 130px 高、12px 的外边距,
+   里面只有两行字,整块连标题一起约 265px —— 页面上最大的一个空白。写随笔的正文
+   本来就会往下长(`resize:vertical`),起始高度不需要替用户预留那么多。 */
+.journal-page .journal-composer textarea { min-height:88px; height:96px; resize:vertical; margin:10px 0; font-size:13.5px; line-height:1.8; }
+.journal-storage-note { margin:10px 2px 24px; color:var(--muted); font-size:12px; }
 .journal-page .journal-feed-header { margin:24px 0 16px; gap:16px; }
 .journal-feed-header h2 { font-size:18px; white-space:nowrap; }
-.journal-feed-header h2 small { color:#7990a3; margin-left:8px; font-weight:400; }
+.journal-feed-header h2 small { color:var(--muted); margin-left:8px; font-weight:400; }
 .journal-feed-header .filter-row { display:flex; flex-wrap:wrap; gap:6px; }
-.journal-reading-layout { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.15fr); align-items:start; gap:22px; }
-.journal-list { display:grid; gap:10px; min-width:0; }
-.journal-list-item { display:flex; gap:18px; width:100%; padding:20px; border:1px solid #e0e7ea; border-radius:13px; background:#ffffffbd; text-align:left; }
+/* `align-items:start` 让两栏各按自己的内容高 —— 右栏 `.journal-reader` 有 360px 的
+   最小高,左栏没记录时只有一个裸的 `<p class="empty-note">`(一行字),于是左栏明显
+   "塌"下去,看着像没加载出来。改成 `stretch` 让两栏同高,空态自己再撑起一个框(见下)。 */
+.journal-reading-layout { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.15fr); align-items:stretch; gap:22px; }
+/* `align-content:start` 不能省:`stretch` 之后,如果这里留着默认值,网格会把多出来的
+   高度摊给每一行,几条记录之间的间距会被拉大。 */
+.journal-list { display:grid; align-content:start; gap:10px; min-width:0; }
+.journal-list-item { display:flex; gap:18px; width:100%; padding:20px; border:1px solid var(--line-card); border-radius:var(--radius-card); background:var(--surface-quiet); text-align:left; }
 .journal-list-item.selected { border-color:#a7cbe7; background:#f4faff; }
-.journal-list-item>time { flex:0 0 58px; padding-right:12px; border-right:1px solid #e3eaee; font-size:12px; color:#7790a6; }
+/* 58px 装不下「09月28日」:12px 下这一串约 63px,于是日期被折成「09月28」+「日」,
+   列表里每一行的日期都是两行 —— 这是最容易被看出来的那种不整齐。放宽到 76px
+   (63 + 12 右边距 + 1px 余量)并且明确不许折行。 */
+.journal-list-item>time { flex:0 0 76px; padding-right:12px; border-right:1px solid #e3eaee; font-size:12px; color:var(--muted); white-space:nowrap; }
 .journal-list-item>div { min-width:0; flex:1; }
 .journal-list-item h2 { font-size:15px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:#203d56; }
-.journal-list-item p { margin:8px 0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; color:#7a8d9e; font-size:13px; }
+.journal-list-item p { margin:8px 0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; color:var(--muted); font-size:13px; }
+/* 一条记录都没有的时候,左栏渲染的是 `<p class="empty-note">`(`Journal.tsx`)。
+   给它一个和右栏同高的空框:不然两边一高一矮,右栏那张卡孤零零地立着,读起来像
+   左栏坏了。虚线边是"这里现在是空的",不是"这里出错了"。 */
+.journal-list > .empty-note {
+  display:grid; align-content:center; justify-items:center; min-height:360px;
+  padding:24px; border:1px dashed #dde6ea; border-radius:var(--radius-card);
+  background:var(--surface-quiet); text-align:center;
+}
 .journal-tags { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
-.journal-tags small { margin-left:auto; color:#8a9baa; }
-.journal-tags span { padding:4px 10px; border-radius:16px; background:#eaf4fc; color:#4679a1; font-size:11px; }
+.journal-tags small { margin-left:auto; color:var(--muted); }
+.journal-tags span { padding:4px 10px; border-radius:var(--radius-pill); background:#eaf4fc; color:var(--blue); font-size:11px; }
 .journal-tags span:nth-child(even) { background:#fbefdf; color:#97734d; }
-.journal-reader { position:sticky; top:20px; min-height:360px; padding:30px; border:1px solid #e0e7ea; border-radius:16px; background:#fffefa; overflow-wrap:anywhere; }
-.journal-reader time { color:#8195a5; font-size:12px; }
+.journal-reader { position:sticky; top:20px; min-height:360px; padding:30px; border:1px solid var(--line-card); border-radius:var(--radius-panel); background:var(--surface-panel); box-shadow:var(--shadow-card); overflow-wrap:anywhere; }
+.journal-reader time { color:var(--muted); font-size:12px; }
 .journal-reader h2 { margin:16px 0; font-size:21px; line-height:1.5; }
-.journal-full-text { white-space:pre-wrap; line-height:1.95; font-size:14px; color:#4c6377; margin-bottom:24px; }
-.journal-reader-empty { display:grid; justify-items:center; align-content:center; min-height:280px; color:#859bab; text-align:center; }
+.journal-full-text { white-space:pre-wrap; line-height:1.9; font-size:14px; color:#4c6377; margin-bottom:24px; }
+.journal-reader-empty { display:grid; justify-items:center; align-content:center; min-height:280px; color:var(--muted); text-align:center; }
 .journal-reader-empty p { font-size:13px; }
 .today-page .editorial-header>.eyebrow { display:none; }
-.today-page .page-date { display:block; color:#6b8baa; }
-.today-page .today-columns { gap:24px; grid-template-columns:minmax(0,1.2fr) minmax(280px,1fr); }
-.today-page .today-columns>section,.today-page .today-aside { padding:22px; border:1px solid #dfebf1; border-radius:16px; background:#ffffffd9; }
-.today-page .focus-card { background:#f3f9fd; box-shadow:none; padding:16px; }
-.today-page .today-item { border-radius:10px; }
+.today-page .page-date { display:block; color:var(--muted); }
+/* 1.2 : 1 是"左栏比右栏宽一点",而右栏是一整张卡片 —— 两栏看起来一样重,
+   首页就分不出"主"和"侧"了。1.4 : 1 在 1180 下是 664 / 470:右栏还放得下那段观察,
+   左栏重新成为这一屏的主。 */
+.today-page .today-columns { gap:24px; grid-template-columns:minmax(0,1.4fr) minmax(280px,1fr); max-width:none; }
+/* 首页的三档表面。原来这三块用的是 `#ffffffd9` / `#ffffffdf` 这种**半透明白**,
+   底下的暖白透上来,卡片之间就只剩一条极浅的线可分 —— 这是"边界发糊"的直接来源,
+   权重自然全都一样。改成不透明的一档,配同一条 `--line-card` 和同一层 `--shadow-card`,
+   卡片才立得住。(`tokens.css` 里那一组 `--surface-*` 就是为这里建的。) */
+.today-page .today-columns>section,.today-page .today-aside { padding:22px; border:1px solid var(--line-card); border-radius:var(--radius-panel); background:var(--surface-panel); box-shadow:var(--shadow-card); }
+/* 焦点卡是首页最该被先看到的一张,而它原来是全场**唯一没有卡片形态**的:
+   `experience.css` 只给了它上下两条 1px 线(下边那条还是深色时代的 `#293c53`,
+   一条近黑的线画在暖白页面上),0 圆角、无阴影、无边框。这里给它完整的 raised 形态,
+   `border` 简写同时把那两条线收掉。
+   它取的是三档表面里**最高的那一档**:底走 `--surface-raised`(白,再往右下微染一层
+   雾蓝,让"今天最重要的那件事"这张卡在暖白页面上比周围的白再亮一点),阴影走
+   `--shadow-panel` —— 比周围那圈 `--shadow-card` 的面板重一档。两档差距就是
+   "主"和"侧"的差距;如果它和面板一样,这一屏又会回到"三块一样重"。 */
+.today-page .focus-card { padding:20px; border:1px solid var(--line-card); border-radius:var(--radius-card); background:linear-gradient(150deg,var(--surface-raised),#f3f9fd); box-shadow:var(--shadow-panel); }
+.today-page .today-item { border-radius:var(--radius-control); }
 .today-page .today-aside { width:auto; }
 .today-page .quiet-note { margin-top:20px; }
-.week-overview { padding:22px; margin-bottom:24px; border:1px solid #dfeaf0; border-radius:16px; background:#ffffffdf; }
+.week-overview { padding:22px; margin-bottom:24px; border:1px solid var(--line-card); border-radius:var(--radius-panel); background:var(--surface-panel); box-shadow:var(--shadow-card); }
 .week-overview>header,.week-overview h2,.week-overview>header>div { display:flex; align-items:center; gap:12px; }
 .week-overview>header { justify-content:space-between; flex-wrap:wrap; }
 .week-overview h2 { font-size:18px; color:#234867; flex-wrap:wrap; }
-.week-overview small { color:#8198ad; font-weight:400; font-size:12px; }
-.week-overview>header button { border:1px solid #d9e7f0; padding:7px 12px; border-radius:7px; color:#527fa7; }
+.week-overview small { color:var(--muted); font-weight:400; font-size:12.5px; }
+.week-overview>header button { border:1px solid #d9e7f0; padding:7px 12px; border-radius:var(--radius-control); color:var(--blue); }
 .week-day-strip { display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); margin:18px 0; }
-.week-day-strip>button { position:relative; display:grid; gap:8px; justify-items:center; padding:14px 0; font-size:13px; color:#6c8ba5; border-radius:12px; }
-.week-day-strip>button.selected { background:#eff7fd; color:#368ae0; }
+.week-day-strip>button { position:relative; display:grid; gap:8px; justify-items:center; padding:14px 0; font-size:13px; color:var(--muted); border-radius:var(--radius-control); }
+.week-day-strip>button.selected { background:#eff7fd; color:var(--blue); }
 .week-day-strip i { width:10px; height:10px; background:#79aada; border-radius:50%; margin:8px 0; }
 .week-day-strip>button:before { content:''; position:absolute; top:80px; left:0; right:0; height:1px; background:#bcd5e9; }
 .week-day-strip i { z-index:1; }
@@ -74,9 +114,39 @@
 .week-selected-list h3 { font-size:14px; margin-bottom:12px; }
 .week-selected-list h3 small { margin-left:12px; }
 .week-selected-list>a { display:flex; align-items:center; justify-content:space-between; padding:12px 8px; gap:16px; border-bottom:1px solid #edf2f5; font-size:13px; }
-.week-selected-list>a>span:last-child { display:flex; align-items:center; gap:8px; white-space:nowrap; color:#7191a8; }
+.week-selected-list>a>span:last-child { display:flex; align-items:center; gap:8px; white-space:nowrap; color:var(--muted); }
 .week-selected-list>a small { display:block; margin-top:4px; }
-.week-selected-list>p { color:#869aaa; font-size:13px; padding:12px 0; }
+.week-selected-list>p { color:var(--muted); font-size:13px; padding:12px 0; }
+
+/* ------------------------------------------------ 首页与随笔:字号与留白
+ *
+ * 这一组全部是**覆盖**,原值在 `experience.css` / `globals.css` 里 —— 那两个文件
+ * 各是一整行,就地改会把一整行都变成 diff,而这一层(`ui-refresh.css`)本来就是
+ * 事实上的最终排版层,覆盖比改源头可读。
+ *
+ * 病的名字是"字体偏小",但根子是**层级平**:眉标 9px、区块标签 9px、元信息 10px,
+ * 三档挤在一起,读起来分不出主次。抬的是小字,层级关系不动。
+ * 颜色不在这里管 —— 深色时代的灰在 `dark-theme.css` 最后一层收口。
+ */
+.eyebrow,.editorial-header>.eyebrow,.today-aside>.eyebrow { font-size:11px; letter-spacing:1.4px; }
+/* 区块标签(「今天最重要的事」「接下来」)。它的右半截(`01 / FOCUS`)原来 9px,
+   是这一屏里最小的字 —— 而它是个编号,不是装饰。 */
+.section-label { font-size:12px; font-weight:600; }
+.section-label>span:last-child { font-size:10.5px; letter-spacing:1px; }
+.today-page .today-aside>p { font-size:13px; line-height:1.85; }
+/* 焦点卡顶上那行分类(「保研准备」+ 一颗点)是 10px —— 首页上最小的字,
+   而它说的是"这件事属于哪个空间"。抬到 11.5px,和眉标同一档。 */
+.today-page .focus-category { font-size:11.5px; }
+/* 右栏那个「刷新今天的安排」是全页最小的字:`experience.css` 里
+   `.today-aside .text-button { font-size:10px }`(0,2,0)压过了上面那条裸的 `.text-button`。
+   10px 在暖白上已经不是"次要",是"看不清"。 */
+.today-page .today-aside .text-button { font-size:12px; }
+.empty-note { font-size:13px; line-height:1.9; padding:22px 0; }
+.text-button { font-size:12px; }
+.quiet-note { font-size:13px; line-height:1.9; }
+/* 「接下来」是每栏下面的第二节,原来只靠 38px 的上边距和上一节拉开。
+   38 太远(它把两节拆成了两个区块),28 之后它们读起来还是同一栏。 */
+.today-page .up-next { margin-top:28px; }
 .open-workbench .workspace { padding-right:clamp(300px,29vw,420px); }
 .open-workbench .chat-hidden .workspace { padding-right:0; }
 .open-workbench .conversation-overlay { width:clamp(300px,29vw,420px); top:66px; bottom:16px; background:none; }

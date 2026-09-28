@@ -32,6 +32,10 @@
 }
 
 /* ---------------------------------------------------------------- 提醒条 */
+/* 提醒条是首页排在标题下面、周览上面的一块,而它原来自己写着 `max-width: 1100px` ——
+   和下面 `.today-columns` 的 1100px 一样,但上面的 `.week-overview` 没有上限,
+   于是同一屏里出现两个右边界:那张浅杏色的条比上下的卡片窄一截,看着像没对齐。
+   上限收到页面这一层(`ui-refresh.css` 的 `.editorial-page.today-page`),里面不再各写各的。 */
 .reminder-strip {
   display: flex;
   gap: 12px;
@@ -39,10 +43,9 @@
   background: var(--surface);
   border: 1px solid var(--line);
   border-left: 3px solid var(--experience);
-  border-radius: 6px;
+  border-radius: var(--radius-card);
   padding: 14px 16px;
   margin-bottom: 26px;
-  max-width: 1100px;
 }
 
 .reminder-strip.muted {
@@ -62,7 +65,9 @@
 .reminder-strip > svg {
   flex-shrink: 0;
   margin-top: 2px;
-  color: var(--experience);
+  /* 那颗铃铛图标原来直接用 `--experience`(#dfa36d),压在暖白上 2.17:1。
+     杏色留着做左侧那根 3px 的竖条(那是色块,不是图形);图标走压深版。 */
+  color: var(--experience-ink);
 }
 
 .reminder-list {
@@ -74,14 +79,14 @@
 }
 
 .reminder strong {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 500;
   color: var(--text);
 }
 
 .reminder p {
-  font-size: 12px;
-  line-height: 1.85;
+  font-size: 13px;
+  line-height: 1.75;
   color: var(--muted);
   margin-top: 6px;
 }
@@ -93,7 +98,7 @@
 }
 
 .reminder-actions button {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--blue);
   padding: 0;
 }
@@ -109,6 +114,15 @@
   border-bottom: 1px solid var(--line-soft);
 }
 
+/* 焦点卡里那一条**不分隔任何东西**:`border-bottom` 是为"一列多项"画的,而
+   `.focus-card` 里只有这一条(`RealToday.tsx` 的 `focusItem`),于是那条线落在卡片
+   下沿往上 25px 的地方,两头各留 21px 的内边距 —— 看着像卡片裂了一道缝。
+   只在焦点卡里收掉;「接下来」那一列的行间线是**真的在分隔**,原样保留。 */
+.focus-card > .today-item {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
 .today-item-main {
   display: flex;
   align-items: center;
@@ -120,25 +134,29 @@
   color: var(--muted);
 }
 
+/* 一行一件。标题原来 14px/1.7,和它下面那行 10px 的小字差着四档 ——
+   首页一屏里有六到八行,这行是唯一要读的,把它抬到 14.5px 并把行高收到 1.6
+   (单行标题不需要 1.7 那么松),下面那行小字抬到 11.5px:10px 在暖白上
+   已经接近"看不清"而不是"不重要"。 */
 .today-item-title {
   flex: 1;
   text-align: left;
-  font-size: 14px;
-  line-height: 1.7;
+  font-size: 14.5px;
+  line-height: 1.6;
   color: var(--text);
   min-width: 0;
 }
 
 .today-item-title small {
   display: block;
-  font-size: 10px;
-  line-height: 1.8;
+  font-size: 11.5px;
+  line-height: 1.7;
   color: var(--muted);
   margin-top: 3px;
 }
 
 .today-item-meta {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
@@ -149,25 +167,30 @@
   color: var(--muted);
 }
 
+/* 缩进 33px 是抄来的:这一行要和标题的左边缘对齐,而标题左边是
+   `.task-check`(15px)加 `.today-item-main` 的 12px 间距 = 27px。33px 让这三块
+   (结果行、动作行、填写表单)比标题多缩 6px,一屏里每一条都歪着。
+   写成算式而不是 27px,是为了下次谁改勾选框宽度时它跟着走。 */
 .today-item-result {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.8;
-  color: var(--research);
-  margin: 8px 0 0 33px;
+  /* `--research` 当字只有 2.59:1,见 `tokens.css` 里的墨色变体。 */
+  color: var(--research-ink);
+  margin: 8px 0 0 calc(15px + var(--space-3));
 }
 
 .today-item-actions {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin: 8px 0 0 33px;
+  margin: 8px 0 0 calc(15px + var(--space-3));
 }
 
 .today-item-actions .text-button {
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .today-item-saving {
@@ -179,18 +202,18 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
-  margin: 12px 0 4px 33px;
+  margin: 12px 0 4px calc(15px + var(--space-3));
   padding: 14px;
   background: var(--ink-2);
   border: 1px solid var(--line-soft);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
 }
 
 .today-item-form label {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
 }
 
@@ -215,7 +238,7 @@
 }
 
 .today-item-form-actions button {
-  font-size: 11px;
+  font-size: 12px;
   padding: 8px 12px;
   border: 1px solid var(--line);
   border-radius: 5px;
