@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { artifactPath } from './support/artifacts';
 import { canvasTool } from './support/menu';
-import { assertBackendRunning, clickUntilVisible, createWorkspace, registerAccount, TOKEN_KEY } from './support/session';
+import { assertBackendRunning, clickUntilVisible, createWorkspace, registerAccount, TOKEN_KEY, waitForRealPlan } from './support/session';
 
 /**
  * 账户与档案。
@@ -103,6 +103,11 @@ test('注册之后自己建空间、建节点，刷新后还在', async ({ page 
 
   // 建完直接进这个新空间 —— 新空间是**空的**,只有根目标。
   await expect(page).toHaveURL(/\/workbench\?workspace=/);
+  // **先等计划真的到。** 不等的话 `canvasTool` 拿回来的是那个
+  // `disabled title="正在读取计划…"` 的按钮,而菜单所在的 `<details>` 会在计划到达的
+  // 那一次重渲染里被整个换掉 —— 元素 detach,后面每一步都在跟 30 秒上限赛跑。
+  // 它红的时候长得像"按钮没了",其实是没等前置条件(见 `support/menu.ts` 里 `canvasTool`)。
+  await waitForRealPlan(page);
   // 「新建节点」在这个工具栏的低频菜单里(见 `support/menu.ts`),所以是**两步**:
   // 菜单里那一项在、能用,再点它。断言的东西没变 —— 变的是它现在住在哪儿。
   const create = await canvasTool(page, '新建节点');
@@ -130,6 +135,8 @@ test('个人资料可以编辑并持久化，而且只属于自己这个账户',
 
   await expect(page.getByRole('heading', { name: spaceTitle })).toBeVisible();
   await page.getByRole('button', { name: '进入工作台' }).click();
+  // 同上:点开菜单之前先等计划到,否则等的是一个会被重渲染换掉的元素。
+  await waitForRealPlan(page);
   await (await canvasTool(page, '新建节点')).click();
   await page.getByLabel('节点名称').fill(nodeTitle);
   await page.getByRole('dialog').getByRole('button', { name: '新建节点' }).click();

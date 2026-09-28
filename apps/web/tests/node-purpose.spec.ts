@@ -54,6 +54,9 @@ function card(page: Page, nodeId: string) {
 test('建一个「主题 / 方向」建出来的节点是信息用途，而且没有任务勾选框', async ({ page }) => {
   const { account, workspaceId } = await scene(page, 'purpose-create');
   await page.goto(`/workbench?workspace=${workspaceId}`);
+  // 先等计划到再开菜单:菜单那个 `<details>` 会被"计划到达"那次重渲染整个换掉,
+  // 不等的话下面那两句等的是一个正在被销毁的元素(见 `support/menu.ts` 里 `canvasTool`)。
+  await waitForRealPlan(page);
   const trigger = await canvasTool(page, '新建节点');
   await expect(trigger).toBeEnabled();
   await trigger.click();

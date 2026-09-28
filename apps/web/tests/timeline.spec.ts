@@ -252,3 +252,92 @@ test('语义缩放、锚点、平移、概览、卡片布局，以及改截止�
 
   expect(errors).toEqual([]);
 });
+
+/**
+ * 时间线工具栏不被工作台的浮动组件盖住。
+ *
+ * ## 为什么单开一条,而不是塞进上面那条
+ *
+ * 上面那条测的是**行为**;这一条测的是**几何**。混在一起的话,一次"工具栏被盖住"
+ * 会先红在某个点击上,报出来是"元素不可见/点不动",读的人要顺着堆栈往回找才会想到
+ * 是布局 —— 它长得像被测功能坏了。
+ *
+ * ## 这条几何到底在防什么
+ *
+ * 时间线是这一页里唯一**从上往下排**的视图。`.space-breadcrumb`(空间路径)和
+ * `.view-tabs`(四个视图入口)是绝对定位的浮动组件,`top:16px`,`z-index:25`;
+ * 时间线的工具栏在普通流里,顶边原本只有 20px 内边距 —— 于是整组"年/季度/月/周/天"
+ * 落在面包屑矩形里,而点击被面包屑接走。**失败的样子是"按钮点不动"**,不是"两个东西
+ * 叠在一起",因为叠在上面的那一层本身就是可交互的元素(「全部空间」按钮、空间名)。
+ *
+ * ## 两条断言,一近一远
+ *
+ * 1. **结构性不变量**:工具栏的顶边必须在浮动组件的下沿之下。
+ *    这条说的是"为什么",而且**不依赖浮动的宽度** —— 面包屑里的空间名短的时候,
+ *    它自己可能只有两百来像素宽,按钮不一定落在它底下,`elementFromPoint` 就未必
+ *    红。不变量是"无论多宽都不许叠",所以拿它兜底。
+ * 2. **后果**:`elementFromPoint` 打在「年」按钮正中心,命中的必须是那个按钮自己。
+ *    这条说的是"用户真的点得到",和上面那条是两件事 —— 一条守意图,一条守结果。
+ *
+ * ## 只看桌面
+ *
+ * ≤720px 不在这一条里:那一档浮动组件是**竖排两层**(面包屑一行、视图切换一行),
+ * 要让开的高度完全不同,和手机工作台一起重做。这里钉的是这一轮修好的那一档
+ * (默认视口 1440,以及 `playwright.config.ts` 里那一档)。
+ */
+test('时间线工具栏不被浮动路径与视图切换盖住', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', e => errors.push(e.message));
+
+  const { token } = await registerAccount(page, 'timeline-geometry');
+  const workspaceId = await createWorkspace(page, token, '时间线几何验收空间');
+  const root = (await getPlan(page, token, workspaceId)).nodes[0];
+  // 建一个节点:让这一页落在**计划已经到达**的状态上,而不是那份还没连上后端的
+  // 占位树。占位状态下工具栏也在,但拿一个"还没准备好"的界面验几何,红了分不清
+  // 是布局错了还是页面还没到。
+  const dated = await createNode(page, token, workspaceId, {
+    parentId: root.id, title: '几何用例的节点', nodeType: 'task', deadline: dayOffset(20),
+  });
+
+  await openSpacePage(page, '/workbench', workspaceId, { view: 'timeline' });
+  await expect(page.locator(`[data-timeline-item="${dated}"] [data-timeline-card]`)).toBeVisible();
+
+  const scales = page.getByRole('group', { name: '时间尺度' });
+  // `exact` 是必须的:五个尺度里「季度」也含「年」字,不精确匹配会同时命中两个。
+  const year = scales.getByRole('button', { name: '年', exact: true });
+  await expect(year).toBeVisible();
+
+  // --- 1. 结构性不变量:工具栏顶边在浮动组件下沿之下 ------------------------------
+  //
+  // 比的是 `getBoundingClientRect` 意义上的**同一坐标系**(都以视口左上角为原点),
+  // 所以三个 `boundingBox()` 可以直接比。
+  const [toolbar, breadcrumb, tabs] = await Promise.all([
+    scales.boundingBox(), page.locator('.space-breadcrumb').boundingBox(), page.locator('.view-tabs').boundingBox(),
+  ]);
+  if (!toolbar) throw new Error('时间线工具栏没有尺寸,几何断言无从谈起');
+  for (const [name, floating] of [['空间路径', breadcrumb], ['视图切换', tabs]] as const) {
+    if (!floating) throw new Error(`浮动组件「${name}」没有尺寸,几何断言无从谈起`);
+    expect(
+      toolbar.y,
+      `时间线工具栏的顶边(${Math.round(toolbar.y)}px)落在「${name}」的下沿(${Math.round(floating.y + floating.height)}px)之上`,
+    ).toBeGreaterThanOrEqual(floating.y + floating.height);
+  }
+
+  // --- 2. 后果:按钮正中心的那一点,归按钮自己 ----------------------------------
+  const hit = await year.evaluate(element => {
+    const rect = element.getBoundingClientRect();
+    const top = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    return {
+      // `contains` 是给按钮内部那个文字/图标节点留的余地 —— 命中的是它自己或它的后代
+      // 都算"点得到它"。
+      self: top === element || element.contains(top),
+      // 没命中时把**到底盖着什么**报出来。只报一句 `expected true` 的话,下一个人
+      // 还得自己去猜是哪一个浮动组件压上来了。
+      blockedBy: top ? `${top.tagName.toLowerCase()}.${String((top as HTMLElement).className)}` : 'null',
+      covered: top ? (top.textContent ?? '').trim().slice(0, 20) : '',
+    };
+  });
+  expect(hit.self, `「年」按钮的中心被 ${hit.blockedBy}${hit.covered ? `(${hit.covered})` : ''} 盖住了`).toBe(true);
+
+  expect(errors).toEqual([]);
+});

@@ -196,7 +196,7 @@ test('离开工作台再回到同一层，没提交的输入还在（明确关�
 test('换空间时草稿不串：新空间看不到旧空间的输入，切回去它还在', async ({ page }) => {
   const { token } = await registerAccount(page, 'canvas-space');
   const first = await createWorkspace(page, token, '草稿验收空间一', '第一个空间');
-  await createWorkspace(page, token, '草稿验收空间二', '第二个空间');
+  const second = await createWorkspace(page, token, '草稿验收空间二', '第二个空间');
   const draft = '这是空间一里没提交的东西';
 
   await page.goto('/spaces');
@@ -210,7 +210,23 @@ test('换空间时草稿不串：新空间看不到旧空间的输入，切回�
   await page.goBack();
   await expect(page).toHaveURL(/\/spaces$/);
   await page.locator('.space-card', { hasText: '草稿验收空间二' }).getByRole('button', { name: '进入工作台' }).click();
-  await waitForRealPlan(page);
+  /*
+   * **这里等的必须是"二那一份计划",不能是"画布上有计划"。**
+   *
+   * 换空间时画布上还挂着一的计划,而 `waitForRealPlan` 只看"有没有真节点" ——
+   * 它会被那份**旧画面**直接喂饱。于是真正的加载在它之后才开始:按钮先变回
+   * `disabled title="正在读取计划…"`,计划到了那一次重渲染又把整个 `<details>`
+   * 换掉。两件事叠在一起,`canvasTool` 交出去的那个定位器就成了一个正在被销毁的
+   * 元素,点下去顶着 30 秒上限红掉 —— 报错写 `element was detached from the DOM`,
+   * 读起来像按钮没了,其实是**等待被旧状态骗过去了**。
+   *
+   * 换成"画布上就是二那个根节点"这种**只有加载真的完成才成立**的前提。
+   * (这条在 `0368bdb` 上就红过,和这一轮的 UI 改动无关。)
+   */
+  const secondRoot = (await getPlan(page, token, second)).nodes[0].id;
+  await expect
+    .poll(() => renderedNodeIds(page), { message: '画布上还是第一个空间的计划,第二个空间的还没到' })
+    .toEqual([secondRoot]);
 
   // 第二个空间里**不许**出现第一个空间正在编辑的东西。
   await expect(page.getByRole('dialog'), '换空间之后弹窗跟着串过来了').toHaveCount(0);

@@ -72,6 +72,9 @@ function card(page: Page, nodeId: string): Locator {
 /** 打开新建节点表单,等它真的能用(计划到达之前那个按钮是禁用的)。 */
 async function openCreate(page: Page, workspaceId: string): Promise<Locator> {
   await page.goto(`/workbench?workspace=${workspaceId}`);
+  // "等它真的能用"以前只有这句话,代码里没有 —— 而 `toBeEnabled()` 等不来一个
+  // 会被"计划到达"那次重渲染换掉的元素。先等计划到(见 `support/menu.ts` 里 `canvasTool`)。
+  await waitForRealPlan(page);
   const trigger = await canvasTool(page, '新建节点');
   await expect(trigger).toBeEnabled();
   await trigger.click();

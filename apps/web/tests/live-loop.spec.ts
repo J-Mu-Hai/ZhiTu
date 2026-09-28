@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { api, assertBackendRunning, createWorkspace, registerAccount } from './support/session';
+import { api, assertBackendRunning, createWorkspace, registerAccount, waitForRealPlan } from './support/session';
 import { canvasTool } from './support/menu';
 
 /**
@@ -47,6 +47,12 @@ test('在浏览器里建的任务能排进日程，做完之后记录真的落�
   // (`POST /nodes` 要一个真 UUID)。先等真数据到,否则失败原因会指向选择器。
   // 它在工具栏那个低频菜单里(见 `support/menu.ts`)。禁用态是产品行为,
   // 不因为多了一层菜单而改变 —— 这里断言的东西一个字都没改。
+  //
+  // **"先等真数据到"这一步以前只是这句话,代码里没有。** 于是 `canvasTool` 拿回来的
+  // 是一个 `disabled title="正在读取计划…"` 的按钮,而后面的 `toBeEnabled()` 只能硬等;
+  // 等的那段时间里计划到了、画布重渲染,那个 `<details>` 连同它里面的按钮一起被换掉 ——
+  // 元素 detach,这一条就撞上 30 秒上限。它红的时候长得像"按钮被删了",其实是没等前置条件。
+  await waitForRealPlan(page);
   const createButton = await canvasTool(page, '新建节点');
   await expect(createButton).toBeEnabled();
   await createButton.click();
@@ -126,7 +132,12 @@ test('站内提醒会出现、能关掉，而且关掉之后刷新不会回来',
   //
   // **而且要等它真的加载完。** 那个"上次打开的空间"是空间详情取回来之后才写进
   // 本地的,取回来之前就走,下一页读到的还是空 —— 于是又被送回空间页。
+  //
+  // "等它真的加载完"用的是 `waitForRealPlan`,不是下面那个 `toBeEnabled()`:
+  // 后者要经过工具栏菜单,而菜单正是被"加载完"这一次重渲染换掉的东西 ——
+  // 拿一个会被加载过程销毁的元素去等加载,是在跟自己做对(见上面那条注释)。
   await page.goto(`/workbench?workspace=${workspaceId}`);
+  await waitForRealPlan(page);
   await expect(await canvasTool(page, '新建节点')).toBeEnabled();
 
   await page.goto('/today');

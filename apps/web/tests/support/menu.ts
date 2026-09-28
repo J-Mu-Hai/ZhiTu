@@ -98,6 +98,21 @@ export async function openCanvasTools(page: Page): Promise<Locator> {
  * `element(s) not found`,读起来像按钮被删了。要检查"计划还没到的时候不能建"之类的
  * 禁用状态,拿它去 `toBeEnabled()`/`toBeDisabled()` 就好 —— 禁用态是产品行为,
  * 不因为多了一层菜单而改变。
+ *
+ * ## 调用方必须先自己等计划到(这里**不**代劳)
+ *
+ * 返回的是**定位器**,不是"已经可用的按钮"。计划没到的时候,`新建节点` 是一个
+ * `disabled title="正在读取计划…"` 的按钮 —— 而 `visibility` 和 disabled 是两回事,
+ * **禁用元素照样"可见"**,所以上面那圈重试会心安理得地成功,把那个禁用按钮交出去。
+ *
+ * 紧接着调用方一 `toBeEnabled()`,等的那段时间里计划到了、画布重渲染,这个
+ * `<details>` 连同里面的按钮被整个换掉:元素 detach,重试拿到的是新元素,再等 ——
+ * 于是这一条就顶着 30 秒上限红掉,而报错写的是 `element(s) not found`,读起来像
+ * "按钮被删了"。真正的机理是**拿一个会被加载过程销毁的元素去等加载**。
+ *
+ * 这里不代劳(不自己 `waitForRealPlan`)是有意的:这个函数要能用来断言"计划没到,
+ * 所以建不了" —— 那种用例等的正是禁用态。所以前置条件由调用方声明:
+ * 要用它点"新建节点"的,先 `await waitForRealPlan(page)`。
  */
 export async function canvasTool(page: Page, label: string): Promise<Locator> {
   const popover = page.locator('.canvas-tools-popover');
