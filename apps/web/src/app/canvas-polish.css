@@ -12,12 +12,12 @@
   justify-content: flex-start;
   gap: 0;
   width: max-content;
-  min-width: 190px;
-  max-width: 330px;
+  min-width: 220px;
+  max-width: 340px;
   height: auto;
-  min-height: 58px;
-  padding: 13px 28px 13px 14px;
-  border-radius: 12px;
+  min-height: 66px;
+  padding: 15px 30px 15px 16px;
+  border-radius: 14px;
   white-space: normal;
 }
 .path-canvas .growth-node.academic { --semantic: #739dc4; }
@@ -32,7 +32,9 @@
   border: 1px solid #dae5eb;
   box-shadow: 0 4px 14px rgba(68, 98, 120, .05);
 }
-.path-canvas .growth-node.goal { min-width: 190px; max-width: 300px; }
+/* 根目标比普通节点宽一档、但仍**比它自己那一层的孩子窄**:它是视觉中心,靠字号
+   (17px)与身份色立住,不靠把别人挤小。跟着基础档一起抬,否则孩子比爹还宽。 */
+.path-canvas .growth-node.goal { min-width: 220px; max-width: 320px; }
 .path-canvas .growth-node .node-heading {
   display: flex;
   align-items: flex-start;
@@ -75,7 +77,10 @@
   max-width: none;
   text-align: left;
   color: #2d455b;
-  font-size: 14px;
+  font-size: 15px;
+  /* 行高**不动**(23px)。它是和 `.node-marker` 的 23px 高度配着来的 —— 两者
+     顶部对齐才有"圆点在标题左边"的样子,而 `canvas-polish.spec.ts` 正是拿
+     `m.top - t.top < 2` 钉着它。改字号不该顺手把这对关系挪走。 */
   line-height: 23px;
   font-weight: 600;
   letter-spacing: 0;
@@ -89,13 +94,15 @@
   max-width: none;
   text-align: left;
 }
+/* 左边距 31px = 标记 21px + 标题行 10px 间距,与上面那两行对齐;它是"说明属于
+   这个标题",不是"说明属于整个节点"。 */
 .path-canvas .growth-node .node-description {
   display: block;
   min-width: 0;
   margin: 5px 0 0 31px;
   color: #708395;
-  font-size: 12px;
-  line-height: 1.7;
+  font-size: 12.5px;
+  line-height: 1.65;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   overflow: visible;
@@ -168,8 +175,16 @@
 }
 .layout-history-note button { background: #fff; color: #425e77; border-color: #d4e2ec; }
 .layout-history-note button:hover { background: #edf5fb; color: #28577f; }
+/*
+ * 这里**没有** `.leaf-summary` 的字号规则 —— 计划里有一条"9px → 10.5px",但那个
+ * 类是**死的**:全仓 `grep`,它只出现在 4 个 CSS 文件里,没有任何一个组件渲染它
+ * (`PathView.tsx` 渲染的是 `.node-description`,上面那一条)。给一个不存在的元素
+ * 写字号,除了让人以为"这里处理过了",什么也做不了;要清就整簇一起清
+ * (`.leaf-summary` / `.leaf-title` 同样无人渲染),那是另一件事。
+ */
+
 @media (max-width: 600px) {
-  .path-canvas .growth-node { max-width: 270px; }
+  .path-canvas .growth-node { max-width: 280px; }
 }
 
 /* ------------------------------------------------------ 正文保存的状态(步骤 4) */

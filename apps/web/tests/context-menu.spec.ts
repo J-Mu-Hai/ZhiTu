@@ -134,7 +134,8 @@ test('节点贴着画布边缘时，菜单翻到另一侧，整块仍在画布�
   if (!area) throw new Error('画布不在');
 
   /*
-   * 把按钮**右下角**挪到离画布边缘 40 像素的地方。
+   * 把按钮挪到**贴着画布边缘 40 像素**的地方,一次贴上边缘(验横翻)、一次贴下边缘
+   * (验竖翻)。
    *
    * 40 这个数是有意选的:菜单最小宽度 168,比 40 宽得多,所以它一定越界,一定走
    * "翻到另一侧"那条路。离得再远一点(比如 200)菜单就正好放得下,这条测试会以
@@ -142,13 +143,30 @@ test('节点贴着画布边缘时，菜单翻到另一侧，整块仍在画布�
    *
    * 两条边都试(横翻与竖翻是两段代码),哪条边的落点没有浮层就验哪条。一条都试不了
    * 就报"前提不成立",不静默跳过。
+   *
+   * ## 为什么"下边"那一次要**连着横坐标一起挪**
+   *
+   * 第一轮先把按钮贴到**右**边缘,第二轮只往下挪 —— 于是第二轮是在**右下角**收尾的,
+   * 而画布右下角**正好是缩放控件**(`.react-flow__controls`)。控件是浮在画布上的,
+   * 它盖住节点本身没问题,但**盖住这个按钮就点不着了**,而这条用例接下来正要点它。
+   *
+   * 这个坑不是"控件该不该在那儿"的问题,是**这一轮选点**的问题:浮层挡着画布是正常的。
+   * 所以往下挪的时候顺手把横坐标也挪到一个空白处(画布左边三分之一,避开左下角的缩略图
+   * 和右下角的控件),「贴着下边缘」这个前提一个字没变。
+   *
+   * 之前它一直是过的,靠的是运气:探针点落在 y=905.6,而控件上沿在 y=907 ——
+   * **1.4 像素**。节点尺寸一变(这一轮把 `.growth-node` 的内边距和最小高度改了,
+   * 按钮跟着挪),这 1.4 像素就没了,点下去直接打在缩放按钮上。差 1.4 像素还能过,
+   * 说明它本来就没有余量,而**用余量不足的落点去验"翻边",验到的是运气**。
    */
   const gap = 40;
   const verified: string[] = [];
   for (const [side, label] of [['right', '右边'], ['bottom', '下边']] as const) {
     const button = await moreButton(page, nodeId).boundingBox();
     if (!button) throw new Error('按钮不在画布上');
-    const dx = side === 'right' ? area.x + area.width - gap - (button.x + button.width) : 0;
+    const dx = side === 'right'
+      ? area.x + area.width - gap - (button.x + button.width)
+      : area.x + area.width * 0.3 - (button.x + button.width / 2);
     const dy = side === 'bottom' ? area.y + area.height - gap - (button.y + button.height) : 0;
     if (!(await unoccupied(page, { x: button.x + dx + button.width / 2, y: button.y + dy + button.height / 2 }))) continue;
 
@@ -159,6 +177,20 @@ test('节点贴着画布边缘时，菜单翻到另一侧，整块仍在画布�
       ? area.x + area.width - gap - (moved.x + moved.width)
       : area.y + area.height - gap - (moved.y + moved.height);
     expect(Math.abs(distance) < 6, `没把按钮挪到贴着${label}的位置:${JSON.stringify(moved)} 画布 ${JSON.stringify(area)}`).toBe(true);
+
+    /*
+     * 落到哪儿了要**再问一次**命中测试,而且这一次问到浮层就**报错,不是跳过**。
+     *
+     * 上面那一次是在**平移之前**按预测点问的,而平移本身有 ±6 像素的容差
+     * (见上一条断言)—— 预测点没被挡,不等于落点没被挡。这正是上面那 1.4 像素
+     * 能骗过它的原因。落点是真的了,所以这里用真的落点问;真被挡住就说明
+     * **这一轮选的落点不成立**,那是要修选点,不是默默少验一条边。
+     */
+    const landing = { x: moved.x + moved.width / 2, y: moved.y + moved.height / 2 };
+    expect(
+      await unoccupied(page, landing),
+      `${label}:落点被画布上的浮层挡住了,点不到这个按钮:${JSON.stringify(landing)}`,
+    ).toBe(true);
 
     await card(page, nodeId).hover();
     await moreButton(page, nodeId).click();

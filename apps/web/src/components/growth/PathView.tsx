@@ -850,7 +850,15 @@ function Canvas() {
       fittedScope.current = spaceId;
       const remembered = viewports[spaceId];
       if (remembered) void setViewport(remembered, { duration: 0 });
-      else void fitView({ padding: 0.18, maxZoom: 1, duration: 0 });
+      // `maxZoom` 1 → 1.2 与 `padding` 0.18 → 0.12 一起,解决的是"画布没有视觉中心":
+      // 三个节点的小图本来会被放大填满画布,被 `maxZoom: 1` 卡住 —— 于是它缩在
+      // 1022×950 的中间一小团。**不是节点长得小,是它被禁止长大。**
+      //
+      // 1.2 是权衡后的上限,不是随手取的:缩放控件一次是 `scaleBy(1/1.2)`,
+      // `canvas-create.spec.ts` 用"连缩两次之后 zoom < 0.95"来验缩放真的生效 ——
+      // 1.2 / 1.44 = 0.833,留得下余量;再往上(比如 1.35)那一档只剩 1 个百分点,
+      // 而且放大会把文字一起拉毛。
+      else void fitView({ padding: 0.12, maxZoom: 1.2, duration: 0 });
     }, 180);
     return () => window.clearTimeout(timer);
   }, [nodesInitialized, planLoading, layoutReady, spaceId, measurements, fitView, setViewport, viewports]);
@@ -1328,7 +1336,11 @@ function Canvas() {
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         fitView={!rememberedViewport}
-        fitViewOptions={{ padding: 0.18, maxZoom: 1 }}
+        // 与上面那个 `fitView` 调用**必须同值**:同一个初次视角有两条入口 ——
+        // 有记忆时走上面那段 effect,没有记忆时走 ReactFlow 自带的这个属性。
+        // 只改一处会让"第一次进这个空间"和"清掉记忆再进"长得不一样,
+        // 而那种不一致最容易被当成随机故障。
+        fitViewOptions={{ padding: 0.12, maxZoom: 1.2 }}
         zoomOnDoubleClick={false}
         minZoom={0.25}
         maxZoom={1.7}
