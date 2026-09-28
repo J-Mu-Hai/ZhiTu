@@ -103,8 +103,8 @@ test('新建的空间里只有用户自己的根目标，没有任何演示内�
 
   // --- 随笔:空的,不是两篇别人的 --------------------------------------------------
   await openSpacePage(page, '/journal', workspaceId!);
-  await expect(page.locator('.journal-entry')).toHaveCount(0);
-  await expect(page.getByText('这个标签下还没有记录。')).toBeVisible();
+  await expect(page.locator('.journal-list-item')).toHaveCount(0);
+  await expect(page.getByText('这里还没有记录，写下第一篇随笔吧。')).toBeVisible();
   await expect(page.locator('.example-badge')).toHaveCount(0);
   await expectNoDemoContent(page, '新空间的随笔页');
 

@@ -17,7 +17,7 @@ function Header({ greeting, dateLabel, dateLabelEn }: { greeting: string; dateLa
     <header className="editorial-header">
       <span className="eyebrow">{dateLabelEn}</span>
       <span className="page-date">{dateLabel}</span>
-      <h1>{greeting}，<br />继续向理想的自己前进。</h1>
+      <h1>{greeting}，继续专注地向前推进。</h1>
       <p>不必一次走很远。今天，把这一件事做好。</p>
     </header>
   );

@@ -6,6 +6,7 @@ import { ArrowUpRight, Check, Clock3, Sparkles } from 'lucide-react';
 import type { ExecutionResult, TodayItemView } from '@/lib/backend';
 import { Reminders } from './Reminders';
 import { useToday } from './useToday';
+import { WeekOverview } from './WeekOverview';
 
 /**
  * 真实空间的「今天」。
@@ -129,6 +130,7 @@ export function RealToday() {
 
   return (
     <>
+      <WeekOverview revision={data} />
       <Reminders />
 
       {error && (

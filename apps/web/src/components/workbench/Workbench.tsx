@@ -1,6 +1,6 @@
 'use client';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { GitBranch, ChartNoAxesGantt, ListTodo, CalendarRange, ChevronRight, PanelRightClose, PanelRightOpen, ArrowLeft, Layers3 } from 'lucide-react';
+import { GitBranch, ChartNoAxesGantt, ListTodo, CalendarRange, ChevronRight, PanelRightOpen, ArrowLeft, Layers3 } from 'lucide-react';
 import { useState } from 'react';
 import { PathView } from '@/components/growth/PathView';
 import { TimelineView } from './TimelineView';
@@ -23,7 +23,7 @@ export function Workbench() {
   const tabs = [{ id: 'path', label: '路径', Icon: GitBranch }, { id: 'timeline', label: '时间线', Icon: ChartNoAxesGantt }, { id: 'tasks', label: '任务', Icon: ListTodo }, { id: 'schedule', label: '排期', Icon: CalendarRange }];
   const workspaceParam = `workspace=${encodeURIComponent(workspaceId)}`;
   return <div className="workbench open-workbench"><div className={`workbench-body ${chatOpen ? '' : 'chat-hidden'}`}><section className="workspace">
-    <div className="space-topbar"><div className="space-breadcrumb" aria-label="空间路径"><button className="workspace-switch" onClick={() => router.push('/spaces')}><Layers3 size={14}/>全部空间</button>{!isRootSpace && <button className="icon-button" aria-label="返回上级空间" onClick={() => enterSpace(growth.nodes[spaceId]?.parentId ?? growth.goalId)}><ArrowLeft size={15}/></button>}{trail.map((node,i)=><span key={node.id}>{i>0&&<ChevronRight size={12}/>}<button onClick={()=>enterSpace(node.id)}>{node.id === growth.goalId ? growth.title : node.title}</button></span>)}</div><div className="view-tabs" role="tablist" aria-label="工作台视图">{tabs.map(({id,label,Icon}) => <button key={id} role="tab" aria-selected={view === id} className={view === id ? 'selected' : ''} onClick={() => router.replace(`/workbench?${workspaceParam}&view=${id}`, { scroll: false })}><Icon size={15}/>{label}</button>)}</div><button className="icon-button" aria-label={chatOpen ? '收起对话' : '展开对话'} onClick={() => setChatOpen(!chatOpen)}>{chatOpen ? <PanelRightClose size={18}/> : <PanelRightOpen size={18}/>}</button></div>
+    <div className="space-topbar"><div className="space-breadcrumb" aria-label="空间路径"><button className="workspace-switch" onClick={() => router.push('/spaces')}><Layers3 size={14}/>全部空间</button>{!isRootSpace && <button className="icon-button" aria-label="返回上级空间" onClick={() => enterSpace(growth.nodes[spaceId]?.parentId ?? growth.goalId)}><ArrowLeft size={15}/></button>}{trail.map((node,i)=><span key={node.id}>{i>0&&<ChevronRight size={12}/>}<button onClick={()=>enterSpace(node.id)}>{node.id === growth.goalId ? growth.title : node.title}</button></span>)}</div><div className="view-tabs" role="tablist" aria-label="工作台视图">{tabs.map(({id,label,Icon}) => <button key={id} role="tab" aria-selected={view === id} className={view === id ? 'selected' : ''} onClick={() => router.replace(`/workbench?${workspaceParam}&view=${id}`, { scroll: false })}><Icon size={15}/>{label}</button>)}</div>{!chatOpen && <button className="icon-button reopen-chat" aria-label="展开对话" onClick={() => setChatOpen(true)}><PanelRightOpen size={18}/></button>}</div>
     {/* 视图是一个三元表达式,所以**切一下页签,整棵画布子树就被卸载了** —— 这是有意的:
         画布和列表不该抢同一个位置,而隐藏着不卸载会让 ReactFlow 拿到一个尺寸为 0 的容器。
         代价是画布内部的东西(平移缩放、弹窗里没提交的输入)会跟着没,所以那两样都

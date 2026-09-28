@@ -50,7 +50,7 @@ test('对话卡片让出画布空间，而且不叠在一起', async ({ page }) 
 
   // 顶栏是薄薄一条,没有那种占掉一大块的侧边栏。
   const navigation = await page.locator('.top-navigation').boundingBox();
-  expect(navigation!.height).toBeLessThanOrEqual(56);
+  expect(navigation!.height).toBeLessThanOrEqual(68);
   await expect(page.locator('.sidebar')).toHaveCount(0);
 
   const canvas = page.locator('.react-flow');
@@ -112,7 +112,7 @@ test('一处发出的消息，收起对话、换视图之后仍然在同一份�
   await page.getByRole('button', { name: '整体移动对话' }).press('ArrowLeft');
   expect((await field.boundingBox())!.x).toBe(before!.x - 10);
 
-  await page.getByRole('button', { name: '收起对话' }).click();
+  await page.getByRole('button', { name: '让对话内容消失' }).click();
   await expect(field).toBeHidden();
   await page.getByRole('tab', { name: '时间线', exact: true }).click();
   await expect(page.getByRole('group', { name: '时间尺度' })).toBeVisible();

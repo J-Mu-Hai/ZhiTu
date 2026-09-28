@@ -139,7 +139,8 @@ test('归档前先告诉你这一下会带走什么，之后能把整支恢复�
   //
   // 工具栏那个按钮上的数字是这一支能不能被找回来的唯一线索。数字不对(比如一直是 0),
   // 用户会以为东西没了 —— 而东西还在库里。
-  const toolbar = page.locator('.space-floating-tools > button', { hasText: '归档' });
+  await page.locator('.canvas-tools-menu > summary').click();
+  const toolbar = page.locator('.space-floating-tools button', { hasText: '归档' });
   await expect(toolbar).toContainText('1');
   await toolbar.click();
 
@@ -289,7 +290,8 @@ test('上层还在归档里时，那一行明说先恢复上层', async ({ page 
   await waitForRealPlan(page);
   await expect.poll(() => renderedNodeIds(page)).toEqual([root.id]);
 
-  await page.locator('.space-floating-tools > button', { hasText: '归档' }).click();
+  await page.locator('.canvas-tools-menu > summary').click();
+  await page.locator('.space-floating-tools button', { hasText: '归档' }).click();
   const list = page.getByRole('dialog');
 
   // 两次归档 = 两行(各自那一批的根)。**子任务那一行照样列出来** ——

@@ -46,7 +46,7 @@ test('后端一直够不着时,留住令牌并给一个重试,而不是把用户
   // 后端回来了:点重试就该进去,不需要重新输密码。
   failing = false;
   await page.getByRole('button', { name: '重试' }).click();
-  await expect(page.getByRole('button', { name: '收起对话' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '让对话内容消失' })).toBeVisible();
   expect(new URL(page.url()).pathname).toBe('/workbench');
 });
 

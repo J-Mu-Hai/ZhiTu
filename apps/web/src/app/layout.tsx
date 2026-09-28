@@ -14,6 +14,7 @@ import './auth.css';
 // 样式必须排在它后面才不会被旧规则按顺序盖掉。
 import './today-live.css';
 import './canvas-polish.css';
+import './ui-refresh.css';
 export const metadata: Metadata = { title: '知途 · 对话成长空间', description: '面向大学生的长期成长规划工作台' };
 export default function Layout({ children }: { children: ReactNode }) {
   return <html lang="zh-CN"><body><AuthProvider><DemoProvider><AppShell>{children}</AppShell></DemoProvider></AuthProvider></body></html>;

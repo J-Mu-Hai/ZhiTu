@@ -1170,73 +1170,15 @@ function Canvas() {
             可见的形状(空白处没有按钮,节点上的垃圾桶还刚被收进了菜单),不教
             就真的没人会发现 —— 而"用户不知道能双击"和"这个功能没做"在他那里
             是同一件事。 */}
-        <span>双击空白处新建节点 · 右键节点打开菜单 · 单击看正文与详情 · 右上角箭头进入子路径 · 拖动节点右侧圆点连线 · 点线可改关系</span>
-        {/*
-          工具栏上这几个按钮与右键菜单**并存,是刻意的**,不是没收干净:
-
-          - 「新建节点」/「添加树叶」:双击空白处那条路要求用户先知道它能双击,
-            而且他可能想建在一个**看得见的位置**(滚动到画布某处),而工具栏这个
-            按钮是"我看得见的一直在那儿的那个入口"。
-          - 「建立关系」「空间文件」**:空间级**操作,不是节点级 —— 它们不属于任何
-            一个节点的右键菜单(在哪个节点上右键都不对)。所以它们没有别的地方可去。
-
-          收进菜单的是**节点级**的低频操作(归档)。判据是"这个操作是不是只对某一个
-          节点成立",不是"这个操作常不常用"。
-        */}
-        <button disabled={!canCreate} title={canCreate ? undefined : '正在读取计划…'} onClick={() => { setPlanError(null); patchDraft({ dialog: 'node' }); }}>
-          <Plus size={15} />
-          {createLabel}
-        </button>
-        {/* 表单建边。拖线是快,但触屏、精确对齐、以及"就是要连到某个具体节点"
-            这三种情况下拖线都不好用 —— 所以两条路都要有。 */}
-        <button
-          disabled={!canCreate || relationCandidates.length < 2}
-          title={relationCandidates.length < 2 ? '这一层至少要有两个节点才能连关系' : undefined}
-          onClick={() => openRelationForm()}
-        >
-          <GitBranch size={15} />
-          建立关系
-        </button>
-        {/* 撤销/重做。**只管布局**,见 `layoutHistory.ts` —— 按钮的 `title` 里说清楚
-            管的是什么,因为"这个撤销会不会把我的节点也弄没"是用户按下去之前会问的问题。
-            没有东西可撤时**不只是禁用**:`title` 里说为什么不可用,否则一个灰按钮
-            和"坏了"长得一样。 */}
-        <button
-          disabled={!canUndo}
-          title={canUndo ? '撤销上一次移动节点（Ctrl+Z）' : '还没有可以撤销的移动'}
-          aria-label="撤销"
-          onClick={() => undoLayout()}
-        >
-          <Undo2 size={15} />
-          撤销
-        </button>
-        <button
-          disabled={!canRedo}
-          title={canRedo ? '重做上一次移动（Ctrl+Shift+Z）' : '没有可以重做的移动'}
-          aria-label="重做"
-          onClick={() => redoLayout()}
-        >
-          <Redo2 size={15} />
-          重做
-        </button>
-        <button onClick={() => patchDraft({ dialog: 'files' })}>
-          <FolderOpen size={15} />
-          空间文件 <small>{files.filter((file) => file.ownerId === spaceId).length || ''}</small>
-        </button>
-        {/* 归档的入口。**它不是一个"回收站图标"就够了的按钮**:用户点垃圾桶归档之后,
-            要有一个明确的地方能找回来,而且要在那里看到"东西还在"。数字用徽标露出来,
-            这样"我归档过东西"这件事不靠记忆。 */}
-        <button
-          // 这里**不清** `archiveNote`:归档那一下的结果("已归档「X」及其下面的 N 项,
-          // 可以在这里恢复")就是在归档之后写的,而那时列表还没开 —— 清掉的话那句话
-          // 永远没有出现过的一刻。留着它,点开列表的人第一眼看到的才是刚才做了什么。
-          // 一条过期的提示由它自己的「知道了」和下一次归档/恢复清掉。
-          onClick={() => setArchiveOpen(true)}
-          title="看看这个空间归档过什么,把想留的恢复回来"
-        >
-          <Archive size={15} />
-          归档 <small>{archived.length || ''}</small>
-        </button>
+        <button disabled={!canUndo} title={canUndo ? '撤销上一次移动节点（Ctrl+Z）' : '还没有可以撤销的移动'} aria-label="撤销" onClick={() => undoLayout()}><Undo2 size={15}/></button>
+        <button disabled={!canRedo} title={canRedo ? '重做上一次移动（Ctrl+Shift+Z）' : '没有可以重做的移动'} aria-label="重做" onClick={() => redoLayout()}><Redo2 size={15}/></button>
+        <button onClick={() => patchDraft({ dialog: 'files' })}><FolderOpen size={15}/>空间文件 <small>{files.filter(file => file.ownerId === spaceId).length || ''}</small></button>
+        <details className="canvas-tools-menu"><summary aria-label="更多空间操作"><MoreHorizontal size={17}/>{archived.length ? <small>{archived.length}</small> : null}</summary><div className="canvas-tools-popover" onClick={event => { if ((event.target as HTMLElement).closest('button:not(:disabled)')) event.currentTarget.closest('details')?.removeAttribute('open'); }}>
+          <p>双击空白处也可以新建节点，右键节点可以打开节点操作。</p>
+          <button disabled={!canCreate} title={canCreate ? undefined : '正在读取计划…'} onClick={() => { setPlanError(null); patchDraft({ dialog: 'node' }); }}><Plus size={15}/>{createLabel}</button>
+          <button disabled={!canCreate || relationCandidates.length < 2} title={relationCandidates.length < 2 ? '这一层至少要有两个节点才能连关系' : undefined} onClick={() => openRelationForm()}><GitBranch size={15}/>建立关系</button>
+          <button onClick={() => setArchiveOpen(true)} title="看看这个空间归档过什么,把想留的恢复回来"><Archive size={15}/>归档 <small>{archived.length || ''}</small></button>
+        </div></details>
         {/* 布局没存上。**拖动是可以悄悄失败的操作** —— 画面上节点就停在你放手的地方,
             而库里没有,刷新之后它回到原处,中间没有任何东西提示过你。所以这一行必须
             看得见,而且带一个**有用的**重试:载荷是点的那一刻现拼的,网络回来了、

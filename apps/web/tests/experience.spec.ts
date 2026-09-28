@@ -111,8 +111,9 @@ test('随笔:发布的日期按本地算，关联的是这个空间真实的节�
   const linked = await createNode(page, token, workspaceId, { parentId: root.id, title: '整理实验室资料', nodeType: 'task' });
 
   await openSpacePage(page, '/journal', workspaceId);
+  await page.getByRole('button', { name: '写下一点此刻的想法' }).click();
   // 新空间的随笔是**空的** —— 没有那两篇别人写的。
-  await expect(page.locator('.journal-entry')).toHaveCount(0);
+  await expect(page.locator('.journal-list-item')).toHaveCount(0);
 
   /*
    * **顺序是有意的:先点开「标签」,再写正文。**
@@ -141,16 +142,15 @@ test('随笔:发布的日期按本地算，关联的是这个空间真实的节�
   await page.getByLabel('关联计划', { exact: true }).selectOption(linked);
   await page.getByRole('button', { name: '发布', exact: true }).click();
 
-  const entry = page.locator('.journal-entry').filter({ hasText: '迈出了第一步' });
+  const entry = page.getByRole('article', { name: '随笔全文' });
   await expect(entry).toBeVisible();
-  await expect(page.locator('.journal-entry')).toHaveCount(1);
-  await expect(entry.locator('.journal-date > span')).toHaveText(`${Number(month)}月`);
-  await expect(entry.locator('.journal-date > strong')).toHaveText(day);
-  await expect(entry).toContainText('# 科研');
+  await expect(page.locator('.journal-list-item')).toHaveCount(1);
+  await expect(entry.locator('time')).toContainText(`${month}-${day}`);
+  await expect(page.locator('.journal-list-item .journal-tags')).toContainText('科研');
   // 自己写的东西永远不带"示例"这个标。示例空间删掉之后这个标连生产者都没有了
   // (`.example-badge` 全仓无人渲染),所以这一条现在的含义是"它不许回来"。
   await expect(entry.locator('.example-badge')).toHaveCount(0);
-  await expect(page.locator('.journal-entry .example-badge')).toHaveCount(0);
+  await expect(page.locator('.journal-list-item .example-badge')).toHaveCount(0);
 
   // 关联的那件事是真的计划节点,点得到它所在的那一层。
   await expect(entry.locator('.journal-tags')).toContainText('整理实验室资料');
@@ -178,11 +178,11 @@ test.fixme('随笔刷新之后还在（后端还没有随笔表，publishJournal
   await openSpacePage(page, '/journal', workspaceId);
   await page.getByLabel('此刻的想法').fill('这条记录应该活过一次刷新');
   await page.getByRole('button', { name: '发布', exact: true }).click();
-  await expect(page.locator('.journal-entry')).toHaveCount(1);
+  await expect(page.locator('.journal-list-item')).toHaveCount(1);
 
   await page.reload();
-  await expect(page.locator('.journal-entry')).toHaveCount(1);
-  await expect(page.locator('.journal-entry').first()).toContainText('这条记录应该活过一次刷新');
+  await expect(page.locator('.journal-list-item')).toHaveCount(1);
+  await expect(page.locator('.journal-list-item').first()).toContainText('这条记录应该活过一次刷新');
 });
 
 test('我的:几页子页都打得开，开关是能给用户拨的', async ({ page }) => {

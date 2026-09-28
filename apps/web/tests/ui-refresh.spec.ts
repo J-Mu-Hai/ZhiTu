@@ -1,0 +1,72 @@
+import { expect, test } from '@playwright/test';
+import { createWorkspace, registerAccount, openSpacePage, createNode, getPlan, scheduleEverything } from './support/session';
+import { artifactPath } from './support/artifacts';
+
+test('空间列表紧凑可滚动，桌面与手机均能创建空间', async ({ page }) => {
+  const { token } = await registerAccount(page, 'ui-spaces');
+  for (let i = 1; i <= 10; i++) await createWorkspace(page, token, `分析空间 ${i}`);
+  await page.goto('/spaces');
+  await expect(page.locator('.space-card')).toHaveCount(10);
+  const card = await page.locator('.space-card').first().boundingBox();
+  expect(card!.height).toBeLessThan(280);
+  await page.screenshot({ path: artifactPath('ui-spaces-desktop.png') });
+  await page.locator('.new-space-card').scrollIntoViewIfNeeded();
+  await page.locator('.new-space-card').click();
+  await expect(page.getByRole('dialog')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.locator('.spaces-grid')).toHaveCSS('grid-template-columns', /\d+px/);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  await page.screenshot({ path: artifactPath('ui-spaces-mobile.png') });
+});
+
+test('随笔收起保留输入，发布后左右阅读与筛选', async ({ page }) => {
+  const { token } = await registerAccount(page, 'ui-journal');
+  const id = await createWorkspace(page, token, '随笔布局');
+  await openSpacePage(page, '/journal', id);
+  await expect(page.getByLabel('此刻的想法')).toHaveCount(0);
+  await page.locator('.journal-compose-trigger').click();
+  await page.getByLabel('此刻的想法').fill('一段安静的思考\n这是可以完整阅读的正文。');
+  await page.getByRole('button', { name: '收起随笔输入框' }).click();
+  await page.locator('.journal-compose-trigger').click();
+  await expect(page.getByLabel('此刻的想法')).toHaveValue('一段安静的思考\n这是可以完整阅读的正文。');
+  await page.getByRole('button', { name: '发布', exact: true }).click();
+  await expect(page.locator('.journal-reader')).toContainText('这是可以完整阅读的正文。');
+  await page.screenshot({ path: artifactPath('ui-journal-desktop.png') });
+  await page.getByRole('button', { name: '科研', exact: true }).click();
+  await expect(page.locator('.journal-list-item')).toHaveCount(0);
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+});
+
+test('首页真实周排期与紧凑工作台保留四种视图', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  const { token } = await registerAccount(page, 'ui-workbench');
+  const id = await createWorkspace(page, token, '成长规划');
+  const root = (await getPlan(page, token, id)).nodes[0];
+  await createNode(page, token, id, { parentId: root.id, title: '整理课程与考核要求', nodeType: 'task', estimateMinutes: 60 });
+  await scheduleEverything(page, token, id);
+  await openSpacePage(page, '/today', id);
+  await expect(page.locator('.week-selected-list')).toContainText('整理课程与考核要求');
+  await page.getByRole('button', { name: '下一周' }).click();
+  await expect(page.locator('.week-selected-list')).toContainText('这一天还没有排期');
+  await page.getByRole('button', { name: '本周', exact: true }).click();
+  await expect(page.locator('.week-selected-list')).toContainText('整理课程与考核要求');
+  await page.screenshot({ path: artifactPath('ui-today-desktop.png') });
+  await openSpacePage(page, '/workbench', id);
+  for (const tab of ['路径', '时间线', '任务', '排期']) await expect(page.getByRole('tab', { name: tab, exact: true })).toBeVisible();
+  const dock = await page.locator('.floating-conversation').boundingBox();
+  expect(dock!.width).toBeLessThan(page.viewportSize()!.width * .35);
+  await expect(page.locator('.canvas-tools-popover')).not.toBeVisible();
+  await page.locator('.canvas-tools-menu > summary').click();
+  await expect(page.locator('.canvas-tools-popover')).toBeVisible();
+  await expect(page.getByRole('button', { name: '建立关系', exact: true })).toBeVisible();
+  await page.locator('.canvas-tools-menu > summary').click();
+  await page.screenshot({ path: artifactPath('ui-workbench-desktop.png') });
+  await page.getByRole('button', { name: '让对话内容消失', exact: true }).click();
+  await expect(page.locator('.conversation-overlay')).toBeHidden();
+  await page.getByRole('button', { name: '展开对话', exact: true }).click();
+  await expect(page.locator('.conversation-overlay')).toBeVisible();
+  expect(errors).toEqual([]);
+});

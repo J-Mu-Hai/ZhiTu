@@ -39,6 +39,8 @@ export function useToday(enabled: boolean) {
   const [loading, setLoading] = useState(false);
   /** 正在写入的那一场 —— 界面据此把那一行的按钮换成"记录中"。 */
   const [savingSession, setSavingSession] = useState<string | null>(null);
+  /** 只允许最后一次读取落到界面。首次加载可能比记录完成后的刷新更晚返回。 */
+  const refreshVersion = useRef(0);
 
   /**
    * 幂等键:每个「场次 + 结果」一个,**成功之后作废**。
@@ -58,19 +60,24 @@ export function useToday(enabled: boolean) {
   const inflight = useRef(new Set<string>());
 
   const refresh = useCallback(async () => {
+    const version = ++refreshVersion.current;
     setLoading(true);
     try {
-      setData(await backend.fetchToday());
-      setError(null);
+      const next = await backend.fetchToday();
+      if (version === refreshVersion.current) {
+        setData(next);
+        setError(null);
+      }
     } catch (cause) {
-      setError(describe(cause));
+      if (version === refreshVersion.current) setError(describe(cause));
     } finally {
-      setLoading(false);
+      if (version === refreshVersion.current) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
     if (!enabled) {
+      refreshVersion.current += 1;
       // 没有空间可看时把上一次的数据清掉 —— 否则换个账户登录,「今天」还挂着
       // 上一个账户的安排。
       setData(null);

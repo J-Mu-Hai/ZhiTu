@@ -52,6 +52,7 @@ const dialog = (page: Page) => page.getByRole('dialog');
 const relationButton = (page: Page) => page.locator('.space-floating-tools button', { hasText: '建立关系' });
 
 async function openRelationForm(page: Page): Promise<void> {
+  await page.locator('.canvas-tools-menu > summary').click();
   // 弹窗里的提交按钮也叫「建立关系」,所以触发器必须限定作用域(见上面那个函数)。
   // `clickUntilVisible` 会在效果没出现时再点一次 —— 见它在 `support/session.ts` 里的理由。
   await clickUntilVisible(page, relationButton(page), dialog(page));
