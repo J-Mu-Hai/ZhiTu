@@ -1,5 +1,11 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
-import { clickUntilVisible, enterSpace } from './support/session';
+import {
+  clickUntilVisible,
+  createWorkspace,
+  enterSpace,
+  registerAccount,
+  waitForRealPlan,
+} from './support/session';
 
 /**
  * 视觉系统的一致性回归。
@@ -134,6 +140,41 @@ function expectLightSurface(value: string, label: string): void {
   for (const mark of marks) {
     expect(Math.min(...mark) >= 200, `${label} 不是浅色表面:${value}`).toBe(true);
   }
+}
+
+/**
+ * 一段颜色对另一段颜色的对比度(WCAG 相对亮度比)。
+ *
+ * 这个文件到这一版为止只验"是不是浅色表面",那抓不住**浅色的字压在浅色的底上** ——
+ * 实测抓到过:用户自己说的话算出来是 `#c9d7e9` 压在 `#edf5fb` 的气泡上,1.33:1,
+ * 几乎是白字印在白纸上,而"背景扫描"和"人眼看截图"两关都放它过去了。
+ */
+function contrastRatio(ink: string, surface: string): number {
+  const luminance = (value: string): number => {
+    const [mark] = channels(toRgb(value));
+    expect(mark, `${value} 解析不出颜色`).toBeDefined();
+    const channel = (part: number): number => {
+      const scaled = part / 255;
+      return scaled <= 0.03928 ? scaled / 12.92 : ((scaled + 0.055) / 1.055) ** 2.4;
+    };
+    return 0.2126 * channel(mark[0]) + 0.7152 * channel(mark[1]) + 0.0722 * channel(mark[2]);
+  };
+  const [high, low] = [luminance(ink), luminance(surface)].sort((a, b) => b - a);
+  return (high + 0.05) / (low + 0.05);
+}
+
+/**
+ * 这个元素上的字,在它自己的底上读得清吗 —— 正文线是 WCAG 的 4.5:1。
+ *
+ * 底取"往上第一个真正画了背景的祖先"(同 `paintedSurface`)。它只认 alpha > 0.5 的
+ * 背景,所以半透明层叠出来的误差在可接受范围内;而这一层要抓的那种错(深色主题的
+ * 浅字留在暖白底上)差得很远,几个百分点的误差不影响判它红。
+ */
+async function expectReadable(locator: Locator, label: string): Promise<void> {
+  const ink = await locator.evaluate((element) => getComputedStyle(element).color);
+  const surface = await paintedSurface(locator, label);
+  const ratio = contrastRatio(ink, surface);
+  expect(ratio, `${label} 只有 ${ratio.toFixed(2)}:1,读不清(${ink} 压在 ${surface} 上)`).toBeGreaterThanOrEqual(4.5);
 }
 
 /**
@@ -483,4 +524,109 @@ test('时间线画布与信息卡使用同一套表面', async ({ page }) => {
     await card.evaluate((element) => getComputedStyle(element).backgroundColor),
     '时间线信息卡',
   );
+});
+
+/**
+ * 发一句话给 AI,等这一轮**真的**结束。
+ *
+ * 判据是"助手的回复多了一条",不是"发送按钮又亮了" —— 那个按钮的 `disabled` 是
+ * `!输入框有字 || 正在发送`,发完之后输入框是空的,所以它**永远不会**再亮起来,
+ * 拿它当等待条件会一直等到超时。写法与理由同 `interview-loop.spec.ts:59`。
+ */
+async function say(page: Page, text: string): Promise<void> {
+  const replies = page.locator('.message.assistant');
+  const before = await replies.count();
+  await page.getByLabel('给 AI 的消息').fill(text);
+  await page.getByLabel('发送消息').click();
+  await expect(replies, '这一轮没有回复 —— 后端可能没在 script 模式里').toHaveCount(before + 1, { timeout: 20000 });
+}
+
+/**
+ * AI 提案卡和用户消息气泡 —— 上面那条整页扫描**看不见它们**,而它们正是这一层
+ * 藏得最久的两处深色残留。
+ *
+ * ## 为什么看不见:两条不同的盲区,得分开说
+ *
+ * 1. **整页扫描只 `goto` 六个页面,从不开对话。** `.proposal` 是"发第二条消息、
+ *    后端真的回了一份变更"之后才挂上来的,而它当时的背景是 `#111f2f`(出自
+ *    `dark-theme.css:511` 的 `.floating-conversation .proposal`)—— **近黑的一张卡
+ *    坐在暖白面板里**,却因为整页扫描压根没进过这个状态而一次都没被抓到。
+ *    这正是文件里那条「资料编辑表单」用例已经记过的同一类漏网,只是更深一层。
+ * 2. **`darkPaint` 只看 `backgroundColor`,描边是它的盲区。** 用户气泡的深色残留
+ *    恰好只在描边上(`dark-theme.css:491` 的 `border-color:#2c496c`):暖白层
+ *    `dark-theme.css:1065` 用简写 `background` 覆盖了它,而**简写 `background` 不碰
+ *    `border-color`** —— 于是底色白了、那圈深蓝的边原样留着。这一处是量图发现的:
+ *    把 PNG 逐行读出来,两张用户气泡的上下顶边都是 `rgb(44,73,108)`。
+ *
+ * 所以下面三个断言各管一段,缺一条就漏一处:整页扫描(背景)、提案卡的表面、
+ * 用户气泡的**描边**。
+ *
+ * ## 为什么会话里那个"+"也要点一下
+ *
+ * `.context-options`(候选讨论对象)在 `dark-theme.css:547` 上是 `#101925` —— 但它
+ * 是点「添加讨论对象」才挂上来的,不点就不在 DOM 里,扫多少遍都扫不到。第 2 条
+ * 盲区在同一处再犯一次:面板开了才有的东西,不打开就等于没验。
+ *
+ * ## 为什么这条用例需要脚本
+ *
+ * 隔离栈里没有模型 key,兜底那条规则永远返回"没有动作" —— 没有提案卡,这一整条
+ * 就没有被测对象。所以它压在 `ZHITU_SCRIPTED_ACTIONS` 上,和 `interview-loop.spec.ts`
+ * 同一道闸:少了那个环境变量**一条都不跑**(看得见),而不是"跑了但什么都没验"(看不见)。
+ */
+test('AI 提案卡与用户消息气泡在暖白主题下不是深色', async ({ page }) => {
+  test.skip(
+    !process.env.ZHITU_SCRIPTED_ACTIONS,
+    '这一条要 --script=apps/web/tests/fixtures/interview-script.json 才跑得起来',
+  );
+  test.slow();
+
+  const { token } = await registerAccount(page, 'theme-proposal');
+  const workspaceId = await createWorkspace(page, token, '提案涂装验收空间', '三个月内把出国申请准备好');
+  await page.goto(`/workbench?workspace=${workspaceId}`);
+  await waitForRealPlan(page);
+
+  // 第一轮只有追问、不产生提案(这条边界由 `interview-loop.spec.ts:83` 钉着),
+  // 提案卡在第二轮才挂上来 —— 所以要发两句,不能只发一句。
+  await say(page, '我想申请出国读研，但不知道从哪开始。');
+  await say(page, '我排名 38，每周能投入 10 小时。');
+
+  const proposal = page.locator('.proposal').last();
+  // 先等卡片真的挂上来,再量颜色。顺序的要点和理由同上面「时间线」那一条:
+  // 量早了量到的可能是被重挂载换掉的那个元素。
+  await expect(proposal).toBeVisible({ timeout: 20000 });
+
+  expect(await darkPaint(page), 'AI Dock 的提案卡状态里有深色涂装').toEqual([]);
+  expectLightSurface(await paintedSurface(proposal, 'AI 提案卡'), 'AI 提案卡的背景');
+
+  /*
+   * 用户气泡的描边。**这里不能只断言"描边是浅色"**,得先问它到底有没有描边:
+   * 如果把这一处修成 `border:none`,计算出来的 `border-color` 会退回 `currentColor`
+   * —— 那是正文的颜色(`#30495f`),`expectLightSurface` 会判它"不是浅色",于是
+   * **改对了反而红**。所以判据是"要么没描边,要么描边是浅的":两种修法都对,
+   * 而"一圈深色的边"两种都不是。
+   */
+  const ring = await page.locator('.floating-conversation .message.user').first().evaluate((element) => {
+    const style = getComputedStyle(element);
+    return { width: style.borderTopWidth, style: style.borderTopStyle, color: style.borderTopColor };
+  });
+  if (ring.style !== 'none' && Number.parseFloat(ring.width) > 0) {
+    expectLightSurface(ring.color, '用户消息气泡的描边');
+  }
+
+  /*
+   * 字的**可读性**。上面几条只管"表面是不是浅色",而浅色的字压在浅色的底上完全
+   * 可以同时满足那几条 —— 2026-09-28 实测到的就是这一处:用户气泡里的正文是
+   * `#c9d7e9`(深色主题给深色气泡配的浅字),压在 `#edf5fb` 上只有 1.33:1。
+   * 这是**用户自己说的话**,读不清就等于这段对话里少了一半。
+   *
+   * 署名同理(`#91add1`,2.09:1):它分的是"这句谁说的"。
+   */
+  await expectReadable(page.locator('.floating-conversation .message.user .message-text').first(), '用户消息的正文');
+  await expectReadable(page.locator('.floating-conversation .message-byline strong').first(), '消息署名');
+
+  // 候选讨论对象面板:开了才存在,所以必须点开再扫一次(见文件头第 2 条盲区)。
+  await page.getByRole('button', { name: '添加讨论对象' }).click();
+  await expect(page.locator('.context-options')).toBeAttached();
+  await page.waitForTimeout(300);
+  expect(await darkPaint(page), '点开「添加讨论对象」之后有深色涂装').toEqual([]);
 });

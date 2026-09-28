@@ -80,18 +80,36 @@
 .open-workbench .workspace { padding-right:clamp(300px,29vw,420px); }
 .open-workbench .chat-hidden .workspace { padding-right:0; }
 .open-workbench .conversation-overlay { width:clamp(300px,29vw,420px); top:66px; bottom:16px; background:none; }
-.open-workbench .floating-conversation { inset:12px 16px 0 0; gap:0; border:1px solid #dce8ef; border-radius:22px; background:#fcfefef5; box-shadow:0 10px 34px #365d7814; overflow:hidden; pointer-events:auto; }
+.open-workbench .floating-conversation { inset:12px 16px 0 0; gap:0; border:1px solid var(--line-float); border-radius:var(--radius-panel); background:var(--float-surface); box-shadow:var(--shadow-float); overflow:hidden; pointer-events:auto; }
 .open-workbench .floating-title { align-self:stretch; border:0; border-radius:0; box-shadow:none; background:none; padding:12px 16px; height:50px; justify-content:space-between; }
 .open-workbench .conversation-move { font-size:14px; font-weight:600; }
 .open-workbench .floating-title small { display:none; }
 .open-workbench .floating-conversation .conversation-panel { pointer-events:auto; }
-.open-workbench .floating-conversation .conversation-history { padding:12px; }
-.open-workbench .floating-conversation .message:nth-child(n) { width:100%; margin:0 0 20px; padding:14px; box-shadow:none; border-radius:13px; }
-.open-workbench .floating-conversation .message.user { width:92%; margin-left:auto; }
-.open-workbench .floating-conversation .message-text { font-size:13px; line-height:1.8; overflow-wrap:anywhere; }
+.open-workbench .floating-conversation .conversation-history { padding:16px; }
+/* 一条消息都没有的时候,"这个面板能做什么"那一块**在转写区里居中**。
+   它本来就锚在顶部,而洞在它下面:顶上放着一张二百来像素的卡,底下空出两百多
+   像素,再往下才是输入框。加内容只能把洞填小一点,填不满 —— 摆到中间才是让它
+   不再是"一大片空白"的那一下。
+   `min-height:100%` 是相对 `.conversation-history` 算的,而它是个 `flex:1` 的
+   滚动容器,高度确定,所以百分比解得开。这一条只在空状态下命中,有消息之后
+   `.conversation-empty` 根本不在 DOM 里。 */
+.open-workbench .floating-conversation .conversation-empty { min-height:100%; justify-content:center; }
+/* 消息卡。**左右错落是按角色分的,不是按序号分的。** 这一条以前有三条兄弟规则
+   (`demo2.css` 与 `demo3-repair.css` 里各一组 `.message:nth-child(3n+1/3n+2/3n)`),
+   按**第几条**给 `margin-left` 6%/0/11%、宽度 88%/94%/84% —— 跟是用户还是 AI 毫无
+   关系。于是对话列表的头三条刚好错开,第四条起又开始重复那个节奏,读起来像排版
+   抖了一下。真实区分只有 `.message.user` 一条。那两组规则这里**删掉了**(它们本来
+   就已经被下面这两条 (0,4,0) 的规则压住,是死规则 —— 留着只会在别人改这一处时
+   以为自己要同时改四处)。
+   垂直间距 20px 不能动:`workbench-layout.spec.ts:105` 按"两张卡的间隔 ≥ 20px"钉着。 */
+.open-workbench .floating-conversation .message:nth-child(n) { width:100%; margin:0 0 20px; padding:14px; box-shadow:none; border-radius:var(--radius-card); }
+.open-workbench .floating-conversation .message.user { width:fit-content; max-width:88%; margin-left:auto; }
+.open-workbench .floating-conversation .message-text { font-size:13.5px; line-height:1.75; overflow-wrap:anywhere; }
 .open-workbench .floating-conversation .composer-area { padding:8px 12px 12px; margin:0; }
-.open-workbench .floating-conversation .composer { box-shadow:none; border-radius:14px; }
-.open-workbench .floating-conversation .composer textarea { height:44px; }
+.open-workbench .floating-conversation .composer { box-shadow:none; border-radius:var(--radius-card); }
+/* 输入框。11px 的字是这一层"密度不足"最刺眼的一处:它和正文差着两个字号档,
+   写的人会以为自己打的字不属于这段话。 */
+.open-workbench .floating-conversation .composer textarea { height:56px; font-size:13px; }
 .open-workbench .workspace { position:relative; }
 .space-topbar { position:absolute; inset:0 0 auto; z-index:25; height:0; min-height:0; padding:0; border:0; background:transparent; overflow:visible; pointer-events:none; }
 /* 三块浮动区走同一套:同一档圆角、同一条描边、同一个底、同一层阴影。

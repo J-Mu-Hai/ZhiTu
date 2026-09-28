@@ -98,11 +98,23 @@ export function ConversationPanel() {
       <div className="conversation-history">
         {historyLoading && <p className="turn-loading">正在读取对话…</p>}
 
+        {/* 空状态。它本来就锚在顶部(不是垂直居中),所以"下面一大片空白"的成因
+            不是位置 —— 是**内容太薄**:一段小字加一句示例,撑不满下面那一大块。
+            按这个面板真实能做的事列三条,把洞填上。
+
+            这三条**全是面板里本来就存在的文案**,不是新编的能力:
+            第 1 条来自这一段原来的那句话,第 2 条来自 `.replan-row` 的按钮,
+            第 3 条来自 `.context-hint`。编一条做不到的事写在这里,比留一片空白更坏。 */}
         {!historyLoading && !messages.length && (
           <div className="conversation-empty">
             <BrandMark size={24} />
             <strong>说说你想推进什么</strong>
-            <p>比如「我想在三个月内完成一个 Python 项目」。AI 会先问清楚截止时间、每周能投入多少时间、现在的水平，再动手排计划。</p>
+            <p>比如「我想在三个月内完成一个 Python 项目」。</p>
+            <ul className="conversation-abilities">
+              <li><span className="tiny-dot" />先问清楚截止时间、每周能投入多少时间、现在的水平，再动手排计划</li>
+              <li><span className="tiny-dot" />按最近的执行情况调整计划</li>
+              <li><span className="tiny-dot" />选择画布中的节点，让讨论更聚焦</li>
+            </ul>
           </div>
         )}
 

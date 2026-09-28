@@ -1039,8 +1039,14 @@ body {
 
 .conversation-overlay { background: linear-gradient(90deg, transparent, rgba(239, 247, 247, 0.85)); }
 .floating-conversation .conversation-panel { background: transparent; }
+/* 提案卡**必须**写成带祖先的那种形式(`.floating-conversation .proposal`),不能只写
+   `.proposal`。上面第 511 行那条深色规则是 `.floating-conversation .proposal, .proposal`,
+   而它命中的是**带祖先**的那一支 —— 也就是 (0,2,0)。只写 `.proposal` 是 (0,1,0),
+   排在后面也赢不了,于是 `#111f2f` 那张近黑的卡一直坐在暖白面板里。
+   实测:整页扫描在提案卡的状态下报 `div.proposal=rgb(17, 31, 47)`。 */
 .floating-title,
 .floating-conversation .message,
+.floating-conversation .proposal,
 .inline-question-card,
 .composer,
 .proposal {
@@ -1062,12 +1068,31 @@ body {
 }
 .proposal-items li::marker { color: #a9c0cd; }
 .proposal-items li + li { margin-top: 2px; }
-.floating-conversation .message.user { background: #edf5fb; }
+/* 用户气泡:深色那层给它上了 `border-color: #2c496c`(第 491 行)。
+   简写 `background` **不碰 border**,所以只写底色的话那圈深蓝的边原样留着 ——
+   底白了、边没白。这一处是量图量出来的:把截图逐行读出来,两张用户气泡的上下
+   顶边都是 `rgb(44, 73, 108)`。整页扫描抓不到它,因为 `darkPaint` 只看背景。 */
+.floating-conversation .message.user { background: #edf5fb; border-color: #d7e5e9; }
+/* 又一处"暖白层写对了、特异度不够"的。上面第 504 行那条是
+   `.floating-conversation .message.user .message-text, .message.user .message-text`
+   —— 命中的是 (0,4,0) 那一支,而这里原来只写了 `.message.user .message-text`
+   (0,3,0),排在后面也赢不了。于是**用户自己说的话是 `#c9d7e9`**,压在 `#edf5fb`
+   的气泡上:1.33:1,几乎是白字印在白纸上。截图里那两句只是"看着有点淡",很容易
+   被当成错觉放过去 —— 是把 PNG 逐行读出来才确认的。 */
 .message-text,
 .floating-conversation .message-text,
+.floating-conversation .message.user .message-text,
 .message.user .message-text { color: #3a5267; }
 .message.user .message-text { background: transparent; border-color: transparent; }
-.message-byline { color: #557a9b; }
+/* 同理:深色那层给署名的是 `#91add1`(0,2,0),而这里原来只写 `.message-byline`
+   (0,1,0)。署名是「知途 / 与你一起」和「我」—— 读不清就等于两条消息分不出谁说的。
+   取值比正文浅一档,但仍然过 4.5:1。 */
+.message-byline,
+.floating-conversation .message-byline { color: #4c6f90; }
+/* 空画布上那句「添加第一个子节点」是**新用户唯一的入口**,而它的颜色是深色主题的
+   浅蓝 `#9dbce5`(`experience.css`),压在暖白画布上只有 1.87:1。它不在任何一张
+   截图里(截图里的空间都有节点),是逐元素量对比度量出来的。 */
+.empty-space-note button { color: #356591; }
 .composer textarea,
 .journal-composer textarea,
 .hub-composer textarea,
@@ -1082,6 +1107,22 @@ body {
   border-color: #d7e5e9;
 }
 .floating-conversation .composer textarea { color: #2e485f; }
+/* 候选讨论对象面板。深色那层(第 547 行)给的是 `#101925` + 一圈 `#28384d` ——
+   一块近黑的板子。它跟前两块一样是**点开才存在**的:不点「添加讨论对象」它不在
+   DOM 里,所以整页扫描扫不到,得先点开再扫。 */
+.floating-conversation .context-options {
+  color: #587086;
+  background: #fffefa;
+  border: 1px solid #d7e5e9;
+  border-radius: var(--radius-control);
+}
+/* 「我」的那个小圆点。底色是深色主题的 `#293646`(`globals.css` 里写死的),
+   18px 的一颗近黑的点坐在暖白气泡上方。 */
+.user-dot {
+  background: var(--tint-selected);
+  box-shadow: inset 0 0 0 1px var(--line-selected);
+  color: #41627f;
+}
 .floating-conversation .composer-actions > span,
 .floating-conversation .composer-footnote,
 .floating-conversation .context-hint { color: #718598; }
@@ -1101,6 +1142,10 @@ body {
 /* 对话的四个以前没有的状态:来源徽标、等待、失败、空。 */
 .source-badge {
   align-self: flex-start;
+  /* 这条徽标在**块级**的 `.message` 里(工作台 Dock 与「对话」页都是),
+     而 `align-self` 只对 flex 子项生效 —— 于是它一路铺满整张卡片,看着像一条
+     状态条而不是一枚徽标。这一行是它本来就是的样子:按内容收窄。 */
+  width: fit-content;
   margin-top: 8px;
   padding: 2px 8px;
   color: #4a7ba6;
@@ -1146,16 +1191,41 @@ body {
   font-size: 11px;
 }
 .turn-error button:disabled { color: #a9a2a0; border-color: #e2dcd8; background: #f7f4f1; cursor: not-allowed; }
+/* 空状态:一个标题、一句示例,再接下"这个面板能做什么"的一张清单。
+   原来是"一个图标 + 一行标题 + 一段小字",撑不住这个面板 —— 洞不在它下面,
+   洞就是它太薄。清单里的三条全部取自面板里本来就有的文案(见 `ConversationPanel`),
+   不是新编的能力。
+   工作台那个浮动 Dock 里它还会被摆到转写区中间,那一条在 `ui-refresh.css`。 */
 .conversation-empty {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 26px 20px;
+  padding: 24px 20px 26px;
   color: #6f8293;
   text-align: center;
 }
-.conversation-empty strong { color: #344f68; font-size: 13px; }
-.conversation-empty p { font-size: 12px; line-height: 1.7; }
+.conversation-empty strong { color: #344f68; font-size: 15px; }
+.conversation-empty p { font-size: 13px; line-height: 1.7; }
+.conversation-abilities {
+  display: grid;
+  gap: 10px;
+  margin: 10px 0 0;
+  padding: 14px 16px;
+  border: 1px solid #e2ecf1;
+  border-radius: var(--radius-card);
+  background: rgba(255, 254, 250, 0.7);
+  list-style: none;
+  text-align: left;
+}
+.conversation-abilities li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: #4f6a80;
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+.conversation-abilities .tiny-dot { margin-top: 6px; }
 .brief-missing {
   display: flex;
   align-items: center;
