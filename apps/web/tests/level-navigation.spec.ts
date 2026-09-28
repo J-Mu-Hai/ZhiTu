@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { assertBackendRunning, createNode, createWorkspace, enterSpace, getPlan, registerAccount, renderedNodeIds, waitForRealPlan } from './support/session';
+import { canvasTool } from './support/menu';
 
 /**
  * 层级导航:进入子空间、在里面建东西、返回上级 —— **每一层都是后端那一层**。
@@ -56,7 +57,7 @@ test('进入子空间、在里面建节点、返回上级，每一层都对得�
   await expect.poll(() => renderedNodeIds(page)).toEqual([leafId, grandId].sort());
 
   // --- 在这一层建一个新节点,走**真实的用户路径**(点按钮、填表单、提交) --------
-  await page.getByRole('button', { name: '添加树叶', exact: true }).click();
+  await (await canvasTool(page, '添加树叶')).click();
   await page.getByLabel('树叶名称').fill('给导师写一封邮件');
   await page.getByRole('dialog').getByRole('button', { name: '添加树叶', exact: true }).click();
   await expect(page.getByText('给导师写一封邮件', { exact: true })).toBeVisible();

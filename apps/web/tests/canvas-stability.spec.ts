@@ -8,7 +8,7 @@ import {
   renderedNodeIds,
   waitForRealPlan,
 } from './support/session';
-import { selectNodeMenuItem } from './support/menu';
+import { canvasTool, selectNodeMenuItem } from './support/menu';
 
 /**
  * 画布状态稳定性:画布子树被卸载、被重建之后,**没提交的输入与视口不许丢**。
@@ -170,7 +170,7 @@ test('离开工作台再回到同一层，没提交的输入还在（明确关�
   await page.locator('.space-card', { hasText: '草稿验收空间' }).getByRole('button', { name: '进入工作台' }).click();
   await waitForRealPlan(page);
 
-  await page.getByRole('button', { name: '新建节点' }).click();
+  await (await canvasTool(page, '新建节点')).click();
   await titleField(page).fill(draft);
 
   // **弹窗是模态的,页签点不动**(见文件头),所以这里走浏览器自己的后退前进 ——
@@ -202,7 +202,7 @@ test('换空间时草稿不串：新空间看不到旧空间的输入，切回�
   await page.goto('/spaces');
   await page.locator('.space-card', { hasText: '草稿验收空间一' }).getByRole('button', { name: '进入工作台' }).click();
   await waitForRealPlan(page);
-  await page.getByRole('button', { name: '新建节点' }).click();
+  await (await canvasTool(page, '新建节点')).click();
   await titleField(page).fill(draft);
 
   // 同上:弹窗开着时模态拦住页面上的一切按钮,所以先退出去(草稿留着),
@@ -214,7 +214,7 @@ test('换空间时草稿不串：新空间看不到旧空间的输入，切回�
 
   // 第二个空间里**不许**出现第一个空间正在编辑的东西。
   await expect(page.getByRole('dialog'), '换空间之后弹窗跟着串过来了').toHaveCount(0);
-  await page.getByRole('button', { name: '新建节点' }).click();
+  await (await canvasTool(page, '新建节点')).click();
   await expect(titleField(page), '第二个空间里的新建弹窗带着第一个空间的字').toHaveValue('');
   // 这个弹窗本来就是空手打开的,关掉它不丢任何东西 —— 但它挡着"全部空间"那个按钮
   // (模态,见文件头),所以要先收起来。
@@ -309,7 +309,7 @@ test('换个人登进来，上一个人没提交的输入不跟过来', async ({
   // 少了这一条,断言挂在哪个键上就没人知道了 —— 而这条测试的全部意义就在那个键上。
   expect(await renderedNodeIds(page), '画布不是占位树,这条测试的前提没成立').toEqual(['goal']);
 
-  await page.getByRole('button', { name: '新建节点' }).click();
+  await (await canvasTool(page, '新建节点')).click();
   await titleField(page).fill(marker);
   await expect(titleField(page)).toHaveValue(marker);
 
@@ -345,6 +345,6 @@ test('换个人登进来，上一个人没提交的输入不跟过来', async ({
   // 甲的东西一样都不许出现。**先看弹窗**:草稿里记着 `dialog: 'node'`,没清掉的话
   // 它会自己开着站在乙面前 —— 那是用户最先看到的东西,也是这条测试变红时该报的那一句。
   await expect(page.getByRole('dialog'), '换账户之后,甲那边开着的新建弹窗跟着过来了').toHaveCount(0);
-  await page.getByRole('button', { name: '新建节点' }).click();
+  await (await canvasTool(page, '新建节点')).click();
   await expect(titleField(page), '乙的新建弹窗里带着甲打的字').toHaveValue('');
 });

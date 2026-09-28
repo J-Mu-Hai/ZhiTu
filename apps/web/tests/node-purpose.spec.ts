@@ -31,6 +31,7 @@ import {
   registerAccount,
   waitForRealPlan,
 } from './support/session';
+import { canvasTool } from './support/menu';
 
 test.beforeEach(async ({ request }) => {
   await assertBackendRunning(request);
@@ -53,7 +54,7 @@ function card(page: Page, nodeId: string) {
 test('建一个「主题 / 方向」建出来的节点是信息用途，而且没有任务勾选框', async ({ page }) => {
   const { account, workspaceId } = await scene(page, 'purpose-create');
   await page.goto(`/workbench?workspace=${workspaceId}`);
-  const trigger = page.getByRole('button', { name: '新建节点' });
+  const trigger = await canvasTool(page, '新建节点');
   await expect(trigger).toBeEnabled();
   await trigger.click();
 

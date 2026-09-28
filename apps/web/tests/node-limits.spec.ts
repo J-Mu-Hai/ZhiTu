@@ -37,6 +37,7 @@ import {
   registerAccount,
   waitForRealPlan,
 } from './support/session';
+import { canvasTool } from './support/menu';
 
 test.beforeEach(async ({ request }) => {
   await assertBackendRunning(request);
@@ -71,7 +72,7 @@ function card(page: Page, nodeId: string): Locator {
 /** 打开新建节点表单,等它真的能用(计划到达之前那个按钮是禁用的)。 */
 async function openCreate(page: Page, workspaceId: string): Promise<Locator> {
   await page.goto(`/workbench?workspace=${workspaceId}`);
-  const trigger = page.getByRole('button', { name: '新建节点' });
+  const trigger = await canvasTool(page, '新建节点');
   await expect(trigger).toBeEnabled();
   await trigger.click();
   const dialog = page.getByRole('dialog');

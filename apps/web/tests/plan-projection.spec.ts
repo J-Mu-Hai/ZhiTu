@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { assertBackendRunning, createNode, createWorkspace, dayOffset, enterSpace, getPlan, registerAccount, renderedNodeIds, waitForRealPlan } from './support/session';
+import { canvasTool } from './support/menu';
 
 /**
  * 阶段 5 的验收:路径图上画出来的节点,必须和 `/plan` 里真实存在的节点一致。
@@ -119,7 +120,7 @@ test('在界面上新建的节点，后端真的存下来了', async ({ page }) 
 
   // 这一条走的是**真实的用户路径**:点按钮、填表单、提交。它同时也在验
   // `POST /nodes` 那条直写路径(用户自己加节点是明确操作,不需要 AI 提案)。
-  await page.getByRole('button', { name: '新建节点' }).click();
+  await (await canvasTool(page, '新建节点')).click();
   await page.getByLabel('节点名称').fill('手写的一个节点');
   await page.getByRole('dialog').getByRole('button', { name: '新建节点' }).click();
   // **等界面认了这件事再去问后端。** `click()` 在事件派发完就返回了,而提交是异步的

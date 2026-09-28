@@ -380,7 +380,15 @@ test('在输入框里按撤销:文字归浏览器,画布一步都不动', async 
   //
   // 上面两次 Ctrl+Z 如果被画布接住了,历史就已经被消费掉、节点也早就跳回去了
   // (上面那条断言会先红)。这一条是它的正证:离开输入框之后那一步还在,按下去仍然管用。
-  await page.locator('.react-flow__pane').click({ position: { x: 20, y: 20 } });
+  //
+  // 点画布上的一块空白,把焦点从输入框里拿出来。**原来点的是左上角那 20×20** ——
+  // 那个角落现在浮着空间路径(它是左上角的浮动组件),点上去落在它身上,
+  // 而这一条要的是"点到画布上"。所以往画布里面挪一点(仍然是空白:左边那一列
+  // 在这个空间里没有节点)。
+  await page.locator('.react-flow__pane').click({ position: { x: 60, y: 220 } });
+  // 顺手确认焦点真的离开了 —— 不然下一步就变成"在输入框里按撤销",
+  // 而那正是上面那一条验的事,两条测试会变成同一条。
+  await expect(composer).not.toBeFocused();
   await toolbar(page).getByRole('button', { name: '撤销' }).click();
   await expect.poll(() => nodeAt(page, account.a).then((now) => same(now, p0)), {
     message: '撤销那一步在输入框里被吃掉了 —— 离开输入框后按撤销,节点没有回到拖动前',

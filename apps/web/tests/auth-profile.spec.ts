@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { artifactPath } from './support/artifacts';
+import { canvasTool } from './support/menu';
 import { assertBackendRunning, clickUntilVisible, createWorkspace, registerAccount, TOKEN_KEY } from './support/session';
 
 /**
@@ -102,8 +103,11 @@ test('注册之后自己建空间、建节点，刷新后还在', async ({ page 
 
   // 建完直接进这个新空间 —— 新空间是**空的**,只有根目标。
   await expect(page).toHaveURL(/\/workbench\?workspace=/);
-  await expect(page.getByRole('button', { name: '新建节点' })).toBeVisible();
-  await page.getByRole('button', { name: '新建节点' }).click();
+  // 「新建节点」在这个工具栏的低频菜单里(见 `support/menu.ts`),所以是**两步**:
+  // 菜单里那一项在、能用,再点它。断言的东西没变 —— 变的是它现在住在哪儿。
+  const create = await canvasTool(page, '新建节点');
+  await expect(create).toBeVisible();
+  await create.click();
   await page.getByLabel('节点名称').fill(nodeTitle);
   await page.getByRole('dialog').getByRole('button', { name: '新建节点' }).click();
   await expect(page.getByText(nodeTitle, { exact: true })).toBeVisible();
@@ -126,7 +130,7 @@ test('个人资料可以编辑并持久化，而且只属于自己这个账户',
 
   await expect(page.getByRole('heading', { name: spaceTitle })).toBeVisible();
   await page.getByRole('button', { name: '进入工作台' }).click();
-  await page.getByRole('button', { name: '新建节点' }).click();
+  await (await canvasTool(page, '新建节点')).click();
   await page.getByLabel('节点名称').fill(nodeTitle);
   await page.getByRole('dialog').getByRole('button', { name: '新建节点' }).click();
   await expect(page.getByText(nodeTitle, { exact: true })).toBeVisible();

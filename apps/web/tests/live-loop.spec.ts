@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { api, assertBackendRunning, createWorkspace, registerAccount } from './support/session';
+import { canvasTool } from './support/menu';
 
 /**
  * 闭环的后半段:**排出日程 → 今天做 → 把结果记下来,而且真的落库了。**
@@ -44,7 +45,9 @@ test('在浏览器里建的任务能排进日程，做完之后记录真的落�
 
   // 计划到达之前画布上是一棵只有一个哨兵根节点的占位树,那时"新建节点"是禁用的
   // (`POST /nodes` 要一个真 UUID)。先等真数据到,否则失败原因会指向选择器。
-  const createButton = page.getByRole('button', { name: '新建节点' });
+  // 它在工具栏那个低频菜单里(见 `support/menu.ts`)。禁用态是产品行为,
+  // 不因为多了一层菜单而改变 —— 这里断言的东西一个字都没改。
+  const createButton = await canvasTool(page, '新建节点');
   await expect(createButton).toBeEnabled();
   await createButton.click();
 
@@ -124,7 +127,7 @@ test('站内提醒会出现、能关掉，而且关掉之后刷新不会回来',
   // **而且要等它真的加载完。** 那个"上次打开的空间"是空间详情取回来之后才写进
   // 本地的,取回来之前就走,下一页读到的还是空 —— 于是又被送回空间页。
   await page.goto(`/workbench?workspace=${workspaceId}`);
-  await expect(page.getByRole('button', { name: '新建节点' })).toBeEnabled();
+  await expect(await canvasTool(page, '新建节点')).toBeEnabled();
 
   await page.goto('/today');
   const strip = page.locator('.reminder-strip');

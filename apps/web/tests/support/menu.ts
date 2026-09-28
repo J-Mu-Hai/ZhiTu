@@ -47,3 +47,68 @@ export async function selectNodeMenuItem(page: Page, nodeId: string, label: stri
   await openNodeMenu(page, nodeId);
   await chooseMenuItem(page, label);
 }
+
+/**
+ * 打开画布工具栏上那个「更多空间操作」菜单。
+ *
+ * ## 为什么"新建节点"变成了两步
+ *
+ * 这些低频率的操作(新建节点 / 建立关系 / 归档)从**常驻按钮**搬进了这个菜单:
+ * 常驻的那一排只留高频的。于是"建一个节点"从一个动作变成两个,而**直接在页面这一层
+ * 找 `getByRole('button', { name: '新建节点' })` 的写法会找不到元素** ——
+ * 菜单收起来的时候,`<details>` 里的内容不在无障碍树里,`getByRole` 看不见它。
+ * 报错会写成 `element(s) not found`,读起来像按钮被删掉了,而不是"它收进菜单了"。
+ *
+ * `support/menu.ts` 里两个菜单各有一个入口函数,理由是一样的:菜单怎么开
+ * (点哪个按钮、要不要悬停、`Shift+F10`)是产品可以改的,而抄在各 spec 里的那几份
+ * 会静静地停在"菜单没开",长得像被测功能坏了。
+ *
+ * ## 幂等 —— 以及为什么要**重试着开**
+ *
+ * 已经开着就不再点一次 summary(再点是**关掉**它)。菜单项点了之后会自己收起,
+ * 所以同一条用例里取第二次时,这里会重新打开。
+ *
+ * 但"再打开"不只是为了第二次:菜单的 `open` 是**直接写在 `<details>` 上的命令式
+ * 属性**,而画布在"计划刚到"这一刻会重渲染 —— 那个 `<details>` 连同 `open` 一起被
+ * 换掉,菜单会在用户眼皮底下自己合上。真人在那一刻会再点一次,这里做的也正是
+ * 这件事:打开 → 等那一项**真的看得见**,没看见就再开一次。
+ *
+ * 这不是把抖动藏起来:藏起来是"放宽断言直到它过",而这里是"做到它真的开着"。
+ * 拿掉重试就会变成一条时间赛跑 —— 在隔离栈里它已经红过一次
+ * (`auth-profile` 注册那条、`live-loop` 建任务那条;trace 里菜单开过、随后
+ * `<details>` 上就没有 `open` 了)。
+ */
+export async function openCanvasTools(page: Page): Promise<Locator> {
+  const menu = page.locator('.canvas-tools-menu');
+  const popover = page.locator('.canvas-tools-popover');
+  await expect(menu, '画布工具栏不见了').toBeVisible();
+  await expect(async () => {
+    if (!(await menu.evaluate(element => (element as HTMLDetailsElement).open))) {
+      await menu.locator('summary').click();
+    }
+    await expect(popover, '「更多空间操作」菜单没有打开').toBeVisible({ timeout: 1500 });
+  }).toPass({ timeout: 15000 });
+  return popover;
+}
+
+/**
+ * 菜单里的一项(**不点**,把断言留给调用方)。
+ *
+ * 先开菜单是必须的:收着的时候它不在无障碍树里 —— 收着时找那一项得到的是
+ * `element(s) not found`,读起来像按钮被删了。要检查"计划还没到的时候不能建"之类的
+ * 禁用状态,拿它去 `toBeEnabled()`/`toBeDisabled()` 就好 —— 禁用态是产品行为,
+ * 不因为多了一层菜单而改变。
+ */
+export async function canvasTool(page: Page, label: string): Promise<Locator> {
+  const popover = page.locator('.canvas-tools-popover');
+  const item = popover.getByRole('button', { name: label });
+  await expect(page.locator('.canvas-tools-menu'), '画布工具栏不见了').toBeVisible();
+  await expect(async () => {
+    const menu = page.locator('.canvas-tools-menu');
+    if (!(await menu.evaluate(element => (element as HTMLDetailsElement).open))) {
+      await menu.locator('summary').click();
+    }
+    await expect(item, `「更多空间操作」菜单里没有「${label}」这一项`).toBeVisible({ timeout: 1500 });
+  }).toPass({ timeout: 15000 });
+  return item;
+}

@@ -734,7 +734,16 @@ test('勾选完成:写进库之后才播完成反馈', async ({ page }) => {
   const settles = log.animations.filter(entry => entry.name === 'check-settle');
   expect(settles, '写入成功之后没有播完成反馈').toHaveLength(1);
   expect(settles[0].cls, '完成反馈没有落在那个勾选框上').toContain('task-check');
-  expect(log.animations.some(entry => entry.name === 'today-settle'), '文字没有落进完成色').toBe(true);
+  /*
+   * 文字与卡片那一段比勾选框**晚 100ms 起跑**(`today-settle` 的 `animation-delay`)。
+   * 所以这里要**等它开始**,不能拿刚刚那一份日志直接断言 —— 勾选框那条 100ms 的动画
+   * 结束时,它还没起跑,而"还没起跑"和"没播"在日志里长得一模一样。
+   * (`RealToday` 里那段按动画名摘标记的说明,防的是同一件事的另一面。)
+   */
+  await expect
+    .poll(async () => (await motionLog(page)).animations.some(entry => entry.name === 'today-settle'),
+      { message: '写入成功了,文字与卡片的完成色一次都没有落下' })
+    .toBe(true);
   console.log('[motion] 完成反馈:', JSON.stringify(log.animations.filter(entry => entry.name === 'check-settle' || entry.name === 'today-settle')));
 
   // 落定之后:图标在、文案在、"刚刚完成"那个标记已经摘掉。
@@ -826,10 +835,23 @@ test('AI 空闲时没有「正在思考」;规则兜底不冒充真实模型', a
   await expect(badge).toBeVisible({ timeout: 20000 });
   await expect(page.locator('.ai-thinking'), '回复到了,标识还挂着').toHaveCount(0);
   const text = (await badge.innerText()).replace(/\s+/g, ' ');
-  expect(text, '规则兜底的回复被说成了模型生成的').not.toContain('AI 规划');
-  expect(text).toContain('本地规则');
-  expect(text).toContain('模型不可用');
-  expect(await badge.getAttribute('class'), '兜底没有标成降级').toContain('degraded');
+  expect(text, '兜底的回复被说成了模型生成的').not.toContain('AI 规划');
+  /*
+   * 这一轮由谁回答**取决于验收栈是怎么起的**:没有模型 key 时是规则兜底
+   * (`本地规则`),带 `--script` 时是脚手架念稿(`测试脚手架`),而这次跑的是哪一种
+   * 只有后端知道。所以这里不规定"必须是哪一个" —— 规定的是两件事:徽标说的必须是
+   * 它**真是**的那一个,而且两者都不许被说成模型生成的。
+   * (`sourceLabel` 里那两个枚举存在的理由,就是不让脚本回放看起来像一次真实调用。)
+   */
+  const honest = [
+    { label: '本地规则', hint: '模型不可用', degraded: true },
+    { label: '测试脚手架', hint: '脚本回放', degraded: false },
+  ].find(entry => text.includes(entry.label));
+  expect(honest, `来源徽标既没有说规则兜底,也没有说脚手架:${text}`).toBeTruthy();
+  expect(text).toContain(honest!.hint);
+  if (honest!.degraded) {
+    expect(await badge.getAttribute('class'), '规则兜底没有标成降级').toContain('degraded');
+  }
   await expect.poll(async () => runningInside(page, '.conversation-overlay')).toEqual([]);
   console.log('[motion] 回复来源徽标:', text);
 });
