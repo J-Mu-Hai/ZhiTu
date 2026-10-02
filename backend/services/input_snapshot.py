@@ -49,8 +49,8 @@ from backend.db.models import (
     ExecutionRecord,
     NodeNote,
     NodeRelation,
-    PlanNode,
     PlanningBrief,
+    PlanNode,
     ScheduledSession,
     UserCapacityProfile,
 )
@@ -382,7 +382,7 @@ async def _note_versions(
             NodeNote.workspace_id == workspace_id, NodeNote.node_id.in_(node_ids)
         )
     )
-    return {node_id: version for node_id, version in result.all()}
+    return dict(result.all())
 
 
 async def _edges(db, workspace_id: uuid.UUID, coverage: set[uuid.UUID]) -> tuple[str, ...]:

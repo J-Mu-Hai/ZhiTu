@@ -41,11 +41,15 @@ from backend.agent.prompts.planning import (
     render_relations_section,
     render_scope_section,
     render_time_section,
+    render_tools_section,
 )
 from backend.agent.runtime.base import (
     AnalysisDraft,
     BriefClaim,
+    QuestionDraft,
+    QuestionOptionDraft,
     ReasoningResult,
+    ToolRequest,
     TurnContext,
 )
 from backend.db.models.enums import ModelSource
@@ -59,6 +63,31 @@ MINUTES_IN_WEEK = 7 * 24 * 60
 #: 设这个上限是为了给"模型开始复读、吐出两百条 create_node"留一道闸 ——
 #: 那种输出会让校验与写入都变得很慢,而它没有任何价值。
 MAX_ACTIONS = 80
+
+#: 一轮最多问几个问题。产品规则:默认 1 个,仅两个高度相关时最多 2 个。
+MAX_QUESTIONS = 2
+#: 一个问题最多几个选项。
+MAX_QUESTION_OPTIONS = 5
+#: 一句问题 / 一句"为什么现在问"最多多长。
+MAX_QUESTION_CHARS = 500
+MAX_WHY_NOW_CHARS = 500
+#: 选项 id 与标签的长度上限。
+MAX_OPTION_ID_CHARS = 40
+MAX_OPTION_LABEL_CHARS = 120
+
+#: `response_mode` 的闭集。不在里面的整个问题丢掉 —— 与 brief 的闭集同一条纪律。
+QUESTION_RESPONSE_MODES = frozenset({"single_select", "multi_select", "free_text", "mixed"})
+
+#: 一次模型调用最多请求几个工具。服务端还会用全局预算卡总量。
+MAX_TOOL_REQUESTS = 2
+#: 工具名与 reason 的长度上限。
+MAX_TOOL_NAME_CHARS = 64
+MAX_TOOL_REASON_CHARS = 300
+
+#: `stopReason` 的闭集。模型写别的 -> `None`(服务端自己判预算)。
+STOP_REASONS = frozenset(
+    {"ready_to_propose", "need_user_answer", "insufficient_evidence", "budget_exhausted", "failed"}
+)
 
 #: 一段文本类条件最多留多长。截断而不是丢弃:被模型写长了的目标仍然比没有目标有用。
 TEXT_LIMITS = {
@@ -128,6 +157,7 @@ def render_turn(turn: TurnContext) -> str:
             "title": n.title,
             "node_type": n.node_type,
             "purpose": n.purpose,
+            "planning_level": n.planning_level,
             "status": n.status,
             "depth": n.depth,
             "deadline": n.deadline,
@@ -179,6 +209,7 @@ def render_turn(turn: TurnContext) -> str:
         time_section=render_time_section(turn.time),
         plan_section=render_plan_section(nodes),
         relations_section=render_relations_section(edges, hidden=turn.edges_hidden),
+        tools_section=render_tools_section(list(turn.tool_exchanges)),
         history_section=render_history_section(history),
         user_message=turn.user_message,
     )
@@ -198,7 +229,9 @@ def render_turn(turn: TurnContext) -> str:
 #:
 #: 所以键的来源收在这里一处:加一栏只改 `parse_analysis` 与这个常量,测试会替人
 #: 盯住 `OUTPUT_CONFIG` 有没有跟上。
-PARSED_PAYLOAD_FIELDS = frozenset({"reply", "brief", "actions", "analysis"})
+PARSED_PAYLOAD_FIELDS = frozenset(
+    {"reply", "brief", "actions", "questions", "toolRequests", "stopReason", "analysis"}
+)
 
 
 def payload_to_result(
@@ -234,6 +267,9 @@ def payload_to_result(
         source=source,
         brief_claims=tuple(parse_claims(payload.get("brief"))),
         actions=parse_actions(payload.get("actions")),
+        questions=parse_questions(payload.get("questions")),
+        tool_requests=parse_tool_requests(payload.get("toolRequests")),
+        stop_reason=parse_stop_reason(payload.get("stopReason")),
         analysis=parse_analysis(payload.get("analysis")),
         request_id=request_id,
         prompt_version=prompt_version,
@@ -308,6 +344,156 @@ def parse_actions(raw_actions: Any) -> tuple[dict, ...]:
             continue
         kept.append(entry)
     return tuple(kept)
+
+
+# ---------------------------------------------------------------------------------
+# questions
+# ---------------------------------------------------------------------------------
+def parse_questions(raw_questions: Any) -> tuple[QuestionDraft, ...]:
+    """把模型给的 `questions` 变成**已经校验过**的问题草稿。
+
+    与 `parse_actions` 的关键区别:actions 在这一层只做形状判断(能不能落地需要数据库),
+    而问题在服务端能完成全部格式校验,所以这里就把它校验完 —— 选项数量、选项 id 唯一、
+    `responseMode` 闭集、自由输入与选项的相容性。
+
+    逐项独立校验、独立丢弃:第 2 个问题写坏了不该把第 1 个一起丢掉。
+    超过 `MAX_QUESTIONS` 的**截断而不是报错** —— 模型偶尔会复读同一个问题。
+    """
+    if not isinstance(raw_questions, list):
+        if raw_questions not in (None, []):
+            logger.info("questions 不是数组,已忽略: %r", type(raw_questions).__name__)
+        return ()
+
+    if len(raw_questions) > MAX_QUESTIONS:
+        logger.info(
+            "模型一轮给了 %d 个问题,只留前 %d 个(上限见 MAX_QUESTIONS)",
+            len(raw_questions),
+            MAX_QUESTIONS,
+        )
+
+    kept: list[QuestionDraft] = []
+    for entry in raw_questions[:MAX_QUESTIONS]:
+        draft = _parse_question(entry)
+        if draft is not None:
+            kept.append(draft)
+    return tuple(kept)
+
+
+def _parse_question(entry: Any) -> QuestionDraft | None:
+    """一个问题的严格形状。返回 None 表示这一条不可用。
+
+    ## 为什么 `free_text` 与 `single_select` 在这里就把选项定死
+
+    答案校验(见 `question_service.answer_question`)要判断"这个选项存不存在"。
+    如果这里放行一个 `free_text` 却带着 3 个选项的问题,那条答案校验就无从判断
+    用户点的那个 id 算不算数 —— 两处一定要有一处说了算,而这一层是最靠前的。
+    """
+    if not isinstance(entry, dict):
+        return None
+
+    question = entry.get("question")
+    if not isinstance(question, str) or not question.strip():
+        return None
+    question = question.strip()[:MAX_QUESTION_CHARS]
+
+    why_now = entry.get("whyNow", entry.get("why_now"))
+    why_now = (
+        why_now.strip()[:MAX_WHY_NOW_CHARS] if isinstance(why_now, str) else ""
+    )
+
+    mode = entry.get("responseMode", entry.get("response_mode"))
+    if mode not in QUESTION_RESPONSE_MODES:
+        return None
+
+    options: list[QuestionOptionDraft] = []
+    raw_options = entry.get("options")
+    if isinstance(raw_options, list):
+        seen: set[str] = set()
+        for option in raw_options[:MAX_QUESTION_OPTIONS]:
+            if not isinstance(option, dict):
+                continue
+            option_id = option.get("id")
+            label = option.get("label")
+            if not isinstance(option_id, str) or not option_id.strip():
+                continue
+            if not isinstance(label, str) or not label.strip():
+                continue
+            option_id = option_id.strip()[:MAX_OPTION_ID_CHARS]
+            if option_id in seen:
+                continue
+            seen.add(option_id)
+            options.append(
+                QuestionOptionDraft(
+                    id=option_id, label=label.strip()[:MAX_OPTION_LABEL_CHARS]
+                )
+            )
+
+    allow_custom = entry.get("allowCustomInput", entry.get("allow_custom_input"))
+    allow_custom = bool(allow_custom) if isinstance(allow_custom, bool) else False
+
+    if mode == "free_text":
+        # 自由输入题不该带选项 —— 带着也会被拒,不如在这里就归零。
+        options = []
+        allow_custom = True
+    elif mode in {"single_select", "multi_select"}:
+        if not options:
+            # 选择题一个选项都没有 = 没问清楚。
+            return None
+    elif mode == "mixed":
+        # 混合题:选项可选,自由输入一定允许。0 个选项时它等价于自由输入题。
+        allow_custom = True
+
+    return QuestionDraft(
+        question=question,
+        why_now=why_now,
+        response_mode=mode,
+        options=tuple(options),
+        allow_custom_input=allow_custom,
+    )
+
+
+# ---------------------------------------------------------------------------------
+# toolRequests / stopReason
+# ---------------------------------------------------------------------------------
+def parse_tool_requests(raw: Any) -> tuple[ToolRequest, ...]:
+    """把模型给的 `toolRequests` 变成**形状合法**的工具请求。
+
+    **这里只做形状判断,不判断工具是否存在、参数是否对、手柄是否可见** —— 那些需要
+    注册表与本轮上下文,在 `agent_tools` 里做。放一个半吊子校验器在这里只会让两处
+    规则漂移。
+    """
+    if not isinstance(raw, list):
+        if raw not in (None, []):
+            logger.info("toolRequests 不是数组,已忽略: %r", type(raw).__name__)
+        return ()
+    kept: list[ToolRequest] = []
+    for entry in raw[:MAX_TOOL_REQUESTS]:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        arguments = entry.get("arguments")
+        if not isinstance(arguments, dict):
+            arguments = {}
+        request_id = entry.get("id")
+        reason = entry.get("reason")
+        kept.append(
+            ToolRequest(
+                id=request_id.strip()[:MAX_TOOL_NAME_CHARS] if isinstance(request_id, str) and request_id.strip() else name.strip()[:MAX_TOOL_NAME_CHARS],
+                name=name.strip()[:MAX_TOOL_NAME_CHARS],
+                arguments=arguments,
+                reason=reason.strip()[:MAX_TOOL_REASON_CHARS] if isinstance(reason, str) else "",
+            )
+        )
+    return tuple(kept)
+
+
+def parse_stop_reason(raw: Any) -> str | None:
+    """`stopReason` 只能是闭集里的一个;写别的就返回 `None`(服务端自己判)。"""
+    if isinstance(raw, str) and raw.strip() in STOP_REASONS:
+        return raw.strip()
+    return None
 
 
 # ---------------------------------------------------------------------------------
@@ -518,13 +704,20 @@ __all__ = [
     "ANALYSIS_FIELD_ORDER",
     "BRIEF_FIELD_ORDER",
     "MAX_ACTIONS",
+    "MAX_QUESTIONS",
+    "MAX_QUESTION_OPTIONS",
+    "MAX_TOOL_REQUESTS",
     "MINUTES_IN_WEEK",
     "PARSED_PAYLOAD_FIELDS",
+    "QUESTION_RESPONSE_MODES",
     "PayloadInvalid",
     "clean_value",
     "parse_actions",
     "parse_analysis",
     "parse_claims",
+    "parse_questions",
+    "parse_stop_reason",
+    "parse_tool_requests",
     "payload_from_chat_completion",
     "payload_to_result",
     "render_turn",

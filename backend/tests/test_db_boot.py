@@ -22,6 +22,12 @@ EXPECTED_TABLES = {
     "auth_sessions",
     "availability_exceptions",
     "availability_rules",
+    # AI 提出的问题。**单独一张表,不塞进 `plan_nodes`** —— 问题不是计划节点,
+    # 不参与排期、依赖、统计(见 db/models/question.py)。
+    "agent_questions",
+    # 服务端控制的推理状态与只读工具调用记录(阶段 4,见 db/models/reasoning.py)。
+    "reasoning_states",
+    "tool_call_records",
     "conversations",
     "dependencies",
     "domain_events",

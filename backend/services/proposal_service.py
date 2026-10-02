@@ -70,6 +70,7 @@ from backend.db.models import (
     Dependency,
     DomainEvent,
     NodeNote,
+    NodeRelation,
     PlanNode,
     PlanRevision,
     Proposal,
@@ -80,7 +81,9 @@ from backend.db.models import (
 from backend.db.models.enums import (
     DependencyType,
     NodeOrigin,
+    NodeRelationType,
     NodeStatus,
+    PlanningLevel,
     ProposalOp,
     ProposalStatus,
     RevisionActor,
@@ -88,7 +91,6 @@ from backend.db.models.enums import (
 )
 from backend.services import note_service, plan_service, turn_context
 from backend.services.context import WorkspaceContext
-from backend.services.node_service import touch_content_version
 from backend.services.errors import (
     IdempotencyKeyReused,
     ProposalExpired,
@@ -97,6 +99,7 @@ from backend.services.errors import (
     ProposalNotFound,
     StaleBaseRevision,
 )
+from backend.services.node_service import touch_content_version
 from backend.services.proposal_validation import (
     NodeSnapshot,
     ValidatedPlan,
@@ -184,6 +187,8 @@ async def build_from_actions(
     snapshots = await _snapshots(db, ctx, nodes)
     handle_map = _handles_to_ids(handles)
     dependencies = await _load_dependency_pairs(db, ctx.id)
+    relations = await _load_relation_pairs(db, ctx.id)
+    strategy_exists = await _strategy_exists(db, ctx.id)
     # 记号表里认不出来的记号直接落空 —— 那一条会在校验里按悬空引用被拒,
     # 而不是变成"范围内没有这个节点"。
     writable = (
@@ -197,8 +202,10 @@ async def build_from_actions(
         handles=handle_map,
         nodes=snapshots,
         dependencies=dependencies,
+        relations=relations,
         today=today_in(ctx.timezone),
         writable=writable,
+        strategy_exists=strategy_exists,
     )
 
     if result.plan is None:
@@ -546,6 +553,8 @@ async def _revalidate(
     snapshots = await _snapshots(db, ctx, nodes)
     handles = {f"n{index}": node.id for index, node in enumerate(nodes, start=1)}
     dependencies = await _load_dependency_pairs(db, ctx.id)
+    relations = await _load_relation_pairs(db, ctx.id)
+    strategy_exists = await _strategy_exists(db, ctx.id)
 
     items = await load_items(db, proposal.id)
     actions = tuple(item.payload for item in items if isinstance(item.payload, dict))
@@ -555,7 +564,9 @@ async def _revalidate(
         handles=handles,
         nodes=snapshots,
         dependencies=dependencies,
+        relations=relations,
         today=today_in(ctx.timezone),
+        strategy_exists=strategy_exists,
     )
     return result.plan, result.errors
 
@@ -580,6 +591,7 @@ async def _apply(
             acceptance_criteria=_clean(action.acceptance_criteria),
             node_type=action.node_type,
             purpose=action.purpose,
+            planning_level=action.planning_level,
             status=NodeStatus.PENDING,
             priority=action.priority,
             estimate_minutes=action.estimate_minutes,
@@ -672,6 +684,26 @@ async def _apply(
             )
         )
 
+    # -- 相关 / 影响关系 ------------------------------------------------------
+    # **不走 `node_service.add_relation`。** 那条路是**用户手工**路径:它自己开一个
+    # `_each_change`,会另记一个计划版本、另发一条 domain_event,而且把
+    # `origin` 固定成 USER。我们现在已经在 `_apply` 的事务与这一次提案的版本里,
+    # 兜回去会多写一个版本、并让 AI 提的关系看起来像用户自己连的。
+    #
+    # 直接建行,`origin=AI`。`PlannedRelation` 里的两端已经是**规范化后**的方向
+    # (`related_to` 按 UUID 整数序),这里不再自己排一次 —— 规范化只有一处。
+    for relation in plan.relations:
+        db.add(
+            NodeRelation(
+                workspace_id=ctx.id,
+                source_node_id=relation.source_id,
+                target_node_id=relation.target_id,
+                relation_type=relation.relation_type,
+                note=relation.note,
+                origin=NodeOrigin.AI,
+            )
+        )
+
     # 先 flush 再取快照:本会话是 autoflush=False(见 db/session.py),
     # 不显式 flush 的话快照里会缺掉刚刚新增的那些节点。
     await db.flush()
@@ -708,6 +740,16 @@ async def _apply(
                 {"predecessorId": str(a), "successorId": str(b)}
                 for a, b in plan.dependencies_remove
             ],
+            # 「相关 / 影响」边另列一栏,不混进 `addedDependencies`:那一栏的语义是
+            # "会改变排期的前置",这里的两种不参与排期(见 `NodeRelationType`)。
+            "addedRelations": [
+                {
+                    "sourceId": str(relation.source_id),
+                    "targetId": str(relation.target_id),
+                    "relationType": relation.relation_type.value,
+                }
+                for relation in plan.relations
+            ],
         },
         created_at=now,
     )
@@ -740,6 +782,7 @@ async def _apply(
             notes_updated=notes_updated,
             dependencies_added=len(plan.dependencies_add),
             dependencies_removed=len(plan.dependencies_remove),
+            relations_added=len(plan.relations),
             revision_version=revision_version,
         ),
         revision.id,
@@ -786,6 +829,35 @@ async def _load_dependency_pairs(    db: AsyncSession, workspace_id: uuid.UUID
     return {(row[0], row[1]) for row in result.all()}
 
 
+async def _load_relation_pairs(
+    db: AsyncSession, workspace_id: uuid.UUID
+) -> set[tuple[uuid.UUID, uuid.UUID, NodeRelationType]]:
+    """这个空间里**两端都还活着**的「相关 / 影响」边。校验重复时用的就是它。
+
+    与 `_load_dependency_pairs` 同一条纪律、同一个理由:节点被软删除时不会级联清
+    关系行,两端都活着才是一个可比较的基准。否则一份本来合法的提案会撞上一条
+    穿过已删节点的重复边。
+
+    返回原样的存储方向,规范化(无向的 `related_to`)交给校验层的
+    `canonical_relation_key` —— 那样一处定义,不会出现"校验用有向、库里存无向"。
+    """
+    live = select(PlanNode.id).where(
+        PlanNode.workspace_id == workspace_id, PlanNode.deleted_at.is_(None)
+    )
+    result = await db.execute(
+        select(
+            NodeRelation.source_node_id,
+            NodeRelation.target_node_id,
+            NodeRelation.relation_type,
+        ).where(
+            NodeRelation.workspace_id == workspace_id,
+            NodeRelation.source_node_id.in_(live),
+            NodeRelation.target_node_id.in_(live),
+        )
+    )
+    return {(row[0], row[1], row[2]) for row in result.all()}
+
+
 async def _snapshots(db, ctx: WorkspaceContext, nodes: list[PlanNode]) -> dict:
     """给校验器的那份节点快照。**生成时与确认时用同一个函数。**
 
@@ -807,7 +879,7 @@ async def _snapshots(db, ctx: WorkspaceContext, nodes: list[PlanNode]) -> dict:
                 NodeNote.workspace_id == ctx.id, NodeNote.node_id.in_(ids)
             )
         )
-        note_versions = {node_id: version for node_id, version in rows.all()}
+        note_versions = dict(rows.all())
 
     return {
         node.id: NodeSnapshot(
@@ -821,6 +893,7 @@ async def _snapshots(db, ctx: WorkspaceContext, nodes: list[PlanNode]) -> dict:
             note_version=note_versions.get(node.id, 0),
             estimate_minutes=node.estimate_minutes,
             deadline=node.deadline,
+            planning_level=node.planning_level.value if node.planning_level else None,
         )
         for node in nodes
     }
@@ -831,6 +904,26 @@ async def _current_revision_version(db: AsyncSession, workspace_id: uuid.UUID) -
         select(Workspace.current_revision_version).where(Workspace.id == workspace_id)
     )
     return int(value or 1)
+
+
+async def _strategy_exists(db: AsyncSession, workspace_id: uuid.UUID) -> bool:
+    """这个空间里有没有一个**活着**的战略节点。
+
+    它回答的是"用户已经确认过一个战略了吗"。战略只能通过**用户确认一份提案**
+    写入计划(或用户手工建),而两种方式写入的都是 `plan_nodes` 里一行
+    `planning_level='strategy'`。所以"存在这样一行"就是"已确认战略"的事实,
+    不需要另一张状态表 —— 多一张就有"两处记录哪一份算数"的问题。
+    """
+    found = await db.scalar(
+        select(PlanNode.id)
+        .where(
+            PlanNode.workspace_id == workspace_id,
+            PlanNode.deleted_at.is_(None),
+            PlanNode.planning_level == PlanningLevel.STRATEGY,
+        )
+        .limit(1)
+    )
+    return found is not None
 
 
 async def _find_decision(
@@ -946,6 +1039,7 @@ def _change_summary(plan: ValidatedPlan) -> dict:
         "deleteNode": 0,
         "addDependency": 0,
         "removeDependency": 0,
+        "createRelation": 0,
         "updateNote": 0,
     }
     bucket = {
@@ -954,6 +1048,7 @@ def _change_summary(plan: ValidatedPlan) -> dict:
         ProposalOp.DELETE_NODE.value: "deleteNode",
         ProposalOp.CREATE_DEPENDENCY.value: "addDependency",
         ProposalOp.DELETE_DEPENDENCY.value: "removeDependency",
+        ProposalOp.CREATE_RELATION.value: "createRelation",
         ProposalOp.UPDATE_NOTE.value: "updateNote",
     }
 

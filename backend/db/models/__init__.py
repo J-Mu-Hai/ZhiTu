@@ -7,7 +7,11 @@
 from backend.db.models.analysis import NodeAnalysis
 from backend.db.models.conversation import Conversation, Message
 from backend.db.models.enums import (
+    ACTIVE_QUESTION_STATUSES,
     FROZEN_SESSION_STATUSES,
+    PLANNING_LEVEL_ORDER,
+    PLANNING_LEVEL_RANK,
+    PROVENANCE_SOURCES,
     AnalysisFreshness,
     AvailabilitySource,
     BriefStatus,
@@ -22,13 +26,20 @@ from backend.db.models.enums import (
     NodeRelationType,
     NodeStatus,
     NodeType,
+    PlanningLevel,
     Priority,
     ProposalOp,
     ProposalStatus,
+    QuestionResponseMode,
+    QuestionStatus,
+    QuestionUserAction,
+    ReasoningAction,
+    ReasoningStatus,
     RevisionActor,
     RevisionTrigger,
     ScheduledSessionOrigin,
     ScheduledSessionStatus,
+    ToolCallStatus,
     WorkspaceStatus,
 )
 from backend.db.models.event import DomainEvent
@@ -36,6 +47,8 @@ from backend.db.models.layout import NodePosition, ScopeViewport
 from backend.db.models.note import NodeNote
 from backend.db.models.plan import Dependency, NodeRelation, PlanNode, PlanRevision
 from backend.db.models.proposal import Proposal, ProposalDecision, ProposalItem
+from backend.db.models.question import AgentQuestion
+from backend.db.models.reasoning import ReasoningState, ToolCallRecord
 from backend.db.models.reminder import ReminderState
 from backend.db.models.schedule import ExecutionRecord, ScheduleApplication, ScheduledSession
 from backend.db.models.user import (
@@ -49,8 +62,13 @@ from backend.db.models.workspace import PlanningBrief, Workspace
 
 __all__ = [
     # 枚举
+    "ACTIVE_QUESTION_STATUSES",
     "FROZEN_SESSION_STATUSES",
+    "PLANNING_LEVEL_ORDER",
+    "PLANNING_LEVEL_RANK",
+    "PROVENANCE_SOURCES",
     # 表
+    "AgentQuestion",
     "AnalysisFreshness",
     "AuthSession",
     "AvailabilityException",
@@ -80,12 +98,19 @@ __all__ = [
     "PlanNode",
     "PlanRevision",
     "PlanningBrief",
+    "PlanningLevel",
     "Priority",
     "Proposal",
     "ProposalDecision",
     "ProposalItem",
     "ProposalOp",
     "ProposalStatus",
+    "QuestionResponseMode",
+    "QuestionStatus",
+    "QuestionUserAction",
+    "ReasoningAction",
+    "ReasoningState",
+    "ReasoningStatus",
     "ReminderState",
     "RevisionActor",
     "RevisionTrigger",
@@ -94,6 +119,8 @@ __all__ = [
     "ScheduledSessionOrigin",
     "ScheduledSessionStatus",
     "ScopeViewport",
+    "ToolCallRecord",
+    "ToolCallStatus",
     "User",
     "UserCapacityProfile",
     "Workspace",

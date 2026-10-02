@@ -34,8 +34,16 @@ from typing import Annotated, Literal
 from pydantic import Field, TypeAdapter
 
 from backend.contracts.common import ApiModel
-from backend.contracts.plan import MAX_DESCRIPTION_CODEPOINTS, MAX_NOTE_CODEPOINTS
-from backend.db.models.enums import NodePurpose, NodeStatus, NodeType, Priority, ProposalOp
+from backend.contracts.plan import MAX_DESCRIPTION_CODEPOINTS
+from backend.db.models.enums import (
+    NodePurpose,
+    NodeRelationType,
+    NodeStatus,
+    NodeType,
+    PlanningLevel,
+    Priority,
+    ProposalOp,
+)
 
 #: 一次最多接受多少条变更。与 agent/runtime/direct_llm.py 的 MAX_ACTIONS 对齐 ——
 #: 两处不一致的话,agent 层放行的条数会在这里被整批拒绝,而用户看到的是
@@ -102,6 +110,10 @@ class CreateNodeAction(_ActionBase):
     #:
     #: 默认 `planning`:模型没提这个字段时,它的行为和加这一列之前完全一样。
     purpose: NodePurpose = NodePurpose.PLANNING
+    #: 规划层级(战略 / 阶段 / 月 / 周 / 日)。**可空** —— 不传就是 unspecified,
+    #: 存量节点与不需要层级的节点都是它。服务端按"父粗子细"校验,
+    #: 且没有已确认战略时不允许提出更细的层级。
+    planning_level: PlanningLevel | None = None
     estimate_minutes: int | None = Field(default=None, gt=0, le=MAX_ESTIMATE_MINUTES)
     deadline: date | None = None
     priority: Priority = Priority.MEDIUM
@@ -130,6 +142,8 @@ class UpdateNodeAction(_ActionBase):
     deadline: date | None = None
     priority: Priority | None = None
     status: NodeStatus | None = None
+    #: 规划层级。传 `null` 是"清空层级",不传是"不改"(`model_fields_set` 区分)。
+    planning_level: PlanningLevel | None = None
 
 
 class DeleteNodeAction(_ActionBase):
@@ -154,6 +168,39 @@ class CreateDependencyAction(_DependencyActionBase):
 
 class DeleteDependencyAction(_DependencyActionBase):
     op: Literal["delete_dependency"]
+
+
+class CreateRelationAction(_ActionBase):
+    """连一条「相关」(`related_to`)或「影响」(`influences`)边。§2.5 / §4.4。
+
+    这两种边写的是 `node_relations`,**不参与排期** —— 它们表达"这两件事有关联"
+    "A 会影响 B",而不是"必须先做 A"。所以它们与 `create_dependency` 是两类动作,
+    不是同一个动作加了一个类型字段:后者写 `dependencies`、要查环、会让任务往后挪。
+
+    ## 方向
+
+    - `related_to` **无向**:`sourceRef` 与 `targetRef` 谁是主语不影响结果,校验器会
+      按 UUID 的整数序把两端规范化成同一个键,A→B 与 B→A 只算一条。
+    - `influences` **有向**:`sourceRef` 影响 `targetRef`,反方向是另一条边。
+
+    ## 为什么两端都允许是信息主题
+
+    信息主题不能作为**排期依赖**的端点(它没有"完成"那一刻),但它完全可以和别的
+    主题相关、也可以影响别的主题 —— "我排名 38"会影响"这学期选课"。这条区分由
+    `NodeRelationType` 的两张表结构保证,不靠这个模型再写一遍。
+
+    ## `note`
+
+    一句解释这条边为什么存在的话,可选。与手工路径(`node_service.add_relation`)同
+    一个字段、同一列,**不设更严的上限** —— 两条路写的是同一张表,两边上限不一致会
+    造成"AI 能写的,用户手工改不回来"。
+    """
+
+    op: Literal["create_relation"]
+    source_ref: Handle
+    target_ref: Handle
+    relation_type: NodeRelationType
+    note: str | None = None
 
 
 class UpdateNoteAction(_ActionBase):
@@ -198,6 +245,7 @@ PlanAction = Annotated[
     | DeleteNodeAction
     | CreateDependencyAction
     | DeleteDependencyAction
+    | CreateRelationAction
     | UpdateNoteAction,
     Field(discriminator="op"),
 ]
@@ -216,6 +264,7 @@ ACCEPTED_OPS: frozenset[str] = frozenset(
         ProposalOp.UPDATE_NOTE.value,
         ProposalOp.CREATE_DEPENDENCY.value,
         ProposalOp.DELETE_DEPENDENCY.value,
+        ProposalOp.CREATE_RELATION.value,
     }
 )
 
@@ -306,6 +355,9 @@ class AppliedChangeView(ApiModel):
     nodes_created: int = 0
     nodes_updated: int = 0
     nodes_deleted: int = 0
+    #: 被写进 `node_relations` 的「相关 / 影响」边条数。与 `dependencies_added`
+    #: **不同一件事**:那些写 `dependencies` 并参与排期,这些只是画布上的说明。
+    relations_added: int = 0
     #: 被写进长正文(笔记)的节点数。**不是节点数之外的另一样东西** —— 一个节点
     #: 可能既在 `nodes_updated` 里、又在 `notes_updated` 里(改说明的同时补了笔记),
     #: 所以这两个数字不能相加。
@@ -359,6 +411,7 @@ __all__ = [
     "ConfirmProposalResponse",
     "CreateDependencyAction",
     "CreateNodeAction",
+    "CreateRelationAction",
     "DeleteDependencyAction",
     "DeleteNodeAction",
     "PlanAction",

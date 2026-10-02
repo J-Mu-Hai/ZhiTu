@@ -151,6 +151,26 @@ OUTPUT_CONFIG: dict[str, Any] = {
     # 就让整轮失败。而这里的取舍相反 —— 十条里有一条不合法,应该留下另外九条,
     # 把那条的错误码单独报给用户(见 `response.py` 的 `parse_actions`)。
     "actions": {"type": "array", "required": False, "description": "提议的计划变更"},
+    # questions 与 actions 同样的取舍:只声明成一个数组,**不声明 `items`** ——
+    # 一道题写坏不该让整轮的回复都失败。逐题校验在 `response.parse_questions`,
+    # 它是与 SDK 无关的那一层,直连与脚本化两条路都走它。
+    "questions": {
+        "type": "array",
+        "required": False,
+        "description": "向用户提的问题(0–2 个),与 actions 分开",
+    },
+    # 有界循环的协议键。**必须声明** —— 否则 openJiuwen 那条路会在到解析器之前
+    # 把它们 pop 掉,模型请求的工具永远执行不了。
+    "toolRequests": {
+        "type": "array",
+        "required": False,
+        "description": "请求调用的只读工具(0–2 个)",
+    },
+    "stopReason": {
+        "type": "string",
+        "required": False,
+        "description": "ready_to_propose / need_user_answer / insufficient_evidence / budget_exhausted / failed",
+    },
     # analysis 同 `brief`:七栏里没列进 `properties` 的键会被 SDK pop 掉。
     #
     # **它必须在这里。** 这一条是真实模型验收抓出来的:提示词从 C 批起就要求模型给

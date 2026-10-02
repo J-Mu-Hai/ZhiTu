@@ -30,8 +30,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.api.dependencies.workspace import get_workspace_context
 from backend.contracts.analysis import MAX_ANALYSES, AnalysisListResponse
 from backend.contracts.plan import (
-    ArchiveImpactPayload,
     ArchivedNodePayload,
+    ArchiveImpactPayload,
     CreateDependencyRequest,
     CreateNodeRequest,
     CreateRelationRequest,
@@ -117,6 +117,7 @@ async def create_node(
         priority=payload.priority,
         estimate_minutes=payload.estimate_minutes,
         deadline=payload.deadline,
+        planning_level=payload.planning_level,
     )
     return _edit_response(result)
 

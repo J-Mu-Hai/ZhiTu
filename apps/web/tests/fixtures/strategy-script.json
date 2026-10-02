@@ -1,0 +1,32 @@
+{
+  "turns": [
+    {
+      "reply": "先定一个大方向，再谈这周做什么。",
+      "actions": [
+        {
+          "op": "create_node",
+          "localId": "n2",
+          "parentRef": "n1",
+          "title": "战略:先英语",
+          "nodeType": "goal",
+          "planningLevel": "strategy",
+          "description": "优先:英语阅读。暂缓:数学建模。依据:目标需要阅读量。风险:时间可能不够。"
+        }
+      ]
+    },
+    {
+      "reply": "战略定了，这一周先精读两篇。",
+      "actions": [
+        {
+          "op": "create_node",
+          "localId": "n3",
+          "parentRef": "n2",
+          "title": "本周重点:精读两篇",
+          "nodeType": "task",
+          "planningLevel": "week",
+          "estimateMinutes": 120
+        }
+      ]
+    }
+  ]
+}

@@ -284,3 +284,8 @@ async def _turn_response(
         input_changed=outcome.input_changed,
         replayed=outcome.replayed,
     )
+
+
+#: 公开别名。回答问题的路径(`routes/questions.py`)要复用这段拼装,而"两条路径的
+#: 响应形状必须逐字段一致"只有在只有一份实现时才成立。
+turn_response = _turn_response

@@ -443,3 +443,124 @@ async def test_the_reply_points_at_the_proposal_it_brought(
     assert replayed.json()["replayed"] is True, "同一个 clientMessageId 应该被认出来"
     assert replayed.json()["proposal"] is not None, "重放时提案丢了"
     assert replayed.json()["proposal"]["id"] == body["proposal"]["id"]
+
+
+# ---------------------------------------------------------------------------------
+# 情事实轨:缺条件也能落长笔记(P0.2 / P0.3)
+# ---------------------------------------------------------------------------------
+async def test_a_proposal_can_write_a_long_note_about_an_experience(
+    app_client: httpx.AsyncClient, make_account, use_reasoner
+) -> None:
+    """一段经历 -> 长笔记 -> confirm -> 笔记按需读得到。
+
+    验收 2。长笔记不进 `/plan`(那是设计:四个视图都不需要 20,000 字正文),
+    所以要拿真实接口 `GET /nodes/{id}/notes` 读回来。
+
+    "缺 deadline / 每周投入 / 当前水平"在这里是一个**已知前提** —— 这个空间里
+    一个规划条件都没有,而这条提案仍然要成立。
+
+    笔记写在一个**已存在**的信息主题上。这是产品里笔记真正出现的形态:用户正在
+    讨论某个节点,又补了一大段。
+    """
+    account = await make_account()
+    long_body = ("大二暑假在实验室做了一个图像分割的小课题," * 40).strip()
+    root_id = next(
+        node["id"] for node in (await _plan(app_client, account))["nodes"]
+        if node["parentId"] is None
+    )
+    created = await app_client.post(
+        f"/api/workspaces/{account.workspace_id}/nodes",
+        json={
+            "parentId": root_id,
+            "title": "暑期科研经历",
+            "nodeType": "capability",
+            "purpose": "information",
+        },
+        headers=account.headers,
+    )
+    assert created.status_code == 201, created.text
+    node_id = created.json()["node"]["id"]
+
+    # n1 根目标,n2 刚建的信息主题。
+    actions = ({"op": "update_note", "targetRef": "n2", "body": long_body},)
+    use_reasoner(FakeReasoner(actions=actions))
+    proposal = await _propose(app_client, account, actions=actions, content="这段经历记一下")
+
+    # 确认前:笔记还是空的。
+    before = await app_client.get(
+        f"/api/workspaces/{account.workspace_id}/nodes/{node_id}/notes",
+        headers=account.headers,
+    )
+    assert before.json()["body"] == ""
+
+    response = await _confirm(app_client, account, proposal["id"])
+    assert response.status_code == 200, response.text
+    applied = response.json()["applied"]
+    assert applied["notesUpdated"] == 1
+    assert applied["nodesCreated"] == 0
+
+    note = await app_client.get(
+        f"/api/workspaces/{account.workspace_id}/nodes/{node_id}/notes",
+        headers=account.headers,
+    )
+    assert note.status_code == 200, note.text
+    assert note.json()["body"] == long_body
+    assert note.json()["contentVersion"] >= 1
+
+    # 重复 confirm 幂等:笔记不会被写第二遍。
+    replay = await _confirm(app_client, account, proposal["id"], KEY_A)
+    assert replay.status_code == 200, replay.text
+    assert replay.json()["replayed"] is True
+    assert (
+        await app_client.get(
+            f"/api/workspaces/{account.workspace_id}/nodes/{node_id}/notes",
+            headers=account.headers,
+        )
+    ).json()["body"] == long_body
+
+
+async def test_a_stale_relation_proposal_writes_nothing(
+    app_client: httpx.AsyncClient, make_account, use_reasoner, db
+) -> None:
+    """计划在提案生成后前进了一版 -> 关系提案也不得照单应用。
+
+    验收 5 的"陈旧版本"那一半。它证明版本闸跑在**关系写入之前**:一份基于旧计划
+    生成的关系提案,不能在用户已经改过计划之后还默默地把边写进去。
+    """
+    from sqlalchemy import update
+
+    from backend.db.models import Workspace
+
+    account = await make_account()
+    actions = (
+        {
+            "op": "create_node",
+            "localId": "n2",
+            "parentRef": "n1",
+            "title": "英语阅读",
+        },
+        {
+            "op": "create_relation",
+            "sourceRef": "n2",
+            "targetRef": "n1",
+            "relationType": "related_to",
+        },
+    )
+    use_reasoner(FakeReasoner(actions=actions))
+    proposal = await _propose(app_client, account, actions=actions)
+
+    # 另一个标签页改了计划(版本号前进)。
+    await db.execute(
+        update(Workspace)
+        .where(Workspace.id == uuid.UUID(account.workspace_id))
+        .values(current_revision_version=Workspace.current_revision_version + 1)
+    )
+    await db.commit()
+
+    refused = await _confirm(app_client, account, proposal["id"])
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["error"]["code"] == "STALE_BASE_REVISION"
+
+    plan = await _plan(app_client, account)
+    assert len(plan["nodes"]) == 1, "陈旧提案里的新节点被写进去了"
+    assert plan["relations"] == [], "陈旧提案里的关系被写进去了"

@@ -18,7 +18,7 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -34,8 +34,8 @@ BEFORE = "b7d41c9f2a68"
 
 #: 两个不同的归档时刻。微秒**刻意非零**:全零的话,两个后端来回转换时"有没有小数位"
 #: 会变成另一个变量,而这条测试要盯的是分组,不是时间格式。
-FIRST = datetime(2026, 9, 20, 10, 0, 0, 1)
-SECOND = datetime(2026, 9, 21, 11, 30, 0, 500000)
+FIRST = datetime(2026, 9, 20, 10, 0, 0, 1, tzinfo=UTC)
+SECOND = datetime(2026, 9, 21, 11, 30, 0, 500000, tzinfo=UTC)
 
 
 def _upgrade(db_path: Path, revision: str, monkeypatch: pytest.MonkeyPatch) -> None:

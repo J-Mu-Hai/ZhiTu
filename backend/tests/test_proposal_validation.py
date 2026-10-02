@@ -30,6 +30,7 @@ PLAN_TABLES = frozenset(
     {
         "plan_nodes",
         "dependencies",
+        "node_relations",
         "plan_revisions",
         "proposals",
         "proposal_items",
@@ -179,6 +180,48 @@ BAD_ACTIONS = [
             {"op": "create_dependency", "predecessorRef": "n3", "successorRef": "n2"},
         ],
         codes.DEPENDENCY_CYCLE,
+    ),
+    (
+        "关系和自己连",
+        [
+            {
+                "op": "create_relation",
+                "sourceRef": "n1",
+                "targetRef": "n1",
+                "relationType": "related_to",
+            }
+        ],
+        codes.SELF_RELATION,
+    ),
+    (
+        "关系引用了不存在的节点",
+        [
+            {
+                "op": "create_relation",
+                "sourceRef": "n1",
+                "targetRef": "n7",
+                "relationType": "influences",
+            }
+        ],
+        codes.DANGLING_PROPOSAL_REF,
+    ),
+    (
+        "信息主题当排期依赖的端点",
+        # 信息主题可以参与「相关 / 影响」,但依赖是排期输入 —— 它没有"完成"那一刻,
+        # 那条边永远不成立。手工路径会拒(`InformationNodeNotSchedulable`),
+        # 提案这条不经过那个函数,所以必须自己在 `_add_dependency` 里再判一次。
+        [
+            {
+                "op": "create_node",
+                "localId": "n2",
+                "parentRef": "n1",
+                "title": "我排名 38",
+                "nodeType": "capability",
+                "purpose": "information",
+            },
+            {"op": "create_dependency", "predecessorRef": "n1", "successorRef": "n2"},
+        ],
+        codes.INFORMATION_NODE_NOT_DEPENDABLE,
     ),
 ]
 

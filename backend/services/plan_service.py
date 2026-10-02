@@ -71,6 +71,7 @@ def node_to_dict(node: PlanNode) -> dict[str, object]:
         "acceptance_criteria": node.acceptance_criteria,
         "node_type": node.node_type.value,
         "purpose": node.purpose.value,
+        "planning_level": node.planning_level.value if node.planning_level else None,
         "status": node.status.value,
         "priority": node.priority.value,
         "estimate_minutes": node.estimate_minutes,

@@ -31,7 +31,11 @@ from datetime import date
 
 from pydantic import ValidationError
 
-from backend.contracts.plan import MAX_NOTE_CODEPOINTS, information_node_conflicts
+from backend.contracts.plan import (
+    MAX_NOTE_CODEPOINTS,
+    child_level_conflicts,
+    information_node_conflicts,
+)
 from backend.contracts.proposal import (
     ACCEPTED_OPS,
     DEFERRED_OPS,
@@ -40,13 +44,14 @@ from backend.contracts.proposal import (
     ActionError,
     CreateDependencyAction,
     CreateNodeAction,
+    CreateRelationAction,
     DeleteDependencyAction,
     DeleteNodeAction,
     UpdateNodeAction,
     UpdateNoteAction,
     action_adapter,
 )
-from backend.db.models.enums import NodePurpose, NodeType
+from backend.db.models.enums import NodePurpose, NodeRelationType, NodeType, PlanningLevel
 
 # ---------------------------------------------------------------------------------
 # 错误码。**这是对外的接口**,与 services/errors.py 里的 code 同级:
@@ -71,12 +76,27 @@ SELF_DEPENDENCY = "SELF_DEPENDENCY"
 DEPENDENCY_CYCLE = "DEPENDENCY_CYCLE"
 DEPENDENCY_ALREADY_EXISTS = "DEPENDENCY_ALREADY_EXISTS"
 DEPENDENCY_NOT_FOUND = "DEPENDENCY_NOT_FOUND"
+#: 一个节点和自己连「相关 / 影响」。与 `SELF_DEPENDENCY` 分开:那个说的是排期依赖,
+#: 这个说的是画布上的说明边 —— 两张表、两条路,错误码也应当分得清。
+SELF_RELATION = "SELF_RELATION"
+#: 这条「相关 / 影响」边已经存在了。`related_to` 是无向的,所以 A→B 已存在时
+#: 再提 B→A 也算重复 —— 规范化的键让两种画法落到同一行。
+RELATION_ALREADY_EXISTS = "RELATION_ALREADY_EXISTS"
+#: 想把一个信息主题当**排期依赖**的端点。与手工路径的 `InformationNodeNotSchedulable`
+#: 同一个 code,见 `services/errors.py`。信息主题可以参与「相关 / 影响」,但依赖
+#: (finish-to-start)是排期输入 —— 信息主题没有"完成"那一刻,那条边永远不成立。
+INFORMATION_NODE_NOT_DEPENDABLE = "INFORMATION_NODE_NOT_DEPENDABLE"
 #: 同一个父节点下已经有一个**同一主题**的节点,而且用途不同,所以合并不了。
 #: 见 `_create`:合并键里含 `purpose`(信息用途与规划用途的"学业情况"是两回事),
 #: 但**拒绝**键里不含 —— 同一层里叫同一个名字的两样东西,正是 §4.4 与 §2.5 要消掉的重复。
 DUPLICATE_NODE_TITLE = "DUPLICATE_NODE_TITLE"
 #: 信息用途的节点带了工时或截止时间。§4.1:"信息主题不需要具备工时、完成勾选或截止日期"。
 INFORMATION_NODE_MUST_NOT_BE_SCHEDULABLE = "INFORMATION_NODE_MUST_NOT_BE_SCHEDULABLE"
+#: 规划层级不相容:父子层级反向(较细的当父、较粗的当子),或信息主题带了层级。
+PLANNING_LEVEL_INVALID = "PLANNING_LEVEL_INVALID"
+#: 还没有已确认的战略,却提出了阶段/月/周/日层级的动作。
+#: **与 `PLANNING_LEVEL_INVALID` 分开**,因为用户要做的事不同:这个要先去确认战略。
+STRATEGY_NOT_CONFIRMED = "STRATEGY_NOT_CONFIRMED"
 #: 提案写笔记时,那段笔记在生成之后被改过了。**与 `CONFLICTING_OPERATIONS` 分开**:
 #: 那个是"同一份提案内部自相矛盾",这个是"你读的那一版已经不是现在的这一版了",
 #: 用户该做的是重新生成,而不是去改提案。
@@ -125,6 +145,8 @@ _FIELD_LABELS: dict[str, str] = {
     #: **报错**里出现 —— 值本身不参与任何判断(见 `consume` 里那一段)。
     "expectedNoteVersion": "笔记版本",
     "expected_note_version": "笔记版本",
+    "planningLevel": "规划层级",
+    "planning_level": "规划层级",
 }
 
 #: 服务端在 payload 里记的"这份提案生成时,那段笔记是第几版"。
@@ -172,6 +194,8 @@ class NodeSnapshot:
     note_version: int = 0
     estimate_minutes: int | None = None
     deadline: date | None = None
+    #: 规划层级(`strategy` / `phase` / `month` / `week` / `day`)。`None` = unspecified。
+    planning_level: str | None = None
 
 
 # ---------------------------------------------------------------------------------
@@ -242,6 +266,22 @@ class NotePatch:
 
 
 @dataclass(frozen=True, slots=True)
+class PlannedRelation:
+    """一条将要被写进 `node_relations` 的「相关 / 影响」边。
+
+    `source_id` / `target_id` 是**已经规范化过**的存储方向:`related_to` 按 UUID 的
+    整数序排好,`influences` 保持模型给的方向。`_apply` 直接拿它建行,不再自己排一次
+    —— 规范化只应当有一处,否则校验用的是无向键、写入用的是原方向,两者会分叉。
+    """
+
+    source_id: uuid.UUID
+    target_id: uuid.UUID
+    relation_type: NodeRelationType
+    note: str | None
+    action: CreateRelationAction
+
+
+@dataclass(frozen=True, slots=True)
 class ValidatedPlan:
     """可以落地的完整变更集。"""
 
@@ -252,13 +292,15 @@ class ValidatedPlan:
     notes: tuple[NotePatch, ...] = ()
     dependencies_add: tuple[tuple[uuid.UUID, uuid.UUID], ...] = ()
     dependencies_remove: tuple[tuple[uuid.UUID, uuid.UUID], ...] = ()
+    #: 「相关 / 影响」边。与 `dependencies_add` 分开:它们写两张表、语义也不同。
+    relations: tuple[PlannedRelation, ...] = ()
     items: tuple[ValidatedItem, ...] = ()
 
     @property
     def is_empty(self) -> bool:
         return not (
             self.creates or self.updates or self.deletes or self.notes
-            or self.dependencies_add or self.dependencies_remove
+            or self.dependencies_add or self.dependencies_remove or self.relations
         )
 
 
@@ -432,6 +474,24 @@ def _find_same_topic(
     return None
 
 
+def canonical_relation_key(
+    relation_type: NodeRelationType, source: uuid.UUID, target: uuid.UUID
+) -> tuple[uuid.UUID, uuid.UUID, str]:
+    """一条「相关 / 影响」边的**比较健**。纯函数。
+
+    `related_to` 是无向的,所以两端要按 UUID 的**整数序**排成一个固定顺序 ——
+    字符串序是实现细节,不能当语义。于是 A→B 与 B→A 得到同一个键,只算一条边。
+    `influences` 有向,方向原样保留,反方向是另一条边。
+
+    比较键与存储方向用的是同一套排序:`_apply` 拿 `key[:2]` 去建行。两处都用它,
+    "校验说重复"与"库里真有一行"才不可能分叉。
+    """
+    if relation_type is NodeRelationType.INFLUENCES:
+        return (source, target, relation_type.value)
+    first, second = sorted((source, target), key=lambda value: value.int)
+    return (first, second, relation_type.value)
+
+
 # ---------------------------------------------------------------------------------
 # 主入口
 # ---------------------------------------------------------------------------------
@@ -441,8 +501,10 @@ def validate_actions(
     handles: Mapping[str, uuid.UUID],
     nodes: Mapping[uuid.UUID, NodeSnapshot],
     dependencies: Iterable[tuple[uuid.UUID, uuid.UUID]] = (),
+    relations: Iterable[tuple[uuid.UUID, uuid.UUID, NodeRelationType]] = (),
     today: date,
     writable: Iterable[uuid.UUID] | None = None,
+    strategy_exists: bool = False,
 ) -> ValidationResult:
     """把模型的一段变更校验成一个可以落地的变更集。
 
@@ -486,9 +548,17 @@ def validate_actions(
         dependencies={
             (a, b) for a, b in dependencies if a in nodes and b in nodes
         },
+        # 同样的理由套在「相关 / 影响」上:两端都还活着的边才是可比较的基准。
+        # 键按 `related_to` 无向规范化,所以 A→B 与 B→A 在这里就是同一个键。
+        relations={
+            canonical_relation_key(relation_type, a, b)
+            for a, b, relation_type in relations
+            if a in nodes and b in nodes
+        },
         today=today,
         writable=None if writable is None else frozenset(writable),
         coalesced=coalesced,
+        strategy_exists=strategy_exists,
     )
     errors: list[ActionError] = []
 
@@ -533,13 +603,20 @@ class _Book:
         today: date,
         writable: frozenset[uuid.UUID] | None = None,
         coalesced: Mapping[int, str] | None = None,
+        relations: set[tuple[uuid.UUID, uuid.UUID, str]] | None = None,
+        strategy_exists: bool = False,
     ) -> None:
         self.today = today
         self.handles = dict(handles)
         self.nodes = dict(nodes)
         self.existing_dependencies = dependencies
+        #: 库里已经存在的「相关 / 影响」边(规范化的键,两端都活着)。
+        self.existing_relations = set(relations or ())
         #: None = 不设范围限制。见 `validate_actions` 的注释。
         self.writable = writable
+        #: 这个空间里有没有一个**已经存在的、活着的**战略节点(`planning_level=strategy`)。
+        #: 有才允许提出更细的层级 —— 战略必须先被用户确认。
+        self.strategy_exists = strategy_exists
         #: 序号 -> 这一条是合并来的,合并到了谁。见 `coalesce_creates`。
         self.coalesced = dict(coalesced or {})
 
@@ -552,6 +629,9 @@ class _Book:
         self.notes: list[NotePatch] = []
         self.dep_add: list[tuple[uuid.UUID, uuid.UUID]] = []
         self.dep_remove: list[tuple[uuid.UUID, uuid.UUID]] = []
+        #: 「相关 / 影响」边。键集用来查重(与库里已存的用同一套规范化),列表用来落盘。
+        self.rel_keys: set[tuple[uuid.UUID, uuid.UUID, str]] = set()
+        self.rel_add: list[PlannedRelation] = []
         self.items: list[ValidatedItem] = []
         #: 已经被写过笔记的节点 -> 那条动作的 `expected_note_version`。
         #: 同一个节点在一次提案里被写两次笔记是矛盾的(第二份照哪一版写?)。
@@ -582,7 +662,7 @@ class _Book:
     def is_empty(self) -> bool:
         return not (
             self.creates or self.updates or self.deletes or self.notes
-            or self.dep_add or self.dep_remove
+            or self.dep_add or self.dep_remove or self.rel_add
         )
 
     def title_of(self, node_id: uuid.UUID) -> str:
@@ -652,6 +732,8 @@ class _Book:
             return self._add_dependency(ordinal, action, payload)
         if isinstance(action, DeleteDependencyAction):
             return self._remove_dependency(ordinal, action, payload)
+        if isinstance(action, CreateRelationAction):
+            return self._add_relation(ordinal, action, payload)
         # action_adapter 的判别联合已经穷尽了所有分支,走到这里说明契约层加了新 op
         # 而这里忘了处理。**如实报成不认识,而不是静默放过去** —— 静默放过去的后果是
         # 用户看到一条"AI 提了变更"却什么都没发生。
@@ -722,10 +804,14 @@ class _Book:
         # 判定函数(`node_service.create_node`),所以"手动与 AI 创建路径采用相同校验"
         # 是结构性的,不是靠两处各写一遍、然后有一条忘了改。
         conflict = information_node_conflicts(
-            action.purpose, action.estimate_minutes, action.deadline
+            action.purpose, action.estimate_minutes, action.deadline, action.planning_level
         )
         if conflict is not None:
             return [_err(ordinal, INFORMATION_NODE_MUST_NOT_BE_SCHEDULABLE, conflict)]
+
+        level_error = self._create_level_error(ordinal, action, parent_id)
+        if level_error is not None:
+            return [level_error]
 
         duplicate = self._duplicate_title(ordinal, parent_id, action)
         if duplicate is not None:
@@ -859,15 +945,24 @@ class _Book:
         # 的信息主题、还带着工时"改写成一条修改 —— 也就是说,一个本来会被 `_create`
         # 拦下的 over-reach,会换一件衣服从这里进来。两处都判才是"拦得住"。
         snapshot = self.nodes[node_id]
+        planning_level = (
+            action.planning_level if "planning_level" in changed else snapshot.planning_level
+        )
         conflict = information_node_conflicts(
             snapshot.purpose,
             action.estimate_minutes
             if action.estimate_minutes is not None
             else snapshot.estimate_minutes,
             action.deadline if action.deadline is not None else snapshot.deadline,
+            planning_level,
         )
         if conflict is not None:
             return [_err(ordinal, INFORMATION_NODE_MUST_NOT_BE_SCHEDULABLE, conflict)]
+
+        if "planning_level" in changed:
+            level_error = self._update_level_error(ordinal, node_id, action.planning_level)
+            if level_error is not None:
+                return [level_error]
 
         self.touched[node_id] = _TOUCH_UPDATE
         self.updates.append(NodePatch(node_id=node_id, changed_fields=changed, action=action))
@@ -1042,6 +1137,19 @@ class _Book:
         predecessor, successor = pair
         if predecessor == successor:
             return [_err(ordinal, SELF_DEPENDENCY, "一个节点不能以自己为前提。")]
+        # 信息主题不能当**排期依赖**的端点(§2.5)。手工路径走的是
+        # `node_service._reject_information_endpoints`;这里必须再判一次,因为提案这条
+        # 路不经过那个函数 —— 少了它,AI 就能建出一条永远不成立的依赖边。
+        for node_id in pair:
+            if self._purpose_of(node_id) == NodePurpose.INFORMATION.value:
+                return [
+                    _err(
+                        ordinal,
+                        INFORMATION_NODE_NOT_DEPENDABLE,
+                        f"「{self.title_of(node_id)}」是信息主题,不参与排期,"
+                        "不能作为依赖的端点。要让它参与排期,先把它的用途改成「行动」。",
+                    )
+                ]
         if pair in self.dep_add:
             return [_err(ordinal, DEPENDENCY_ALREADY_EXISTS, "这条前置关系在同一次提案里写了两遍。")]
         if pair in self.existing_dependencies and pair not in self.dep_remove:
@@ -1102,6 +1210,74 @@ class _Book:
         )
         return []
 
+    def _add_relation(
+        self, ordinal: int, action: CreateRelationAction, payload: dict
+    ) -> list[ActionError]:
+        """连一条「相关 / 影响」边。§2.5。
+
+        与依赖分开校验,因为规则不同:依赖查环、信息主题不能当端点;这两种边**允许成环**、
+        信息主题**可以参与**。方向规则也不同 —— `related_to` 无向去重。
+
+        允许引用同一份提案里**前面刚建**的节点:`self.resolved` 在 `_create` 里已经绑好,
+        所以"先建节点、再连关系"天然成立。
+        """
+        pair = self._resolve_pair(
+            ordinal, action.source_ref, action.target_ref, subject="关系里"
+        )
+        if isinstance(pair, list):
+            return pair
+        blocked = self._pair_out_of_scope(
+            ordinal, pair, action.source_ref, action.target_ref
+        )
+        if blocked is not None:
+            return [blocked]
+        source, target = pair
+        if source == target:
+            return [_err(ordinal, SELF_RELATION, "一个节点不能和自己建立关系。")]
+
+        key = canonical_relation_key(action.relation_type, source, target)
+        first, second, _ = key
+        label = _relation_label(action.relation_type)
+        if key in self.existing_relations:
+            return [
+                _err(
+                    ordinal,
+                    RELATION_ALREADY_EXISTS,
+                    f"「{self.title_of(first)}」和「{self.title_of(second)}」之间"
+                    f"已经有一条「{label}」关系了。",
+                )
+            ]
+        if key in self.rel_keys:
+            return [
+                _err(
+                    ordinal,
+                    RELATION_ALREADY_EXISTS,
+                    f"这条「{label}」关系在同一次提案里写了两遍。",
+                )
+            ]
+
+        self.rel_keys.add(key)
+        self.rel_add.append(
+            PlannedRelation(
+                source_id=first,
+                target_id=second,
+                relation_type=action.relation_type,
+                note=(action.note or None),
+                action=action,
+            )
+        )
+        self.items.append(
+            ValidatedItem(
+                ordinal=ordinal,
+                op=action.op,
+                summary=_relation_summary(
+                    action.relation_type, self.title_of(first), self.title_of(second)
+                ),
+                payload=payload,
+            )
+        )
+        return []
+
     # -- 范围 ------------------------------------------------------------------
     def _out_of_scope(self, ordinal: int, node_id: uuid.UUID, ref: str) -> ActionError | None:
         """这个节点在不在"这一轮能改的"里面。不在就返回一条错误,在就返回 None。
@@ -1138,7 +1314,12 @@ class _Book:
 
     # -- 辅助 ------------------------------------------------------------------
     def _resolve_pair(
-        self, ordinal: int, predecessor_ref: str, successor_ref: str
+        self,
+        ordinal: int,
+        predecessor_ref: str,
+        successor_ref: str,
+        *,
+        subject: str = "前置关系里",
     ) -> tuple[uuid.UUID, uuid.UUID] | list[ActionError]:
         """把两个记号解析成一对真实 id。解析不了就返回错误列表(用类型区分两种返回)。
 
@@ -1154,7 +1335,7 @@ class _Book:
                     _err(
                         ordinal,
                         DANGLING_PROPOSAL_REF,
-                        f"前置关系里{label}节点 {ref} 不存在。",
+                        f"{subject}{label}节点 {ref} 不存在。",
                     )
                 ]
             resolved[ref] = node_id
@@ -1169,6 +1350,115 @@ class _Book:
                 return planned.depth
         snapshot = self.nodes.get(node_id)
         return snapshot.depth if snapshot else 0
+
+    def _purpose_of(self, node_id: uuid.UUID) -> str:
+        """一个节点的用途 —— **同一条提案里刚建的节点也要算**。
+
+        只看 `self.nodes` 会漏掉 `create_node` 刚建出来、同一条里又要给它连关系的节点,
+        而那种节点是一个完全合法的依赖端点(只要它是 planning)。
+        """
+        for planned in self.creates.values():
+            if planned.id == node_id:
+                return planned.action.purpose.value
+        snapshot = self.nodes.get(node_id)
+        return snapshot.purpose if snapshot else NodePurpose.PLANNING.value
+
+    # -- 规划层级 ------------------------------------------------------------
+    def _level_of(self, node_id: uuid.UUID) -> str | None:
+        """一个节点的层级,同一条提案里刚建的节点也算。"""
+        for planned in self.creates.values():
+            if planned.id == node_id:
+                level = planned.action.planning_level
+                return level.value if level is not None else None
+        snapshot = self.nodes.get(node_id)
+        return snapshot.planning_level if snapshot else None
+
+    def _has_strategy_ancestor(self, node_id: uuid.UUID) -> bool:
+        """从 `node_id`(含自己)沿父链上找,有没有一个**已存在**的 strategy 节点。
+
+        **只认 `self.nodes`(库里已有的)。** 计划中刚建的节点不算 —— 战略必须先被
+        用户确认,而确认发生在提案通过之后。所以一条"同一个提案里先建战略、再建周"
+        的动作里,那个周找不到已确认的战略祖先,会被拒。
+        """
+        seen: set[uuid.UUID] = set()
+        current: uuid.UUID | None = node_id
+        while current is not None and current not in seen:
+            seen.add(current)
+            snapshot = self.nodes.get(current)
+            if snapshot is None:
+                return False
+            if snapshot.planning_level == PlanningLevel.STRATEGY.value:
+                return True
+            current = snapshot.parent_id
+        return False
+
+    def _create_level_error(
+        self, ordinal: int, action: CreateNodeAction, parent_id: uuid.UUID
+    ) -> ActionError | None:
+        """新建一个带层级的节点时的全部层级规则。"""
+        level = action.planning_level
+        if level is None:
+            return None
+        # 1) 父子层级只能从粗到细(允许跳过中间层;None 与任何层级相容)。
+        parent_conflict = child_level_conflicts(self._level_of(parent_id), level)
+        if parent_conflict is not None:
+            return _err(ordinal, PLANNING_LEVEL_INVALID, parent_conflict)
+        # 2) strategy 本身不受"必须有已确认战略"的约束。
+        if level is PlanningLevel.STRATEGY:
+            return None
+        # 3) 没有已确认战略时,只能提战略选择,不能下钻。
+        if not self.strategy_exists:
+            return _err(
+                ordinal,
+                STRATEGY_NOT_CONFIRMED,
+                "还没有已确认的战略。先把战略选择提出来、让用户确认,再往下拆"
+                "阶段/月/周/日。",
+            )
+        # 4) 更细的层级必须挂在一个已确认的战略或它下面的节点上。
+        if not self._has_strategy_ancestor(parent_id):
+            return _err(
+                ordinal,
+                STRATEGY_NOT_CONFIRMED,
+                "这一层计划要挂在一个已确认的战略(或它下面的节点)上,不能凭空新建。",
+            )
+        return None
+
+    def _update_level_error(
+        self, ordinal: int, node_id: uuid.UUID, level: PlanningLevel | None
+    ) -> ActionError | None:
+        """把一个已有节点改成某个层级时的全部层级规则。"""
+        if level is None:
+            return None
+        snapshot = self.nodes.get(node_id)
+        parent_level = (
+            self._level_of(snapshot.parent_id)
+            if snapshot is not None and snapshot.parent_id is not None
+            else None
+        )
+        parent_conflict = child_level_conflicts(parent_level, level)
+        if parent_conflict is not None:
+            return _err(ordinal, PLANNING_LEVEL_INVALID, parent_conflict)
+        for child in self.nodes.values():
+            if child.parent_id != node_id:
+                continue
+            child_conflict = child_level_conflicts(level, child.planning_level)
+            if child_conflict is not None:
+                return _err(ordinal, PLANNING_LEVEL_INVALID, child_conflict)
+        if level is PlanningLevel.STRATEGY:
+            return None
+        if not self.strategy_exists:
+            return _err(
+                ordinal,
+                STRATEGY_NOT_CONFIRMED,
+                "还没有已确认的战略。先把战略选择提出来、让用户确认,再往下拆。",
+            )
+        if not self._has_strategy_ancestor(node_id):
+            return _err(
+                ordinal,
+                STRATEGY_NOT_CONFIRMED,
+                "这个节点不在任何一个已确认的战略下面,不能直接改成一个更细的层级。",
+            )
+        return None
 
     def _descendants(self, root_id: uuid.UUID) -> list[uuid.UUID]:
         """收集一棵子树的全部节点(含根自己),父节点一定排在自己的子节点之前。
@@ -1226,6 +1516,7 @@ class _Book:
             notes=tuple(self.notes),
             dependencies_add=tuple(self.dep_add),
             dependencies_remove=tuple(self.dep_remove),
+            relations=tuple(self.rel_add),
             items=tuple(self.items),
         )
 
@@ -1306,6 +1597,16 @@ def _create_summary(action: CreateNodeAction, coalesced_from: str | None = None)
     """
     if getattr(action.purpose, "value", action.purpose) == NodePurpose.INFORMATION.value:
         head = f"新建信息主题「{action.title}」"
+    elif action.planning_level is PlanningLevel.STRATEGY:
+        head = f"建立战略选择「{action.title}」"
+    elif action.planning_level is PlanningLevel.PHASE:
+        head = f"新增阶段重点「{action.title}」"
+    elif action.planning_level is PlanningLevel.MONTH:
+        head = f"新增本月重点「{action.title}」"
+    elif action.planning_level is PlanningLevel.WEEK:
+        head = f"新增本周重点「{action.title}」"
+    elif action.planning_level is PlanningLevel.DAY:
+        head = f"新增今日行动「{action.title}」"
     else:
         head = f"新建{TYPE_LABELS.get(action.node_type.value, action.node_type.value)}「{action.title}」"
     bits = [head]
@@ -1334,6 +1635,20 @@ def _update_summary(
 
 def _note_summary(action: UpdateNoteAction, title: str, chars: int) -> str:
     return f"把 {chars} 字写进「{title}」的长笔记"
+
+
+def _relation_label(relation_type: NodeRelationType) -> str:
+    return "影响" if relation_type is NodeRelationType.INFLUENCES else "相关"
+
+
+def _relation_summary(
+    relation_type: NodeRelationType, first_title: str, second_title: str
+) -> str:
+    """一条关系在预览里的中文。**方向要读得出来** —— `influences` 是有向的,
+    写成"A 与 B 相关"会让用户以为反方向也一样,而反方向是另一条边。"""
+    if relation_type is NodeRelationType.INFLUENCES:
+        return f"建立影响关系:「{first_title}」会影响「{second_title}」"
+    return f"建立相关关系:「{first_title}」与「{second_title}」"
 
 
 def _delete_summary(title: str, subtree_size: int) -> str:
@@ -1395,22 +1710,29 @@ __all__ = [
     "DUPLICATE_LOCAL_ID",
     "DUPLICATE_NODE_TITLE",
     "INFORMATION_NODE_MUST_NOT_BE_SCHEDULABLE",
+    "INFORMATION_NODE_NOT_DEPENDABLE",
     "LOCAL_ID_CONFLICT",
     "NODE_NOT_IN_WORKSPACE",
     "NOTE_CHANGED",
     "OP_NOT_YET_AVAILABLE",
     "OUT_OF_SCOPE",
     "PAYLOAD_SCHEMA_INVALID",
+    "PLANNING_LEVEL_INVALID",
+    "RELATION_ALREADY_EXISTS",
     "SELF_DEPENDENCY",
+    "SELF_RELATION",
+    "STRATEGY_NOT_CONFIRMED",
     "TOO_MANY_ACTIONS",
     "UNKNOWN_OP_TYPE",
     "NodePatch",
     "NodeSnapshot",
     "NotePatch",
     "PlannedNode",
+    "PlannedRelation",
     "ValidatedItem",
     "ValidatedPlan",
     "ValidationResult",
+    "canonical_relation_key",
     "coalesce_creates",
     "find_cycle",
     "normalize_title",

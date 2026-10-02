@@ -1,0 +1,34 @@
+{
+  "turns": [
+    {
+      "reply": "我想先确认一件事，它会影响我先拆哪一边。",
+      "questions": [
+        {
+          "question": "这学期你希望把重心放在哪一边?",
+          "whyNow": "它决定我先拆英语还是先拆数学",
+          "responseMode": "single_select",
+          "options": [
+            { "id": "english", "label": "英语" },
+            { "id": "math", "label": "数学" }
+          ],
+          "allowCustomInput": true
+        }
+      ],
+      "actions": []
+    },
+    {
+      "reply": "记下了。我会先按英语来整理，你看一眼这条信息主题再决定要不要留下。",
+      "actions": [
+        {
+          "op": "create_node",
+          "localId": "n2",
+          "parentRef": "n1",
+          "title": "这学期重心:英语",
+          "nodeType": "capability",
+          "purpose": "information",
+          "description": "用户选择了英语。"
+        }
+      ]
+    }
+  ]
+}

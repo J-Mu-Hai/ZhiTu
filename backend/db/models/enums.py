@@ -28,6 +28,53 @@ class NodeType(StrEnum):
     MILESTONE = "milestone"
 
 
+class PlanningLevel(StrEnum):
+    """一个节点处于哪一层规划。**与 `NodeType` / `NodePurpose` 都正交。**
+
+    - `NodeType` 回答"这是什么"(goal/task/stage/…);
+    - `NodePurpose` 回答"要不要排期";
+    - `PlanningLevel` 回答"它在哪一层"(战略 / 阶段 / 月 / 周 / 日)。
+
+    ## 为什么单独一列,而不用 title 或 node_type 推断
+
+    "三月重点"与"本月重点"可以挂在任何 `node_type` 上,而标题文本不能当语义
+    (一个叫"本周"的阶段和一个叫"本周"的周计划长得一样)。规划层级需要被**明确
+    写入、明确校验**,不能靠猜。
+
+    ## 存量兼容
+
+    这一列**可空**。旧节点全部是 `None`(unspecified),不回填、不重写。没有层级的
+    节点行为与加这一列之前完全一样。
+
+    ## 它不等于"已排期"
+
+    它只表达语义层级,不进入排期算法。具体哪天做仍由排期器按 `estimate_minutes` /
+    `deadline` / 容量算出。
+    """
+
+    STRATEGY = "strategy"
+    PHASE = "phase"
+    MONTH = "month"
+    WEEK = "week"
+    DAY = "day"
+
+
+#: 从粗到细的规划层级顺序。**层级顺序只在这里定义一处** —— 校验(父粗子细)、
+#: 确认战略的判定、以及前端标签全部读它。
+PLANNING_LEVEL_ORDER: tuple[PlanningLevel, ...] = (
+    PlanningLevel.STRATEGY,
+    PlanningLevel.PHASE,
+    PlanningLevel.MONTH,
+    PlanningLevel.WEEK,
+    PlanningLevel.DAY,
+)
+
+#: 层级 -> 粗细排名(越小越粗)。禁止一个较细的层级当较粗层级的父节点。
+PLANNING_LEVEL_RANK: dict[PlanningLevel, int] = {
+    level: index for index, level in enumerate(PLANNING_LEVEL_ORDER)
+}
+
+
 class NodePurpose(StrEnum):
     """这个节点是**用来排期的**,还是**只用来记事**的。
 
@@ -222,6 +269,17 @@ class ProposalOp(StrEnum):
     UPDATE_NOTE = "update_note"
     CREATE_DEPENDENCY = "create_dependency"
     DELETE_DEPENDENCY = "delete_dependency"
+    #: 连一条「相关」或「影响」边(写 `node_relations`,不参与排期)。
+    #:
+    #: 与 `CREATE_DEPENDENCY` 分开,是因为它们写的是**两张表**、语义也不同:
+    #: 前置会改变排期,这两种只是说明。见 `db/models/enums.py::NodeRelationType`。
+    #:
+    #: 新增这个**成员**不需要迁移:`proposal_items.op` 是
+    #: `enum_type(native_enum=False)`,SQLAlchemy 2.x 默认 `create_constraint=False`,
+    #: 列上是一条 `VARCHAR(32)`,没有 CHECK 约束(实测 DDL;
+    #: `data/zhitu_dev.db` 里 `proposal_items.op VARCHAR(32) NOT NULL`)。
+    #: `node_relations` 表本身也已经在 `eab5fc18adde` 迁移里建好了。
+    CREATE_RELATION = "create_relation"
     SCHEDULE_SESSIONS = "schedule_sessions"
     UNSCHEDULE_SESSIONS = "unschedule_sessions"
     MOVE_SESSION = "move_session"
@@ -252,3 +310,84 @@ class AvailabilitySource(StrEnum):
     RULE = "rule"
     EXCEPTION = "exception"
     USER_BLOCK = "user_block"
+
+
+class QuestionResponseMode(StrEnum):
+    """用户可以用什么方式回答一个问题。
+
+    选项是**加速器,不是限制** —— 所以 `MIXED` 允许“点一个再加上自己的话”,
+    而 `allow_custom_input` 是比 response_mode 更细的一层开关(单/多选也可以
+    允许补一句)。
+    """
+
+    SINGLE_SELECT = "single_select"
+    MULTI_SELECT = "multi_select"
+    FREE_TEXT = "free_text"
+    #: 既可以选项,也可以自由输入。
+    MIXED = "mixed"
+
+
+class QuestionStatus(StrEnum):
+    """问题节点的生命周期。
+
+    `pending -> answered -> investigating -> resolved`,或 `pending -> archived`。
+    - `answered`:用户已经答了,但后续处理还没跑完。
+    - `investigating`:**“正在处理”**。前端据此显示处理中,避免用户以为答案丢了。
+      模型失败时停在这里(答案与状态都已落库,刷新后仍读得回)。
+    - `resolved`:后续处理成功,稳定落点/提案已经产生。
+    - `archived`:用户跳过、或问题失效不再追问。
+    """
+
+    PENDING = "pending"
+    ANSWERED = "answered"
+    INVESTIGATING = "investigating"
+    RESOLVED = "resolved"
+    ARCHIVED = "archived"
+
+
+#: 算是“还需要用户看到/还在处理”的状态。读取接口默认只返回这些。
+ACTIVE_QUESTION_STATUSES = frozenset(
+    {QuestionStatus.PENDING, QuestionStatus.ANSWERED, QuestionStatus.INVESTIGATING}
+)
+
+
+class QuestionUserAction(StrEnum):
+    """记录在问题上的用户动作,用于审计“他答了/跳过了/说稍后”。"""
+
+    ANSWERED = "answered"
+    SKIPPED = "skipped"
+    DEFERRED = "deferred"
+
+
+class ReasoningAction(StrEnum):
+    """一次 reasoning state 的下一步动作。**服务端据此决定循环怎么走。**"""
+
+    READ_TOOL = "read_tool"
+    ASK_USER = "ask_user"
+    SYNTHESIZE = "synthesize"
+    STOP = "stop"
+
+
+class ReasoningStatus(StrEnum):
+    """reasoning state 的生命周期。
+
+    `blocked` 是“模型/工具失败或预算耗尽”——数据已经保存,可以恢复,但这一轮
+    没有得出可应用结论。
+    """
+
+    UNEXPLORED = "unexplored"
+    EXPLORING = "exploring"
+    BLOCKED = "blocked"
+    RESOLVED = "resolved"
+    ABANDONED = "abandoned"
+
+
+class ToolCallStatus(StrEnum):
+    OK = "ok"
+    ERROR = "error"
+    #: 参数/权限/未知工具被注册表拒绝 —— 与 `error`(执行时出错)分开。
+    REJECTED = "rejected"
+
+
+#: 模型可见事实的来源类型。**所有进入 state / 工具结果 / 分析的内容都带一个。**
+PROVENANCE_SOURCES = ("user", "system", "tool", "model_inference", "assumption")

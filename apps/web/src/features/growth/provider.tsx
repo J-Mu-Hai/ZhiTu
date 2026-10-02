@@ -351,6 +351,11 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
    * 不会一直挂着。
    */
   const [inputChanged, setInputChanged] = useState(false);
+  /**
+   * AI 提出的问题。**与计划分开** —— 它们落库即成卡片,不等提案确认。
+   * 默认只拿还没结束的那些(pending / answered / investigating)。
+   */
+  const [questions, setQuestions] = useState<backend.QuestionView[]>([]);
   const [deciding, setDeciding] = useState(false);
   /** 「按执行情况调整」的状态。`message` 是给用户看的那句话,成败都有。 */
   const [replanState, setReplanState] = useState<{ busy: boolean; message: string | null; degraded: boolean }>(
@@ -403,6 +408,17 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     setRemoteProposals(await backend.listProposals(space.id));
   }, [space.id]);
 
+  /**
+   * 重新拉问题列表。
+   *
+   * 发消息、回答问题、跳过/稍后之后都要调它 —— 前端不从响应里就地拼问题数组,
+   * 否则“服务端实际存了什么”与“界面显示什么”会用两套代码维护同一份数据。
+   */
+  const refreshQuestions = useCallback(async () => {
+    const view = await backend.listQuestions(space.id);
+    setQuestions(view.questions);
+  }, [space.id]);
+
   // 提案。和计划、历史一样,每次打开空间都重新拉 —— 上一轮没处理完的那一份,
   // 关掉标签页再回来还应该在,否则用户会以为它丢了。
   useEffect(() => {
@@ -411,6 +427,16 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     backend.listProposals(space.id)
       .then(list => { if (!cancelled) setRemoteProposals(list); })
       .catch(() => { if (!cancelled) setRemoteProposals([]); });
+    return () => { cancelled = true; };
+  }, [isReal, space.id]);
+
+  // 问题。与提案、历史同一条纪律:关掉页面再回来,待回答的问题还在。
+  useEffect(() => {
+    if (!isReal) return;
+    let cancelled = false;
+    backend.listQuestions(space.id)
+      .then(view => { if (!cancelled) setQuestions(view.questions); })
+      .catch(() => { if (!cancelled) setQuestions([]); });
     return () => { cancelled = true; };
   }, [isReal, space.id]);
 
@@ -1359,6 +1385,8 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
       // 这一轮可能产出了一份新的待确认提案。重新拉一次,而不是把 `result.proposal`
       // 塞进数组:后者会和"打开空间时那一份"用两套代码维护同一个列表。
       await refreshProposals();
+      // 也可能提了一个问题。与提案一样,从服务端重新拉。
+      await refreshQuestions();
     } catch (cause) {
       const error = cause instanceof ApiError ? cause : null;
       setMessages(old => old.map(m => m.id === optimisticId ? { ...m, pending: false, failed: true } : m));
@@ -1399,6 +1427,7 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
       setInputChanged(result.inputChanged);
       setLastFailed(null);
       await refreshProposals();
+      await refreshQuestions();
     } catch (cause) {
       // 失败要**说出来**。一次"点了没反应"的重新分析会被读成"已经分析过了,
       // 内容没变" —— 而真实情况是这次压根没问到模型。
@@ -1407,6 +1436,83 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
       setRetryable(error ? error.retryable : true);
     } finally {
       setSending(false);
+    }
+  }
+
+  /**
+   * 回答一个问题。
+   *
+   * **状态先乐观地置为“处理中”** —— 后端要先存答案、再跑一轮模型,可能要等几秒。
+   * 不做这一步的话,用户点完以为没反应,再点一次。真正的状态以后端为准:成功转
+   * `resolved`,模型失败停在 `investigating`,刷新后都读得回。
+   *
+   * 后续那一轮如果真的产出了提案,它会和发消息一样进入 `remoteProposals`,仍然
+   * 要用户点“确认,写入计划”—— 这里**不碰计划**。
+   */
+  async function submitAnswer(
+    questionId: string,
+    payload: { selectedOptionIds: string[]; customInput?: string | null },
+  ): Promise<boolean> {
+    setSendError(null);
+    setQuestions(old =>
+      old.map(q => (q.id === questionId ? { ...q, status: 'investigating' } : q)),
+    );
+    try {
+      const result = await backend.answerQuestion(space.id, questionId, {
+        selectedOptionIds: payload.selectedOptionIds,
+        customInput: payload.customInput ?? null,
+        clientAnswerId: crypto.randomUUID(),
+      });
+      setQuestions(old => old.map(q => (q.id === result.question.id ? result.question : q)));
+      if (result.turn) {
+        const turn = result.turn;
+        setMessages(old => [
+          ...old,
+          toMessage(turn.userMessage),
+          toMessage(turn.assistantMessage),
+        ]);
+        setBrief(turn.brief);
+        setProposalErrors(turn.proposalErrors);
+        setInputChanged(turn.inputChanged);
+        await refreshProposals();
+      }
+      // 后续模型可能又提了新问题;列表以服务端为准。
+      await refreshQuestions();
+      return true;
+    } catch (cause) {
+      // 双击时第二下会撞上“已经回答过”。那不是错误,把它当成“状态已推进,
+      // 拉一次真状态就好”—— 给用户看一行红字只会让他以为答案没存进去。
+      if (!(cause instanceof ApiError && cause.code === 'QUESTION_NOT_ANSWERABLE')) {
+        setSendError(cause instanceof ApiError ? cause.message : '回答失败,请重试。');
+      }
+      await refreshQuestions().catch(() => undefined);
+      return false;
+    }
+  }
+
+  /** 跳过一个问题 -> 后端归档。**只改问题状态,不碰计划。** */
+  async function dismissQuestion(questionId: string): Promise<boolean> {
+    try {
+      await backend.skipQuestion(space.id, questionId, crypto.randomUUID());
+      await refreshQuestions();
+      return true;
+    } catch (cause) {
+      setSendError(cause instanceof ApiError ? cause.message : '操作失败,请重试。');
+      await refreshQuestions().catch(() => undefined);
+      return false;
+    }
+  }
+
+  /** 稍后回答 -> 后端保持 pending,只记一条用户动作。 */
+  async function postponeQuestion(questionId: string): Promise<boolean> {
+    try {
+      await backend.deferQuestion(space.id, questionId, crypto.randomUUID());
+      await refreshQuestions();
+      return true;
+    } catch (cause) {
+      setSendError(cause instanceof ApiError ? cause.message : '操作失败,请重试。');
+      await refreshQuestions().catch(() => undefined);
+      return false;
     }
   }
 
@@ -1435,6 +1541,9 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     refreshPlan,
     // 提案
     remoteProposals, proposalErrors, deciding, confirmRemote, rejectRemote,
+    // 问题节点。与提案分开:问题落库即成卡片,不需要确认;回答后模型提的变更
+    // 仍然进 `remoteProposals`,仍然要用户点确认。
+    questions, submitAnswer, dismissQuestion, postponeQuestion,
     replan, replanState,
     // 上一轮是不是基于已经变过的输入(见 `inputChanged` 的注释),以及"重新分析"
     // 那个入口。**两者一起给出去**:只有这个字段而没有入口,用户知道出事了却没法

@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ArrowUp, Plus, X, CornerDownLeft, AlertCircle, RotateCcw, RefreshCw } from 'lucide-react';
 import { useDemo } from '@/features/growth/provider';
 import { degradedHint, fieldLabel, sourceLabel } from '@/lib/backend';
+import type { QuestionView } from '@/lib/backend';
 
 /**
  * 提案落下之后,卡片上显示的状态。
@@ -18,6 +19,149 @@ const PROPOSAL_STATUS_LABEL: Record<string, string> = {
   stale: '计划已经变了，这份提议作废',
   failed: '写入没有成功，计划未改动',
 };
+
+/**
+ * 一个待回答的问题卡片。
+ *
+ * ## 为什么是“卡片”而不是一条普通消息
+ *
+ * 问题不是计划,也不是助手的一句闲聊。它要能被回答、跳过、稍后 —— 这些是消息
+ * 气泡上长不出来的动作。所以它渲染成一张卡,并且在**同一时刻只突出一个**:
+ * 一次抛一张问卷只在模型那侧被禁止是不够的,界面上也要只给一个主问题。
+ *
+ * ## 提交后的“处理中”
+ *
+ * 后端要先存答案,再跑一轮模型。这中间可能有几秒,而“点了没反应”会被读成
+ * “没存上”。所以父级(provider)会先把状态置为处理中,这里据此显示
+ * “正在处理你的回答…” —— 它对应的是后端真实的 `answered` / `investigating` 状态,
+ * 不是一段假的动画。
+ */
+function PrimaryQuestionCard({
+  question,
+  sourceTitle,
+  onLocate,
+  onAnswer,
+  onSkip,
+  onLater,
+}: {
+  question: QuestionView;
+  sourceTitle: string | null;
+  onLocate: (nodeId: string) => void;
+  onAnswer: (
+    id: string,
+    payload: { selectedOptionIds: string[]; customInput?: string | null },
+  ) => Promise<boolean>;
+  onSkip: (id: string) => Promise<boolean>;
+  onLater: (id: string) => Promise<boolean>;
+}) {
+  const [selected, setSelected] = useState<string[]>([]);
+  const [custom, setCustom] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const processing = question.status === 'answered' || question.status === 'investigating';
+  const resolved = question.status === 'resolved';
+  const showOptions = question.responseMode !== 'free_text' && question.options.length > 0;
+  const multiple = question.responseMode === 'multi_select';
+  const showCustom = question.allowCustomInput || question.responseMode === 'free_text';
+  const hasInput = selected.length > 0 || custom.trim().length > 0;
+
+  function toggle(optionId: string) {
+    setSelected(old => {
+      if (multiple) {
+        return old.includes(optionId) ? old.filter(id => id !== optionId) : [...old, optionId];
+      }
+      return old.includes(optionId) ? [] : [optionId];
+    });
+  }
+
+  async function submit() {
+    if (busy || !hasInput) return;
+    setBusy(true);
+    await onAnswer(question.id, {
+      selectedOptionIds: selected,
+      customInput: showCustom ? custom.trim() || null : null,
+    });
+    setBusy(false);
+  }
+
+  if (processing || resolved) {
+    return (
+      <div className="proposal question-card" role="status">
+        <span className="eyebrow">AI 的问题</span>
+        <strong>{question.question}</strong>
+        <p className="question-processing">
+          {resolved ? '已记下你的回答。' : '正在处理你的回答…'}
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="proposal question-card">
+      <span className="eyebrow">AI 想先问一句</span>
+      <strong>{question.question}</strong>
+      {question.whyNow && <p className="question-why">{question.whyNow}</p>}
+      {sourceTitle && question.sourceNodeId && (
+        <button
+          type="button"
+          className="question-source"
+          disabled={busy}
+          onClick={() => onLocate(question.sourceNodeId as string)}
+        >
+          关于「{sourceTitle}」· 定位到画布
+        </button>
+      )}
+
+      {showOptions && (
+        <div className="question-options">
+          {question.options.map(option => {
+            const active = selected.includes(option.id);
+            return (
+              <button
+                type="button"
+                key={option.id}
+                className={active ? 'question-option active' : 'question-option'}
+                aria-pressed={active}
+                disabled={busy}
+                onClick={() => toggle(option.id)}
+              >
+                {option.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {showCustom && (
+        <textarea
+          className="question-input"
+          aria-label="补充你的回答"
+          placeholder={showOptions ? '也可以补充一句…' : '写下你的回答…'}
+          value={custom}
+          disabled={busy}
+          onChange={event => setCustom(event.target.value)}
+        />
+      )}
+
+      <div className="question-actions">
+        <button type="button" disabled={busy} onClick={() => void onLater(question.id)}>
+          稍后回答
+        </button>
+        <button type="button" disabled={busy} onClick={() => void onSkip(question.id)}>
+          跳过
+        </button>
+        <button
+          type="button"
+          className="primary-button"
+          disabled={busy || !hasInput}
+          onClick={() => void submit()}
+        >
+          {busy ? '提交中…' : '提交回答'}
+        </button>
+      </div>
+    </div>
+  );
+}
 
 /**
  * 与 AI 的对话面板。
@@ -38,7 +182,7 @@ const PROPOSAL_STATUS_LABEL: Record<string, string> = {
  *    它跟模型能不能用没关系。
  */
 export function ConversationPanel() {
-  const { growth, selectedId, select, messages, remoteProposals, proposalErrors, inputChanged, deciding, confirmRemote, rejectRemote, replan, replanState, send, retry, sending, sendError, retryable, brief, historyLoading, messagesTruncated, spaceId } = useDemo();
+  const { growth, selectedId, select, messages, remoteProposals, proposalErrors, inputChanged, deciding, confirmRemote, rejectRemote, replan, replanState, send, retry, sending, sendError, retryable, brief, historyLoading, messagesTruncated, spaceId, questions, submitAnswer, dismissQuestion, postponeQuestion } = useDemo();
   const [input, setInput] = useState('');
   const [showContexts, setShowContexts] = useState(false);
   const bottom = useRef<HTMLDivElement>(null);
@@ -60,6 +204,22 @@ export function ConversationPanel() {
   const orphanProposals = remoteProposals.filter(
     proposal => proposal.status === 'validated' || proposal.status === 'pending_confirmation',
   ).filter(proposal => !messages.some(message => message.proposalId === proposal.id));
+
+  /**
+   * 同一时刻只突出**一个**主问题。
+   *
+   * 优先一个还没答的;没有的话,正在处理的也要显示(用户刚答完,不能让它凭空消失,
+   * 否则他会以为答案没提交上)。列表已由后端按时间排好,这里只做挑选,不再排序。
+   */
+  const primaryQuestion =
+    questions.find(question => question.status === 'pending') ??
+    questions.find(question => question.status === 'investigating' || question.status === 'answered') ??
+    null;
+
+  /** 这个空间里有没有**已确认的**战略节点。没有时,周/日安排没有依据。 */
+  const hasStrategy = Object.values(growth.nodes).some(
+    node => node.planningLevel === 'strategy',
+  );
 
   // 提案也要跟着滚。`replan` 产出的那份提案是**追加在末尾**的,不滚过去的话
   // 用户点了「按执行情况调整」会看到界面毫无反应。
@@ -171,7 +331,14 @@ export function ConversationPanel() {
                       {/* 摘要由**服务端**生成(它知道每一项到底指向哪个节点),
                           前端只负责显示。在前端把 op 和参数拼成一句话的话,
                           两个地方就得各维护一套"人话",迟早对不上。 */}
-                      {remote.items.slice(0, 8).map(item => <li key={item.ordinal}>{item.summary}</li>)}
+                      {remote.items.slice(0, 8).map(item => (
+                        <li key={item.ordinal}>
+                          {item.summary}
+                          {typeof item.payload.description === 'string' && item.payload.description && (
+                            <em className="proposal-item-detail">{item.payload.description}</em>
+                          )}
+                        </li>
+                      ))}
                       {remote.items.length > 8 && <li>…还有 {remote.items.length - 8} 项</li>}
                     </ul>
                   )}
@@ -235,7 +402,14 @@ export function ConversationPanel() {
               <strong>{proposal.itemCount > 0 ? `${proposal.itemCount} 项变更` : '这次没有可执行的变更'}</strong>
               {proposal.items.length > 0 && (
                 <ul className="proposal-items">
-                  {proposal.items.slice(0, 8).map(item => <li key={item.ordinal}>{item.summary}</li>)}
+                  {proposal.items.slice(0, 8).map(item => (
+                    <li key={item.ordinal}>
+                      {item.summary}
+                      {typeof item.payload.description === 'string' && item.payload.description && (
+                        <em className="proposal-item-detail">{item.payload.description}</em>
+                      )}
+                    </li>
+                  ))}
                   {proposal.items.length > 8 && <li>…还有 {proposal.items.length - 8} 项</li>}
                 </ul>
               )}
@@ -264,6 +438,28 @@ export function ConversationPanel() {
       </div>
 
       <div className="composer-area">
+        {/* 待回答的问题。**只显示一个主要问题** —— 一次抛多张卡片就是问卷墙,
+            那是产品明确不要的东西(产品规则:一轮默认最多 1 个问题)。
+            与 source node 的关联在这里看得见:有标题就写“关于「…」”,节点归档后
+            找不到标题就不写 —— 不去渲染一个指向失效节点的引用。 */}
+        {primaryQuestion && (
+          <PrimaryQuestionCard
+            key={primaryQuestion.id}
+            question={primaryQuestion}
+            sourceTitle={
+              primaryQuestion.sourceNodeId
+                ? growth.nodes[primaryQuestion.sourceNodeId]?.title ?? null
+                : null
+            }
+            onLocate={id => select(id)}
+            onAnswer={submitAnswer}
+            onSkip={dismissQuestion}
+            onLater={postponeQuestion}
+          />
+        )}
+        {questions.length > 1 && (
+          <p className="question-more">另外还有 {questions.length - 1} 个问题，可以先不管。</p>
+        )}
         {/* 「按执行情况调整」的入口。
             放在对话里而不是排期页,是因为它的产出是一份**要用户确认的提案**,
             而确认的界面就在这里 —— 换个地方发起、再让用户回来确认,中间那一步
@@ -286,6 +482,15 @@ export function ConversationPanel() {
           <div className="brief-missing" title="AI 会先问清楚这些再排计划">
             <span className="tiny-dot" />
             还缺：{brief.missing.map(fieldLabel).join('、')}
+          </div>
+        )}
+        {/* 战略未确认时的提醒。**不是禁止按钮** —— 用户仍可以先聊、先沉淀事实;
+            它说的是"周/日安排需要先有一个已确认的战略方向"。确认战略走的是
+            已有的提案卡与"确认，写入计划",这里不新增任何旁路。 */}
+        {!hasStrategy && (
+          <div className="strategy-hint" role="status" title="先确认战略方向，再往下排周/日">
+            <span className="tiny-dot" />
+            还没有已确认的战略方向：先和 AI 确认一个战略选择，再往下排周/日。
           </div>
         )}
 

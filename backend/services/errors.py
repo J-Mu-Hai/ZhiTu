@@ -328,6 +328,42 @@ class RelationRejected(DomainError):
     http_status = 400
 
 
+# ---------------------------------------------------------------------------------
+# 问题节点
+# ---------------------------------------------------------------------------------
+class QuestionNotFound(DomainError):
+    """问题不存在,或者不属于当前空间。
+
+    与 `NodeNotFound` 同一条纪律:两种情况返回同一个错误与状态码。
+    """
+
+    code = "QUESTION_NOT_FOUND"
+    http_status = 404
+
+
+class QuestionNotAnswerable(DomainError):
+    """这个问题已经答过、已经跳过、或正在处理,不能再用一份新答案覆盖。
+
+    重复提交**同一个** `clientAnswerId` 不算错误 —— 那是双击,服务层会回读已写入
+    的结果原样返回(幂等)。只有在答了一个不一样的答案、或对已归档的问题作答时
+    才走到这里。
+    """
+
+    code = "QUESTION_NOT_ANSWERABLE"
+    http_status = 409
+
+
+class InvalidQuestionAnswer(DomainError):
+    """答案与这个问题的 `responseMode` 不相容。
+
+    例:单选却选了多个;选了不存在的选项;不允许自由输入却只给了文字;自由输入题
+    却一个选项都没选。
+    """
+
+    code = "QUESTION_ANSWER_INVALID"
+    http_status = 400
+
+
 class IdempotencyKeyReused(DomainError):
     """同一个幂等键配了不同的请求体。
 

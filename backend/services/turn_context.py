@@ -476,7 +476,7 @@ class _Scope:
     "用户点了一个节点"就会顺手把可改范围缩到他脚底下,而那是两件事。
     """
 
-    __slots__ = ("scope_id", "focus_id", "in_scope", "ancestors", "children", "layer_of")
+    __slots__ = ("ancestors", "children", "focus_id", "in_scope", "layer_of", "scope_id")
 
     def __init__(self) -> None:
         self.scope_id: uuid.UUID | None = None
@@ -720,6 +720,7 @@ async def build_turn_context(
             title=node.title,
             node_type=node.node_type.value,
             purpose=node.purpose.value,
+            planning_level=node.planning_level.value if node.planning_level else None,
             status=node.status.value,
             depth=node.depth,
             deadline=node.deadline.isoformat() if node.deadline else None,

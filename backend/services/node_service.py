@@ -79,6 +79,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.contracts.plan import (
     DEPENDS_ON,
+    as_planning_level,
+    child_level_conflicts,
     description_length_error,
     information_node_conflicts,
 )
@@ -137,6 +139,8 @@ EDITABLE_FIELDS = frozenset(
         "priority",
         "estimate_minutes",
         "deadline",
+        # 规划层级。可空 —— 传 null 是"清空层级"。它只表达语义,不进排期。
+        "planning_level",
     }
 )
 
@@ -317,12 +321,18 @@ async def create_node(
     priority: str = Priority.MEDIUM.value,
     estimate_minutes: int | None = None,
     deadline: date | None = None,
+    planning_level: str | None = None,
 ) -> EditResult:
     """在 `parent_id` 下面挂一个新节点。**用户自己建的,所以 `origin=user`。**"""
     clean_title = title.strip()
     parsed_type = _parse_enum("node_type", node_type)
     parsed_purpose = _parse_enum("purpose", purpose)
     parsed_priority = _parse_enum("priority", priority)
+    parsed_level = as_planning_level(planning_level)
+    if planning_level is not None and parsed_level is None:
+        raise InvalidInput(
+            "规划层级只能是 strategy / phase / month / week / day。"
+        )
     if not clean_title:
         raise InvalidInput("标题不能为空。")
     if len(clean_title) > 200:
@@ -340,7 +350,9 @@ async def create_node(
         raise InvalidInput(too_long)
     # 手工建和 AI 提案走**同一个谓词**(§2.5)。两条路各写一份判断的话,
     # 迟早有一条漏掉,而漏掉的表现是"我自己建的能带工时,AI 建的不行"。
-    conflicts = information_node_conflicts(parsed_purpose, estimate_minutes, deadline)
+    conflicts = information_node_conflicts(
+        parsed_purpose, estimate_minutes, deadline, parsed_level
+    )
     if conflicts is not None:
         raise InvalidInput(conflicts)
 
@@ -349,6 +361,11 @@ async def create_node(
         # 把父节点挪走了/删了 -> 我按旧数据写"就会算出错的 depth;而 depth 一旦
         # 和真实层级不符,不会有任何东西报错,只会让树在界面上缩成一团。
         parent = await load_node(db, ctx, parent_id)
+        # 父子层级只能从粗到细。父节点在锁里读到,判断就在锁里做 —— 放外面的话
+        # "读到父层级 -> 别人改了它 -> 我按旧值写"会留下一条反向的层级链。
+        level_conflict = child_level_conflicts(parent.planning_level, parsed_level)
+        if level_conflict is not None:
+            raise InvalidInput(level_conflict)
         sibling_count = await db.scalar(
             select(func.count(PlanNode.id)).where(
                 PlanNode.workspace_id == ctx.id,
@@ -365,6 +382,7 @@ async def create_node(
             acceptance_criteria=_clean(acceptance_criteria),
             node_type=parsed_type,
             purpose=parsed_purpose,
+            planning_level=parsed_level,
             status=NodeStatus.PENDING,
             priority=parsed_priority,
             estimate_minutes=estimate_minutes,
@@ -416,6 +434,14 @@ async def update_node(
         raise InvalidInput("这次编辑没有带任何要改的字段。")
 
     values = {key: _parse_enum(key, value) for key, value in patch.items()}
+    if "planning_level" in values:
+        raw_level = values["planning_level"]
+        parsed_level = as_planning_level(raw_level)
+        if raw_level is not None and parsed_level is None:
+            raise InvalidInput(
+                "规划层级只能是 strategy / phase / month / week / day。"
+            )
+        values["planning_level"] = parsed_level
     if "title" in values:
         title = str(values["title"]).strip()
         if not title:
@@ -464,9 +490,37 @@ async def update_node(
             values.get("purpose", node.purpose),
             values.get("estimate_minutes", node.estimate_minutes),  # type: ignore[arg-type]
             values.get("deadline", node.deadline),  # type: ignore[arg-type]
+            values.get("planning_level", node.planning_level),
         )
         if conflicts is not None:
             raise InvalidInput(conflicts)
+
+        # 改了规划层级就要与**父节点和直属子节点**都相容。只判父不判子的话,
+        # 把一个 phase 改成 week 会在它下面留下一串更粗的 phase 孩子 —— 而那正是
+        # "从粗到细"这条规则要防的反向链。
+        if "planning_level" in values:
+            target_level = values["planning_level"]
+            if node.parent_id is not None:
+                parent = await db.get(PlanNode, node.parent_id)
+                parent_level = (
+                    parent.planning_level
+                    if parent is not None and parent.deleted_at is None
+                    else None
+                )
+                parent_conflict = child_level_conflicts(parent_level, target_level)
+                if parent_conflict is not None:
+                    raise InvalidInput(parent_conflict)
+            children = await db.execute(
+                select(PlanNode.planning_level).where(
+                    PlanNode.workspace_id == ctx.id,
+                    PlanNode.parent_id == node.id,
+                    PlanNode.deleted_at.is_(None),
+                )
+            )
+            for (child_level,) in children.all():
+                child_conflict = child_level_conflicts(target_level, child_level)
+                if child_conflict is not None:
+                    raise InvalidInput(child_conflict)
 
         for field, value in values.items():
             setattr(node, field, value)

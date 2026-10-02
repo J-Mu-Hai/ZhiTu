@@ -38,6 +38,7 @@ from backend.db.models.enums import (
     NodeRelationType,
     NodeStatus,
     NodeType,
+    PlanningLevel,
     Priority,
     RevisionActor,
     RevisionTrigger,
@@ -91,6 +92,14 @@ class PlanNode(UuidPk, TimestampMixin, Base):
         default=NodePurpose.PLANNING,
         server_default=sql_text("'planning'"),
         nullable=False,
+    )
+    # 规划层级(战略 / 阶段 / 月 / 周 / 日)。**可空** —— 这一列是纯增量的:
+    # 旧节点全部是 NULL(unspecified),行为与加这一列之前一模一样,不回填、不重写。
+    #
+    # 为什么可空而不给默认值:"默认 strategy"或"默认 task 层"都会把存量节点
+    # 静默翻译成一个它们从未表达过的语义。NULL 就是"还没说"。
+    planning_level: Mapped[PlanningLevel | None] = mapped_column(
+        enum_type(PlanningLevel, "planning_level")
     )
     status: Mapped[NodeStatus] = mapped_column(
         enum_type(NodeStatus, "node_status"), default=NodeStatus.PENDING, nullable=False

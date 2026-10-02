@@ -42,6 +42,7 @@ import { ContextMenu, type ContextMenuState } from '@/components/ui/ContextMenu'
 import { Dialog } from '@/components/ui/Dialog';
 import { AmbientGlow } from '@/components/ui/AmbientGlow';
 import { CREATE_KINDS, useCanvasDraft, type CreateKind } from '@/features/growth/drafts';
+import { planningLevelLabel } from '@/features/growth/planningLevel';
 import {
   MAX_DESCRIPTION_CODEPOINTS,
   MAX_NOTE_CODEPOINTS,
@@ -172,6 +173,11 @@ function GrowthNodeComponent({ id, data, selected }: NodeProps<FlowNode>) {
             : <span className="node-title-dot" />}
         </span>
         <strong className="node-title">{node.title}</strong>
+        {node.planningLevel && (
+          <span className={`node-level node-level-${node.planningLevel}`}>
+            {planningLevelLabel(node.planningLevel)}
+          </span>
+        )}
       </div>
       {(node.description || data.root) && <p className="node-description">{node.description || '根目标'}</p>}
       {node.status === 'doing' && <span className="node-doing" />}
@@ -1766,6 +1772,9 @@ function Canvas() {
             // 恰好就是"悄悄盖掉别人刚写的正文"那条路。一个字段只有一个写入口。
             updateNode(detailNode.id, { title: detailTitle.trim() || detailNode.title }); closeDetailEditor(); }}>
             <label>节点名称<input autoFocus value={detailTitle} maxLength={80} onChange={(event) => patchDraft({ detailTitle: event.target.value })} /></label>
+            {detailNode.planningLevel && (
+              <p className="node-level-detail">规划层级:{planningLevelLabel(detailNode.planningLevel)}</p>
+            )}
             {/* 正文:边打边存。下面那一行状态是**真实结果**,不是"我发过一次请求" ——
                 见 `flushBody`。 */}
             <label>

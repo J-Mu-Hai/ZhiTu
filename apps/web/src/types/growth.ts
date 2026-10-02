@@ -35,6 +35,13 @@ export interface GrowthNode {
    */
   purpose?: 'planning' | 'information';
   /**
+   * 规划层级(`strategy` / `phase` / `month` / `week` / `day`)。
+   *
+   * 缺省表示"没指定" —— 存量节点、以及不需要层级的节点都是它。它只表达语义层级,
+   * **不代表已排期**。没有值时界面不显示任何层级标签,避免凭空造出语义。
+   */
+  planningLevel?: 'strategy' | 'phase' | 'month' | 'week' | 'day';
+  /**
    * 节点由谁创建。它不改变节点属于哪个 NodeSpace，只决定画布是否自动画出
    * 父子结构线：AI 生成的规划沿树生长，用户手动放下的节点先保持独立，等用户
    * 自己建立关系。

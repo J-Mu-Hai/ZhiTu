@@ -135,6 +135,10 @@ export interface PlanNode {
    * 它决定三件事:排期里不出现、`totalNodes` 里不计数、画布上不画任务勾选框。
    */
   purpose: string;
+  /** 规划层级(`strategy` / `phase` / `month` / `week` / `day`),`null` = 未指定。 */
+  planningLevel: string | null;
+  /** 节点是用户自己建的还是 AI 提的。`prod-ai.spec.ts` 靠它区分两类写入。 */
+  origin: 'user' | 'ai';
   deadline: string | null;
   status: string;
   /**

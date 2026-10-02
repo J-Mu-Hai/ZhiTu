@@ -280,6 +280,72 @@
       "title": "AnalysisView",
       "type": "object"
     },
+    "AnswerQuestionRequest": {
+      "additionalProperties": false,
+      "description": "回答一个问题。\n\n`client_answer_id` 是幂等键:双击或网络重试带同一个值时,后端**不会**再跑一遍\n后续处理,而是原样返回上次的结果。它必填,理由与提案确认的幂等键相同 ——\n让服务端在缺失时补一个随机值,等于把这个保证悄悄关掉。",
+      "properties": {
+        "clientAnswerId": {
+          "maxLength": 64,
+          "minLength": 8,
+          "title": "Clientanswerid",
+          "type": "string"
+        },
+        "customInput": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Custominput"
+        },
+        "selectedOptionIds": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Selectedoptionids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "clientAnswerId"
+      ],
+      "title": "AnswerQuestionRequest",
+      "type": "object"
+    },
+    "AnswerQuestionResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "question": {
+          "$ref": "#/$defs/QuestionView"
+        },
+        "replayed": {
+          "default": false,
+          "title": "Replayed",
+          "type": "boolean"
+        },
+        "turn": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SendMessageResponse"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "question"
+      ],
+      "title": "AnswerQuestionResponse",
+      "type": "object"
+    },
     "ApiErrorBody": {
       "additionalProperties": false,
       "description": "错误体里 `error` 那一层。\n\n`code` 是接口的一部分,和字段名同级 —— 客户端按它分支。`message` 只是给人看的\n文案,会改;按文案分支的客户端会在某次\"把话说得更清楚\"的改动里静默失灵。",
@@ -351,6 +417,11 @@
         "notesUpdated": {
           "default": 0,
           "title": "Notesupdated",
+          "type": "integer"
+        },
+        "relationsAdded": {
+          "default": 0,
+          "title": "Relationsadded",
           "type": "integer"
         },
         "revisionVersion": {
@@ -830,6 +901,17 @@
           "title": "Parentref",
           "type": "string"
         },
+        "planningLevel": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PlanningLevel"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "priority": {
           "$ref": "#/$defs/Priority",
           "default": "medium"
@@ -917,6 +999,18 @@
           "title": "Parentid",
           "type": "string"
         },
+        "planningLevel": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Planninglevel"
+        },
         "priority": {
           "default": "medium",
           "title": "Priority",
@@ -937,6 +1031,50 @@
         "title"
       ],
       "title": "CreateNodeRequest",
+      "type": "object"
+    },
+    "CreateRelationAction": {
+      "additionalProperties": false,
+      "description": "连一条「相关」(`related_to`)或「影响」(`influences`)边。§2.5 / §4.4。\n\n这两种边写的是 `node_relations`,**不参与排期** —— 它们表达\"这两件事有关联\"\n\"A 会影响 B\",而不是\"必须先做 A\"。所以它们与 `create_dependency` 是两类动作,\n不是同一个动作加了一个类型字段:后者写 `dependencies`、要查环、会让任务往后挪。\n\n## 方向\n\n- `related_to` **无向**:`sourceRef` 与 `targetRef` 谁是主语不影响结果,校验器会\n  按 UUID 的整数序把两端规范化成同一个键,A→B 与 B→A 只算一条。\n- `influences` **有向**:`sourceRef` 影响 `targetRef`,反方向是另一条边。\n\n## 为什么两端都允许是信息主题\n\n信息主题不能作为**排期依赖**的端点(它没有\"完成\"那一刻),但它完全可以和别的\n主题相关、也可以影响别的主题 —— \"我排名 38\"会影响\"这学期选课\"。这条区分由\n`NodeRelationType` 的两张表结构保证,不靠这个模型再写一遍。\n\n## `note`\n\n一句解释这条边为什么存在的话,可选。与手工路径(`node_service.add_relation`)同\n一个字段、同一列,**不设更严的上限** —— 两条路写的是同一张表,两边上限不一致会\n造成\"AI 能写的,用户手工改不回来\"。",
+      "properties": {
+        "note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Note"
+        },
+        "op": {
+          "const": "create_relation",
+          "title": "Op",
+          "type": "string"
+        },
+        "relationType": {
+          "$ref": "#/$defs/NodeRelationType"
+        },
+        "sourceRef": {
+          "pattern": "^n[0-9]{1,5}$",
+          "title": "Sourceref",
+          "type": "string"
+        },
+        "targetRef": {
+          "pattern": "^n[0-9]{1,5}$",
+          "title": "Targetref",
+          "type": "string"
+        }
+      },
+      "required": [
+        "op",
+        "sourceRef",
+        "targetRef",
+        "relationType"
+      ],
+      "title": "CreateRelationAction",
       "type": "object"
     },
     "CreateRelationRequest": {
@@ -1665,6 +1803,15 @@
       "title": "NodePurpose",
       "type": "string"
     },
+    "NodeRelationType": {
+      "description": "画布上除\"前置\"之外的关系类型。\n\n**与 `DependencyType` 并列,不合并成一个枚举。** 两者看起来都是\"节点之间的边\",\n差别却是实质性的:\n\n- `finish_to_start` 是**排期算法的输入** —— 排期器要用它算\"这个任务最早能排到哪天\";\n  这两个类型不参与排期,一条 `influences` 不该让任何任务往后挪。\n- `dependencies` 还有 `lag_days`(前置完成后要等几天),这两个没有。\n- 两者存在**两张表**里,唯一约束的形状也不同:前置按有向的\n  `(predecessor, successor)` 去重,`related_to` 是无向的。\n\n合并的后果是排期代码里开始出现\"哪种类型才算前置\"的分支,而那是把已经分开的\n两件事重新搅在一起。接口层有一份统一的三类型视图(见 `contracts/plan.py` 的\n`RelationType`),但那是**投影**,不是存储。",
+      "enum": [
+        "related_to",
+        "influences"
+      ],
+      "title": "NodeRelationType",
+      "type": "string"
+    },
     "NodeStatus": {
       "enum": [
         "pending",
@@ -1882,6 +2029,18 @@
           "default": null,
           "title": "Parentid"
         },
+        "planningLevel": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Planninglevel"
+        },
         "priority": {
           "title": "Priority",
           "type": "string"
@@ -2068,6 +2227,18 @@
       ],
       "title": "PlannedSessionView",
       "type": "object"
+    },
+    "PlanningLevel": {
+      "description": "一个节点处于哪一层规划。**与 `NodeType` / `NodePurpose` 都正交。**\n\n- `NodeType` 回答\"这是什么\"(goal/task/stage/…);\n- `NodePurpose` 回答\"要不要排期\";\n- `PlanningLevel` 回答\"它在哪一层\"(战略 / 阶段 / 月 / 周 / 日)。\n\n## 为什么单独一列,而不用 title 或 node_type 推断\n\n\"三月重点\"与\"本月重点\"可以挂在任何 `node_type` 上,而标题文本不能当语义\n(一个叫\"本周\"的阶段和一个叫\"本周\"的周计划长得一样)。规划层级需要被**明确\n写入、明确校验**,不能靠猜。\n\n## 存量兼容\n\n这一列**可空**。旧节点全部是 `None`(unspecified),不回填、不重写。没有层级的\n节点行为与加这一列之前完全一样。\n\n## 它不等于\"已排期\"\n\n它只表达语义层级,不进入排期算法。具体哪天做仍由排期器按 `estimate_minutes` /\n`deadline` / 容量算出。",
+      "enum": [
+        "strategy",
+        "phase",
+        "month",
+        "week",
+        "day"
+      ],
+      "title": "PlanningLevel",
+      "type": "string"
     },
     "Priority": {
       "enum": [
@@ -2298,6 +2469,240 @@
         }
       },
       "title": "PutNoteRequest",
+      "type": "object"
+    },
+    "QuestionActionRequest": {
+      "additionalProperties": false,
+      "description": "跳过 / 稍后回答的请求体。\n\n`client_action_id` 与回答的幂等键同义。`reason` 可选,只用于审计。",
+      "properties": {
+        "clientActionId": {
+          "maxLength": 64,
+          "minLength": 8,
+          "title": "Clientactionid",
+          "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        }
+      },
+      "required": [
+        "clientActionId"
+      ],
+      "title": "QuestionActionRequest",
+      "type": "object"
+    },
+    "QuestionActionResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "question": {
+          "$ref": "#/$defs/QuestionView"
+        },
+        "replayed": {
+          "default": false,
+          "title": "Replayed",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "question"
+      ],
+      "title": "QuestionActionResponse",
+      "type": "object"
+    },
+    "QuestionAnswer": {
+      "additionalProperties": false,
+      "description": "用户对一个问题给出的答案。\n\n`selected_option_ids` 里每个 id 都必须是这个问题的 `options` 里出现过的 ——\n服务端校验,不靠前端。`custom_input` 只有在 `allow_custom_input` 为真时才收。",
+      "properties": {
+        "customInput": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Custominput"
+        },
+        "selectedOptionIds": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Selectedoptionids",
+          "type": "array"
+        }
+      },
+      "title": "QuestionAnswer",
+      "type": "object"
+    },
+    "QuestionListResponse": {
+      "additionalProperties": false,
+      "description": "这个空间的问题。**默认只返回还没结束的那些**(pending / answered / investigating)。\n\n`include_decided=true` 时把 resolved / archived 也带上(审计与历史)。",
+      "properties": {
+        "questions": {
+          "items": {
+            "$ref": "#/$defs/QuestionView"
+          },
+          "title": "Questions",
+          "type": "array"
+        },
+        "truncated": {
+          "default": false,
+          "title": "Truncated",
+          "type": "boolean"
+        }
+      },
+      "title": "QuestionListResponse",
+      "type": "object"
+    },
+    "QuestionOption": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 40,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 120,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label"
+      ],
+      "title": "QuestionOption",
+      "type": "object"
+    },
+    "QuestionView": {
+      "additionalProperties": false,
+      "properties": {
+        "allowCustomInput": {
+          "default": false,
+          "title": "Allowcustominput",
+          "type": "boolean"
+        },
+        "answer": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/QuestionAnswer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "answeredAt": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Answeredat"
+        },
+        "createdAt": {
+          "format": "date-time",
+          "title": "Createdat",
+          "type": "string"
+        },
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "options": {
+          "items": {
+            "$ref": "#/$defs/QuestionOption"
+          },
+          "title": "Options",
+          "type": "array"
+        },
+        "question": {
+          "title": "Question",
+          "type": "string"
+        },
+        "responseMode": {
+          "title": "Responsemode",
+          "type": "string"
+        },
+        "sourceMessageId": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sourcemessageid"
+        },
+        "sourceNodeId": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sourcenodeid"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "updatedAt": {
+          "format": "date-time",
+          "title": "Updatedat",
+          "type": "string"
+        },
+        "whyNow": {
+          "title": "Whynow",
+          "type": "string"
+        },
+        "workspaceId": {
+          "format": "uuid",
+          "title": "Workspaceid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "workspaceId",
+        "question",
+        "whyNow",
+        "responseMode",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ],
+      "title": "QuestionView",
       "type": "object"
     },
     "QuietHoursView": {
@@ -2864,7 +3269,6 @@
           "$ref": "#/$defs/PlanNodePayload"
         },
         "overbookedDays": {
-          "default": [],
           "items": {
             "$ref": "#/$defs/OverbookedDayPayload"
           },
@@ -3926,6 +4330,17 @@
           "title": "Op",
           "type": "string"
         },
+        "planningLevel": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PlanningLevel"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "priority": {
           "anyOf": [
             {
@@ -4051,6 +4466,18 @@
           ],
           "default": null,
           "title": "Nodetype"
+        },
+        "planningLevel": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Planninglevel"
         },
         "priority": {
           "anyOf": [

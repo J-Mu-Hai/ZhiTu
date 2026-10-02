@@ -47,7 +47,12 @@ from backend.db.models.enums import (
     RevisionTrigger,
     ScheduledSessionStatus,
 )
-from backend.services import conversation_service, execution_service, proposal_service
+from backend.services import (
+    conversation_service,
+    execution_service,
+    proposal_service,
+    strategy_review,
+)
 from backend.services.context import WorkspaceContext
 from backend.services.timeutil import today_in
 from backend.services.turn_context import build_turn_context
@@ -322,6 +327,10 @@ async def propose_replan(
         reasoning=result.reply,
         assistant_message=message,
         trigger_type=RevisionTrigger.EXECUTION_DEVIATION,
+    )
+    # 复盘时也计算一次战略复评触发:**只创建问题卡,不自动改战略。**
+    await strategy_review.maybe_create_review_question(
+        db, ctx, source_node_id=None, source_message_id=getattr(message, "id", None)
     )
     await db.commit()
 

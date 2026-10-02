@@ -69,6 +69,10 @@ AUTHENTICATED_ROUTES = {
     ("GET", "/api/workspaces/{workspace_id}/layout"),
     ("PUT", "/api/workspaces/{workspace_id}/layout"),
     ("GET", "/api/workspaces/{workspace_id}/proposals"),
+    ("GET", "/api/workspaces/{workspace_id}/questions"),
+    ("POST", "/api/workspaces/{workspace_id}/questions/{question_id}/answer"),
+    ("POST", "/api/workspaces/{workspace_id}/questions/{question_id}/skip"),
+    ("POST", "/api/workspaces/{workspace_id}/questions/{question_id}/later"),
     ("GET", "/api/workspaces/{workspace_id}/analyses"),
     ("POST", "/api/workspaces/{workspace_id}/nodes/{node_id}/analysis/refresh"),
     ("POST", "/api/workspaces/{workspace_id}/proposals/{proposal_id}/confirm"),
@@ -96,6 +100,8 @@ CROSS_ACCOUNT_ROUTES = {
     ("POST", "/api/workspaces/{workspace_id}/messages"): "workspace_id",
     ("GET", "/api/workspaces/{workspace_id}/plan"): "workspace_id",
     ("GET", "/api/workspaces/{workspace_id}/proposals"): "workspace_id",
+    # 问题列表只读,而且刚建好的空间必然返回 200(空列表也是列表) —— 反向断言成立。
+    ("GET", "/api/workspaces/{workspace_id}/questions"): "workspace_id",
     # 分析列表进得来:它**只读**,而且刚建好的空间必然返回 200(空列表也是列表),
     # 反向断言成立。这条的归属校验必须真的存在 —— 分析是按 `workspace_id` 查的,
     # 而 `ctx` 已经在 SQL 的 WHERE 里写死了归属(见 get_workspace_context),
@@ -179,6 +185,17 @@ _BODIES: dict[tuple[str, str], dict] = {
         "targetId": "00000000-0000-4000-8000-000000000003",
         "relationType": "related_to",
     },
+    # 问题节点的写接口。形状合法即可 —— 匿名那条用例在触到问题之前就被 401 拦下。
+    ("POST", "/api/workspaces/{workspace_id}/questions/{question_id}/answer"): {
+        "selectedOptionIds": [],
+        "clientAnswerId": "anon-probe-key",
+    },
+    ("POST", "/api/workspaces/{workspace_id}/questions/{question_id}/skip"): {
+        "clientActionId": "anon-probe-key",
+    },
+    ("POST", "/api/workspaces/{workspace_id}/questions/{question_id}/later"): {
+        "clientActionId": "anon-probe-key",
+    },
     # 空数组是合法的:它表示"这一次没有要提交的位置"。跨账号那条用例因此拿得到
     # A 自己的 200(反向断言),而 B 仍然在触到布局之前就被空间归属挡下。
     ("PUT", "/api/workspaces/{workspace_id}/layout"): {},
@@ -209,6 +226,7 @@ _BODIES: dict[tuple[str, str], dict] = {
 _ANY_PROPOSAL_ID = "00000000-0000-4000-8000-000000000001"
 _ANY_NODE_ID = "00000000-0000-4000-8000-000000000002"
 _ANY_RELATION_ID = "00000000-0000-4000-8000-000000000004"
+_ANY_QUESTION_ID = "00000000-0000-4000-8000-000000000005"
 
 
 def _routes_from_openapi() -> set[tuple[str, str]]:
@@ -333,6 +351,7 @@ def _fill(template: str, account: Account) -> str:
         .replace("{proposal_id}", _ANY_PROPOSAL_ID)
         .replace("{node_id}", _ANY_NODE_ID)
         .replace("{relation_id}", _ANY_RELATION_ID)
+        .replace("{question_id}", _ANY_QUESTION_ID)
     )
 
 

@@ -28,6 +28,8 @@ from __future__ import annotations
 
 import httpx
 
+from backend.tests.conftest import FakeReasoner
+
 # ---------------------------------------------------------------------------------
 # 小工具:这个文件里每次都要的那几步
 # ---------------------------------------------------------------------------------
@@ -377,3 +379,113 @@ def test_the_prompt_tells_the_model_it_can_create_information_nodes() -> None:
     assert '"information"' in SYSTEM_PROMPT, (
         "提示词里没有 `information` 这个值的用法(或没有例子),模型猜不出该怎么填。"
     )
+
+
+# ---------------------------------------------------------------------------------
+# 6. P0.2:提示词里不再有"条件不齐就不许生长"的总闸
+# ---------------------------------------------------------------------------------
+def test_the_prompt_has_no_total_gate_on_missing_conditions() -> None:
+    """缺 deadline / weekly / current_level 只能挡住**正式排期**,不能挡住信息落点。
+
+    审计文档第 8.1 节说的那个冲突就在这里:同一份提示词既要求用户报"排名 38"时建
+    信息节点,又要求三条件不齐时 `actions` 必须是空数组、"只是补充信息"也应为空。
+    三条规则互相打架,访谈里最常见的结果就是模型已经拿到了适合落盘的事实,却因为
+    "条件没齐"而不提案。
+
+    这里断言的不是措辞,而是**那个总闸没了、两条轨道在了**:
+
+    - 旧的总闸(`三个条件还没齐 → actions 必须空`)必须从提示词里消失;
+    - `事实 / 探索沉淀轨` 与 `正式规划 / 排期轨` 两条都要在。
+
+    这是一个确定性断言 —— 提示词是产品行为,它有没有那条总闸是一个可以直接读出来的
+    事实,不需要跑模型。
+    """
+    from backend.agent.prompts.planning import PROMPT_VERSION, SYSTEM_PROMPT
+
+    assert PROMPT_VERSION == "planning-v13", (
+        f"提示词改了必须升级 PROMPT_VERSION,现在是 {PROMPT_VERSION!r}"
+    )
+    # 旧总闸的两句原话。它们必须消失。
+    assert "三个条件还没齐" not in SYSTEM_PROMPT, "旧的'条件不齐 actions 必须为空'总闸还在"
+    assert "必须是空数组" not in SYSTEM_PROMPT, "还在要求缺条件时把 actions 清空"
+    # 新结构:两条轨道,各自说清边界。
+    assert "事实 / 探索沉淀轨" in SYSTEM_PROMPT, "提示词没有事实/探索沉淀这一条轨"
+    assert "正式规划 / 排期轨" in SYSTEM_PROMPT, "提示词没有正式规划/排期这一条轨"
+    # 缺条件只挡排期结论,不挡信息节点/笔记/关系 —— 三条出路都要出现。
+    assert "信息主题" in SYSTEM_PROMPT
+    assert "长笔记" in SYSTEM_PROMPT
+    assert "create_relation" in SYSTEM_PROMPT, (
+        "事实轨里没有关系建议这条路;P0.3 要求条件不齐时也能提 related_to / influences"
+    )
+
+
+async def test_missing_conditions_do_not_block_a_fact_landing(
+    app_client: httpx.AsyncClient, make_account, use_reasoner
+) -> None:
+    """P0.2 的验收:三个规划条件一个都没有,事实仍然要能落进画布。
+
+    这条走的是**真实 HTTP 链路**:`/messages` -> 提案 -> `confirm` -> `/plan`。
+    脚本(而不是真实模型)只替掉"谁来想出这个动作"这一步,后面的校验、确认、
+    事务写入全都走产品代码。
+
+    它证明的是服务端这一侧没有把"条件不齐"变成一道写入闸 —— 而提示词那一侧,
+    由上面的 `test_the_prompt_has_no_total_gate_on_missing_conditions` 钉住。
+    两条缺一不可:只有提示词没有总闸、服务端却有闸(或反过来),用户都还是
+    "它听懂了,画布没长"。
+    """
+    account = await make_account()
+    use_reasoner(
+        FakeReasoner(
+            reply="记下来了:你目前专业排名 38。",
+            actions=(
+                {
+                    "op": "create_node",
+                    "localId": "n2",
+                    "parentRef": "n1",
+                    "title": "我现在排名 38",
+                    "nodeType": "capability",
+                    "purpose": "information",
+                    "description": "专业排名 38/120。",
+                },
+            ),
+        )
+    )
+
+    response = await app_client.post(
+        f"/api/workspaces/{account.workspace_id}/messages",
+        json={"content": "我现在排名 38"},
+        headers=account.headers,
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+
+    assert body["proposalErrors"] == [], body["proposalErrors"]
+    assert body["proposal"] is not None, "缺条件时事实没有变成提案"
+
+    # 确认之前,计划不动。
+    before = await _plan(app_client, account)
+    assert len(before["nodes"]) == 1
+
+    proposal_id = body["proposal"]["id"]
+    confirmed = await app_client.post(
+        f"/api/workspaces/{account.workspace_id}/proposals/{proposal_id}/confirm",
+        json={"idempotencyKey": "fact-landing-key"},
+        headers=account.headers,
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()["applied"]["nodesCreated"] == 1
+
+    after = await _plan(app_client, account)
+    titles = {node["title"]: node for node in after["nodes"]}
+    assert "我现在排名 38" in titles
+    assert titles["我现在排名 38"]["purpose"] == "information"
+
+    # 重复 confirm 幂等:一行都不多写。
+    replay = await app_client.post(
+        f"/api/workspaces/{account.workspace_id}/proposals/{proposal_id}/confirm",
+        json={"idempotencyKey": "fact-landing-key"},
+        headers=account.headers,
+    )
+    assert replay.status_code == 200, replay.text
+    assert replay.json()["replayed"] is True
+    assert len((await _plan(app_client, account))["nodes"]) == 2

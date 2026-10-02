@@ -30,7 +30,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.db.models import NodePosition, NodeRelation, PlanRevision
-from backend.tests.conftest import snapshot
+from backend.services import proposal_validation as codes
+from backend.tests.conftest import FakeReasoner, snapshot
 
 
 # ---------------------------------------------------------------------------------
@@ -965,3 +966,356 @@ async def test_a_relation_table_row_is_not_a_dependency(
     rows = await db.scalar(select(func.count()).select_from(NodeRelation))
     assert rows == 2
     assert (await _counts(db))["dependencies"] == 0
+
+
+# ---------------------------------------------------------------------------------
+# AI 提案里的关系(create_relation)
+#
+# 这一组走的是**真实 HTTP 链路**:`/messages` 生成提案 -> 用户 confirm -> `/plan`。
+# 脚本只替掉"谁来想出这个动作",后面的校验、事务写入、版本记账全是产品代码。
+# ---------------------------------------------------------------------------------
+async def _propose(
+    client: httpx.AsyncClient,
+    account,
+    *,
+    content: str = "看一下",
+    context_node_id: str | None = None,
+    scope_root_id: str | None = None,
+) -> dict:
+    payload: dict = {"content": content}
+    if context_node_id is not None:
+        payload["contextNodeId"] = context_node_id
+    if scope_root_id is not None:
+        payload["scopeRootId"] = scope_root_id
+    response = await client.post(
+        f"/api/workspaces/{account.workspace_id}/messages",
+        json=payload,
+        headers=account.headers,
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+async def _confirm(
+    client: httpx.AsyncClient, account, proposal_id: str, key: str
+) -> httpx.Response:
+    return await client.post(
+        f"/api/workspaces/{account.workspace_id}/proposals/{proposal_id}/confirm",
+        json={"idempotencyKey": key},
+        headers=account.headers,
+    )
+
+
+async def test_a_proposal_can_add_an_influences_edge(
+    app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
+) -> None:
+    """两个主题互相影响 -> `create_relation` -> confirm -> 画布上出现一条**有向**边。
+
+    验收 3。断言分三层:提案阶段只预览、confirm 之前 `/plan` 不变、confirm 之后
+    真实写进 `node_relations`(origin=ai)且落在这一版 `PlanRevision.diff` 里。
+    """
+    account = await make_account()
+    ids = await _create_nodes(app_client, account, "英语阅读", "数学建模")
+    # 记号顺序就是加载顺序:n1 根目标,n2 英语阅读,n3 数学建模。
+    use_reasoner(
+        FakeReasoner(
+            actions=(
+                {
+                    "op": "create_relation",
+                    "sourceRef": "n2",
+                    "targetRef": "n3",
+                    "relationType": "influences",
+                    "note": "读题速度会影响建模",
+                },
+            )
+        )
+    )
+
+    body = await _propose(app_client, account)
+    assert body["proposalErrors"] == [], body["proposalErrors"]
+    assert body["proposal"] is not None
+    summary = " ".join(item["summary"] for item in body["proposal"]["items"])
+    assert "影响" in summary, summary
+
+    # 确认之前:画布上没有这条边。
+    assert (await _plan(app_client, account))["relations"] == []
+
+    confirmed = await _confirm(app_client, account, body["proposal"]["id"], "rel-key-1")
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()["applied"]["relationsAdded"] == 1
+    # 排期侧的依赖没有被误记。
+    assert confirmed.json()["applied"]["dependenciesAdded"] == 0
+
+    plan = await _plan(app_client, account)
+    edges = [edge for edge in plan["relations"] if edge["relationType"] == "influences"]
+    assert len(edges) == 1, plan["relations"]
+    edge = edges[0]
+    assert edge["sourceId"] == ids["英语阅读"]
+    assert edge["targetId"] == ids["数学建模"]
+    assert edge["origin"] == "ai"
+    assert edge["note"] == "读题速度会影响建模"
+
+    # 版本账本里能查到这次关系写入,而且它**不在** addedDependencies 那一栏。
+    revision = await db.scalar(
+        select(PlanRevision)
+        .where(PlanRevision.workspace_id == uuid.UUID(account.workspace_id))
+        .order_by(PlanRevision.version.desc())
+    )
+    assert revision is not None
+    assert revision.diff["addedRelations"] == [
+        {
+            "sourceId": ids["英语阅读"],
+            "targetId": ids["数学建模"],
+            "relationType": "influences",
+        }
+    ]
+    assert revision.diff["addedDependencies"] == []
+    assert (await _counts(db))["dependencies"] == 0
+
+    # 重复 confirm 幂等:边只有一条。
+    replay = await _confirm(app_client, account, body["proposal"]["id"], "rel-key-1")
+    assert replay.status_code == 200, replay.text
+    assert replay.json()["replayed"] is True
+    assert len((await _plan(app_client, account))["relations"]) == 1
+
+
+async def test_a_new_node_and_a_relation_in_the_same_proposal(
+    app_client: httpx.AsyncClient, make_account, use_reasoner
+) -> None:
+    """先 `create_node`,再引用它建关系 —— 同一个提案里。
+
+    验收 4。`resolved` 在 `_create` 里就把 `n2` 绑到了新节点上,所以后面那条关系
+    解析得到它。这不只是一个便利:`create_relation` 必须允许引用**本条之前**刚建的
+    节点,否则"新建一个主题并把它连到目标上"就永远要用户确认两次。
+    """
+    account = await make_account()
+    use_reasoner(
+        FakeReasoner(
+            actions=(
+                {
+                    "op": "create_node",
+                    "localId": "n2",
+                    "parentRef": "n1",
+                    "title": "英语阅读",
+                },
+                {
+                    "op": "create_relation",
+                    "sourceRef": "n2",
+                    "targetRef": "n1",
+                    "relationType": "related_to",
+                },
+            )
+        )
+    )
+
+    body = await _propose(app_client, account)
+    assert body["proposalErrors"] == [], body["proposalErrors"]
+    assert body["proposal"] is not None
+    assert body["proposal"]["itemCount"] == 2
+
+    confirmed = await _confirm(app_client, account, body["proposal"]["id"], "rel-key-2")
+    assert confirmed.status_code == 200, confirmed.text
+    applied = confirmed.json()["applied"]
+    assert applied["nodesCreated"] == 1
+    assert applied["relationsAdded"] == 1
+
+    plan = await _plan(app_client, account)
+    new_node = next(node for node in plan["nodes"] if node["title"] == "英语阅读")
+    assert len(plan["relations"]) == 1
+    edge = plan["relations"][0]
+    assert edge["relationType"] == "related_to"
+    assert {edge["sourceId"], edge["targetId"]} == {new_node["id"], next(
+        node["id"] for node in plan["nodes"] if node["parentId"] is None
+    )}
+    assert edge["origin"] == "ai"
+
+
+async def test_related_to_is_deduplicated_against_an_existing_edge(
+    app_client: httpx.AsyncClient, make_account, use_reasoner
+) -> None:
+    """`related_to` 无向:A→B 已经存在时,再提 B→A 算重复,不是第二条边。
+
+    验收 5 的"重复关系"那一半。规范化按 UUID 的整数序,所以两种画法落到同一个键;
+    没有规范化的话,唯一约束只拦得住"同一方向连两次",画布上会出现两条重叠的线。
+    拒绝时不产生任何提案 —— 用户看到的是一条明确的原因,不是一次安静的成功。
+    """
+    account = await make_account()
+    ids = await _create_nodes(app_client, account, "A", "B")
+    # 用户自己先连了一条 A—B。
+    existing = await _connect(app_client, account, ids["A"], ids["B"], "related_to")
+    assert existing.status_code == 201, existing.text
+
+    use_reasoner(
+        FakeReasoner(
+            actions=(
+                {
+                    "op": "create_relation",
+                    "sourceRef": "n3",
+                    "targetRef": "n2",
+                    "relationType": "related_to",
+                },
+            )
+        )
+    )
+
+    body = await _propose(app_client, account)
+    assert body["proposal"] is None, "重复的关系不该产生提案"
+    assert {error["code"] for error in body["proposalErrors"]} == {codes.RELATION_ALREADY_EXISTS}
+
+    # 一行都没多写。
+    assert len((await _plan(app_client, account))["relations"]) == 1
+
+
+async def test_the_same_related_to_edge_twice_in_one_proposal_is_refused(
+    app_client: httpx.AsyncClient, make_account, use_reasoner
+) -> None:
+    """同一份提案里 A—B 与 B—A 各写一遍 -> 拒绝,而不是写两条。"""
+    account = await make_account()
+    await _create_nodes(app_client, account, "A", "B")
+    use_reasoner(
+        FakeReasoner(
+            actions=(
+                {
+                    "op": "create_relation",
+                    "sourceRef": "n2",
+                    "targetRef": "n3",
+                    "relationType": "related_to",
+                },
+                {
+                    "op": "create_relation",
+                    "sourceRef": "n3",
+                    "targetRef": "n2",
+                    "relationType": "related_to",
+                },
+            )
+        )
+    )
+
+    body = await _propose(app_client, account)
+    assert body["proposal"] is None
+    assert {error["code"] for error in body["proposalErrors"]} == {codes.RELATION_ALREADY_EXISTS}
+    assert (await _plan(app_client, account))["relations"] == []
+
+
+async def test_influences_in_both_directions_are_two_edges(
+    app_client: httpx.AsyncClient, make_account, use_reasoner
+) -> None:
+    """`influences` 有向:A→B 与 B→A 是两条边,不能被去重成一条。"""
+    account = await make_account()
+    ids = await _create_nodes(app_client, account, "英语", "数学")
+    use_reasoner(
+        FakeReasoner(
+            actions=(
+                {
+                    "op": "create_relation",
+                    "sourceRef": "n2",
+                    "targetRef": "n3",
+                    "relationType": "influences",
+                },
+                {
+                    "op": "create_relation",
+                    "sourceRef": "n3",
+                    "targetRef": "n2",
+                    "relationType": "influences",
+                },
+            )
+        )
+    )
+
+    body = await _propose(app_client, account)
+    assert body["proposalErrors"] == [], body["proposalErrors"]
+    confirmed = await _confirm(app_client, account, body["proposal"]["id"], "rel-key-3")
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()["applied"]["relationsAdded"] == 2
+
+    edges = (await _plan(app_client, account))["relations"]
+    assert {(edge["sourceId"], edge["targetId"]) for edge in edges} == {
+        (ids["英语"], ids["数学"]),
+        (ids["数学"], ids["英语"]),
+    }
+
+
+async def test_a_relation_out_of_scope_writes_nothing(
+    app_client: httpx.AsyncClient, make_account, use_reasoner
+) -> None:
+    """关系是两端的事:有一端在范围外,整条提案被拒,一行都不写。
+
+    验收 5 的"越权"那一半。范围是一条权限,不是提示词里的一句建议 —— 模型看得见
+    范围外的节点(用来解释问题),但不能拿它去改用户的图。
+    """
+    account = await make_account()
+    inside = await _create_nodes(app_client, account, "在范围内")
+    await _create_nodes(app_client, account, "在范围外")
+
+    # n2 在范围内,n3 在范围外。
+    use_reasoner(
+        FakeReasoner(
+            actions=(
+                {
+                    "op": "create_relation",
+                    "sourceRef": "n2",
+                    "targetRef": "n3",
+                    "relationType": "influences",
+                },
+            )
+        )
+    )
+
+    body = await _propose(
+        app_client,
+        account,
+        content="把这两条连起来",
+        context_node_id=inside["在范围内"],
+        scope_root_id=inside["在范围内"],
+    )
+    assert body["proposal"] is None
+    assert {error["code"] for error in body["proposalErrors"]} == {codes.OUT_OF_SCOPE}
+    assert (await _plan(app_client, account))["relations"] == []
+
+
+async def test_an_information_topic_may_take_part_in_an_influence_edge(
+    app_client: httpx.AsyncClient, make_account, use_reasoner
+) -> None:
+    """信息主题**可以**参与「相关 / 影响」,虽然它不能当排期依赖的端点。
+
+    这是两种关系最容易被合并的地方:一行"信息主题不能参与关系"的过度限制会挡住
+    "我排名 38 影响这学期选课"这种**正是**信息主题要表达的结构。
+    """
+    account = await make_account()
+    info = await app_client.post(
+        f"/api/workspaces/{account.workspace_id}/nodes",
+        json={
+            "parentId": await _root(app_client, account),
+            "title": "我排名 38",
+            "nodeType": "capability",
+            "purpose": "information",
+        },
+        headers=account.headers,
+    )
+    assert info.status_code == 201, info.text
+    info_id = info.json()["node"]["id"]
+    task = await _create_nodes(app_client, account, "这学期选课")
+
+    # n1 根,n2 我排名 38,n3 这学期选课。
+    use_reasoner(
+        FakeReasoner(
+            actions=(
+                {
+                    "op": "create_relation",
+                    "sourceRef": "n2",
+                    "targetRef": "n3",
+                    "relationType": "influences",
+                },
+            )
+        )
+    )
+
+    body = await _propose(app_client, account)
+    assert body["proposalErrors"] == [], body["proposalErrors"]
+    confirmed = await _confirm(app_client, account, body["proposal"]["id"], "rel-key-4")
+    assert confirmed.status_code == 200, confirmed.text
+
+    edges = (await _plan(app_client, account))["relations"]
+    assert len(edges) == 1
+    assert edges[0]["sourceId"] == info_id
+    assert edges[0]["targetId"] == task["这学期选课"]

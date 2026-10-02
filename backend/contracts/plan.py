@@ -24,6 +24,7 @@ from datetime import date, datetime
 from pydantic import Field
 
 from backend.contracts.common import ApiModel
+from backend.db.models.enums import PLANNING_LEVEL_RANK, PlanningLevel
 
 #: 画布上"前置"这个类型的名字 —— **接口上的名字,不是库里的名字**。
 #: 库里它是 `DependencyType.FINISH_TO_START`,存在 `dependencies` 表;而
@@ -91,6 +92,7 @@ def information_node_conflicts(
     purpose: object,
     estimate_minutes: int | None,
     deadline: date | None,
+    planning_level: object | None = None,
 ) -> str | None:
     """信息用途的节点和工时/截止不能同时存在。返回原因,或者 `None`。
 
@@ -124,6 +126,8 @@ def information_node_conflicts(
         fields.append("预计工时")
     if deadline is not None:
         fields.append("截止日期")
+    if planning_level is not None:
+        fields.append("规划层级")
     if not fields:
         return None
     what = "和".join(fields)
@@ -134,6 +138,53 @@ def information_node_conflicts(
         f"信息主题不进排期,所以不能带{what}。"
         f"要给它排期,就把用途改回「行动」;要让它当信息主题,就把{what}清掉。"
     )
+
+
+#: 规划层级的中文名。**只在这里定义一处** —— 手工表单、提案摘要、前端标签读它。
+PLANNING_LEVEL_LABELS: dict[str, str] = {
+    "strategy": "战略",
+    "phase": "阶段",
+    "month": "月",
+    "week": "周",
+    "day": "日",
+}
+
+
+def as_planning_level(value: object | None) -> PlanningLevel | None:
+    """把字符串/枚举/None 统一成 `PlanningLevel | None`。非法值返回 `None`。
+
+    手工路径收的是字符串,AI 动作收的是枚举。两处都要"值是不是合法层级"这一个
+    判断,所以收在契约层做一次 —— 分两处写就会漂移。
+    """
+    if value is None:
+        return None
+    if isinstance(value, PlanningLevel):
+        return value
+    try:
+        return PlanningLevel(str(value))
+    except ValueError:
+        return None
+
+
+def child_level_conflicts(parent_level: object | None, child_level: object | None) -> str | None:
+    """父子的规划层级只能**从粗到细**(或同级)。返回原因,或 `None`。
+
+    - `None` 表示"没指定层级" —— 它既不算粗也不算细,与任何层级都相容(存量兼容)。
+    - 允许跳过中间层级:strategy → week 合法,不强制每个用户都先有 month/day。
+    - 禁止 strategy 挂在 week/day 下,也禁止 week/day 成为 strategy 的父节点。
+
+    手工建/改与 AI 提案都调它 —— 两条路必须拦得一模一样(同 `information_node_conflicts`)。
+    """
+    parent = as_planning_level(parent_level)
+    child = as_planning_level(child_level)
+    if parent is None or child is None:
+        return None
+    if PLANNING_LEVEL_RANK[child] < PLANNING_LEVEL_RANK[parent]:
+        return (
+            f"父节点是{PLANNING_LEVEL_LABELS[parent.value]}层,不能挂一个更粗的"
+            f"{PLANNING_LEVEL_LABELS[child.value]}层子节点。规划层级只能从粗到细。"
+        )
+    return None
 
 
 class PlanNodePayload(ApiModel):
@@ -149,6 +200,10 @@ class PlanNodePayload(ApiModel):
     #: "这是什么事"和"这件事要不要占日历"是两个问题。
     #: 见 `db/models/enums.py` 的 `NodePurpose`。
     purpose: str = "planning"
+    #: 规划层级(`strategy` / `phase` / `month` / `week` / `day`)。
+    #: **`None` = 没指定** —— 存量节点与不需要层级的节点都是它,前端不得显示
+    #: 任何误导性的层级标签。它只表达语义层级,不代表已排期。
+    planning_level: str | None = None
     status: str
     priority: str
     #: 预计工时(分钟)。是排期的输入,不是排期结果。
@@ -384,6 +439,8 @@ class CreateNodeRequest(ApiModel):
     priority: str = "medium"
     estimate_minutes: int | None = None
     deadline: date | None = None
+    #: 规划层级。**可空** —— 不传就是 unspecified。information 节点不允许带它。
+    planning_level: str | None = None
 
 
 class UpdateNodeRequest(ApiModel):
@@ -405,6 +462,8 @@ class UpdateNodeRequest(ApiModel):
     priority: str | None = None
     estimate_minutes: int | None = None
     deadline: date | None = None
+    #: 规划层级。传 null 是"清空层级"(回到 unspecified),不传是"不改"。
+    planning_level: str | None = None
     #: **正文的乐观锁,不是要写的字段 —— 它是一个前置条件。**
     #:
     #: 客户端把读到的那一版 `PlanNodePayload.content_version` 原样带回来;对不上
@@ -491,7 +550,7 @@ class RestoreResponse(ApiModel):
     overdue_sessions: int
     #: 恢复之后超了每日上限的那些天。**这一栏比的是每日上限,没有重跑可用时段** ——
     #: 用户那天本来就没有可用时段时会少报(见 `node_service._restore_schedule_report`)。
-    overbooked_days: list[OverbookedDayPayload] = []
+    overbooked_days: list[OverbookedDayPayload] = Field(default_factory=list)
     #: 跟着一起回来的关系与依赖条数。它们**没有**被归档删掉过,所以这里说的是
     #: "重新可见",不是"重新创建"。给界面用来解释"为什么边也回来了"。
     relations_visible: int = 0

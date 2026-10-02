@@ -95,6 +95,7 @@ export function toGrowthNode(node: PlanNodePayload, sessions: GrowthSession[] = 
     contentVersion: node.contentVersion,
     type: toNodeType(node),
     purpose: node.purpose,
+    planningLevel: node.planningLevel ?? undefined,
     origin: node.origin,
     parentId: node.parentId ?? undefined,
     status: toStatus(node.status),

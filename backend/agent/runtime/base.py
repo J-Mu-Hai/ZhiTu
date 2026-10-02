@@ -135,6 +135,10 @@ class PlanNodeView:
     #: 字段之后,否则 `@dataclass` 在**导入时**就抛 `TypeError` —— 症状是整个测试
     #: 收集阶段直接中断,而不是某一条用例变红。
     purpose: str = "planning"
+    #: 规划层级(`strategy` / `phase` / `month` / `week` / `day`)。`None` = 没指定。
+    #: 模型靠它判断"已经确认过战略了吗"以及"这一层该挂到哪"。它只是语义,
+    #: 不代表已排期。
+    planning_level: str | None = None
     #: 父节点的记号。根目标为 None。用来让模型看清自己拿到的是一棵树,而不是一张表。
     parent_handle: str | None = None
     description: str | None = None
@@ -347,6 +351,9 @@ class TurnContext:
     writable_handles: tuple[str, ...] = ()
     #: 这个空间里现存的节点之间的关系。两端都是记号。
     edges: tuple[RelationView, ...] = ()
+    #: 本次循环里已经执行过的只读工具结果。**回填给下一次模型调用**,让模型
+    #: 根据真实结果继续判断,而不是凭空猜。为空表示还没调过工具(第一轮)。
+    tool_exchanges: tuple[ToolExchange, ...] = ()
     #: 有多少条关系因为两端之一不在本次读到的节点里而没能列出来。**如实计数**,
     #: 不列出来又不说明的话,模型会把"我没看到"当成"没有关系"。
     edges_hidden: int = 0
@@ -453,6 +460,63 @@ class AnalysisDraft:
 
 
 @dataclass(frozen=True, slots=True)
+class QuestionOptionDraft:
+    """一个问题的一个选项。`id` 是给程序对答案用的,`label` 是给人看的。
+
+    为什么要在选项上给 `id`:用户答案存的是 `selectedOptionIds` 而不是标签文本。
+    存标签的话,模型下一次把同一道题的选项措辞改一个字,历史答案就再也对不上了。
+    """
+
+    id: str
+    label: str
+
+
+@dataclass(frozen=True, slots=True)
+class QuestionDraft:
+    """模型想向用户提的一个问题。
+
+    **它不是一条计划变更。** 与 `actions` 平行、不混在一起:问题落库后是一张待回答
+    的卡片,而 actions 仍然是一份要用户确认的提案。把两者合在一起,就会出现
+    "确认了提案才出现问题"或"点了问题选项顺手改了计划"这两类错误。
+
+    `response_mode` 与 `allow_custom_input` 是**两个维度**:前者决定主体怎么答,
+    后者决定能不能在选项之外补一句。选项是加速器,不是限制。
+    """
+
+    question: str
+    why_now: str
+    response_mode: str
+    options: tuple[QuestionOptionDraft, ...] = ()
+    allow_custom_input: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ToolRequest:
+    """模型请求调用一个**只读工具**。模型只能用本轮 handle,参数由服务端注册表校验。"""
+
+    id: str
+    name: str
+    arguments: dict = field(default_factory=dict)
+    #: 一句对用户可解释的原因。**不是思维链。**
+    reason: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ToolExchange:
+    """一次工具调用的结果摘要,回填给下一次模型调用。
+
+    它只带 `summary`(已截断的摘要),不带完整结果 —— 长结果在服务端截断,并在
+    `truncated` 里如实标注,不把“没看到全部”说成“没有”。
+    """
+
+    tool_name: str
+    arguments: dict = field(default_factory=dict)
+    status: str = "ok"
+    summary: dict = field(default_factory=dict)
+    truncated: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class ReasoningResult:
     """一次模型调用的结果。**永远是可用的**,即使内容为空。"""
 
@@ -465,6 +529,16 @@ class ReasoningResult:
     retryable: bool = False
     brief_claims: tuple[BriefClaim, ...] = ()
     actions: tuple[dict, ...] = ()
+    #: 模型这一轮想向用户提的问题(0–2 个)。**与 `actions` 分开** ——
+    #: 问题落库即成卡片,不等提案确认;而 actions 仍是待确认提案。
+    questions: tuple[QuestionDraft, ...] = ()
+    #: 模型请求的只读工具调用(0–N 个)。由 `agent_loop_service` 执行并把结果
+    #: 回填到下一次调用;**中间轮即使带 actions 也不生成提案**。
+    tool_requests: tuple[ToolRequest, ...] = ()
+    #: 模型对“为什么停下”的声明。服务端也自己判预算,不单信它。
+    #: `ready_to_propose` / `need_user_answer` / `insufficient_evidence` /
+    #: `budget_exhausted` / `failed`。
+    stop_reason: str | None = None
     #: 模型这一轮形成的判断。None = 它这轮没给(纯聊天、纯提问)。
     analysis: AnalysisDraft | None = None
     request_id: str = ""

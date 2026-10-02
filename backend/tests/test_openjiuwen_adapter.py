@@ -48,7 +48,6 @@ from backend.agent.runtime.openjiuwen_runtime import (
 )
 from backend.agent.runtime.response import PayloadInvalid
 from backend.agent.runtime.rule_fallback import RuleFallbackReasoner
-from backend.core.config import Settings
 from backend.db.models.enums import DegradedReason, ModelSource
 
 # --------------------------------------------------------------------------------------
@@ -226,6 +225,19 @@ def test_the_output_declaration_matches_what_the_parser_reads() -> None:
         # 的值进确认字段**的东西,所以这里照真实形状写。
         "brief": {"weekly_available_minutes": {"value": 360, "source": "user_stated"}},
         "actions": [{"op": "create_node", "ref": "n1", "title": "打基础"}],
+        "questions": [
+            {
+                "question": "重心放哪边?",
+                "whyNow": "它决定先拆哪边",
+                "responseMode": "free_text",
+                "options": [],
+                "allowCustomInput": True,
+            }
+        ],
+        "toolRequests": [
+            {"id": "t1", "name": "get_node", "arguments": {"handle": "n1"}, "reason": "看看正文"}
+        ],
+        "stopReason": "ready_to_propose",
         "analysis": {"known": ["n1 的正文里写着只能周末做"], "diagnosis": ["缺一个时长"]},
     }
     assert set(payload) == set(OUTPUT_CONFIG), (
@@ -239,6 +251,11 @@ def test_the_output_declaration_matches_what_the_parser_reads() -> None:
     assert result.degraded is False, "键齐全的载荷必须是成功的"
     assert [c.field for c in result.brief_claims] == ["weekly_available_minutes"]
     assert len(result.actions) == 1
+    assert len(result.questions) == 1, "解析器读了 questions,结果里就必须有它"
+    assert result.questions[0].response_mode == "free_text"
+    assert len(result.tool_requests) == 1, "解析器读了 toolRequests,结果里就必须有它"
+    assert result.tool_requests[0].name == "get_node"
+    assert result.stop_reason == "ready_to_propose"
     assert result.analysis is not None, "解析器读了 analysis,结果里就必须有它"
     assert result.analysis.known == ("n1 的正文里写着只能周末做",)
 

@@ -281,6 +281,13 @@ class FakeReasoner:
     #: 那些**故意非法**的用例(未知 op、悬空 n7、`2026-13-45`)能原样写出来 ——
     #: 它们本来就该是"模型吐了一段不合法 JSON"的形状,而不是一个构造不出来的模型对象。
     actions: tuple[dict, ...] = ()
+    #: 这一轮要提的问题(形状与模型输出一致,走 `response.parse_questions` 同一套清洗)。
+    #: 与 `actions` 一样写成 dict,方便表达"写坏了一道题"这类用例。
+    questions: tuple = ()
+    #: 这一轮请求的只读工具(形状与模型输出一致,走 `response.parse_tool_requests`)。
+    tool_requests: tuple = ()
+    #: 这一轮声明的停止原因。
+    stop_reason: str | None = None
     degraded: bool = False
     degraded_reason: object | None = None
     retryable: bool = False
@@ -293,6 +300,11 @@ class FakeReasoner:
 
     async def reason(self, turn):
         from backend.agent.runtime.base import ReasoningResult
+        from backend.agent.runtime.response import (
+            parse_questions,
+            parse_stop_reason,
+            parse_tool_requests,
+        )
         from backend.db.models.enums import ModelSource
 
         self.calls.append(turn)
@@ -304,6 +316,9 @@ class FakeReasoner:
             retryable=self.retryable,
             brief_claims=tuple(self.claims),
             actions=tuple(self.actions),
+            questions=tuple(parse_questions(list(self.questions))),
+            tool_requests=tuple(parse_tool_requests(list(self.tool_requests))),
+            stop_reason=parse_stop_reason(self.stop_reason),
             analysis=self.analysis,
             request_id="fake-request",
             prompt_version="fake-v1",

@@ -88,7 +88,13 @@ import uuid
 from pathlib import Path
 
 from backend.agent.runtime.base import ReasoningResult, TurnContext
-from backend.agent.runtime.response import parse_analysis, parse_claims
+from backend.agent.runtime.response import (
+    parse_analysis,
+    parse_claims,
+    parse_questions,
+    parse_stop_reason,
+    parse_tool_requests,
+)
 from backend.db.models.enums import ModelSource
 
 #: 脚本所在的环境变量:一段 JSON,或一份写着它的文件的路径。名字带 `ZHITU_` 前缀,
@@ -96,7 +102,7 @@ from backend.db.models.enums import ModelSource
 SCRIPT_ENV = "ZHITU_SCRIPTED_ACTIONS"
 
 #: 提示词版本。落库的 `prompt_version` 会写它 —— 一条 `scripted-v1` 的消息在库里
-#: 一眼就能和真的提示词版本(`planning-v9`)区分开。
+#: 一眼就能和真的提示词版本(`planning-v11`)区分开。
 PROMPT_VERSION = "scripted-v1"
 
 #: 脚本用完之后那一轮的回复。**不含任何计划内容**,与 `rule_fallback` 同一条纪律:
@@ -150,12 +156,20 @@ def parse_script(raw: str) -> tuple[dict, ...]:
     for index, turn in enumerate(turns, start=1):
         if not isinstance(turn, dict):
             raise ScriptedConfigError(f"{SCRIPT_ENV} 第 {index} 轮不是对象。")
-        unknown = set(turn) - {"reply", "claims", "actions", "analysis"}
+        unknown = set(turn) - {
+            "reply",
+            "claims",
+            "actions",
+            "analysis",
+            "questions",
+            "toolRequests",
+            "stopReason",
+        }
         if unknown:
             # 静默忽略一个拼错的键(比如 `action`)会让整段脚本变成"什么都不提"。
             raise ScriptedConfigError(
                 f"{SCRIPT_ENV} 第 {index} 轮里有认不出的键:{'、'.join(sorted(unknown))}。"
-                "能写的是 reply / claims / actions / analysis。"
+                "能写的是 reply / claims / actions / questions / toolRequests / stopReason / analysis。"
             )
     return tuple(turns)
 
@@ -219,6 +233,9 @@ class ScriptedReasoner:
             brief_claims=tuple(parse_claims(scripted.get("claims"))),
             # 逐条原样交给校验链 —— 这一行**不做任何加工**,包括不去猜哪些动作是合法的。
             actions=tuple(scripted.get("actions") or ()),
+            questions=tuple(parse_questions(scripted.get("questions"))),
+            tool_requests=tuple(parse_tool_requests(scripted.get("toolRequests"))),
+            stop_reason=parse_stop_reason(scripted.get("stopReason")),
             analysis=parse_analysis(scripted.get("analysis")),
             request_id=uuid.uuid4().hex,
             prompt_version=PROMPT_VERSION,

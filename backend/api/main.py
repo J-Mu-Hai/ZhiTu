@@ -20,6 +20,7 @@ from backend.api.routes import (
     auth,
     execution,
     plan,
+    questions,
     reminders,
     review,
     schedule,
@@ -118,6 +119,9 @@ app.include_router(plan.router, prefix="/api/workspaces", tags=["plan"])
 app.include_router(schedule.router, prefix="/api/workspaces", tags=["schedule"])
 # 复盘:偏差事实与"按执行情况调整"。事实那一半永远可用,不依赖模型。
 app.include_router(review.router, prefix="/api/workspaces", tags=["review"])
+# 问题节点:AI 提问、用户回答。**与提案分开** —— 问题落库即成卡片,不等待确认;
+# 回答之后模型提的计划变更仍然走 plan.py 那套待确认提案。
+app.include_router(questions.router, prefix="/api/workspaces", tags=["questions"])
 
 # 执行反馈与「今天」。前缀是 `/api` 而不是 `/api/sessions`:「今天」跨全部活动空间,
 # 路径上根本没有空间 id —— 用户问的是"我今天要做什么",不是"我这个空间今天做什么"。

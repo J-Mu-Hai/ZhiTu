@@ -279,6 +279,125 @@ export function sendMessage(
 }
 
 // ---------------------------------------------------------------------------------
+// 问题节点
+// ---------------------------------------------------------------------------------
+
+/** 用户可以用什么方式回答一个问题。选项是加速器,不是限制。 */
+export type QuestionResponseMode = 'single_select' | 'multi_select' | 'free_text' | 'mixed';
+
+/**
+ * 问题节点的生命周期。
+ *
+ * `answered` / `investigating` 都是“已处理但还没结束”的状态:前者是刚答完,
+ * 后者是后续那一轮对话正在处理。模型失败时停在 `investigating` —— 答案与状态都已
+ * 落库,刷新后读得回,不会丢。
+ */
+export type QuestionStatus =
+  | 'pending'
+  | 'answered'
+  | 'investigating'
+  | 'resolved'
+  | 'archived';
+
+export interface QuestionOption {
+  id: string;
+  label: string;
+}
+
+export interface QuestionAnswer {
+  selectedOptionIds: string[];
+  customInput: string | null;
+}
+
+/**
+ * 一个 AI 提出的问题。
+ *
+ * **它不是计划节点** —— 不进排期、不能当依赖、不计入任务统计。回答它也不等于
+ * 同意任何计划变更:回答之后模型提的变更仍然是一份要用户点“确认,写入计划”的提案。
+ */
+export interface QuestionView {
+  id: string;
+  workspaceId: string;
+  /** 从哪个节点聊出来的。节点归档后仍是原 id,但前端不应再渲染成可跳转的引用。 */
+  sourceNodeId: string | null;
+  sourceMessageId: string | null;
+  question: string;
+  whyNow: string;
+  responseMode: QuestionResponseMode;
+  options: QuestionOption[];
+  allowCustomInput: boolean;
+  status: QuestionStatus;
+  answer: QuestionAnswer | null;
+  createdAt: string;
+  updatedAt: string;
+  answeredAt: string | null;
+}
+
+export interface QuestionListResponse {
+  questions: QuestionView[];
+  truncated: boolean;
+}
+
+export interface AnswerQuestionResponse {
+  question: QuestionView;
+  /** 回答之后那一轮对话的结果。重复提交(幂等)时为 `null`。 */
+  turn: SendMessageResponse | null;
+  replayed: boolean;
+}
+
+export interface QuestionActionResponse {
+  question: QuestionView;
+  replayed: boolean;
+}
+
+export function listQuestions(
+  workspaceId: string,
+  options: { includeDecided?: boolean } = {},
+): Promise<QuestionListResponse> {
+  const suffix = options.includeDecided ? '?includeDecided=true' : '';
+  return apiFetch<QuestionListResponse>(`/api/workspaces/${workspaceId}/questions${suffix}`);
+}
+
+export function answerQuestion(
+  workspaceId: string,
+  questionId: string,
+  payload: { selectedOptionIds: string[]; customInput?: string | null; clientAnswerId: string },
+): Promise<AnswerQuestionResponse> {
+  return apiFetch<AnswerQuestionResponse>(
+    `/api/workspaces/${workspaceId}/questions/${questionId}/answer`,
+    { method: 'POST', body: payload },
+  );
+}
+
+function questionAction(
+  workspaceId: string,
+  questionId: string,
+  action: 'skip' | 'later',
+  clientActionId: string,
+): Promise<QuestionActionResponse> {
+  return apiFetch<QuestionActionResponse>(
+    `/api/workspaces/${workspaceId}/questions/${questionId}/${action}`,
+    { method: 'POST', body: { clientActionId } },
+  );
+}
+
+export function skipQuestion(
+  workspaceId: string,
+  questionId: string,
+  clientActionId: string,
+): Promise<QuestionActionResponse> {
+  return questionAction(workspaceId, questionId, 'skip', clientActionId);
+}
+
+export function deferQuestion(
+  workspaceId: string,
+  questionId: string,
+  clientActionId: string,
+): Promise<QuestionActionResponse> {
+  return questionAction(workspaceId, questionId, 'later', clientActionId);
+}
+
+// ---------------------------------------------------------------------------------
 // AI 分析
 // ---------------------------------------------------------------------------------
 
@@ -431,6 +550,13 @@ export interface PlanNodePayload {
    * 也不能作为前置依赖的端点。理由见后端 `db/models/enums.py::NodePurpose`。
    */
   purpose: 'planning' | 'information';
+  /**
+   * 规划层级(`strategy` / `phase` / `month` / `week` / `day`)。
+   *
+   * **`null` = 没指定** —— 存量节点、以及不需要层级的节点都是它。它只表达语义
+   * 层级,不代表已排期。前端不得为一个 `null` 节点显示任何层级标签。
+   */
+  planningLevel: 'strategy' | 'phase' | 'month' | 'week' | 'day' | null;
   status: 'pending' | 'doing' | 'completed' | 'archived';
   priority: 'low' | 'medium' | 'high';
   estimateMinutes: number | null;
@@ -1405,6 +1531,13 @@ export interface AppliedChangeView {
   notesUpdated: number;
   dependenciesAdded: number;
   dependenciesRemoved: number;
+  /**
+   * 被写进 `node_relations` 的「相关 / 影响」边条数。
+   *
+   * 与 `dependenciesAdded` 是两件事:那些写 `dependencies` 并参与排期,
+   * 这些只是画布上的说明,不改排期结果。
+   */
+  relationsAdded: number;
   revisionVersion: number;
 }
 

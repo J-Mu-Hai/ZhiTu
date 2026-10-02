@@ -46,7 +46,14 @@ from backend.db.models.enums import (
     MessageRole,
     ModelSource,
 )
-from backend.services import analysis_service, node_service, proposal_service
+from backend.services import (
+    agent_loop_service,
+    analysis_service,
+    node_service,
+    proposal_service,
+    question_service,
+    strategy_review,
+)
 from backend.services.brief_service import apply_claims
 from backend.services.context import WorkspaceContext
 from backend.services.errors import InvalidInput
@@ -333,8 +340,18 @@ async def submit_turn(
         scope_root_id=scope_root_id,
     )
 
-    # ---- 模型调用在两次提交之间。它失败不会影响上面已经落库的用户消息。----
-    result = await reasoner.reason(turn)
+    # ---- 有界工具循环在两次提交之间。它失败不会影响上面已经落库的用户消息。----
+    # 循环里可能调用只读工具、把结果回填给模型;**中间轮的 actions 不会进 proposal**,
+    # 只有这里返回的最终那一份会。
+    loop = await agent_loop_service.run_turn(
+        db,
+        ctx,
+        reasoner,
+        turn=turn,
+        source_message_id=user_message.id,
+        context_node_id=context_node_id,
+    )
+    result = loop.result
 
     # **模型刚回来,先比一次输入 —— 而且必须在这一轮自己写库之前比。**
     #
@@ -410,6 +427,28 @@ async def submit_turn(
             assistant_message=assistant_message,
         )
     )
+    # 问题节点与提案在**同一个事务**里落地。它们分开:问题落库即成卡片,
+    # 不需要任何确认;提案仍然是待用户确认的。
+    #
+    # **输入变过时不建问题。** 问题也是模型基于当时上下文提出的,旧轮次的它同样
+    # 可能问错东西;与提案保持同一条判断。
+    if not input_changed:
+        await question_service.create_from_drafts(
+            db,
+            ctx,
+            result.questions,
+            source_message_id=assistant_message.id,
+            source_node_id=context_node_id,
+        )
+        # 战略复评触发器:**只创建一张问题卡,不改任何战略节点。**
+        # 用户明确改了长期条件、或连续多周期失败时才问一次;
+        # 单次延期/单日失败不该走到这里(理由见 `strategy_review`)。
+        await strategy_review.maybe_create_review_question(
+            db,
+            ctx,
+            changed_fields=changed,
+            source_message_id=assistant_message.id,
+        )
     await db.commit()
 
     return TurnOutcome(
