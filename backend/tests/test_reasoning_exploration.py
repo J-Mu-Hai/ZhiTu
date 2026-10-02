@@ -224,6 +224,39 @@ async def test_root_change_triggers_a_new_exploration(
     assert len(reasoner.calls) == 2
 
 
+async def test_user_edit_is_preserved_across_agent_turns(
+    app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
+) -> None:
+    account = await make_account()
+    reasoner = MapReasoner(drafts=(_map_draft(primary=4), _map_draft(primary=4)))
+    use_reasoner(reasoner)
+
+    first = await _enter(app_client, account)
+    node_id = first["reasoning"]["nodes"][0]["id"]
+
+    # 用户改标题 + 写原文。
+    edited = await app_client.patch(
+        f"/api/workspaces/{account.workspace_id}/reasoning/nodes/{node_id}",
+        json={"title": "我自己的用途", "userDescription": "这是我自己写的原文"},
+        headers=account.headers,
+    )
+    assert edited.status_code == 200, edited.text
+    view = edited.json()
+    assert view["nodes"][0]["title"] == "我自己的用途"
+    assert view["nodes"][0]["userDescription"] == "这是我自己写的原文"
+
+    # 再跑一轮(force retry):模型又想写回原标题,但用户字段必须原样保留。
+    retry = await app_client.post(
+        f"/api/workspaces/{account.workspace_id}/agent/turn",
+        json={"trigger": "retry", "idempotencyKey": "retry-user-edit"},
+        headers=account.headers,
+    )
+    assert retry.status_code == 200, retry.text
+    node = next(n for n in retry.json()["reasoning"]["nodes"] if n["id"] == node_id)
+    assert node["title"] == "我自己的用途", "Agent 覆盖了用户改过的标题"
+    assert node["userDescription"] == "这是我自己写的原文", "Agent 覆盖了用户原文"
+
+
 def test_scripted_reasoner_accepts_reasoning_map_fixture() -> None:
     turns = parse_script(
         '{"turns":[{"reply":"x","reasoningMap":{"focus":"r1","nodes":['

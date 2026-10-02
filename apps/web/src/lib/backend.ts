@@ -371,9 +371,11 @@ export interface QuestionAnswer {
 export interface QuestionView {
   id: string;
   workspaceId: string;
-  /** 从哪个节点聊出来的。节点归档后仍是原 id,但前端不应再渲染成可跳转的引用。 */
+  /** 从哪个节点聊出来的。节点归档后仍是原 id，但前端不应再渲染成可跳转的引用。 */
   sourceNodeId: string | null;
   sourceMessageId: string | null;
+  /** 回答之后服务端靠它定位要重评的推理节点。 */
+  reasoningNodeId: string | null;
   question: string;
   whyNow: string;
   responseMode: QuestionResponseMode;
@@ -1704,4 +1706,132 @@ export function fieldLabel(field: string): string {
     default:
       return field;
   }
+}
+
+// ---------------------------------------------------------------------------------
+// 目标推理地图(阶段 7)
+// ---------------------------------------------------------------------------------
+
+/** 显式 Agent turn 的触发来源。**闭集**,服务端按它选阶段与动作。 */
+export type AgentTurnTrigger =
+  | 'space_entered'
+  | 'user_message'
+  | 'node_selected'
+  | 'question_answered'
+  | 'strategy_confirmation'
+  | 'progress_update'
+  | 'execution_planning'
+  | 'retry';
+
+/**
+ * 推理地图上的一个节点。
+ *
+ * **它不是 GrowthNode**:不进排期、任务统计、依赖或执行记录。`userDescription`
+ * 是用户原文(前端可编辑),`summary` 是 Agent 维护的摘要 —— 两者必须分区显示,
+ * Agent 不会覆盖用户字段。
+ */
+export interface ReasoningNodeView {
+  id: string;
+  handle: string;
+  parentHandle: string | null;
+  linkedPlanNodeId: string | null;
+  title: string;
+  summary: string | null;
+  userDescription: string | null;
+  nodeType: string;
+  status: string;
+  nextAction: string;
+  importance: number;
+  uncertainty: number;
+  urgency: number;
+  impact: number;
+  confidence: number;
+  /** 可解释启发式现算,不是概率。 */
+  priority: number;
+  rationale: string | null;
+  assumptions: string[];
+  evidence: string[];
+  source: string;
+  version: number;
+  updatedAt: string;
+}
+
+export interface ReasoningLinkView {
+  id: string;
+  sourceHandle: string;
+  targetHandle: string;
+  linkType: string;
+  note: string | null;
+}
+
+/** 当前目标推理地图。读接口与 agent turn 都返回这一份。 */
+export interface GoalReasoningView {
+  workspaceId: string;
+  sessionId: string | null;
+  rootPlanNodeId: string | null;
+  phase: string;
+  turnAction: string;
+  status: string;
+  mapVersion: number;
+  focusHandle: string | null;
+  focusReasoningNodeId: string | null;
+  focusReason: string | null;
+  inputVersion: string | null;
+  strategyProposalId: string | null;
+  exploredAt: string | null;
+  lastEvaluatedAt: string | null;
+  nodes: ReasoningNodeView[];
+  links: ReasoningLinkView[];
+  error: string | null;
+}
+
+export interface AgentTurnRequest {
+  trigger: AgentTurnTrigger;
+  selectedNodeId?: string | null;
+  reasoningHandle?: string | null;
+  message?: string | null;
+  idempotencyKey: string;
+  contextVersion?: number | null;
+}
+
+export interface AgentTurnResponse {
+  reasoning: GoalReasoningView;
+  message: MessageView | null;
+  question: QuestionView | null;
+  replayed: boolean;
+  degraded: boolean;
+  degradedReason: DegradedReason | null;
+  retryable: boolean;
+  changed: boolean;
+}
+
+export interface UpdateReasoningNodeRequest {
+  title?: string;
+  userDescription?: string;
+  status?: string;
+}
+
+export function getReasoningMap(workspaceId: string): Promise<GoalReasoningView> {
+  return apiFetch<GoalReasoningView>(`/api/workspaces/${workspaceId}/reasoning`);
+}
+
+export function runAgentTurn(
+  workspaceId: string,
+  payload: AgentTurnRequest,
+): Promise<AgentTurnResponse> {
+  return apiFetch<AgentTurnResponse>(`/api/workspaces/${workspaceId}/agent/turn`, {
+    method: 'POST',
+    body: payload,
+  });
+}
+
+export function updateReasoningNode(
+  workspaceId: string,
+  nodeId: string,
+  payload: UpdateReasoningNodeRequest,
+): Promise<GoalReasoningView> {
+  return apiFetch<GoalReasoningView>(
+    `/api/workspaces/${workspaceId}/reasoning/nodes/${nodeId}`,
+    { method: 'PATCH', body: payload },
+  );
 }

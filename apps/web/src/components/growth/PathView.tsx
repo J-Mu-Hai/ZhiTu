@@ -54,6 +54,8 @@ import { useMobileLayout } from '@/lib/media';
 import type { GrowthEdge, GrowthNode, GrowthRelationType } from '@/types/growth';
 import { SpaceFiles } from './SpaceFiles';
 import { CanvasQuestionNodeComponent, QuestionInteractionContext, type CanvasQuestionDraft, type QuestionFlowNode, type QuestionInteraction } from './CanvasQuestionNode';
+import { ReasoningNodeComponent, type ReasoningFlowNode } from './ReasoningNode';
+import type { ReasoningNodeView } from '@/lib/backend';
 
 type GrowthFlowData = {
   object: GrowthNode;
@@ -86,7 +88,7 @@ type GrowthFlowData = {
   onCreatedEnd: (id: string) => void;
 };
 type GrowthFlowNode = Node<GrowthFlowData, 'growth'>;
-type FlowNode = GrowthFlowNode | QuestionFlowNode;
+type FlowNode = GrowthFlowNode | QuestionFlowNode | ReasoningFlowNode;
 
 const colors = {
   academic: '#749ce1',
@@ -279,7 +281,7 @@ type BodyNote =
   /** 别处改过同一段正文。带上服务端那一份,由用户决定留哪一段。 */
   | { kind: 'conflict'; serverBody: string; message: string };
 
-const nodeTypes = { growth: GrowthNodeComponent, question: CanvasQuestionNodeComponent };
+const nodeTypes = { growth: GrowthNodeComponent, question: CanvasQuestionNodeComponent, reasoning: ReasoningNodeComponent };
 
 /** Siblings share an outgoing lane, without drawing extra junction dots. */
 function BranchEdge(props: EdgeProps) {
@@ -408,7 +410,28 @@ function QuestionAnchorEdge(props: EdgeProps) {
   );
 }
 
-const edgeTypes = { branch: BranchEdge, relation: RelationEdge, questionAnchor: QuestionAnchorEdge };
+/** 推理地图的边。**不是业务关系** —— 不参与排期、不可编辑、不可删除。 */
+function ReasoningLinkEdge(props: EdgeProps) {
+  const [path] = getSmoothStepPath({
+    sourceX: props.sourceX,
+    sourceY: props.sourceY,
+    targetX: props.targetX,
+    targetY: props.targetY,
+    sourcePosition: props.sourcePosition,
+    targetPosition: props.targetPosition,
+    borderRadius: 16,
+    offset: 16,
+  });
+  return (
+    <BaseEdge
+      id={props.id}
+      path={path}
+      style={{ strokeDasharray: '4 4', stroke: '#8a7fb0', strokeWidth: 1.2, opacity: 0.7 }}
+    />
+  );
+}
+
+const edgeTypes = { branch: BranchEdge, relation: RelationEdge, questionAnchor: QuestionAnchorEdge, reasoningLink: ReasoningLinkEdge };
 
 /**
  * `__zhituCanvasLifecycle` 最多留多少条。理由见 `Canvas` 里那个 effect 的说明。
@@ -418,6 +441,85 @@ const edgeTypes = { branch: BranchEdge, relation: RelationEdge, questionAnchor: 
  * 改这里的话,顺手看一眼那个用例里写着的同一个数。
  */
 const CANVAS_LIFECYCLE_LIMIT = 50;
+
+/**
+ * 推理地图节点的详情面板。
+ *
+ * **用户原文与 Agent 摘要分区显示。** 保存只改标题与原文(服务端会锁定改过的标题),
+ * 其余字段由 Agent 维护。暂缓/标记完成只改推理地图的节点状态,不碰业务计划。
+ */
+function ReasoningDetail({
+  node,
+  onClose,
+  onAgentTurn,
+  onEdit,
+}: {
+  node: ReasoningNodeView;
+  onClose: () => void;
+  onAgentTurn: (payload: { trigger: 'node_selected' | 'user_message'; reasoningHandle: string; message?: string }) => void;
+  onEdit: (patch: { title?: string; userDescription?: string; status?: string }) => void;
+}) {
+  const [title, setTitle] = useState(node.title);
+  const [body, setBody] = useState(node.userDescription ?? '');
+  const [discuss, setDiscuss] = useState('');
+  useEffect(() => {
+    setTitle(node.title);
+    setBody(node.userDescription ?? '');
+  }, [node.id, node.title, node.userDescription]);
+
+  return (
+    <div className="reasoning-detail" role="dialog" aria-label={`推理节点:${node.title}`}>
+      <header>
+        <span className="eyebrow">目标推理 · {node.handle}</span>
+        <button type="button" aria-label="关闭推理详情" onClick={onClose}>×</button>
+      </header>
+      <label className="rd-field">
+        <span>维度标题</span>
+        <input value={title} onChange={event => setTitle(event.target.value)} aria-label="维度标题" />
+      </label>
+      {node.summary && (
+        <p className="rd-summary">
+          <span className="rd-label">AI 摘要</span>
+          {node.summary}
+        </p>
+      )}
+      <label className="rd-field">
+        <span>你的说明（原文，AI 不会覆盖）</span>
+        <textarea
+          value={body}
+          onChange={event => setBody(event.target.value)}
+          aria-label="你的说明"
+          placeholder="写下你对这个维度的想法…"
+        />
+      </label>
+      {node.evidence.length > 0 && (
+        <p className="rd-evidence"><span className="rd-label">依据</span>{node.evidence.join('；')}</p>
+      )}
+      <p className="rd-meta">优先级 {node.priority} · 状态 {node.status}</p>
+      <div className="rd-actions">
+        <button type="button" onClick={() => onEdit({ title, userDescription: body })}>保存</button>
+        <button type="button" onClick={() => onAgentTurn({ trigger: 'node_selected', reasoningHandle: node.handle })}>自动分析</button>
+        <button type="button" onClick={() => onAgentTurn({ trigger: 'node_selected', reasoningHandle: node.handle, message: '展开这个维度' })}>展开</button>
+        <button type="button" onClick={() => onEdit({ status: 'paused' })}>暂缓</button>
+        <button type="button" onClick={() => onEdit({ status: 'resolved' })}>标记完成</button>
+      </div>
+      <div className="rd-discuss">
+        <input value={discuss} onChange={event => setDiscuss(event.target.value)} placeholder="围绕它讨论一句…" aria-label="讨论内容" />
+        <button
+          type="button"
+          disabled={!discuss.trim()}
+          onClick={() => {
+            onAgentTurn({ trigger: 'user_message', reasoningHandle: node.handle, message: discuss.trim() });
+            setDiscuss('');
+          }}
+        >
+          发送
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function Canvas() {
   const {
     growth, selectedId, select, positions, commitNodeMove, questionPositions, commitQuestionMove, spaceId, workspaceId, canvasKey, viewports, setScopeViewport,
@@ -436,6 +538,7 @@ function Canvas() {
     archiveOpen, setArchiveOpen, archived, archiveListError, archiveNote, setArchiveNote,
     restoreArchived, restoringId,
     questions, submitAnswer, dismissQuestion, postponeQuestion, questionFocus,
+    reasoning, reasoningLoading, ensureReasoningMap, agentTurn, editReasoningNode,
   } = useDemo();
   const { fitView, setViewport, screenToFlowPosition } = useReactFlow();
   /*
@@ -593,6 +696,13 @@ function Canvas() {
    * 避免了“拖问题节点把整张业务图重算一遍”。
    */
   const [questionDragging, setQuestionDragging] = useState<Record<string, { x: number; y: number }>>({});
+  /** 打开的是哪个推理节点(用会话内短记号)。详情面板里显示原文与 Agent 摘要。 */
+  const [openReasoningHandle, setOpenReasoningHandle] = useState<string | null>(null);
+  const handleOpenReasoning = useCallback(
+    (node: ReasoningNodeView) => setOpenReasoningHandle(node.handle),
+    [],
+  );
+  const openReasoningNode = reasoning?.nodes.find((item) => item.handle === openReasoningHandle) ?? null;
   const [submitting, setSubmitting] = useState(false);
   /**
    * 当前选中的**边**。与节点的 `selectedId` 是两回事:`selectedId` 决定"聚焦所选"
@@ -971,6 +1081,55 @@ function Canvas() {
       });
     });
 
+    // ---- 目标推理地图(纯 UI 投影,不是业务节点) ----------------------------
+    // 它和 `growth`、`question` 是三种不同的节点类型。位置是确定性算出来的 ——
+    // 推理节点不进业务位置表,刷新后按同一规则重建。
+    if (reasoning && reasoning.nodes.length > 0) {
+      const anchor = positionById[spaceId] ?? { x: 0, y: 0 };
+      const reasoningPos: Record<string, { x: number; y: number }> = {};
+      const primaries = reasoning.nodes.filter((item) => !item.parentHandle);
+      primaries.forEach((item, index) => {
+        reasoningPos[item.handle] = { x: anchor.x + index * 300, y: anchor.y + 430 };
+      });
+      for (const item of reasoning.nodes) {
+        if (!item.parentHandle) continue;
+        const parent = reasoningPos[item.parentHandle] ?? { x: anchor.x, y: anchor.y + 430 };
+        const siblings = reasoning.nodes.filter((node) => node.parentHandle === item.parentHandle);
+        const index = siblings.indexOf(item);
+        reasoningPos[item.handle] = { x: parent.x + (index + 1) * 220, y: parent.y + 160 };
+      }
+      for (const item of reasoning.nodes) {
+        nextNodes.push({
+          id: `reasoning:${item.handle}`,
+          type: 'reasoning',
+          draggable: false,
+          connectable: false,
+          deletable: false,
+          selectable: true,
+          ariaLabel: item.title,
+          position: reasoningPos[item.handle] ?? { x: anchor.x, y: anchor.y + 430 },
+          data: {
+            node: item,
+            isFocus: item.handle === reasoning.focusHandle,
+            onOpen: handleOpenReasoning,
+          },
+        });
+      }
+      for (const link of reasoning.links) {
+        if (!reasoningPos[link.sourceHandle] || !reasoningPos[link.targetHandle]) continue;
+        nextEdges.push({
+          id: `reasoning-link:${link.id}`,
+          source: `reasoning:${link.sourceHandle}`,
+          target: `reasoning:${link.targetHandle}`,
+          type: 'reasoningLink',
+          selectable: false,
+          deletable: false,
+          reconnectable: false,
+          focusable: false,
+        });
+      }
+    }
+
     /*
      * 关系边。**只画两头都在场的那一条。**
      *
@@ -1003,7 +1162,7 @@ function Canvas() {
       });
     });
     return { nodes: nextNodes, edges: nextEdges };
-  }, [growth, spaceId, isRootSpace, selectedId, selectedEdgeId, positions, dragging, questionPositions, questionDragging, files, measurements, handleMore, hoveredId, createdId, drawnEdgeId, clearCreated, clearDrawn, questions, focusedQuestionId]);
+  }, [growth, spaceId, isRootSpace, selectedId, selectedEdgeId, positions, dragging, questionPositions, questionDragging, files, measurements, handleMore, hoveredId, createdId, drawnEdgeId, clearCreated, clearDrawn, questions, focusedQuestionId, reasoning, handleOpenReasoning]);
 
   // 右侧「定位到画布」:等 question 节点投影出来之后 fit 一次,并选中它。
   useEffect(() => {
@@ -1525,6 +1684,10 @@ function Canvas() {
             setFocusedQuestionId(node.data.questionId);
             return;
           }
+          if (node.type === 'reasoning') {
+            handleOpenReasoning(node.data.node);
+            return;
+          }
           openDetail(node.data.object);
         }}
         /*
@@ -1702,6 +1865,22 @@ function Canvas() {
         <Controls position="bottom-right" showInteractive={false} />
       </ReactFlow>
       </QuestionInteractionContext.Provider>
+      {openReasoningNode && (
+        <ReasoningDetail
+          node={openReasoningNode}
+          onClose={() => setOpenReasoningHandle(null)}
+          onAgentTurn={(payload) => { void agentTurn(payload); }}
+          onEdit={(patch) => { void editReasoningNode(openReasoningNode.id, patch); }}
+        />
+      )}
+      {(reasoningLoading || reasoning?.status === 'failed') && (
+        <div className="reasoning-status" role="status">
+          {reasoningLoading ? '正在梳理问题地图…' : '问题地图这次没有梳理成'}
+          {!reasoningLoading && reasoning?.status === 'failed' && (
+            <button type="button" onClick={() => { void ensureReasoningMap({ retry: true }); }}>重试</button>
+          )}
+        </div>
+      )}
       {direct.length === 0 && (
         <div className="empty-space-note">
           <span>这里，还可以长出更多可能。</span>

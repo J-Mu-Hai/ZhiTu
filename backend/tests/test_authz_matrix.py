@@ -72,6 +72,7 @@ AUTHENTICATED_ROUTES = {
     ("GET", "/api/workspaces/{workspace_id}/questions"),
     ("GET", "/api/workspaces/{workspace_id}/reasoning"),
     ("POST", "/api/workspaces/{workspace_id}/agent/turn"),
+    ("PATCH", "/api/workspaces/{workspace_id}/reasoning/nodes/{node_id}"),
     ("POST", "/api/workspaces/{workspace_id}/questions/{question_id}/answer"),
     ("POST", "/api/workspaces/{workspace_id}/questions/{question_id}/skip"),
     ("POST", "/api/workspaces/{workspace_id}/questions/{question_id}/later"),
@@ -206,6 +207,8 @@ _BODIES: dict[tuple[str, str], dict] = {
         "trigger": "space_entered",
         "idempotencyKey": "authz-probe",
     },
+    # 地图节点的用户编辑。全字段可空,`{}` 就是一次合法请求。
+    ("PATCH", "/api/workspaces/{workspace_id}/reasoning/nodes/{node_id}"): {},
     ("POST", "/api/workspaces/{workspace_id}/questions/{question_id}/later"): {
         "clientActionId": "anon-probe-key",
     },

@@ -379,6 +379,12 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
    */
   const [questions, setQuestions] = useState<backend.QuestionView[]>([]);
   /**
+   * 目标推理地图。**与业务计划分开** —— 它不是任务树,只是决策维度与焦点。
+   * 进入空间时自动梳理一次(服务端幂等),之后由显式 Agent turn 更新。
+   */
+  const [reasoning, setReasoning] = useState<backend.GoalReasoningView | null>(null);
+  const [reasoningLoading, setReasoningLoading] = useState(false);
+  /**
    * 让画布定位到某个问题节点的通道。`nonce` 让“再点一次定位”也能重新触发。
    * 它不是计划状态,不持久化 —— 只是一个 UI 意图。
    */
@@ -449,6 +455,94 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     setQuestions(view.questions);
   }, [space.id]);
 
+  /** 只读地重拉推理地图。 */
+  const refreshReasoning = useCallback(async () => {
+    const view = await backend.getReasoningMap(space.id);
+    setReasoning(view);
+    return view;
+  }, [space.id]);
+
+  /** 自动梳理只飞一趟 —— 初始进入、点进子空间、计划刷新都可能触发它。 */
+  const reasoningInFlight = useRef(false);
+
+  /**
+   * **进入空间时自动梳理问题地图。** 幂等由服务端的 `input_version` 保证:
+   * 同一输入重进直接返回当前地图,绝不重复建节点。前端只在“还没有会话 / 上次失败”
+   * 时才发 `space_entered` turn。
+   */
+  const ensureReasoningMap = useCallback(async (options: { retry?: boolean } = {}) => {
+    if (!isReal || reasoningInFlight.current) return reasoning;
+    reasoningInFlight.current = true;
+    setReasoningLoading(true);
+    try {
+      const view = await backend.getReasoningMap(space.id);
+      setReasoning(view);
+      const needsExplore =
+        Boolean(options.retry) || view.sessionId === null || view.status === 'failed' || view.status === 'idle';
+      if (!needsExplore) return view;
+      const response = await backend.runAgentTurn(space.id, {
+        trigger: options.retry ? 'retry' : 'space_entered',
+        // 服务端还比对 `input_version`;这把钥匙只负责“同一份内容重试不重复跑”。
+        idempotencyKey: options.retry
+          ? `retry:${crypto.randomUUID()}`
+          : `enter:${space.id}:${view.inputVersion ?? 'first'}`,
+      });
+      setReasoning(response.reasoning);
+      if (response.message) setMessages((old) => [...old, toMessage(response.message as backend.MessageView)]);
+      if (response.question) await refreshQuestions().catch(() => undefined);
+      return response.reasoning;
+    } catch (cause) {
+      setSendError(cause instanceof ApiError ? cause.message : '目标梳理没有完成,稍后可以重试。');
+      return reasoning;
+    } finally {
+      reasoningInFlight.current = false;
+      setReasoningLoading(false);
+    }
+  }, [isReal, reasoning, refreshQuestions, space.id]);
+
+  /** 显式 Agent turn:节点讨论 / 自动分析 / 展开 / 暂缓 / 标记完成 / 战略确认。 */
+  const agentTurn = useCallback(
+    async (payload: Omit<backend.AgentTurnRequest, 'idempotencyKey'> & { idempotencyKey?: string }) => {
+      try {
+        const response = await backend.runAgentTurn(space.id, {
+          ...payload,
+          idempotencyKey: payload.idempotencyKey ?? crypto.randomUUID(),
+        });
+        setReasoning(response.reasoning);
+        if (response.message) setMessages((old) => [...old, toMessage(response.message as backend.MessageView)]);
+        await refreshQuestions().catch(() => undefined);
+        await refreshProposals().catch(() => undefined);
+        return response;
+      } catch (cause) {
+        setSendError(cause instanceof ApiError ? cause.message : '这一步没有完成,请重试。');
+        return null;
+      }
+    },
+    [refreshProposals, refreshQuestions, space.id],
+  );
+
+  /** 用户编辑地图节点的标题 / 原文。**只改这两列**,Agent 之后不再覆盖标题。 */
+  const editReasoningNode = useCallback(
+    async (nodeId: string, patch: backend.UpdateReasoningNodeRequest) => {
+      try {
+        const view = await backend.updateReasoningNode(space.id, nodeId, patch);
+        setReasoning(view);
+      } catch (cause) {
+        setSendError(cause instanceof ApiError ? cause.message : '保存失败。');
+      }
+    },
+    [space.id],
+  );
+
+  // 计划第一次到达(或换空间)时自动梳理一次问题地图。**幂等由服务端保证** ——
+  // 这个 effect 多跑几次不会重复建节点。依赖里不带 `ensureReasoningMap`(它依赖
+  // `reasoning`,带上会自相触发)。
+  useEffect(() => {
+    if (!isReal || !plan || !growth.goalId || growth.goalId === PLACEHOLDER_ROOT_ID) return;
+    void ensureReasoningMap();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isReal, plan?.revisionVersion, space.id, growth.goalId]);
+
   // 提案。和计划、历史一样,每次打开空间都重新拉 —— 上一轮没处理完的那一份,
   // 关掉标签页再回来还应该在,否则用户会以为它丢了。
   useEffect(() => {
@@ -490,7 +584,13 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     return () => { cancelled = true; };
   }, [space.id, space.kind]);
 
-  function enterSpace(id: string) { if (!growth.nodes[id]) return; setSpaceId(id); select(id); }
+  function enterSpace(id: string) {
+    if (!growth.nodes[id]) return;
+    setSpaceId(id);
+    select(id);
+    // 进入空间**不再只是设置 spaceId** —— 真实调用一次幂等的目标推理 turn。
+    void ensureReasoningMap();
+  }
   /**
    * 重新拉整份计划。
    *
@@ -1593,6 +1693,8 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     // 问题节点。与提案分开:问题落库即成卡片,不需要确认;回答后模型提的变更
     // 仍然进 `remoteProposals`,仍然要用户点确认。
     questions, submitAnswer, dismissQuestion, postponeQuestion, questionFocus, focusQuestion,
+    // 目标推理地图。与业务计划、问题都分开;进入空间会自动梳理一次(幂等)。
+    reasoning, reasoningLoading, ensureReasoningMap, refreshReasoning, agentTurn, editReasoningNode,
     replan, replanState,
     // 上一轮是不是基于已经变过的输入(见 `inputChanged` 的注释),以及"重新分析"
     // 那个入口。**两者一起给出去**:只有这个字段而没有入口,用户知道出事了却没法

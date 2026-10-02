@@ -109,6 +109,18 @@ class GoalReasoningView(ApiModel):
     error: str | None = None
 
 
+class UpdateReasoningNodeRequest(ApiModel):
+    """用户对地图节点的编辑。**只改标题与用户原文** —— 其余字段由 Agent 维护。
+
+    标题一旦被用户改过就锁定(`title_locked`),之后 Agent 的任何一轮都不再覆盖它。
+    """
+
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    user_description: str | None = Field(default=None, max_length=4000)
+    #: 用户动作:暂缓 / 标记完成等。只改推理地图的节点状态,不碰业务计划。
+    status: str | None = Field(default=None, max_length=16)
+
+
 class AgentTurnResponse(ApiModel):
     """一次显式 Agent turn 的结果。**所有正式计划写入仍走 proposal + 用户确认。**"""
 
@@ -132,4 +144,5 @@ __all__ = [
     "GoalReasoningView",
     "ReasoningLinkView",
     "ReasoningNodeView",
+    "UpdateReasoningNodeRequest",
 ]

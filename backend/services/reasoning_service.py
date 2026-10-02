@@ -61,7 +61,7 @@ from backend.db.models.enums import (
 )
 from backend.services import conversation_service, question_service, turn_context
 from backend.services.context import WorkspaceContext
-from backend.services.errors import InvalidInput
+from backend.services.errors import InvalidInput, NodeNotFound
 
 logger = logging.getLogger(__name__)
 
@@ -734,6 +734,45 @@ async def run_turn(
     return await _response(db, ctx, session, replayed=True)
 
 
+async def update_node(
+    db: AsyncSession,
+    ctx: WorkspaceContext,
+    node_id: uuid.UUID,
+    *,
+    title: str | None = None,
+    user_description: str | None = None,
+    status: str | None = None,
+) -> GoalReasoningView:
+    """用户编辑一个地图节点的标题 / 原文。**只碰这两列**,不碰计划。
+
+    标题被用户改过就 `title_locked=True` —— 此后 Agent 的任何一轮都不再覆盖它
+    (见 `_apply_draft`)。这是“用户编辑不被 Agent 静默覆盖”的落点。
+    """
+    session = await get_session(db, ctx)
+    if session is None:
+        raise InvalidInput("这个空间还没有开始目标推理。")
+    node = await db.scalar(
+        select(ReasoningNode).where(
+            ReasoningNode.id == node_id, ReasoningNode.session_id == session.id
+        )
+    )
+    if node is None:
+        raise NodeNotFound("没有找到这个推理节点。")
+    if title is not None:
+        node.title = title.strip()[:200]
+        node.title_locked = True
+    if user_description is not None:
+        node.user_description = user_description.strip()[:4000]
+    if status is not None:
+        try:
+            node.status = ReasoningNodeStatus(status.strip())
+        except ValueError as exc:
+            raise InvalidInput("不认识的地图节点状态。") from exc
+    node.version += 1
+    await db.commit()
+    return await build_view(db, ctx, session)
+
+
 __all__ = [
     "MAX_MAP_NODES",
     "MAX_PRIMARY_NODES",
@@ -751,4 +790,5 @@ __all__ = [
     "root_plan_node",
     "run_space_entered",
     "run_turn",
+    "update_node",
 ]

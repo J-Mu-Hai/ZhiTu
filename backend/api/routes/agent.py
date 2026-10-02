@@ -12,13 +12,20 @@
 
 from __future__ import annotations
 
+import uuid
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.agent.runtime import Reasoner
 from backend.api.dependencies.agent import get_reasoner
 from backend.api.dependencies.workspace import get_workspace_context
-from backend.contracts.reasoning import AgentTurnRequest, AgentTurnResponse, GoalReasoningView
+from backend.contracts.reasoning import (
+    AgentTurnRequest,
+    AgentTurnResponse,
+    GoalReasoningView,
+    UpdateReasoningNodeRequest,
+)
 from backend.db.session import get_db
 from backend.services import reasoning_service
 from backend.services.context import WorkspaceContext
@@ -64,6 +71,29 @@ async def run_agent_turn(
       增量重评与战略收敛(步骤 4)。
     """
     return await reasoning_service.run_turn(db, ctx, reasoner, payload=payload)
+
+
+@router.patch(
+    "/{workspace_id}/reasoning/nodes/{node_id}",
+    response_model=GoalReasoningView,
+    summary="用户编辑一个推理地图节点(标题 / 原文)",
+)
+async def update_reasoning_node(
+    node_id: uuid.UUID,
+    payload: UpdateReasoningNodeRequest,
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+) -> GoalReasoningView:
+    """用户改标题或原文。**只改这两列** —— 其余字段由 Agent 维护,且改过的标题
+    之后 Agent 不再覆盖(见 `reasoning_service.update_node`)。"""
+    return await reasoning_service.update_node(
+        db,
+        ctx,
+        node_id,
+        title=payload.title,
+        user_description=payload.user_description,
+        status=payload.status,
+    )
 
 
 __all__ = ["router"]

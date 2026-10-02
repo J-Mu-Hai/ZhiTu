@@ -5366,6 +5366,54 @@
       "title": "UpdateProfileRequest",
       "type": "object"
     },
+    "UpdateReasoningNodeRequest": {
+      "additionalProperties": false,
+      "description": "用户对地图节点的编辑。**只改标题与用户原文** —— 其余字段由 Agent 维护。\n\n标题一旦被用户改过就锁定(`title_locked`),之后 Agent 的任何一轮都不再覆盖它。",
+      "properties": {
+        "status": {
+          "anyOf": [
+            {
+              "maxLength": 16,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Status"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        },
+        "userDescription": {
+          "anyOf": [
+            {
+              "maxLength": 4000,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Userdescription"
+        }
+      },
+      "title": "UpdateReasoningNodeRequest",
+      "type": "object"
+    },
     "UpdateRelationRequest": {
       "additionalProperties": false,
       "description": "改一条边。**\"没传\"与\"传了 null\"是两件事**,同 `UpdateNodeRequest`。\n\n`relation_type` 只能在 `related_to` 与 `influences` 之间换 —— 换成/换出\n`depends_on` 会跨表(那是排期输入),这一版拒绝并给出明确原因,不静默丢说明。",
