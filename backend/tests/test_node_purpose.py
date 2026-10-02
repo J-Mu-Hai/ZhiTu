@@ -402,7 +402,7 @@ def test_the_prompt_has_no_total_gate_on_missing_conditions() -> None:
     """
     from backend.agent.prompts.planning import PROMPT_VERSION, SYSTEM_PROMPT
 
-    assert PROMPT_VERSION == "planning-v14", (
+    assert PROMPT_VERSION == "planning-v15", (
         f"提示词改了必须升级 PROMPT_VERSION,现在是 {PROMPT_VERSION!r}"
     )
     # 旧总闸的两句原话。它们必须消失。

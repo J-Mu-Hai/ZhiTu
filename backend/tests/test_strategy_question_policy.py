@@ -136,12 +136,19 @@ async def test_scheduling_questions_are_allowed_after_strategy_is_confirmed(
 def test_prompt_encodes_strategy_and_information_policy() -> None:
     from backend.agent.prompts.planning import PROMPT_VERSION, SYSTEM_PROMPT
 
-    assert PROMPT_VERSION == "planning-v14"
+    assert PROMPT_VERSION == "planning-v15"
     assert "战略阶段先问取舍" in SYSTEM_PROMPT
     assert "有界 Orientation" in SYSTEM_PROMPT
     assert "系统已知" in SYSTEM_PROMPT
     assert "时间不用问" in SYSTEM_PROMPT
     assert "research_public" in SYSTEM_PROMPT
+    # 6B-3:公开研究的顺序、禁令与诚实边界必须写死在提示词里。
+    assert "公开可研究" in SYSTEM_PROMPT
+    assert "不得为下面这些发公网搜索" in SYSTEM_PROMPT
+    assert "用户资源承诺" in SYSTEM_PROMPT
+    assert "搜索只能提供背景与可选项" in SYSTEM_PROMPT
+    assert "公开研究的诚实边界" in SYSTEM_PROMPT
+    assert "研究结果是依据,不是写入" in SYSTEM_PROMPT
 
 
 # ---------------------------------------------------------------------------------

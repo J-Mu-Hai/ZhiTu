@@ -70,6 +70,10 @@ class Settings(BaseSettings):
     research_timezone: str = "Asia/Shanghai"
     #: 可选域名白名单(逗号分隔,子串匹配)。空 = 不限制(仅公开网页)。
     research_allowed_domains: str = ""
+    #: **测试专用**:受控的 mock 研究 provider。默认关闭;即便开了,生产环境
+    #: (`APP_ENV=production`)也不会启用 —— 三道闸见 `research_service.provider_ready`。
+    #: 生产只支持真实 `tavily`。
+    research_mock_enabled: bool = False
     # 规划调用的实现路径:auto | openjiuwen | direct_llm | rule
     # auto 表示每次请求时探测 openjiuwen 是否可用,不可用则降级并在响应里如实标注。
     agent_reasoner: str = "auto"

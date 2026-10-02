@@ -56,6 +56,8 @@ logger = logging.getLogger(__name__)
 
 TAVILY_ENDPOINT = "https://api.tavily.com/search"
 PROVIDER = "tavily"
+#: 测试用的 mock provider。**不是产品能力** —— 只在显式开启且非生产时可用。
+MOCK_PROVIDER = "mock"
 #: 单条摘录的最多字符数。来源只需要“够判断”,不需要整页。
 MAX_EXCERPT_CHARS = 400
 MAX_TITLE_CHARS = 200
@@ -126,12 +128,25 @@ def lease_config_error() -> str | None:
 
 
 def provider_ready() -> tuple[bool, str]:
-    """提供商是否可用。返回 (就绪, 不可用原因)。**原因里不含密钥。**"""
+    """提供商是否可用。返回 (就绪, 不可用原因)。**原因里不含密钥。**
+
+    mock 有三道闸:`RESEARCH_PROVIDER=mock`、`RESEARCH_MOCK_ENABLED=true`、且
+    `APP_ENV != production`。任何一道不满足都返回不可用 —— 生产环境**不可能**
+    因为一个配错的环境变量而启用 mock。
+    """
     if not settings.research_enabled:
         return False, "RESEARCH_ENABLED_FALSE"
     provider = (settings.research_provider or "none").strip().lower()
     if provider in ("", "none", "off", "disabled"):
         return False, "RESEARCH_PROVIDER_NONE"
+    if provider == MOCK_PROVIDER:
+        if settings.app_env == "production":
+            return False, "RESEARCH_MOCK_IN_PRODUCTION"
+        if not settings.research_mock_enabled:
+            return False, "RESEARCH_MOCK_DISABLED"
+        if lease_config_error() is not None:
+            return False, "RESEARCH_LEASE_INVALID"
+        return True, "ok"
     if provider != PROVIDER:
         return False, "RESEARCH_PROVIDER_UNSUPPORTED"
     if not (settings.tavily_api_key or "").strip():
@@ -139,6 +154,45 @@ def provider_ready() -> tuple[bool, str]:
     if lease_config_error() is not None:
         return False, "RESEARCH_LEASE_INVALID"
     return True, "ok"
+
+
+#: mock provider 的固定来源。用保留的 `example` 域,不指向任何真实站点。
+_MOCK_SOURCES: tuple[dict, ...] = (
+    {
+        "title": "公开政策说明(测试来源)",
+        "url": "https://example.edu.cn/mock-policy",
+        "content": "这是测试用的公开来源摘要,用于验证引用链路,不对应真实政策。",
+    },
+    {
+        "title": "公开报名时间(测试来源)",
+        "url": "https://example.edu.cn/mock-deadline",
+        "content": "报名截止时间以测试来源为准。",
+    },
+)
+
+
+def _mock_results(query: str) -> list[dict]:
+    """**测试用**的确定性公开来源。
+
+    由 query 里的标记决定成功 / 超时 / 失败 / 空 —— 让隔离 E2E 不必真的出网,
+    也不必依赖公网波动。不是产品能力:三道闸见 `provider_ready`。
+    """
+    lowered = query.lower()
+    if "__timeout__" in lowered:
+        raise httpx.TimeoutException("mock timeout")
+    if "__fail__" in lowered:
+        raise httpx.ConnectError("mock failure")
+    if "__empty__" in lowered:
+        return []
+    return [dict(item) for item in _MOCK_SOURCES]
+
+
+async def _fetch_raw(query: str) -> list[dict]:
+    """按配置选真实 Tavily 还是测试 mock。**只有这两种。**"""
+    provider = (settings.research_provider or "").strip().lower()
+    if provider == MOCK_PROVIDER:
+        return _mock_results(query)
+    return await _fetch_tavily(query)
 
 
 async def _fetch_tavily(query: str) -> list[dict]:
@@ -499,7 +553,7 @@ async def search(db: AsyncSession, query: str) -> ResearchOutcome:
 
         # ---- 从这里起可能真的产生费用;后续任何失败都不退回额度。----
         try:
-            raw = await _fetch_tavily(query)
+            raw = await _fetch_raw(query)
         except httpx.TimeoutException as exc:
             logger.warning("公开研究调用超时: %s", type(exc).__name__)
             await _mark_failed(session, key)
@@ -555,6 +609,8 @@ _UNAVAILABLE_REASONS = frozenset(
         "RESEARCH_PROVIDER_UNSUPPORTED",
         "TAVILY_API_KEY_MISSING",
         "RESEARCH_LEASE_INVALID",
+        "RESEARCH_MOCK_DISABLED",
+        "RESEARCH_MOCK_IN_PRODUCTION",
     }
 )
 
@@ -624,11 +680,14 @@ REASON_NOTE: dict[str, str] = {
     "NO_RESULTS": "这次公开研究没有返回可用来源;不要编造。",
     "IN_PROGRESS": "同一个公开研究正在进行中;我没有重复联网,请稍后再看。",
     "RESEARCH_LEASE_INVALID": "公开研究的租约时长配置不安全(必须大于单次超时并留缓冲);我没有联网查过。",
+    "RESEARCH_MOCK_DISABLED": "公开研究的 mock provider 没有显式打开(RESEARCH_MOCK_ENABLED=false);我没有联网查过。",
+    "RESEARCH_MOCK_IN_PRODUCTION": "生产环境不允许使用 mock 研究 provider;我没有联网查过。",
 }
 
 
 __all__ = [
     "MAX_EXCERPT_CHARS",
+    "MOCK_PROVIDER",
     "PROVIDER",
     "REASON_NOTE",
     "TAVILY_ENDPOINT",
