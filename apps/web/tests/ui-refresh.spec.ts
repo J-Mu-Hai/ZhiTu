@@ -1,5 +1,5 @@
 import { expect, test, type Locator } from '@playwright/test';
-import { createWorkspace, registerAccount, openSpacePage, createNode, getPlan, scheduleEverything } from './support/session';
+import { createWorkspace, registerAccount, openSpacePage, createNode, getPlan, scheduleEverything, waitForRealPlan } from './support/session';
 import { artifactPath } from './support/artifacts';
 
 test('空间列表紧凑可滚动，桌面与手机均能创建空间', async ({ page }) => {
@@ -162,4 +162,185 @@ test('手机工作台上画布优先，AI 面板是底部抽屉', async ({ page 
 
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
   expect(errors).toEqual([]);
+});
+
+/**
+ * 对话区收口:右侧“一起思考”是对话与输入区,不是系统诊断面板。
+ *
+ * 这一条钉三件事:
+ * 1. `brief-missing` 与 `strategy-hint` 两条常驻诊断**不再渲染**(不是 CSS 隐藏);
+ * 2. 没有战略/没有执行计划时,`replan` 入口完全不占空间;
+ * 3. 没有问题也没有选中项时,不再有“选择画布中的节点”这条常驻空话。
+ */
+test('对话区不再挂常驻诊断，replan 只用在有执行计划时出现', async ({ page }) => {
+  const { token } = await registerAccount(page, 'ui-conversation');
+  const id = await createWorkspace(page, token, '对话精简空间');
+  const root = (await getPlan(page, token, id)).nodes[0];
+  await createNode(page, token, id, { parentId: root.id, title: '普通任务', nodeType: 'task', estimateMinutes: 60 });
+  await openSpacePage(page, '/workbench', id);
+  await waitForRealPlan(page);
+  await page.waitForTimeout(400);
+
+  // 两条常驻诊断提示彻底不渲染。
+  await expect(page.locator('.brief-missing')).toHaveCount(0);
+  await expect(page.locator('.strategy-hint')).toHaveCount(0);
+  // 没有已确认战略、也没有执行计划:replan 入口整块不渲染,不占一行。
+  await expect(page.getByRole('button', { name: '按最近的执行情况调整计划' })).toHaveCount(0);
+  // 没有问题、也没选节点 -> “选择画布中的节点”那条常驻说明不渲染。
+  await expect(page.locator('.context-hint')).toHaveCount(0);
+  // 输入入口本身还在。
+  await expect(page.getByLabel('给 AI 的消息')).toBeVisible();
+});
+
+/**
+ * 输入框:一行时不能像大文本编辑器,多行时增长,到顶就在内部滚动。
+ *
+ * 三个数都从真实渲染的包围盒读,不读 CSS 声明。上限给到 126px 是因为滚动条
+ * 与亚像素取整会有几像素余量;真正要挡的是“输入框跟着内容无限变高把面板挤走”。
+ */
+test('输入框初高约一行，随内容增高，到上限后内部滚动', async ({ page }) => {
+  const { token } = await registerAccount(page, 'ui-composer-height');
+  const id = await createWorkspace(page, token, '输入框高度空间');
+  await openSpacePage(page, '/workbench', id);
+  await waitForRealPlan(page);
+
+  const textarea = page.getByLabel('给 AI 的消息');
+  await expect(textarea).toBeVisible();
+  const initial = await textarea.boundingBox();
+  expect(initial, '输入框不在').not.toBeNull();
+  expect(initial!.height, `初始输入框太高了:${initial!.height}`).toBeLessThanOrEqual(56);
+  expect(initial!.height, `初始输入框太矮了:${initial!.height}`).toBeGreaterThanOrEqual(40);
+
+  await textarea.fill(Array.from({ length: 12 }, (_, index) => `第 ${index + 1} 行`).join('\n'));
+  await expect
+    .poll(async () => (await textarea.boundingBox())!.height, { message: '多行输入之后输入框没有长高' })
+    .toBeGreaterThan(initial!.height);
+  const grown = await textarea.boundingBox();
+  expect(grown!.height, `输入框超过了最大高度:${grown!.height}`).toBeLessThanOrEqual(126);
+  expect(
+    await textarea.evaluate(element => element.scrollHeight > element.clientHeight + 1),
+    '内容超过上限后应该在输入框内部滚动',
+  ).toBe(true);
+
+  // 删回一行:高度缩回去,不是“长过一次就回不去了”。
+  await textarea.fill('');
+  await expect
+    .poll(async () => Math.round((await textarea.boundingBox())!.height), { message: '清空之后输入框没有缩回来' })
+    .toBeLessThanOrEqual(56);
+});
+
+/**
+ * proposal 校验失败:必须保留这个事实,但默认只占一行,原因可展开、提示可关闭。
+ *
+ * 真实校验失败需要一个能产出动作的 reasoner;隔离栈默认是 `rule`(永远没有动作),
+ * 所以这里只把响应里的 `proposalErrors` 换成一份真实的用户可读原因 —— 其余字段照后端
+ * 原样送进界面。这一条验的是它到了界面之后长什么样,与后端为什么拒它无关。
+ */
+test('提案校验失败保留为紧凑提示，可展开原因、可关闭', async ({ page }) => {
+  const { token } = await registerAccount(page, 'ui-proposal-error');
+  const id = await createWorkspace(page, token, '提案校验空间');
+  await openSpacePage(page, '/workbench', id);
+  await waitForRealPlan(page);
+
+  await page.route('**/api/workspaces/*/messages', async (route) => {
+    if (route.request().method() !== 'POST') return route.continue();
+    const response = await route.fetch();
+    const body = await response.json();
+    await route.fulfill({
+      status: response.status(),
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ...body,
+        proposalErrors: [{ code: 'VALIDATION', message: '这条调整会把一个任务排到它自己的前置之前。' }],
+      }),
+    });
+  });
+
+  await page.getByLabel('给 AI 的消息').fill('帮我调整一下计划。');
+  await page.getByLabel('发送消息').click();
+
+  const notice = page.locator('.proposal-error');
+  await expect(notice).toBeVisible({ timeout: 20000 });
+  await expect(notice).toContainText('本次计划建议未应用');
+  // 默认不展开原因 —— 这是“最多一行”的具体含义。
+  await expect(notice.locator('.turn-error-reasons')).toHaveCount(0);
+  // 展开了才看得到原始原因。
+  await notice.getByRole('button', { name: '查看原因' }).click();
+  await expect(notice.locator('.turn-error-reasons')).toContainText('排到它自己的前置之前');
+  // 关闭只关这条前端提示。
+  await notice.getByRole('button', { name: '关闭这条提示' }).click();
+  await expect(page.locator('.proposal-error')).toHaveCount(0);
+});
+
+/**
+ * 画布上的“删除”必须可发现,而且仍然走既有的可恢复归档。
+ *
+ * 这一条同时钉住“选中之后更多操作常驻”“菜单说的是用户语言”“确认归档后能在归档列表
+ * 里找回来”。它不重验后端归档语义(那个由 `node-delete.spec.ts` 钉)。
+ */
+test('单击普通节点后选中与更多操作可见，菜单里是「删除（可恢复）」', async ({ page }) => {
+  const { token } = await registerAccount(page, 'ui-node-actions');
+  const id = await createWorkspace(page, token, '节点操作空间');
+  const root = (await getPlan(page, token, id)).nodes[0];
+  const nodeId = await createNode(page, token, id, { parentId: root.id, title: '可删除节点', nodeType: 'task' });
+
+  await openSpacePage(page, '/workbench', id);
+  await waitForRealPlan(page);
+  await page.waitForTimeout(500);
+
+  const node = page.locator(`.react-flow__node[data-id="${nodeId}"]`);
+  const card = node.locator('.growth-node');
+  const more = node.locator('.node-more');
+
+  // 桌面、未选中、指针不在上面:更多操作是隐的。
+  await page.mouse.move(2, 2);
+  await expect(more).toHaveCSS('opacity', '0');
+
+  // 单击选中(会打开详情);关掉详情后选中仍在 —— 选中样式与更多操作都可见,
+  // 不需要用户猜位置去悬停。
+  await card.click();
+  await page.getByRole('dialog').getByRole('button', { name: '关闭弹窗' }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(card).toHaveClass(/is-selected/);
+  await expect(more, '选中之后“更多操作”还藏着 —— 删除就不可发现').toHaveCSS('opacity', '1');
+
+  // 菜单项是用户语言,并说清“删到哪去”。
+  await more.click();
+  const menu = page.getByRole('menu');
+  await expect(menu).toBeVisible();
+  const remove = menu.getByRole('menuitem', { name: '删除（可恢复）' });
+  await expect(remove).toBeVisible();
+  await expect(remove).toContainText('将移至归档，不会立即永久删除');
+
+  // 真的走一遍:确认影响 -> 归档 -> 节点消失,而且在归档列表里找得回来。
+  await remove.click();
+  const confirm = page.getByRole('dialog');
+  await expect(confirm.getByRole('heading')).toHaveText('归档「可删除节点」？');
+  await confirm.getByRole('button', { name: '归档' }).click();
+  await expect(node, '确认归档之后节点还在画布上').toHaveCount(0);
+
+  await page.locator('.canvas-tools-menu > summary').click();
+  await page.locator('.space-floating-tools button', { hasText: '归档' }).click();
+  const list = page.getByRole('dialog');
+  await expect(
+    list.locator('.archive-list li').filter({ hasText: '可删除节点' }),
+    '“删除”之后在归档列表里找不到它 —— 它不是可恢复的',
+  ).toHaveCount(1);
+});
+
+/** 根目标仍然不可删除,而且禁用项要说出原因。 */
+test('根目标的删除项禁用并说明原因', async ({ page }) => {
+  const { token } = await registerAccount(page, 'ui-root-delete');
+  const id = await createWorkspace(page, token, '根目标删除空间');
+  const root = (await getPlan(page, token, id)).nodes[0];
+  await openSpacePage(page, '/workbench', id);
+  await waitForRealPlan(page);
+  await page.waitForTimeout(500);
+
+  const rootNode = page.locator(`.react-flow__node[data-id="${root.id}"]`);
+  await rootNode.hover();
+  await rootNode.locator('.node-more').click();
+  const remove = page.getByRole('menu').getByRole('menuitem', { name: '删除（可恢复）' });
+  await expect(remove, '根目标的删除入口要在,只是不可选').toHaveAttribute('aria-disabled', 'true');
+  await expect(remove.locator('.context-menu-why')).toHaveText('根目标不能归档');
 });

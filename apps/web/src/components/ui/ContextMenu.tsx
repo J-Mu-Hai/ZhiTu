@@ -44,6 +44,14 @@ export interface ContextMenuItem {
    */
   disabled?: boolean;
   disabledReason?: string;
+  /**
+   * 可选项的**补充说明**(一行小字)。
+   *
+   * 与 `disabledReason` 分开:那个只在禁用项上出现,回答"为什么不能点";
+   * 这个给能点的项补充后果("删除会去哪")。混用会让"能用的项不该有原因"这类
+   * 断言失去意义。
+   */
+  hint?: string;
 }
 
 export interface ContextMenuState {
@@ -264,7 +272,10 @@ export function ContextMenu({
           }}
         >
           {item.icon ? <span className="context-menu-icon" aria-hidden="true">{item.icon}</span> : null}
-          <span className="context-menu-label">{item.label}</span>
+          <span className="context-menu-text">
+            <span className="context-menu-label">{item.label}</span>
+            {!item.disabled && item.hint ? <span className="context-menu-hint">{item.hint}</span> : null}
+          </span>
           {/*
             禁用原因**印出来**,不只在 title 里。title 要悬停几百毫秒才出现,而且触屏
             根本没有悬停 —— 而这个产品明确要保留触屏入口。

@@ -4,9 +4,10 @@
  * 验的是产品行为,不是模型的判断(脚本是测试脚手架,后端会记 `model_source=scripted`):
  *
  * 1. 节点卡 / 提案卡显示 planningLevel 标签;战略提案展示优先项、暂缓项、依据与风险;
- * 2. 战略未确认时,界面提示"先确认战略方向",不允许假装已有可执行日程;
+ * 2. 战略未确认时,界面不再有常驻的"先确认战略"提示条,也不显示 replan 入口 ——
+ *    没有战略就没有调整依据;
  * 3. 确认战略 -> 刷新页面后层级状态保持;
- * 4. 确认战略后才允许下一层(周)。
+ * 4. 确认战略后才允许下一层(周);有了执行计划层,replan 入口才出现。
  *
  * 没有脚本时整组 `skip`(与 `interview-loop.spec.ts` 同一条纪律)。
  */
@@ -47,8 +48,10 @@ test('战略先确认,再往下分层;层级标签可见且刷新保持', async 
   await page.goto(`/workbench?workspace=${workspaceId}`);
   await waitForRealPlan(page);
 
-  // 战略未确认:界面明确提示先确认方向。
-  await expect(page.locator('.strategy-hint')).toBeVisible();
+  // 战略未确认:不再有常驻提示条,也不显示 replan 入口 —— 没有战略就没有调整
+  // 依据。两件事都用"不存在"表达,而不是一条系统诊断。
+  await expect(page.locator('.strategy-hint')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '按最近的执行情况调整计划' })).toHaveCount(0);
 
   // ---- 第一轮:战略提议 ----
   await say(page, '帮我定个长期方向。');
@@ -76,8 +79,10 @@ test('战略先确认,再往下分层;层级标签可见且刷新保持', async 
   // 节点卡上出现"战略层"标签。
   const strategyNode = page.locator('.react-flow__node').filter({ hasText: '战略:先英语' }).first();
   await expect(strategyNode.locator('.node-level-strategy')).toContainText('战略层');
-  // 战略已确认,提示消失。
+  // 战略已确认,提示消失。**但仍然没有 replan 入口** —— 这时只有战略层,还没有可
+  // 调整的阶段/周/日执行计划。
   await expect(page.locator('.strategy-hint')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '按最近的执行情况调整计划' })).toHaveCount(0);
 
   // ---- 刷新:层级状态从后端恢复 ----
   await page.reload();
@@ -108,4 +113,7 @@ test('战略先确认,再往下分层;层级标签可见且刷新保持', async 
   await expect(
     page.locator('.react-flow__node').filter({ hasText: '本周重点:精读两篇' }).first().locator('.node-level-week'),
   ).toContainText('周重点');
+
+  // 有了执行计划层,replan 入口才出现。
+  await expect(page.getByRole('button', { name: '按最近的执行情况调整计划' })).toBeVisible();
 });

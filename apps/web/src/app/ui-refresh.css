@@ -179,7 +179,7 @@
 .open-workbench .floating-conversation .composer { box-shadow:none; border-radius:var(--radius-card); }
 /* 输入框。11px 的字是这一层"密度不足"最刺眼的一处:它和正文差着两个字号档,
    写的人会以为自己打的字不属于这段话。 */
-.open-workbench .floating-conversation .composer textarea { height:56px; font-size:13px; }
+.open-workbench .floating-conversation .composer textarea { min-height:48px; max-height:120px; height:auto; overflow-y:auto; font-size:13px; line-height:1.6; }
 .open-workbench .workspace { position:relative; }
 .space-topbar { position:absolute; inset:0 0 auto; z-index:25; height:0; min-height:0; padding:0; border:0; background:transparent; overflow:visible; pointer-events:none; }
 /* 三块浮动区走同一套:同一档圆角、同一条描边、同一个底、同一层阴影。

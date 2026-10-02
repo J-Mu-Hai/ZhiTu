@@ -186,6 +186,9 @@ test('顶层讨论锚定到目标根节点,悬停不重建画布、点击只开�
   await expect(page.locator('.react-flow__edge.reasoning-anchor-edge')).toHaveCount(4);
   // 内部真实 links 仍在(r1→r3),锚定线没有替代它的语义。
   await expect(page.locator('.react-flow__edge-reasoningLink')).toHaveCount(1);
+  // 推理节点**不是业务节点**:它没有业务“删除/建立关系”入口,也没有更多操作菜单。
+  await expect(page.locator('.react-flow__node-reasoning .node-more')).toHaveCount(0);
+  await expect(page.locator('.react-flow__node-question .node-more')).toHaveCount(0);
 
   // 锚定线不是普通关系:正式 plan 里 relations 为空,也没发过 POST /relations。
   expect((await getPlan(page, token, workspaceId)).relations).toHaveLength(0);

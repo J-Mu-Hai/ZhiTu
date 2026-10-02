@@ -3,7 +3,7 @@ import { BrandMark } from '@/components/ui/BrandMark';
 import { useEffect, useRef, useState } from 'react';
 import { ArrowUp, Plus, X, CornerDownLeft, AlertCircle, RotateCcw, RefreshCw } from 'lucide-react';
 import { useDemo } from '@/features/growth/provider';
-import { degradedHint, fieldLabel, sourceLabel } from '@/lib/backend';
+import { degradedHint, sourceLabel } from '@/lib/backend';
 import type { QuestionView, ResearchView } from '@/lib/backend';
 
 /**
@@ -121,6 +121,50 @@ function QuestionStatusHint({
 }
 
 /**
+ * 提案校验失败的**紧凑**提示。
+ *
+ * ## 为什么不是一条长错误
+ *
+ * "AI 说改了、其实没写进去"是一个重要事实,不能被吞掉 —— 但旧版把后端返回的
+ * 全部校验原因一次性铺出来,长的时候会把下面的消息推得很远,用户第一眼看到的
+ * 是"系统报错了",而不是"这次建议没生效,计划没变"。
+ *
+ * 所以默认只留一行结论(`本次计划建议未应用`);原始原因要点"查看原因"才展开。
+ *
+ * ## 关闭只是关闭这条前端提示
+ *
+ * 关闭状态是这个组件自己的 `useState`,不碰 provider 里的 `proposalErrors`,
+ * 也不碰任何提案状态 —— 关掉它不会把一次失败伪装成成功。父级用错误的
+ * `code+message` 当 `key`,来了**新**的错误会重新挂载,旧的关闭状态不会把它一起藏掉。
+ */
+function ProposalErrorNotice({ errors }: { errors: { code: string; message: string }[] }) {
+  const [open, setOpen] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
+  if (dismissed) return null;
+  // 同一个原因可能出现在多条动作上,去重后再显示。
+  const reasons = Array.from(new Set(errors.map(error => error.message)));
+  return (
+    <div className="turn-error proposal-error" role="alert">
+      <div className="turn-error-line">
+        <AlertCircle size={14} />
+        <span>本次计划建议未应用</span>
+        <button type="button" className="turn-error-toggle" aria-expanded={open} onClick={() => setOpen(value => !value)}>
+          查看原因
+        </button>
+        <button type="button" className="turn-error-dismiss" aria-label="关闭这条提示" onClick={() => setDismissed(true)}>
+          <X size={13} />
+        </button>
+      </div>
+      {open && (
+        <ul className="turn-error-reasons">
+          {reasons.map((reason, index) => <li key={index}>{reason}</li>)}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/**
  * 与 AI 的对话面板。
  *
  * ## 这一版为什么长这样
@@ -134,14 +178,21 @@ function QuestionStatusHint({
  *    历史消息也带 —— 往上翻的时候同样看得出来。
  * 2. **降级时说明原因**(额度用尽?超时?密钥无效?),而不是只给一个通用错误。
  * 3. **失败就是失败**:错误行 + 重试按钮。`retryable=false` 时按钮灰掉 ——
- *    让用户点一个注定失败的按钮比不给他按钮更糟。
- * 4. **还缺哪些规划条件**由服务端算,显示在输入框上方。模型挂了也该显示 ——
- *    它跟模型能不能用没关系。
+ *    让用户点一个注定失败的按钮比不给他按钮更糟。proposal 校验失败则收成
+ *    一行可展开、可关闭的提示(见 `ProposalErrorNotice`)。
+ *
+ * ## 这一版收掉了旧版的两条常驻诊断
+ *
+ * `brief-missing`("还缺:截止时间、每周投入……")与 `strategy-hint`("还没有已确认
+ * 的战略方向……")不再渲染。右侧是对话与输入区,不是系统诊断面板;战略阶段也不该
+ * 被"截止时间/每周投入"干扰。`replan` 入口只在**已确认战略 + 存在执行计划**时才出现。
  */
 export function ConversationPanel() {
-  const { growth, selectedId, select, messages, remoteProposals, proposalErrors, inputChanged, deciding, confirmRemote, rejectRemote, replan, replanState, send, retry, sending, sendError, retryable, brief, historyLoading, messagesTruncated, spaceId, questions, focusQuestion } = useDemo();
+  const { growth, selectedId, select, messages, remoteProposals, proposalErrors, inputChanged, deciding, confirmRemote, rejectRemote, replan, replanState, send, retry, sending, sendError, retryable, historyLoading, messagesTruncated, spaceId, questions, focusQuestion } = useDemo();
   const [input, setInput] = useState('');
   const [showContexts, setShowContexts] = useState(false);
+  /** 输入框的 DOM 元素。高度按内容算(见下面那个 effect)。 */
+  const composer = useRef<HTMLTextAreaElement>(null);
   const bottom = useRef<HTMLDivElement>(null);
   const selected = selectedId ? growth.nodes[selectedId] : null;
 
@@ -177,10 +228,37 @@ export function ConversationPanel() {
   const hasStrategy = Object.values(growth.nodes).some(
     node => node.planningLevel === 'strategy',
   );
+  /**
+   * 有没有**可调整的执行计划** —— 阶段/月/周/日这一层。
+   *
+   * `replan` 调的是"按执行偏差重排",没有这一层就没有可调整的对象。所以入口的
+   * 显示条件是**这两件事同时成立**;缺任何一个,它整块不渲染,不占对话区一行。
+   */
+  const hasExecutionPlan = Object.values(growth.nodes).some(
+    node => node.planningLevel === 'phase'
+      || node.planningLevel === 'month'
+      || node.planningLevel === 'week'
+      || node.planningLevel === 'day',
+  );
+  const canReplan = hasStrategy && hasExecutionPlan;
 
   // 提案也要跟着滚。`replan` 产出的那份提案是**追加在末尾**的,不滚过去的话
   // 用户点了「按执行情况调整」会看到界面毫无反应。
   useEffect(() => { bottom.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }); }, [messages.length, sending, remoteProposals.length]);
+
+  /**
+   * 输入框随内容长高,到 120px 就内部滚动。
+   *
+   * 先置 `auto` 再读 `scrollHeight`:不置 auto 的话读到的是**当前**高度,删字时
+   * 它就永远缩不回去。上下限由 CSS 的 `min-height`/`max-height` 兜底(48/120),
+   * 所以这里不需要自己夹紧。
+   */
+  useEffect(() => {
+    const el = composer.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
+  }, [input]);
 
   function submit() {
     if (!input.trim() || sending) return;
@@ -335,16 +413,17 @@ export function ConversationPanel() {
           </div>
         )}
 
-        {/* 模型提了变更、但校验没让过。**必须说出来。**
-            不显示的话,用户看到的是"AI 回复了一段话,但计划什么都没变",而他会
-            以为是自己没说清楚 —— 于是换个说法再说一遍,而问题不在他。 */}
+        {/* 模型提了变更、但校验没让过。**必须说出来,而且必须收得住。**
+
+            旧版把全部原因一次性铺在对话流里,而校验文案可能很长 —— 用户第一眼
+            读到的是"系统出错了",而不是"这次建议没生效、计划没变"。新版默认
+            只留一行结论,原因点开才看,而且能关掉。关闭只是关掉这条前端提示,
+            不改提案状态、也不伪造成功。见 `ProposalErrorNotice`。 */}
         {proposalErrors.length > 0 && (
-          <div className="turn-error" role="alert">
-            <AlertCircle size={14} />
-            <span>
-              这次提议的变更没有通过检查，计划没有被改动：{proposalErrors.map(e => e.message).join('；')}
-            </span>
-          </div>
+          <ProposalErrorNotice
+            key={proposalErrors.map(error => `${error.code}:${error.message}`).join('|')}
+            errors={proposalErrors}
+          />
         )}
 
         {/* 还没有任何一条消息指向它的提案。
@@ -421,40 +500,33 @@ export function ConversationPanel() {
         {/* 「按执行情况调整」的入口。
             放在对话里而不是排期页,是因为它的产出是一份**要用户确认的提案**,
             而确认的界面就在这里 —— 换个地方发起、再让用户回来确认,中间那一步
-            用户是会丢的。 */}
-        <div className="replan-row">
-          <button type="button" className="text-button" disabled={replanState.busy || sending} onClick={() => void replan()}>
-            <RefreshCw size={12} />{replanState.busy ? '正在看最近的执行情况…' : '按最近的执行情况调整计划'}
-          </button>
-          {/* 降级时说"这次没能给出方案",不说"不需要调整" —— 前者要用户重试,
-              后者要用户放心,这两句话差别很大,不能合成一句空白。 */}
-          {replanState.message && (
-            <p className={replanState.degraded ? 'replan-note degraded' : 'replan-note'} role="status">
-              {replanState.message}
-            </p>
-          )}
-        </div>
+            用户是会丢的。
 
-        {/* 还缺哪些条件由服务端算。它跟模型能不能用无关,所以模型挂了也要显示。 */}
-        {brief && brief.missing.length > 0 && (
-          <div className="brief-missing" title="AI 会先问清楚这些再排计划">
-            <span className="tiny-dot" />
-            还缺：{brief.missing.map(fieldLabel).join('、')}
-          </div>
-        )}
-        {/* 战略未确认时的提醒。**不是禁止按钮** —— 用户仍可以先聊、先沉淀事实;
-            它说的是"周/日安排需要先有一个已确认的战略方向"。确认战略走的是
-            已有的提案卡与"确认，写入计划",这里不新增任何旁路。 */}
-        {!hasStrategy && (
-          <div className="strategy-hint" role="status" title="先确认战略方向，再往下排周/日">
-            <span className="tiny-dot" />
-            还没有已确认的战略方向：先和 AI 确认一个战略选择，再往下排周/日。
+            **只有真有东西可调时才出现。** 没有已确认战略,这条链路没有判断依据;
+            没有执行计划,也就没有可调整的对象(见 `canReplan`)。 */}
+        {canReplan && (
+          <div className="replan-row">
+            <button type="button" className="text-button" disabled={replanState.busy || sending} onClick={() => void replan()}>
+              <RefreshCw size={12} />{replanState.busy ? '正在看最近的执行情况…' : '按最近的执行情况调整计划'}
+            </button>
+            {/* 降级时说"这次没能给出方案",不说"不需要调整" —— 前者要用户重试,
+                后者要用户放心,这两句话差别很大,不能合成一句空白。 */}
+            {replanState.message && (
+              <p className={replanState.degraded ? 'replan-note degraded' : 'replan-note'} role="status">
+                {replanState.message}
+              </p>
+            )}
           </div>
         )}
 
+        {/* 「选择画布中的节点,让讨论更聚焦」这条说明只在**确实有事可做**时出现:
+            已经选了一个节点(`.context-chip`),或者有一个当前待回答的问题。既没有
+            问题也没有选中项时,它是一句指向不存在动作的常驻空话 —— 不渲染。 */}
         {selected
           ? <div className="context-chip"><span className="tiny-dot" />正在讨论：{selected.title}<button aria-label="清除上下文" onClick={() => select(null)}><X size={12} /></button></div>
-          : <div className="context-hint"><span className="tiny-dot" />选择画布中的节点，让讨论更聚焦</div>}
+          : primaryQuestion
+            ? <div className="context-hint"><span className="tiny-dot" />选择画布中的节点，让讨论更聚焦</div>
+            : null}
 
         {showContexts && (
           <div className="context-options">
@@ -466,6 +538,8 @@ export function ConversationPanel() {
 
         <form className="composer" onSubmit={e => { e.preventDefault(); submit(); }}>
           <textarea
+            ref={composer}
+            rows={1}
             aria-label="给 AI 的消息"
             placeholder={selected ? `关于「${selected.title}」，告诉 AI 你的想法……` : '我想在……之内完成……'}
             value={input}

@@ -269,7 +269,7 @@ test('一次真实的计划写入之后，画布不重建、视口不被打回�
   //
   // 中间那一步"只问不写"是这条用例的前提:它验的是**写完之后**画布不重建,
   // 少了确认那一下,它测的就是一次空点击。
-  await selectNodeMenuItem(page, doomedId, '归档');
+  await selectNodeMenuItem(page, doomedId, '删除');
   await page.getByRole('dialog').getByRole('button', { name: '归档' }).click();
   await expect(page.locator('.react-flow__node')).toHaveCount(1);
 

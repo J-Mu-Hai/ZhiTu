@@ -355,7 +355,7 @@ test('触屏上没有悬停，入口恒显而且能开菜单', async ({ browser 
     // 触屏没有右键,所以这个按钮是唯一的入口:它得真的能开出菜单来,不只是看得见。
     await moreButton(page, nodeId).click();
     await expect(page.getByRole('menu')).toBeVisible();
-    await expect(page.getByRole('menu').getByRole('menuitem', { name: '归档' })).toBeVisible();
+    await expect(page.getByRole('menu').getByRole('menuitem', { name: '删除（可恢复）' })).toBeVisible();
   } finally {
     await context.close();
   }

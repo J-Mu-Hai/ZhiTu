@@ -273,6 +273,7 @@ select {
 }
 
 .growth-node:hover .node-more,
+.growth-node.is-selected .node-more,
 .node-more:focus-visible {
   opacity: 1;
   transform: translateY(0) scale(1);
@@ -368,8 +369,22 @@ select {
   color: #5a6879;
 }
 
-.context-menu-label {
+.context-menu-text {
   flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.context-menu-label {
+  flex: none;
+}
+
+/** 可选操作的后果说明("删除会去哪")。与 `.context-menu-why` 分开,见 `ContextMenu.tsx`。 */
+.context-menu-hint {
+  color: #6b7b90;
+  font-size: 0.78em;
 }
 
 /**
@@ -1215,6 +1230,35 @@ body {
   font-size: 11px;
 }
 .turn-error button:disabled { color: #a9a2a0; border-color: #e2dcd8; background: #f7f4f1; cursor: not-allowed; }
+/*
+ * 提案校验失败:默认只占一行。
+ *
+ * 旧版把后端返回的全部原因一次铺开,长的校验文案会把下面的消息推得很远 ——
+ * 用户先看到"报错了",而不是"这次建议没生效、计划没变"。原因收进 `details` 式的
+ * 展开区,由 `查看原因` 打开;`关闭` 只关这条前端提示。
+ */
+.turn-error.proposal-error { display: block; }
+.turn-error-line { display: flex; align-items: center; gap: 8px; }
+.turn-error-line > span { flex: 1; }
+.turn-error .turn-error-dismiss {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  justify-content: center;
+  color: #9c5334;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+}
+.turn-error .turn-error-dismiss:hover { background: #f7e4d6; }
+.turn-error-reasons {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: #7a4a30;
+  font-size: 11px;
+  line-height: 1.7;
+}
+.turn-error-reasons li + li { margin-top: 2px; }
 /* 空状态:一个标题、一句示例,再接下"这个面板能做什么"的一张清单。
    原来是"一个图标 + 一行标题 + 一段小字",撑不住这个面板 —— 洞不在它下面,
    洞就是它太薄。清单里的三条全部取自面板里本来就有的文案(见 `ConversationPanel`),
@@ -1250,18 +1294,6 @@ body {
   line-height: 1.65;
 }
 .conversation-abilities .tiny-dot { margin-top: 6px; }
-.brief-missing {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 9px;
-  padding: 7px 11px;
-  color: #5c7b6f;
-  background: #eff6f2;
-  border: 1px solid #d3e6dc;
-  border-radius: 8px;
-  font-size: 11px;
-}
 
 .timeline-view,
 .task-view,
