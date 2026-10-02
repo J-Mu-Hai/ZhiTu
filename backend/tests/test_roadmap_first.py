@@ -15,6 +15,7 @@ import uuid
 from dataclasses import dataclass, field
 
 import httpx
+import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,8 +26,16 @@ from backend.agent.runtime.base import (
     ReasoningMapNodeDraft,
     ReasoningResult,
 )
-from backend.db.models import AgentQuestion, PlanNode, ReasoningNode
-from backend.db.models.enums import ModelSource, ReasoningSessionStatus
+from backend.db.models import AgentQuestion, GoalReasoningSession, PlanNode, ReasoningNode
+from backend.db.models.enums import (
+    ModelSource,
+    ReasoningNodeStatus,
+    ReasoningNodeType,
+    ReasoningSessionPhase,
+    ReasoningSessionStatus,
+    ReasoningSource,
+    ReasoningTurnAction,
+)
 
 
 def _roadmap_draft(
@@ -288,3 +297,352 @@ async def test_first_turn_legacy_dimension_map_is_rejected_then_retries(
     assert retried["reasoning"]["status"] == "ready"
     assert len(retried["reasoning"]["nodes"]) == 4
     assert retried["reasoning"]["nodes"][0]["nodeType"] == "route"
+
+
+async def _questions(db: AsyncSession, account) -> list[AgentQuestion]:
+    rows = await db.execute(
+        select(AgentQuestion).where(AgentQuestion.workspace_id == uuid.UUID(account.workspace_id))
+    )
+    return list(rows.scalars())
+
+
+async def test_plain_text_first_turn_is_rejected_without_question(
+    app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
+) -> None:
+    """真实模型只回一段文字(带一个问题)时:两轮都不合格 -> 失败,**不写问题节点**。"""
+    account = await make_account()
+    use_reasoner(
+        MapReasoner(
+            drafts=(None, None),
+            questions=(
+                QuestionDraft(question="你学它是想解决什么具体问题?", why_now="想了解用途", response_mode="free_text"),
+            ),
+        )
+    )
+    body = await _enter(app_client, account)
+    assert body["changed"] is False
+    assert body["reasoning"]["status"] == "failed"
+    assert body["reasoning"]["nodes"] == []
+    assert await _questions(db, account) == [], "不合格的首轮不许落问题卡"
+
+
+async def test_question_only_first_turn_is_rejected(
+    app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
+) -> None:
+    account = await make_account()
+    use_reasoner(
+        MapReasoner(
+            drafts=(None, None),
+            questions=(
+                QuestionDraft(question="为什么学?", why_now="它决定路线", response_mode="free_text"),
+            ),
+        )
+    )
+    body = await _enter(app_client, account)
+    assert body["reasoning"]["status"] == "failed"
+    assert body["reasoning"]["nodes"] == []
+    assert await _questions(db, account) == []
+
+
+async def test_old_dimension_map_first_turn_is_rejected(
+    app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
+) -> None:
+    account = await make_account()
+    legacy = ReasoningMapDraft(
+        nodes=tuple(
+            ReasoningMapNodeDraft(handle=f"r{i}", title=f"维度 {i}") for i in range(1, 6)
+        ),
+        focus_handle="r1",
+        phase="strategic_exploration",
+    )
+    use_reasoner(MapReasoner(drafts=(legacy, legacy)))
+    body = await _enter(app_client, account)
+    assert body["reasoning"]["status"] == "failed"
+    assert body["reasoning"]["nodes"] == []
+    assert await _questions(db, account) == []
+
+
+async def test_first_turn_retries_once_with_correction_then_succeeds(
+    app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
+) -> None:
+    """第一轮只回文字 -> 服务端用结构化纠错提示重试一次 -> 第二轮路线图成功。"""
+    account = await make_account()
+    reasoner = MapReasoner(drafts=(None, _roadmap_draft(stages=4)))
+    use_reasoner(reasoner)
+
+    body = await _enter(app_client, account)
+    assert body["changed"] is True
+    assert body["reasoning"]["phase"] == "roadmap_draft"
+    assert len([n for n in body["reasoning"]["nodes"] if n["nodeType"] == "stage"]) == 4
+    # 纠错提示确实进了模型看到的输入。
+    assert len(reasoner.calls) >= 2
+    assert "reasoningMap" in reasoner.calls[1].user_message or "路线图" in reasoner.calls[1].user_message
+
+
+async def test_regenerate_roadmap_keeps_legacy_nodes_in_history(
+    app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
+) -> None:
+    """旧地图重生成:新 route+stage 写进去,旧的 dimension **不删**。"""
+    account = await make_account()
+    root = await db.scalar(
+        select(PlanNode).where(PlanNode.workspace_id == uuid.UUID(account.workspace_id), PlanNode.depth == 0)
+    )
+    assert root is not None
+    # 直接造一张阶段 8 之前的旧地图(顶层一堆一级 dimension)。
+    session = GoalReasoningSession(
+        workspace_id=uuid.UUID(account.workspace_id),
+        root_plan_node_id=root.id,
+        phase=ReasoningSessionPhase.STRATEGIC_EXPLORATION,
+        turn_action=ReasoningTurnAction.ANALYZE,
+        status=ReasoningSessionStatus.READY,
+    )
+    db.add(session)
+    await db.flush()
+    for index in range(1, 5):
+        db.add(
+            ReasoningNode(
+                session_id=session.id,
+                handle=f"old{index}",
+                title=f"旧维度 {index}",
+                node_type=ReasoningNodeType.DIMENSION,
+                status=ReasoningNodeStatus.EXPLORING,
+                next_action=ReasoningTurnAction.ANALYZE,
+                source=ReasoningSource.AGENT,
+            )
+        )
+    await db.commit()
+
+    use_reasoner(MapReasoner(drafts=(_roadmap_draft(stages=4),)))
+    response = await app_client.post(
+        f"/api/workspaces/{account.workspace_id}/agent/turn",
+        json={"trigger": "regenerate_roadmap", "idempotencyKey": "regen-1"},
+        headers=account.headers,
+    )
+    assert response.status_code == 200, response.text
+    view = response.json()["reasoning"]
+    handles = {node["handle"] for node in view["nodes"]}
+    # 新路线在。
+    assert any(node["nodeType"] == "route" for node in view["nodes"])
+    assert len([n for n in view["nodes"] if n["nodeType"] == "stage"]) == 4
+    # 旧维度仍在(归入历史思考层)。
+    assert {"old1", "old2", "old3", "old4"} <= handles
+
+
+# ---------------------------------------------------------------------------
+# 真实模型 adapter:chat/completions 的原始载荷 -> 解析 -> 首轮是否成立
+# ---------------------------------------------------------------------------
+from backend.agent.runtime.response import (  # noqa: E402
+    PayloadInvalid,
+    payload_from_chat_completion,
+    payload_to_result,
+)
+from backend.db.models.enums import DegradedReason  # noqa: E402
+
+
+def _chat(content: str) -> dict:
+    return {"choices": [{"message": {"content": content}}], "usage": {}}
+
+
+def test_adapter_plain_text_is_not_parseable() -> None:
+    """模型只回自然语言 -> adapter 明确判定“输出无效”,不猜、不硬解。"""
+    with pytest.raises((PayloadInvalid, ValueError)):
+        payload_from_chat_completion(_chat("你好,我想先了解你的目标。"))
+
+
+def test_adapter_question_only_has_no_reasoning_map() -> None:
+    raw = _chat(
+        '{"reply":"先问你一个问题。","questions":['
+        '{"question":"为什么学?","whyNow":"它决定路线","responseMode":"free_text","options":[]}]}'
+    )
+    body, _usage = payload_from_chat_completion(raw)
+    result = payload_to_result(body, source=ModelSource.DIRECT_LLM, request_id="r", prompt_version="t")
+    assert result.reasoning_map is None
+    assert len(result.questions) == 1
+
+
+@dataclass
+class PayloadReasoner:
+    """把**原始 chat/completions JSON**经真实 adapter 解析后返回,模拟真实模型。"""
+
+    contents: tuple[str, ...] = ()
+    calls: list = field(default_factory=list)
+    _index: int = 0
+
+    async def reason(self, turn):
+        self.calls.append(turn)
+        if self._index >= len(self.contents):
+            return ReasoningResult(
+                reply="模型没有给出结构化结果。",
+                source=ModelSource.UNAVAILABLE,
+                degraded=True,
+                degraded_reason=DegradedReason.MODEL_OUTPUT_INVALID,
+                retryable=True,
+            )
+        raw = _chat(self.contents[self._index])
+        self._index += 1
+        try:
+            body, _usage = payload_from_chat_completion(raw)
+            return payload_to_result(
+                body,
+                source=ModelSource.DIRECT_LLM,
+                request_id="r",
+                prompt_version="t",
+            )
+        except (PayloadInvalid, ValueError):
+            return ReasoningResult(
+                reply="模型这次的回答没能解析出来。",
+                source=ModelSource.UNAVAILABLE,
+                degraded=True,
+                degraded_reason=DegradedReason.MODEL_OUTPUT_INVALID,
+                retryable=True,
+            )
+
+
+ROADMAP_JSON = (
+    '{"reply":"先给你一条约 12 周的路线。","reasoningMap":{'
+    '"phase":"roadmap_draft","turnAction":"ask_user","focus":"r2","focusReason":"先定阶段顺序",'
+    '"nodes":['
+    '{"handle":"r1","title":"推荐路线:约 12 周","nodeType":"route","parent":null,'
+    '"timeframe":"约 12 周","deliverable":"一个可展示项目","passCriteria":"能端到端做完"},'
+    '{"handle":"r2","title":"阶段 1:基础","nodeType":"stage","parent":"r1",'
+    '"timeframe":"约 3 周","deliverable":"一组小练习","passCriteria":"能写函数"},'
+    '{"handle":"r3","title":"阶段 2:数据","nodeType":"stage","parent":"r1",'
+    '"timeframe":"约 3 周","deliverable":"一份分析","passCriteria":"能清洗数据"},'
+    '{"handle":"r4","title":"阶段 3:作品","nodeType":"stage","parent":"r1",'
+    '"timeframe":"约 3 周","deliverable":"一个项目","passCriteria":"能讲清结论"}],'
+    '"links":[{"source":"r1","target":"r2","type":"influences","note":"路线决定顺序"}]}}'
+)
+OLD_DIMENSION_JSON = (
+    '{"reply":"先梳理这些维度。","reasoningMap":{"phase":"strategic_exploration",'
+    '"focus":"r1","nodes":['
+    '{"handle":"r1","title":"目标用途","nodeType":"dimension"},'
+    '{"handle":"r2","title":"能力基础","nodeType":"dimension"},'
+    '{"handle":"r3","title":"最小能力","nodeType":"dimension"},'
+    '{"handle":"r4","title":"验证方式","nodeType":"dimension"}],"links":[]}}'
+)
+
+
+async def test_adapter_old_dimension_map_never_becomes_successful_first_turn(
+    app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
+) -> None:
+    account = await make_account()
+    use_reasoner(PayloadReasoner(contents=(OLD_DIMENSION_JSON, OLD_DIMENSION_JSON)))
+    body = await _enter(app_client, account)
+    assert body["changed"] is False
+    assert body["reasoning"]["status"] == "failed"
+    assert body["reasoning"]["nodes"] == []
+    assert await _questions(db, account) == []
+
+
+async def test_adapter_plain_text_never_becomes_successful_first_turn(
+    app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
+) -> None:
+    account = await make_account()
+    use_reasoner(PayloadReasoner(contents=("你好,我想先了解你的目标。", "先问一个问题:你为什么学?")))
+    body = await _enter(app_client, account)
+    assert body["changed"] is False
+    assert body["reasoning"]["status"] == "failed"
+    assert await _questions(db, account) == []
+
+
+async def test_adapter_valid_roadmap_json_succeeds(
+    app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
+) -> None:
+    account = await make_account()
+    use_reasoner(PayloadReasoner(contents=(ROADMAP_JSON,)))
+    body = await _enter(app_client, account)
+    assert body["changed"] is True
+    assert body["reasoning"]["phase"] == "roadmap_draft"
+    assert len([n for n in body["reasoning"]["nodes"] if n["nodeType"] == "stage"]) == 3
+    assert all(
+        n["timeframe"] and n["deliverable"] and n["passCriteria"]
+        for n in body["reasoning"]["nodes"]
+        if n["nodeType"] == "stage"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 真实模型 transport:httpx.MockTransport 走一遍 DirectLLMReasoner 的
+# HTTP -> adapter -> 解析 路径
+# ---------------------------------------------------------------------------
+import backend.agent.runtime.direct_llm as direct_llm  # noqa: E402
+from backend.agent.runtime.direct_llm import DirectLLMReasoner  # noqa: E402
+from backend.core.config import Settings  # noqa: E402
+
+
+def _mock_llm(monkeypatch: pytest.MonkeyPatch, content: str) -> DirectLLMReasoner:
+    """让 DirectLLMReasoner 的 httpx 客户端走 MockTransport,返回固定的模型文本。"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"choices": [{"message": {"content": content}}], "usage": {}}
+        )
+
+    original = httpx.AsyncClient
+
+    def factory(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(direct_llm.httpx, "AsyncClient", factory)
+    settings = Settings(
+        _env_file=None,
+        llm_api_key="test-key",
+        llm_model="deepseek-chat",
+        llm_base_url="https://api.deepseek.com",
+    )
+    return DirectLLMReasoner(settings)
+
+
+async def _call(reasoner: DirectLLMReasoner):
+    raw = await reasoner._post({"model": "deepseek-chat", "messages": []})
+    return reasoner._parse(
+        raw, request_id="r", latency_ms=0, payload={"model": "deepseek-chat"}, prompt_version="t"
+    )
+
+
+async def test_mock_transport_plain_text_degrades(monkeypatch: pytest.MonkeyPatch) -> None:
+    reasoner = _mock_llm(monkeypatch, "你好,我想先了解你的目标。")
+    result = await _call(reasoner)
+    assert result.degraded is True
+    assert result.degraded_reason is DegradedReason.MODEL_OUTPUT_INVALID
+    assert result.reasoning_map is None
+
+
+async def test_mock_transport_question_only_parses_without_map(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reasoner = _mock_llm(
+        monkeypatch,
+        '{"reply":"先问你一个问题。","questions":['
+        '{"question":"为什么学?","whyNow":"它决定路线","responseMode":"free_text","options":[]}]}',
+    )
+    result = await _call(reasoner)
+    assert result.degraded is False
+    assert result.reasoning_map is None
+    assert len(result.questions) == 1
+
+
+async def test_mock_transport_old_dimension_map_parses_as_dimensions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reasoner = _mock_llm(monkeypatch, OLD_DIMENSION_JSON)
+    result = await _call(reasoner)
+    assert result.degraded is False
+    assert result.reasoning_map is not None
+    assert all(node.node_type == "dimension" for node in result.reasoning_map.nodes)
+    assert not [node for node in result.reasoning_map.nodes if node.node_type == "route"]
+
+
+async def test_mock_transport_valid_roadmap_parses_route_and_stages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reasoner = _mock_llm(monkeypatch, ROADMAP_JSON)
+    result = await _call(reasoner)
+    assert result.degraded is False
+    assert result.reasoning_map is not None
+    routes = [n for n in result.reasoning_map.nodes if n.node_type == "route"]
+    stages = [n for n in result.reasoning_map.nodes if n.node_type == "stage"]
+    assert len(routes) == 1
+    assert 3 <= len(stages) <= 5
+    assert all(stage.timeframe and stage.deliverable and stage.pass_criteria for stage in stages)

@@ -31,6 +31,7 @@ AgentTurnTrigger = Literal[
     "node_selected",
     "question_answered",
     "strategy_confirmation",
+    "regenerate_roadmap",
     "progress_update",
     "execution_planning",
     "retry",

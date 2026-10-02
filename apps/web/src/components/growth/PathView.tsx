@@ -910,6 +910,11 @@ function Canvas() {
   const hasThinkingLayer =
     (reasoning?.nodes ?? []).some((node) => node.nodeType === 'route') &&
     (reasoning?.nodes ?? []).some((node) => node.nodeType === 'stage');
+  /**
+   * 阶段 8 之前的旧地图:已经有推理节点,但顶层是一堆一级维度,没有路线/阶段结构。
+   * 界面上给一个**明确的**重生成入口,而不是继续把它当主画布。
+   */
+  const isLegacyMap = (reasoning?.nodes.length ?? 0) > 0 && !hasThinkingLayer;
   const canvasHasContent =
     direct.length > 0 || (reasoning?.nodes.length ?? 0) > 0 || visibleQuestions > 0;
   // 对话框标题用。真实空间的根节点标题可能是空的(建空间时用户只填了空间名),
@@ -1107,6 +1112,12 @@ function Canvas() {
     // 它们**不是** `plan_nodes`:不参与排期/依赖/统计,也不写进任何关系表。
     // 锚定到源节点;源节点缺失或未加载时锚到当前空间根。同锚点的多个问题按
     // `createdAt` 确定性排序 + 固定偏移,避免堆叠、保证刷新前后位置稳定。
+    // **只有主路线存在时才在主画布放问题卡。** 路线还没成功生成时,一张“大号待澄清
+    // 问题”会把“先给宏观路线”这件事直接抹掉(产品规则)。
+    const roadmapExists =
+      !!reasoning &&
+      reasoning.nodes.some((item) => item.nodeType === 'route') &&
+      reasoning.nodes.some((item) => item.nodeType === 'stage');
     const orderedQuestions = [...questions].sort((a, b) =>
       a.createdAt === b.createdAt ? a.id.localeCompare(b.id) : a.createdAt.localeCompare(b.createdAt),
     );
@@ -1116,7 +1127,7 @@ function Canvas() {
       null;
     // **主画布只放当前一个活动问题。** 其余问题折进“思考层”的计数里 —— 六七张问题卡
     // 和阶段节点并列会把主线读没(见 `showThinking`)。
-    const shownQuestions = orderedQuestions.filter((item) => item.id === primaryQuestionId);
+    const shownQuestions = roadmapExists ? orderedQuestions.filter((item) => item.id === primaryQuestionId) : [];
     const anchorCounts: Record<string, number> = {};
     shownQuestions.forEach((item) => {
       const anchorId = item.sourceNodeId && positionById[item.sourceNodeId] ? item.sourceNodeId : spaceId;
@@ -2099,13 +2110,25 @@ function Canvas() {
           {refining ? '正在细化…' : '细化第一阶段'}
         </button>
       )}
+      {isLegacyMap && (
+        <button
+          className="legacy-map-entry"
+          type="button"
+          disabled={reasoningLoading}
+          onClick={() => { void agentTurn({ trigger: 'regenerate_roadmap' }); }}
+          title="根据当前目标与已有信息重新生成一条推荐路线与阶段；旧的讨论节点会收进历史思考层"
+        >
+          <GitBranch size={13} />
+          此目标仍使用旧版讨论图 · 重新生成战略路线
+        </button>
+      )}
       {hasThinkingLayer && (
         <button
           className="thinking-toggle"
           type="button"
           aria-expanded={showThinking}
           onClick={() => setShowThinking((value) => !value)}
-          title="决策维度、风险、假设与其余待澄清因素 —— 默认不占主画布"
+          title="决策维度、风险、假设与旧版讨论图中的历史节点 —— 默认不占主画布"
         >
           <GitBranch size={14} />
           {showThinking ? '收起思考层' : '思考层'}

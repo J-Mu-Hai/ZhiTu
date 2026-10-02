@@ -185,7 +185,7 @@ async def test_first_turn_legacy_dimension_map_is_rejected(
 ) -> None:
     """**路线优先的核心回归**:新首轮给旧的散乱一级维度图,整份拒绝、不写半成品。"""
     account = await make_account()
-    use_reasoner(MapReasoner(drafts=(_legacy_dimension_draft(primary=6),)))
+    use_reasoner(MapReasoner(drafts=(_legacy_dimension_draft(primary=6), _legacy_dimension_draft(primary=6))))
 
     body = await _enter(app_client, account)
     assert body["changed"] is False
@@ -244,8 +244,9 @@ async def test_structurally_invalid_roadmap_is_rejected_atomically(
     app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
 ) -> None:
     account = await make_account()
-    # 只有 2 个阶段 —— 低于 3,整份路线图拒绝。
-    reasoner = MapReasoner(drafts=(_roadmap_draft(stages=2),))
+    # 只有 2 个阶段 —— 低于 3,整份路线图拒绝。给两份(纠错重试也拿到同样的错),
+    # 断言最终错误说的是形状问题。
+    reasoner = MapReasoner(drafts=(_roadmap_draft(stages=2), _roadmap_draft(stages=2)))
     use_reasoner(reasoner)
 
     body = await _enter(app_client, account)

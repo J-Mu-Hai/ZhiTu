@@ -1,11 +1,64 @@
 {
   "turns": [
     {
-      "reply": "我先梳理一下这个目标。",
-      "actions": []
-    },
-    {
-      "reply": "我想先确认一件事，它会影响我先拆哪一边。",
+      "reply": "先给你一条约 10 周的推荐路线，分三个阶段。",
+      "reasoningMap": {
+        "phase": "roadmap_draft",
+        "turnAction": "ask_user",
+        "focus": "r2",
+        "focusReason": "先确定重心，再排阶段顺序",
+        "nodes": [
+          {
+            "handle": "r1",
+            "title": "推荐路线：约 10 周先打通最小闭环",
+            "nodeType": "route",
+            "parent": null,
+            "summary": "先最小闭环，再补深度。",
+            "status": "exploring",
+            "timeframe": "约 10 周",
+            "deliverable": "一个可展示的成果",
+            "passCriteria": "能端到端完成一次"
+          },
+          {
+            "handle": "r2",
+            "title": "阶段 1：打基础",
+            "nodeType": "stage",
+            "parent": "r1",
+            "summary": "把最基本的东西练熟。",
+            "status": "exploring",
+            "timeframe": "约 3 周",
+            "deliverable": "一组基础练习",
+            "passCriteria": "能独立完成基础题"
+          },
+          {
+            "handle": "r3",
+            "title": "阶段 2：做一次实战",
+            "nodeType": "stage",
+            "parent": "r1",
+            "summary": "拿一个真实任务练手。",
+            "status": "unexplored",
+            "timeframe": "约 4 周",
+            "deliverable": "一份实战成果",
+            "passCriteria": "能独立交付"
+          },
+          {
+            "handle": "r4",
+            "title": "阶段 3：补齐与展示",
+            "nodeType": "stage",
+            "parent": "r1",
+            "summary": "补短板并把它讲清楚。",
+            "status": "unexplored",
+            "timeframe": "约 3 周",
+            "deliverable": "一次完整展示",
+            "passCriteria": "能讲清取舍与结论"
+          }
+        ],
+        "links": [
+          { "source": "r1", "target": "r2", "type": "depends_on", "note": "先打基础" },
+          { "source": "r2", "target": "r3", "type": "depends_on", "note": "基础之后实战" },
+          { "source": "r3", "target": "r4", "type": "depends_on", "note": "实战之后补齐" }
+        ]
+      },
       "questions": [
         {
           "question": "这学期你希望把重心放在哪一边?",
@@ -17,11 +70,14 @@
           ],
           "allowCustomInput": true
         }
-      ],
+      ]
+    },
+    {
+      "reply": "记下了，我先把这个事实放到路线上。",
       "actions": []
     },
     {
-      "reply": "记下了。我会先按英语来整理，你看一眼这条信息主题再决定要不要留下。",
+      "reply": "我刚才补充了一个小提醒，你看一下。",
       "actions": [
         {
           "op": "create_node",

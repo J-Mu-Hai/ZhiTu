@@ -14,6 +14,7 @@ import {
   assertBackendRunning,
   createWorkspace,
   getPlan,
+  openSpacePage,
   registerAccount,
   waitForRealPlan,
 } from './support/session';
@@ -245,4 +246,119 @@ test('路线锚定到目标根节点,悬停不重建画布、点击只开一次�
   await expect(detail, '点击一次应该只出现一个详情面板').toHaveCount(1);
   await expect(detail).toContainText('目标推理');
   await expect(detail.getByLabel('维度标题')).toHaveValue('推荐路线：约 10 周从基础到可展示项目');
+});
+
+/**
+ * 旧地图过渡:阶段 8 之前留下的“散乱一级维度图”不能再一直污染新体验。
+ *
+ * 这里用 `page.route` 把推理地图的读取与“重新生成”的 agent turn 换成固定载荷 ——
+ * 旧地图是**存量数据**,隔离栈里造不出来(新首轮已经被服务端强制成路线图)。这一条
+ * 验的是:界面能认出旧地图、点“重新生成战略路线”后主画布切成路线、旧节点不丢。
+ */
+test('旧地图可识别并重新生成战略路线，旧节点留在思考层', async ({ page }) => {
+  const { token } = await registerAccount(page, 'legacy-map');
+  const id = await createWorkspace(page, token, '旧地图空间');
+  const root = (await getPlan(page, token, id)).nodes[0];
+  const now = new Date().toISOString();
+
+  const node = (handle: string, title: string, nodeType: string, parentHandle: string | null) => ({
+    id: `${handle}-id`,
+    handle,
+    parentHandle,
+    linkedPlanNodeId: null,
+    title,
+    summary: null,
+    userDescription: null,
+    nodeType,
+    status: 'exploring',
+    nextAction: 'analyze',
+    importance: 4,
+    uncertainty: 3,
+    urgency: 1,
+    impact: 4,
+    confidence: 2,
+    priority: 3,
+    rationale: null,
+    assumptions: [],
+    evidence: [],
+    timeframe: null,
+    deliverable: null,
+    passCriteria: null,
+    source: 'agent',
+    version: 1,
+    updatedAt: now,
+  });
+
+  const legacyView = {
+    workspaceId: id,
+    sessionId: 'legacy-session',
+    rootPlanNodeId: root.id,
+    phase: 'strategic_exploration',
+    turnAction: 'analyze',
+    status: 'ready',
+    mapVersion: 1,
+    focusHandle: 'old1',
+    focusReason: '旧焦点',
+    nodes: [1, 2, 3, 4].map(i => node(`old${i}`, `旧版维度 ${i}`, 'dimension', null)),
+    links: [],
+    error: null,
+  };
+  const roadmapView = {
+    ...legacyView,
+    phase: 'roadmap_draft',
+    turnAction: 'ask_user',
+    focusHandle: 'r2',
+    nodes: [
+      node('r1', '推荐路线：约 10 周先打通最小闭环', 'route', null),
+      node('r2', '阶段 1：打基础', 'stage', 'r1'),
+      node('r3', '阶段 2：做一次实战', 'stage', 'r1'),
+      node('r4', '阶段 3：补齐与展示', 'stage', 'r1'),
+      ...legacyView.nodes,
+    ],
+  };
+
+  let regenerated = false;
+  await page.route('**/api/workspaces/*/reasoning', async route => {
+    if (route.request().method() !== 'GET') return route.continue();
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(regenerated ? roadmapView : legacyView),
+    });
+  });
+  await page.route('**/api/workspaces/*/agent/turn', async route => {
+    if (route.request().method() !== 'POST') return route.continue();
+    regenerated = true;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        reasoning: roadmapView,
+        message: null,
+        question: null,
+        replayed: false,
+        degraded: false,
+        degradedReason: null,
+        retryable: false,
+        changed: true,
+        proposalErrors: [],
+      }),
+    });
+  });
+
+  await openSpacePage(page, '/workbench', id);
+  await waitForRealPlan(page);
+
+  const regenerate = page.getByRole('button', { name: /重新生成战略路线/ });
+  await expect(regenerate, '旧地图没有重生成入口').toBeVisible({ timeout: 20000 });
+  await regenerate.click();
+
+  // 主画布切换成路线 + 阶段,入口消失。
+  await expect(page.locator('.reasoning-node').filter({ hasText: '推荐路线' })).toBeVisible();
+  await expect(page.getByRole('button', { name: /重新生成战略路线/ })).toHaveCount(0);
+
+  // 旧节点不删:默认折叠,点开思考层后仍看得到。
+  await expect(page.locator('.reasoning-node').filter({ hasText: '旧版维度 1' })).toHaveCount(0);
+  await page.getByRole('button', { name: /思考层/ }).click();
+  await expect(page.locator('.reasoning-node').filter({ hasText: '旧版维度 1' })).toBeVisible();
 });

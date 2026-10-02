@@ -73,6 +73,15 @@ test('问题投影为画布节点,在画布上回答,刷新后消失', async ({ 
   await expect(questionCard(page)).toContainText('这学期你希望把重心放在哪一边?');
   await expect(page.locator('.react-flow__edge.question-anchor-edge')).toHaveCount(1);
 
+  // 紧凑卡:默认宽度约 190–220px,而且“稍后回答/跳过/补充输入”收进“更多”。
+  const cardBox = await questionCard(page).boundingBox();
+  expect(cardBox, '问题卡没有尺寸').not.toBeNull();
+  expect(cardBox!.width, `问题卡太宽了:${cardBox!.width}`).toBeLessThanOrEqual(220);
+  expect(cardBox!.width).toBeGreaterThanOrEqual(150);
+  await expect(questionCard(page).getByRole('button', { name: '稍后回答' })).toHaveCount(0);
+  await questionCard(page).getByRole('button', { name: '更多' }).click();
+  await expect(questionCard(page).getByRole('button', { name: '稍后回答' })).toBeVisible();
+
   // 锚定虚线**不是**业务关系:正式 plan 的 relations 仍为空。
   const rel = await getPlan(page, token, workspaceId);
   expect(rel.relations).toHaveLength(0);
@@ -114,6 +123,7 @@ test('无 source 的问题仍稳定显示;稍后回答刷新后仍在', async ({
   await say(page, '我想提升一下。');
   await expect(questionNode(page)).toHaveCount(1, { timeout: 20000 });
 
+  await questionCard(page).getByRole('button', { name: '更多' }).click();
   await questionCard(page).getByRole('button', { name: '稍后回答' }).click();
   await expect(questionNode(page)).toHaveCount(1);
 

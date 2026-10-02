@@ -34,7 +34,7 @@
    状态不能只靠颜色表达:每张卡都有文字徽标与 aria-label。 */
 .react-flow__node-question { z-index: 4 !important; cursor: grab; }
 .react-flow__node-question:active { cursor: grabbing; }
-.canvas-question-node { width: 264px; padding: 12px 13px; border-radius: var(--radius-control); border: 1px dashed var(--line-strong); background: var(--surface-raised); color: var(--text); box-shadow: var(--shadow-card); font-size: 11px; }
+.canvas-question-node { width: 206px; padding: 10px 12px; border-radius: var(--radius-control); border: 1px dashed var(--line-strong); background: var(--surface-raised); color: var(--text); box-shadow: var(--shadow-card); font-size: 11px; }
 .canvas-question-node.is-primary { border-style: solid; border-color: var(--experience); box-shadow: 0 0 0 3px color-mix(in srgb, var(--experience) 20%, transparent), var(--shadow-card); }
 .canvas-question-node.is-focused { outline: 2px solid var(--line-selected); outline-offset: 2px; }
 .canvas-question-node.is-processing { border-color: var(--academic); background: var(--ink-2); }
@@ -56,8 +56,13 @@
 .cq-status { font-size: 10px; color: var(--blue); margin-top: 6px; }
 .cq-actions { display: flex; align-items: center; gap: 6px; margin-top: 9px; }
 .cq-text { font-size: 9px; color: var(--muted); background: none; border: 0; padding: 0; cursor: pointer; }
-.cq-submit { margin-left: auto; font-size: 10px; padding: 6px 10px; border-radius: var(--radius-control); background: var(--blue); border: 1px solid var(--blue); color: #fff; cursor: pointer; }
+.cq-submit { flex: 1; margin-left: 0; font-size: 10px; padding: 6px 10px; border-radius: var(--radius-control); background: var(--blue); border: 1px solid var(--blue); color: #fff; cursor: pointer; }
 .cq-submit:disabled { opacity: .45; cursor: default; }
+/* 紧凑问题卡：次要与解释性内容收进“更多”。 */
+.cq-more { flex: none; font-size: 10px; padding: 6px 9px; border-radius: var(--radius-control); background: var(--surface-quiet); border: 1px solid var(--line); color: var(--muted); cursor: pointer; }
+.cq-details { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+.cq-details .cq-why { margin-bottom: 6px; }
+.cq-details .cq-actions { margin-top: 7px; }
 /* 锚定虚线由 React Flow 画;这里只保证它不被误当成业务关系。 */
 .react-flow__edge.question-anchor-edge { pointer-events: none; }
 /* 讨论锚定线同理:只表示“这个讨论属于该目标”,不可点、不可当业务关系编辑。 */
@@ -126,3 +131,6 @@
 .thinking-toggle { position: absolute; left: 16px; bottom: 96px; z-index: 11; display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; border: 1px solid #cdc4e0; border-radius: var(--radius-pill); background: var(--float-surface); color: #6b5f8f; font-size: 11px; box-shadow: var(--shadow-float); }
 .thinking-toggle small { min-width: 16px; padding: 1px 5px; border-radius: 999px; background: #efeaf7; color: #6b5f8f; font-size: 9px; text-align: center; }
 .thinking-toggle[aria-expanded='true'] { background: #efeaf7; }
+/* 旧版讨论图的重生成入口。默认不占主画布空间以外的地方——它就是一条提示。 */
+.legacy-map-entry { position: absolute; left: 50%; bottom: 96px; transform: translateX(-50%); z-index: 12; display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; border: 1px solid #d8c39a; border-radius: var(--radius-pill); background: #fdf6e8; color: #8a6a2f; font-size: 11px; box-shadow: var(--shadow-float); }
+.legacy-map-entry:disabled { opacity: .6; }

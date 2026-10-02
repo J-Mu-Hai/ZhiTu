@@ -306,6 +306,26 @@ REFINE_PHASE_MESSAGE = (
     "具体任务安排仍然提成待确认提案。"
 )
 
+#: 路线图不合法时,给模型的**结构化纠错提示**。
+#:
+#: 真实模型经常“只回一句话”或“只提一个问题”—— 提示词管不住它们。所以在同一轮
+#: 预算内**再试一次**,而这一次把“必须给出什么形状”写死。再失败就诚实报错,不降级成
+#: “先问一个碎问题”。
+ROADMAP_CORRECTION_MESSAGE = (
+    "你上一轮没有给出合法的战略路线图。现在只输出 JSON,并且必须包含 reasoningMap:"
+    "恰好一条顶层 route(nodeType=\"route\", parent=null),以及挂在它下面的 3–5 个 "
+    "stage(nodeType=\"stage\", parent=route 的 handle);每个 stage 都必须有 "
+    "timeframe(粗粒度时间带,例如“约 2 周”)、deliverable(成果物)、passCriteria(通过标准)。"
+    "不要只写自然语言回复,不要只提问题,不要输出一堆一级 dimension。"
+)
+
+#: “重新生成战略路线”按钮替用户说的那句话。旧地图(只有一级维度)走它。
+REGENERATE_ROADMAP_MESSAGE = (
+    "用户要求基于当前目标与已有信息重新生成一条**战略路线图**。"
+    "请给出:恰好一条顶层 route + 3–5 个挂在它下面的 stage,每个 stage 带 "
+    "timeframe / deliverable / passCriteria。旧的一级维度不用再展开。"
+)
+
 
 class MapValidationError(Exception):
     """模型给的地图操作不合法。**不写半成品**,把原因留给会话的 `last_error`。"""
@@ -364,9 +384,14 @@ def _validate_draft(
     *,
     existing: dict[str, ReasoningNode],
     handle_of_id: dict[uuid.UUID, str],
+    force_roadmap: bool = False,
 ) -> None:
-    """写入**之前**把整份草稿验一遍。任何一处不合法就整份拒绝。"""
-    fresh = not existing
+    """写入**之前**把整份草稿验一遍。任何一处不合法就整份拒绝。
+
+    `force_roadmap=True` 时,即使已经有存量节点(旧地图),这一份草稿也**必须**是
+    合法路线图 —— 用于“重新生成战略路线”。
+    """
+    fresh = not existing or force_roadmap
     if fresh:
         # 阶段 8:**路线优先**。新建会话 / 首次目标梳理 / 未确认战略的首轮**只能**是
         # “恰好一条顶层战略路线 + 3–5 个挂在它下面的阶段”。
@@ -434,6 +459,51 @@ def _validate_draft(
             )
     if draft.focus_handle and draft.focus_handle not in known:
         raise MapValidationError(f"焦点 {draft.focus_handle} 不在当前地图里。")
+
+
+def _has_roadmap(rows: list[ReasoningNode]) -> bool:
+    """这张地图里是否已经有一条**可当主路线**的 route(至少 3 个直属 stage)。
+
+    用来区分“路线优先的新地图”与“阶段 8 之前的旧式一级维度图”。旧图仍然
+    读得出来、画得出来,但它不是新体验的主路线。
+    """
+    for route in rows:
+        if route.node_type is not ReasoningNodeType.ROUTE:
+            continue
+        stages = [
+            row
+            for row in rows
+            if row.parent_id == route.id and row.node_type is ReasoningNodeType.STAGE
+        ]
+        if len(stages) >= 3:
+            return True
+    return False
+
+
+def _roadmap_error(
+    result: ReasoningResult,
+    *,
+    existing: dict[str, ReasoningNode],
+    handle_of_id: dict[uuid.UUID, str],
+    force_roadmap: bool,
+) -> str | None:
+    """这一轮的结果是不是一个可落库的路线图。不是就返回**给用户看的原因**。
+
+    真实模型经常会“只回一句话”或“只提一个问题”—— 提示词管不住它们,所以这里
+    是服务端的硬闸:不合格就返回原因,由调用方决定要不要结构化纠错重试。
+    """
+    if result.degraded:
+        return result.reply or "模型这次没能完成探索。"
+    draft = result.reasoning_map
+    if draft is None:
+        return "模型没有给出结构化的战略路线图(只回了文字或问题),这次没有写入任何节点。"
+    try:
+        _validate_draft(
+            draft, existing=existing, handle_of_id=handle_of_id, force_roadmap=force_roadmap
+        )
+    except MapValidationError as exc:
+        return str(exc)
+    return None
 
 
 # --- 写入 ------------------------------------------------------------------
@@ -677,35 +747,68 @@ async def run_space_entered(
     session.last_error = None
     await db.commit()
 
-    current_iv = await input_version(db, ctx, root)
+    return await _explore_and_apply(
+        db, ctx, root, session, reasoner,
+        trigger_message=SPACE_ENTERED_PROMPT,
+        current_iv=await input_version(db, ctx, root),
+        idempotency_key=payload.idempotency_key,
+    )
+
+
+async def _explore_and_apply(
+    db: AsyncSession,
+    ctx: WorkspaceContext,
+    root: PlanNode,
+    session: GoalReasoningSession,
+    reasoner,
+    *,
+    trigger_message: str,
+    current_iv: str | None = None,
+    idempotency_key: str | None = None,
+) -> AgentTurnResponse:
+    """跑一轮路线探索并落库。**真实模型的服务端硬闸在这里。**
+
+    1. 地图里还没有合法路线(新建会话,或阶段 8 前留下的旧式一级维度图)→ 这一轮
+       的输出**必须**是路线图;
+    2. 模型只回文字 / 只提问题 / 给旧形状 → 用结构化纠错提示**再试一次**;
+    3. 再失败就写 `failed` + 可读原因,**不写问题节点、不降级成“先问一个碎问题”**。
+
+    只有校验通过才真的动地图,调用方在同一个事务里提交。
+    """
+    existing_rows = await _load_nodes(db, session.id)
+    existing = {row.handle: row for row in existing_rows}
+    handle_of_id = {row.id: row.handle for row in existing_rows}
+    force_roadmap = not _has_roadmap(existing_rows)
+
     turn = await _build_reasoning_context(
-        db, ctx, root, session, trigger_message=SPACE_ENTERED_PROMPT
+        db, ctx, root, session, trigger_message=trigger_message
     )
     result = await reasoner.reason(turn)
-
-    if result.degraded:
+    error = _roadmap_error(
+        result, existing=existing, handle_of_id=handle_of_id, force_roadmap=force_roadmap
+    )
+    # 模型**可用**但输出不合格 -> 结构化纠错,再试一次(有限预算内一次)。
+    if error is not None and not result.degraded:
+        retry_turn = await _build_reasoning_context(
+            db,
+            ctx,
+            root,
+            session,
+            trigger_message=f"{trigger_message}\n\n{ROADMAP_CORRECTION_MESSAGE}",
+        )
+        retry = await reasoner.reason(retry_turn)
+        result = retry
+        error = _roadmap_error(
+            retry, existing=existing, handle_of_id=handle_of_id, force_roadmap=force_roadmap
+        )
+    if error is not None:
         session.status = ReasoningSessionStatus.FAILED
-        session.last_error = result.reply or "模型这次没能完成探索。"
+        session.last_error = error
         await db.commit()
         return await _response(db, ctx, session, result=result)
 
     draft = result.reasoning_map
-    if draft is None:
-        session.status = ReasoningSessionStatus.FAILED
-        session.last_error = "模型没有给出可用的推理地图结构,这次没有写入任何节点。"
-        await db.commit()
-        return await _response(db, ctx, session, result=result)
-
-    existing_rows = await _load_nodes(db, session.id)
-    existing = {row.handle: row for row in existing_rows}
-    handle_of_id = {row.id: row.handle for row in existing_rows}
-    try:
-        _validate_draft(draft, existing=existing, handle_of_id=handle_of_id)
-    except MapValidationError as exc:
-        session.status = ReasoningSessionStatus.FAILED
-        session.last_error = str(exc)
-        await db.commit()
-        return await _response(db, ctx, session, result=result)
+    assert draft is not None  # `_roadmap_error` 已经确认过
 
     # ---- 全部校验通过,才动地图 ----
     _apply_draft(db, session, draft, existing)
@@ -717,6 +820,8 @@ async def run_space_entered(
         session.focus_reason = draft.focus_reason or "它当前最影响下一步该怎么做。"
     if draft.phase:
         session.phase = ReasoningSessionPhase(draft.phase)
+    elif session.phase is ReasoningSessionPhase.ORIENTATION:
+        session.phase = ReasoningSessionPhase.ROADMAP_DRAFT
     if draft.turn_action:
         session.turn_action = ReasoningTurnAction(draft.turn_action)
 
@@ -727,7 +832,6 @@ async def run_space_entered(
     )
 
     # 问题:挂到当前焦点节点上;战略阶段由服务端拦住排期类问题。
-    strategy_phase = session.phase.is_strategic
     created_questions = await question_service.create_from_drafts(
         db,
         ctx,
@@ -735,26 +839,55 @@ async def run_space_entered(
         source_message_id=message.id,
         source_node_id=root.id,
         reasoning_node_id=focus.id if focus is not None else None,
-        strategy_phase=strategy_phase,
+        strategy_phase=session.phase.is_strategic,
     )
 
     session.status = ReasoningSessionStatus.READY
-    session.input_version = current_iv
-    session.last_idempotency_key = payload.idempotency_key
+    if current_iv is not None:
+        session.input_version = current_iv
+    if idempotency_key:
+        session.last_idempotency_key = idempotency_key
     session.map_version += 1
-    session.explored_at = now
-    session.last_evaluated_at = now
+    session.explored_at = utcnow()
+    session.last_evaluated_at = session.explored_at
     await db.commit()
 
-    primary_question = created_questions[0] if created_questions else None
     return await _response(
         db,
         ctx,
         session,
         message=message,
-        question=primary_question,
+        question=created_questions[0] if created_questions else None,
         result=result,
         changed=True,
+    )
+
+
+async def regenerate_roadmap(
+    db: AsyncSession,
+    ctx: WorkspaceContext,
+    reasoner,
+    *,
+    payload: AgentTurnRequest,
+) -> AgentTurnResponse:
+    """“重新生成战略路线”按钮。
+
+    针对**阶段 8 之前的旧地图**(顶层是一堆一级 dimension)。旧节点**不删** —— 它们
+    会落到前端的“历史思考”折叠层;新路线覆盖主画布。不写任何 `PlanNode`。
+    """
+    root = await root_plan_node(db, ctx)
+    if root is None:
+        raise InvalidInput("这个空间还没有根目标,先建一个再开始目标推理。")
+    session = await get_or_create_session(db, ctx)
+    assert session is not None
+    session.status = ReasoningSessionStatus.RUNNING
+    session.last_error = None
+    await db.commit()
+    return await _explore_and_apply(
+        db, ctx, root, session, reasoner,
+        trigger_message=REGENERATE_ROADMAP_MESSAGE,
+        current_iv=await input_version(db, ctx, root),
+        idempotency_key=payload.idempotency_key,
     )
 
 
@@ -827,6 +960,18 @@ async def _run_incremental(
 
     if payload.trigger == "question_answered":
         trigger_message = await _advance_after_answer(db, ctx, session, payload)
+
+    # **旧地图优先补路线。** 阶段 8 前留下的地图顶层是一堆一级 dimension;用户
+    # 下一条消息(包括回答问题)不应该继续把它们展开,而应该先把宏观路线补上。
+    existing_rows = await _load_nodes(db, session.id)
+    if session.phase.is_strategic and not _has_roadmap(existing_rows):
+        session.status = ReasoningSessionStatus.RUNNING
+        session.last_error = None
+        await db.commit()
+        return await _explore_and_apply(
+            db, ctx, root, session, reasoner,
+            trigger_message=f"{trigger_message}\n\n{ROADMAP_CORRECTION_MESSAGE}",
+        )
 
     session.status = ReasoningSessionStatus.RUNNING
     await db.commit()
@@ -1016,6 +1161,8 @@ async def run_turn(
         return await run_space_entered(
             db, ctx, reasoner, payload=payload, force=payload.trigger == "retry"
         )
+    if payload.trigger == "regenerate_roadmap":
+        return await regenerate_roadmap(db, ctx, reasoner, payload=payload)
     if payload.trigger == "strategy_confirmation":
         return await _confirm_strategy(db, ctx, payload=payload)
 
@@ -1128,6 +1275,7 @@ __all__ = [
     "input_version",
     "load_map",
     "refine_strategy",
+    "regenerate_roadmap",
     "render_map_section",
     "root_plan_node",
     "run_space_entered",

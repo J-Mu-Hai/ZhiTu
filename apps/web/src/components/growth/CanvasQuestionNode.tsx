@@ -89,6 +89,8 @@ export function CanvasQuestionNodeComponent({ data }: NodeProps<QuestionFlowNode
   const interaction = useContext(QuestionInteractionContext) ?? NOOP_INTERACTION;
   const draft = interaction.drafts[question.id] ?? EMPTY_QUESTION_DRAFT;
   const [busy, setBusy] = useState(false);
+  /** “更多”展开状态。纯 UI:默认只留问题 + 最多 3 个关键选项。 */
+  const [expanded, setExpanded] = useState(false);
 
   const status = question.status;
   const processing = status === 'answered' || status === 'investigating';
@@ -167,21 +169,7 @@ export function CanvasQuestionNodeComponent({ data }: NodeProps<QuestionFlowNode
         (`isConnectable={false}` + 节点 `connectable:false` 一起保证它拖不出新边)。
       */}
       <Handle type="target" position={Position.Left} isConnectable={false} />
-      <div className="cq-head">
-        <span className="cq-badge">{STATUS_LABEL[status] ?? '待澄清'}</span>
-        {data.isPrimary && <span className="cq-primary">最主要</span>}
-      </div>
       <p className="cq-question">{question.question}</p>
-      {question.whyNow && !processing && !resolved && <p className="cq-why">{question.whyNow}</p>}
-      {question.sourceNodeId && (
-        <button
-          type="button"
-          className="cq-source nodrag"
-          onPointerDown={press(() => interaction.onLocateSource(question.sourceNodeId as string))}
-        >
-          查看来源
-        </button>
-      )}
 
       {processing || resolved ? (
         <p className="cq-status" role="status">
@@ -191,7 +179,7 @@ export function CanvasQuestionNodeComponent({ data }: NodeProps<QuestionFlowNode
         <>
           {showOptions && (
             <div className="cq-options">
-              {question.options.map(option => {
+              {question.options.slice(0, 3).map(option => {
                 const active = draft.selected.includes(option.id);
                 return (
                   <button
@@ -208,11 +196,11 @@ export function CanvasQuestionNodeComponent({ data }: NodeProps<QuestionFlowNode
               })}
             </div>
           )}
-          {showCustom && (
+          {!showOptions && showCustom && (
             <textarea
               className="cq-input nodrag"
               aria-label="补充你的回答"
-              placeholder={showOptions ? '也可以补充一句…' : '写下你的回答…'}
+              placeholder="写下你的回答…"
               value={draft.custom}
               disabled={busy}
               onPointerDown={event => event.stopPropagation()}
@@ -231,12 +219,6 @@ export function CanvasQuestionNodeComponent({ data }: NodeProps<QuestionFlowNode
             </p>
           )}
           <div className="cq-actions">
-            <button type="button" className="cq-text nodrag" disabled={busy} onPointerDown={press(() => void decide('later'))}>
-              稍后回答
-            </button>
-            <button type="button" className="cq-text nodrag" disabled={busy} onPointerDown={press(() => void decide('skip'))}>
-              跳过
-            </button>
             <button
               type="button"
               className="cq-submit nodrag"
@@ -245,7 +227,57 @@ export function CanvasQuestionNodeComponent({ data }: NodeProps<QuestionFlowNode
             >
               {busy ? '提交中…' : draft.error ? '重试' : '提交回答'}
             </button>
+            {/*
+             * 次要与解释性内容全部收进“更多”。默认只留一句问题与最多 3 个选项 ——
+             * 一张大号问卷卡会和路线/阶段争主画布。
+             */}
+            <button
+              type="button"
+              className="cq-more nodrag"
+              aria-expanded={expanded}
+              onPointerDown={press(() => setExpanded(value => !value))}
+            >
+              {expanded ? '收起' : '更多'}
+            </button>
           </div>
+
+          {expanded && (
+            <div className="cq-details">
+              <div className="cq-head">
+                <span className="cq-badge">{STATUS_LABEL[status] ?? '待澄清'}</span>
+                {data.isPrimary && <span className="cq-primary">最主要</span>}
+              </div>
+              {question.whyNow && <p className="cq-why">{question.whyNow}</p>}
+              {question.sourceNodeId && (
+                <button
+                  type="button"
+                  className="cq-source nodrag"
+                  onPointerDown={press(() => interaction.onLocateSource(question.sourceNodeId as string))}
+                >
+                  查看来源
+                </button>
+              )}
+              {showOptions && showCustom && (
+                <textarea
+                  className="cq-input nodrag"
+                  aria-label="补充你的回答"
+                  placeholder="也可以补充一句…"
+                  value={draft.custom}
+                  disabled={busy}
+                  onPointerDown={event => event.stopPropagation()}
+                  onChange={event => setDraft({ ...draft, custom: event.target.value, error: null })}
+                />
+              )}
+              <div className="cq-actions">
+                <button type="button" className="cq-text nodrag" disabled={busy} onPointerDown={press(() => void decide('later'))}>
+                  稍后回答
+                </button>
+                <button type="button" className="cq-text nodrag" disabled={busy} onPointerDown={press(() => void decide('skip'))}>
+                  跳过
+                </button>
+              </div>
+            </div>
+          )}
         </>
       )}
     </div>
