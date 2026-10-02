@@ -53,7 +53,7 @@ import { useDemo } from '@/features/growth/provider';
 import { useMobileLayout } from '@/lib/media';
 import type { GrowthEdge, GrowthNode, GrowthRelationType } from '@/types/growth';
 import { SpaceFiles } from './SpaceFiles';
-import { CanvasQuestionNodeComponent, EMPTY_QUESTION_DRAFT, type CanvasQuestionDraft, type QuestionFlowNode } from './CanvasQuestionNode';
+import { CanvasQuestionNodeComponent, QuestionInteractionContext, type CanvasQuestionDraft, type QuestionFlowNode, type QuestionInteraction } from './CanvasQuestionNode';
 
 type GrowthFlowData = {
   object: GrowthNode;
@@ -420,7 +420,7 @@ const edgeTypes = { branch: BranchEdge, relation: RelationEdge, questionAnchor: 
 const CANVAS_LIFECYCLE_LIMIT = 50;
 function Canvas() {
   const {
-    growth, selectedId, select, positions, commitNodeMove, spaceId, workspaceId, canvasKey, viewports, setScopeViewport,
+    growth, selectedId, select, positions, commitNodeMove, questionPositions, commitQuestionMove, spaceId, workspaceId, canvasKey, viewports, setScopeViewport,
     // `enterSpace` / `askArchive` 又回到这里了:**节点的右键菜单**是它们的第三个入口
     // (前两个是节点上那个箭头按钮和工具栏)。它们都在**画布这一层**打开菜单,所以
     // 取在这里;节点子组件里那一份只管自己那个箭头。
@@ -585,6 +585,14 @@ function Canvas() {
    * 看这一份,`positions` 的真值被挡在后面 —— 撤销会因此"按了没反应"。
    */
   const [dragging, setDragging] = useState<Record<string, { x: number; y: number }>>({});
+  /**
+   * **拖动中**的问题节点位置预览。
+   *
+   * 与业务节点的 `dragging` 分开:业务那份会进布局历史与落库(经 `commitNodeMove`),
+   * 而问题节点是 UI-only 投影 —— 拖它不得触碰业务位置、历史或后端。分开之后也顺带
+   * 避免了“拖问题节点把整张业务图重算一遍”。
+   */
+  const [questionDragging, setQuestionDragging] = useState<Record<string, { x: number; y: number }>>({});
   const [submitting, setSubmitting] = useState(false);
   /**
    * 当前选中的**边**。与节点的 `selectedId` 是两回事:`selectedId` 决定"聚焦所选"
@@ -749,6 +757,61 @@ function Canvas() {
     openNodeMenuRef.current?.(node, trigger);
   }, []);
 
+  /*
+   * 问题节点的动作走**稳定的包装函数**。
+   *
+   * `submitAnswer` / `dismissQuestion` / `postponeQuestion` / `select` 都是 provider
+   * 每次渲染新建的普通函数。它们直接进下面 `useMemo` 的依赖,会让整张图在**任何**
+   * provider 重渲染时重算 —— 节点对象一批批换新,而 React Flow 对“换了对象”的节点
+   * 会重置测量,于是“测量 → 重渲染 → 再测量”的循环就来了(节点持续闪烁)。
+   * 用 ref 里那一份最新的闭包包一层,包装函数身份恒定,图只在真正的数据变化时重算。
+   */
+  const questionActionsRef = useRef({ submitAnswer, dismissQuestion, postponeQuestion, select });
+  questionActionsRef.current = { submitAnswer, dismissQuestion, postponeQuestion, select };
+  const handleQuestionSubmit = useCallback(
+    (id: string, payload: { selectedOptionIds: string[]; customInput?: string | null }) =>
+      questionActionsRef.current.submitAnswer(id, payload),
+    [],
+  );
+  const handleQuestionSkip = useCallback(
+    (id: string) => questionActionsRef.current.dismissQuestion(id),
+    [],
+  );
+  const handleQuestionLater = useCallback(
+    (id: string) => questionActionsRef.current.postponeQuestion(id),
+    [],
+  );
+  const handleQuestionLocate = useCallback(
+    (sourceNodeId: string) => questionActionsRef.current.select(sourceNodeId),
+    [],
+  );
+  const setQuestionDraft = useCallback((questionId: string, next: CanvasQuestionDraft) => {
+    setQuestionDrafts((prev) => ({ ...prev, [questionId]: next }));
+  }, []);
+
+  /**
+   * 问题交互的 context 值。**草稿变了只重渲染消费它的那几张问题卡**,不重建整张
+   * 节点数组 —— 这是闪烁修复的一半(另一半是下面 memo 的稳定依赖与 `measured`)。
+   */
+  const questionInteraction = useMemo<QuestionInteraction>(
+    () => ({
+      drafts: questionDrafts,
+      onDraftChange: setQuestionDraft,
+      onSubmit: handleQuestionSubmit,
+      onSkip: handleQuestionSkip,
+      onLater: handleQuestionLater,
+      onLocateSource: handleQuestionLocate,
+    }),
+    [
+      questionDrafts,
+      setQuestionDraft,
+      handleQuestionSubmit,
+      handleQuestionSkip,
+      handleQuestionLater,
+      handleQuestionLocate,
+    ],
+  );
+
   const { nodes, edges } = useMemo(() => {
     const nextNodes: FlowNode[] = [];
     const nextEdges: Edge[] = [];
@@ -865,27 +928,31 @@ function Canvas() {
       const index = anchorCounts[anchorId] ?? 0;
       anchorCounts[anchorId] = index + 1;
       const nodeId = `question:${item.id}`;
+      const positionKey = `${spaceId}:${nodeId}`;
+      // 用户拖过就听用户的(UI-only 位置表);否则给一个确定性的扇出位置,
+      // 保证同一锚点下多个问题不堆叠、刷新前后一致。
+      const fallback = {
+        x: anchor.x + 40 + (index % 2) * 300,
+        y: anchor.y + 150 + Math.floor(index / 2) * 210,
+      };
+      const placed = questionDragging[positionKey] ?? questionPositions[positionKey] ?? fallback;
       nextNodes.push({
         id: nodeId,
         type: 'question',
-        draggable: false,
+        // **可自由拖动**,但它仍是 UI 投影:拖动只写 UI-only 位置表,不碰业务图谱。
+        draggable: true,
         connectable: false,
         deletable: false,
         selectable: true,
+        // 已测量过就带上,避免 React Flow 把“没有 measured 的新对象”当成未测量而反复重测。
+        measured: measurements[nodeId],
         ariaLabel: item.question,
-        position: { x: anchor.x + 40, y: anchor.y + 150 + index * 200 },
+        position: placed,
         data: {
           questionId: item.id,
           question: item,
           isPrimary: item.id === primaryQuestionId,
           isFocused: focusedQuestionId === item.id,
-          draft: questionDrafts[item.id] ?? EMPTY_QUESTION_DRAFT,
-          onDraftChange: (questionId: string, next: CanvasQuestionDraft) =>
-            setQuestionDrafts((prev) => ({ ...prev, [questionId]: next })),
-          onSubmit: submitAnswer,
-          onSkip: dismissQuestion,
-          onLater: postponeQuestion,
-          onLocateSource: (sourceNodeId: string) => select(sourceNodeId),
         },
       });
       // 仅 UI 的锚定虚线:**不是 NodeRelation、不是 dependency**,不写任何表。
@@ -895,9 +962,12 @@ function Canvas() {
         target: nodeId,
         type: 'questionAnchor',
         className: 'question-anchor-edge',
+        // 不可选、不可删、不可重新连接、不进任何保存。
         selectable: false,
+        deletable: false,
+        reconnectable: false,
         focusable: false,
-        zIndex: -1,
+        zIndex: 0,
       });
     });
 
@@ -933,7 +1003,7 @@ function Canvas() {
       });
     });
     return { nodes: nextNodes, edges: nextEdges };
-  }, [growth, spaceId, isRootSpace, selectedId, selectedEdgeId, positions, dragging, files, measurements, handleMore, hoveredId, createdId, drawnEdgeId, clearCreated, clearDrawn, questions, focusedQuestionId, questionDrafts, submitAnswer, dismissQuestion, postponeQuestion, select]);
+  }, [growth, spaceId, isRootSpace, selectedId, selectedEdgeId, positions, dragging, questionPositions, questionDragging, files, measurements, handleMore, hoveredId, createdId, drawnEdgeId, clearCreated, clearDrawn, questions, focusedQuestionId]);
 
   // 右侧「定位到画布」:等 question 节点投影出来之后 fit 一次,并选中它。
   useEffect(() => {
@@ -1433,6 +1503,7 @@ function Canvas() {
           </div>
         )}
       </div>
+      <QuestionInteractionContext.Provider value={questionInteraction}>
       <ReactFlow<FlowNode>
         nodes={nodes}
         edges={edges}
@@ -1542,7 +1613,13 @@ function Canvas() {
         onNodesChange={(changes) => {
           for (const change of changes) {
             if (change.type === 'position' && change.position && change.dragging) {
-              setDragging((old) => ({ ...old, [`${spaceId}:${change.id}`]: change.position! }));
+              const key = `${spaceId}:${change.id}`;
+              // 问题节点是 UI-only:拖动只进它自己的预览表,不进业务那份。
+              if (change.id.startsWith('question:')) {
+                setQuestionDragging((old) => ({ ...old, [key]: change.position! }));
+              } else {
+                setDragging((old) => ({ ...old, [key]: change.position! }));
+              }
             }
             if (change.type === 'dimensions' && change.dimensions) {
               const dimensions = change.dimensions;
@@ -1555,26 +1632,39 @@ function Canvas() {
           }
         }}
         onNodeDragStop={(_, node) => {
-          // **一次拖拽 = 一步历史。** 中途那几十帧在 `onNodesChange` 里只进 `dragging`
-          // (预览),一行历史都不占 —— 逐帧记的话,按一次撤销只往回挪一个像素。
-          const moved = { [`${spaceId}:${node.id}`]: node.position };
+          const key = `${spaceId}:${node.id}`;
           const started = dragStart.current;
           dragStart.current = null;
-          // `before` 只有拖动的**起点**知道。没拿到(理论上不会)就不记这一步:
-          // 记一条"撤销了但没动"的账比不记更坏。
-          commitNodeMove(moved, started?.id === node.id ? { [`${spaceId}:${node.id}`]: started.position } : {});
-          // **拖完把预览扔掉。** `dragging` 只是"拖动中"的那一份(画节点用的是
-          // `dragging[key] ?? positions[key] ?? 自动排布`),而它以前从来不清 ——
-          // 于是拖过一次之后,这个节点在画布上永远看 `dragging` 那一份,**位置的
-          // 真值(`positions`)被它挡住**。从前看不出来,是因为拖完两者恰好相等;
-          // 撤销让它们分开了,表现是"撤销之后画布一动不动"(位置变了,画的是旧的那一份)。
-          const key = `${spaceId}:${node.id}`;
-          setDragging((old) => {
-            if (!(key in old)) return old;
-            const next = { ...old };
-            delete next[key];
-            return next;
-          });
+          if (node.type === 'question') {
+            // **UI-only 位置。** 不记历史、不排布局落库、不碰后端 —— 问题节点不是
+            // 业务节点,拖它只是“我把这张卡放在这里”。
+            commitQuestionMove(key, { x: node.position.x, y: node.position.y });
+          } else {
+            // **一次拖拽 = 一步历史。** 中途那几十帧在 `onNodesChange` 里只进 `dragging`
+            // (预览),一行历史都不占 —— 逐帧记的话,按一次撤销只往回挪一个像素。
+            const moved = { [key]: node.position };
+            // `before` 只有拖动的**起点**知道。没拿到(理论上不会)就不记这一步:记一条
+            // "撤销了但没动"的账比不记更坏。
+            commitNodeMove(moved, started?.id === node.id ? { [key]: started.position } : {});
+          }
+          // **拖完把预览扔掉。** 预览只是“拖动中”的那一份(画节点用的是
+          // `dragging[key] ?? positions[key] ?? 自动排布`),拖完不清的话位置的
+          // 真值会被它挡住 —— 撤销因此“按了没反应”。
+          if (node.type === 'question') {
+            setQuestionDragging((old) => {
+              if (!(key in old)) return old;
+              const next = { ...old };
+              delete next[key];
+              return next;
+            });
+          } else {
+            setDragging((old) => {
+              if (!(key in old)) return old;
+              const next = { ...old };
+              delete next[key];
+              return next;
+            });
+          }
         }}
         onMoveStart={() => setPanning(true)}
         onMoveEnd={(_, viewport) => {
@@ -1598,13 +1688,20 @@ function Canvas() {
         <MiniMap
           position="bottom-left"
           style={{ width: 120, height: 78 }}
-          nodeColor={(node) => colors[(node.data.object as GrowthNode).category ?? 'academic']}
+          // 问题节点没有 `data.object`(它不是业务 GrowthNode)—— 直接取会抛。
+          // 这里先判类型,再判可取到的 object,最后才回退到默认色。
+          nodeColor={(node) => {
+            if (node.type === 'question') return '#c7a06e';
+            const object = (node.data as Partial<GrowthFlowData> | undefined)?.object;
+            return colors[object?.category ?? 'academic'];
+          }}
           maskColor="rgba(238,244,244,.78)"
           pannable
           zoomable
         />
         <Controls position="bottom-right" showInteractive={false} />
       </ReactFlow>
+      </QuestionInteractionContext.Provider>
       {direct.length === 0 && (
         <div className="empty-space-note">
           <span>这里，还可以长出更多可能。</span>

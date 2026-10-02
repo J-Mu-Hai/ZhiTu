@@ -1,6 +1,6 @@
 'use client';
 import { Handle, Position, type Node, type NodeProps } from '@xyflow/react';
-import { useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { createContext, useContext, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import type { QuestionView } from '@/lib/backend';
 
 /**
@@ -19,10 +19,15 @@ import type { QuestionView } from '@/lib/backend';
  * 中途的重渲染而丢失(实测:点了选项、按钮却一直是灰的)。所以按钮动作直接挂在
  * `onPointerDown` 上,并 `stopPropagation` —— 既不触发画布选中,也不会丢事件。
  *
- * ## 输入草稿为什么由外部持有
+ * ## 输入草稿与回调为什么走 context,而不是 `data`
  *
- * React Flow 在选中/布局变化时会重建节点组件。如果 `selected` / `custom` 存在组件
- * 内部,一次重渲染就会把它们清空。所以草稿(`draft`)由 PathView 按 `questionId` 持有。
+ * React Flow 会在选中/布局变化时重建节点组件。如果 `selected` / `custom` 存在组件
+ * 内部,一次重渲染就会把它们清空。所以草稿由 PathView 按 `questionId` 持有。
+ *
+ * 但它**不能塞进 `data`**:草稿每敲一个字都变,进了 `data` 就意味着整张节点数组
+ * 重算 —— 业务节点也跟着换对象,而 React Flow 对"换了对象"的节点会重置测量,
+ * 触发"测量 → 重渲染 → 再测量"的循环(用户看到的是节点持续闪烁)。放进 context
+ * 之后,只有消费它的**问题节点**会重渲染,业务节点原样不动。
  */
 export type CanvasQuestionDraft = {
   selected: string[];
@@ -30,12 +35,20 @@ export type CanvasQuestionDraft = {
   error: string | null;
 };
 
+/** `data` 里只放**稳定的标识**:问题本身、是否主问题、是否聚焦。 */
 export type CanvasQuestionData = {
   questionId: string;
   question: QuestionView;
   isPrimary: boolean;
   isFocused: boolean;
-  draft: CanvasQuestionDraft;
+};
+
+export type QuestionFlowNode = Node<CanvasQuestionData, 'question'>;
+
+export const EMPTY_QUESTION_DRAFT: CanvasQuestionDraft = { selected: [], custom: '', error: null };
+
+export type QuestionInteraction = {
+  drafts: Record<string, CanvasQuestionDraft>;
   onDraftChange: (id: string, next: CanvasQuestionDraft) => void;
   onSubmit: (
     id: string,
@@ -46,9 +59,16 @@ export type CanvasQuestionData = {
   onLocateSource: (sourceNodeId: string) => void;
 };
 
-export type QuestionFlowNode = Node<CanvasQuestionData, 'question'>;
+const NOOP_INTERACTION: QuestionInteraction = {
+  drafts: {},
+  onDraftChange: () => undefined,
+  onSubmit: async () => false,
+  onSkip: async () => false,
+  onLater: async () => false,
+  onLocateSource: () => undefined,
+};
 
-export const EMPTY_QUESTION_DRAFT: CanvasQuestionDraft = { selected: [], custom: '', error: null };
+export const QuestionInteractionContext = createContext<QuestionInteraction | null>(null);
 
 const STATUS_LABEL: Record<string, string> = {
   pending: '待澄清',
@@ -66,7 +86,8 @@ const STATUS_TEXT: Record<string, string> = {
 
 export function CanvasQuestionNodeComponent({ data }: NodeProps<QuestionFlowNode>) {
   const question = data.question;
-  const draft = data.draft;
+  const interaction = useContext(QuestionInteractionContext) ?? NOOP_INTERACTION;
+  const draft = interaction.drafts[question.id] ?? EMPTY_QUESTION_DRAFT;
   const [busy, setBusy] = useState(false);
 
   const status = question.status;
@@ -79,7 +100,7 @@ export function CanvasQuestionNodeComponent({ data }: NodeProps<QuestionFlowNode
   const hasInput = draft.selected.length > 0 || draft.custom.trim().length > 0;
 
   function setDraft(next: CanvasQuestionDraft) {
-    data.onDraftChange(question.id, next);
+    interaction.onDraftChange(question.id, next);
   }
 
   function toggle(optionId: string) {
@@ -94,7 +115,7 @@ export function CanvasQuestionNodeComponent({ data }: NodeProps<QuestionFlowNode
   async function submit() {
     if (!interactive || busy || !hasInput) return;
     setBusy(true);
-    const ok = await data.onSubmit(question.id, {
+    const ok = await interaction.onSubmit(question.id, {
       selectedOptionIds: draft.selected,
       customInput: showCustom ? draft.custom.trim() || null : null,
     });
@@ -105,12 +126,16 @@ export function CanvasQuestionNodeComponent({ data }: NodeProps<QuestionFlowNode
   async function decide(action: 'skip' | 'later') {
     if (busy) return;
     setBusy(true);
-    const ok = action === 'skip' ? await data.onSkip(question.id) : await data.onLater(question.id);
+    const ok =
+      action === 'skip'
+        ? await interaction.onSkip(question.id)
+        : await interaction.onLater(question.id);
     setBusy(false);
     if (!ok) {
       setDraft({
         ...draft,
-        error: action === 'skip' ? '跳过没有成功，可以再试一次。' : '稍后回答没有成功，可以再试一次。',
+        error:
+          action === 'skip' ? '跳过没有成功，可以再试一次。' : '稍后回答没有成功，可以再试一次。',
       });
     }
   }
@@ -136,6 +161,11 @@ export function CanvasQuestionNodeComponent({ data }: NodeProps<QuestionFlowNode
 
   return (
     <div className={classes} role="group" aria-label={`待澄清问题：${question.question}`}>
+      {/*
+        目标锚点。锚定虚线从这里进入卡片。**只在左侧留一个** —— 问题节点不是业务
+        节点,不需要可连接的 source handle;这个 handle 只是给锚定边一个确定的落点
+        (`isConnectable={false}` + 节点 `connectable:false` 一起保证它拖不出新边)。
+      */}
       <Handle type="target" position={Position.Left} isConnectable={false} />
       <div className="cq-head">
         <span className="cq-badge">{STATUS_LABEL[status] ?? '待澄清'}</span>
@@ -147,7 +177,7 @@ export function CanvasQuestionNodeComponent({ data }: NodeProps<QuestionFlowNode
         <button
           type="button"
           className="cq-source nodrag"
-          onPointerDown={press(() => data.onLocateSource(question.sourceNodeId as string))}
+          onPointerDown={press(() => interaction.onLocateSource(question.sourceNodeId as string))}
         >
           查看来源
         </button>

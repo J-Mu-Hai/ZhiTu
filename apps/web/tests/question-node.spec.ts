@@ -114,3 +114,80 @@ test('无 source 的问题仍稳定显示;稍后回答刷新后仍在', async ({
   await expect(questionNode(page)).toHaveCount(1, { timeout: 20000 });
   await expect(questionCard(page)).toContainText('这学期你希望把重心放在哪一边?');
 });
+
+/** 问题节点在当前流坐标系里的 transform(与视口平移缩放无关)。 */
+async function questionTransform(page: Page): Promise<string> {
+  return (await questionNode(page).getAttribute('style')) ?? '';
+}
+
+test('问题节点可自由拖动,锚定虚线跟随,刷新后位置恢复', async ({ page }) => {
+  test.slow();
+  const { token } = await registerAccount(page, 'canvas-question-drag');
+  const workspaceId = await createWorkspace(page, token, '画布问题拖动空间', '提升英语');
+  await page.goto(`/workbench?workspace=${workspaceId}`);
+  await waitForRealPlan(page);
+
+  await say(page, '我想提升一下。');
+  await expect(questionNode(page)).toHaveCount(1, { timeout: 20000 });
+  await expect(page.locator('.react-flow__edge.question-anchor-edge')).toHaveCount(1);
+
+  const draggedBefore = await questionTransform(page);
+  const box = await questionNode(page).boundingBox();
+  if (!box) throw new Error('问题节点没有边界框,拖不动');
+  // 从卡片顶部空白处(徽标那一条,不是任何按钮)起手拖动。
+  await page.mouse.move(box.x + 40, box.y + 14);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 40 + 180, box.y + 14 + 120, { steps: 12 });
+  await page.mouse.up();
+
+  // 位置真的变了,而且锚定虚线仍然只有一条(拖动不产生业务关系)。
+  await expect.poll(() => questionTransform(page)).not.toBe(draggedBefore);
+  const draggedTo = await questionTransform(page);
+  await expect(page.locator('.react-flow__edge.question-anchor-edge')).toHaveCount(1);
+  const rel = await getPlan(page, token, workspaceId);
+  expect(rel.relations).toHaveLength(0);
+
+  // 刷新:位置由 UI-only 表恢复,状态与锚定边也回来。
+  await page.reload();
+  await waitForRealPlan(page);
+  await expect(questionNode(page)).toHaveCount(1, { timeout: 20000 });
+  await expect(page.locator('.react-flow__edge.question-anchor-edge')).toHaveCount(1);
+  await expect.poll(() => questionTransform(page)).toBe(draggedTo);
+});
+
+test('画布静止时问题节点位置稳定、不被反复重挂载', async ({ page }) => {
+  test.slow();
+  const { token } = await registerAccount(page, 'canvas-question-stable');
+  const workspaceId = await createWorkspace(page, token, '画布问题稳定空间', '提升英语');
+  await page.goto(`/workbench?workspace=${workspaceId}`);
+  await waitForRealPlan(page);
+
+  await say(page, '我想提升一下。');
+  await expect(questionNode(page)).toHaveCount(1, { timeout: 20000 });
+  // 等测量与初始定位都安静下来。
+  await page.waitForTimeout(600);
+
+  // 在 DOM 元素上留一个印记:元素被卸载重挂载时印记会消失(React Flow
+  // 重建 wrapper 时不会保留它)。
+  await questionNode(page).evaluate((element) => {
+    (element as unknown as Record<string, unknown>).__zhituStableMark = true;
+  });
+
+  const samples: string[] = [];
+  for (let i = 0; i < 12; i += 1) {
+    await page.waitForTimeout(250);
+    samples.push(await questionNode(page).evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      return `${Math.round(rect.x)},${Math.round(rect.y)},${Math.round(rect.width)}x${Math.round(rect.height)}`;
+    }));
+  }
+
+  const unique = [...new Set(samples)];
+  expect(unique, `问题节点在静止时持续变化(闪烁):\n${unique.join('\n')}`).toHaveLength(1);
+  expect(
+    await questionNode(page).evaluate(
+      (element) => (element as unknown as Record<string, unknown>).__zhituStableMark === true,
+    ),
+    '问题节点被卸载/重挂载了',
+  ).toBe(true);
+});

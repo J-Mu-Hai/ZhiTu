@@ -65,6 +65,16 @@ import { ApiError, getToken } from '@/lib/api';
 type LocalPrefs = {
   settings: AISettings;
   positions: Record<string, { x: number; y: number }>;
+  /**
+   * **UI-only 的问题节点位置。** 键是 `${spaceId}:question:${questionId}`,与业务
+   * 位置(`positions`)完全分开:
+   * - 不进布局历史(撤销/重做只管业务节点),
+   * - 不进 `PUT /layout`(`layoutPayload` 只认 plan_nodes 的 UUID,问题 id 会被
+   *   服务端整批拒绝),
+   * - 按账户存在本机(位置是“我怎么看这张图”)。
+   * 刷新 / 重进同一空间时从这里恢复。
+   */
+  questionPositions: Record<string, { x: number; y: number }>;
 };
 
 /**
@@ -162,13 +172,17 @@ function toMessage(view: backend.MessageView): Message {
  * 这里只取 `settings` 和 `positions`,多出来的字段自然被忽略,所以老数据不会炸。
  */
 function loadLocalPrefs(user: AccountProfile | null, space: SpaceInfo): LocalPrefs {
-  const fallback: LocalPrefs = { settings: { ...DEFAULT_SETTINGS }, positions: {} };
+  const fallback: LocalPrefs = { settings: { ...DEFAULT_SETTINGS }, positions: {}, questionPositions: {} };
   if (!user || typeof window === 'undefined') return fallback;
   try {
     const stored = localStorage.getItem(storageKeyFor(user, space));
     if (!stored) return fallback;
     const parsed = JSON.parse(stored) as Partial<LocalPrefs>;
-    return { settings: parsed.settings ?? fallback.settings, positions: parsed.positions ?? {} };
+    return {
+      settings: parsed.settings ?? fallback.settings,
+      positions: parsed.positions ?? {},
+      questionPositions: parsed.questionPositions ?? {},
+    };
   } catch {
     return fallback;
   }
@@ -308,6 +322,13 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
   }, [growth.nodes, selectedId]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [positions, setPositionsRaw] = useState<Record<string, { x: number; y: number }>>(seed.positions);
+  /**
+   * 问题节点的 UI-only 位置。它**不进** `positions`、不进布局历史、不落后端 ——
+   * 原因见 `LocalPrefs.questionPositions`。
+   */
+  const [questionPositions, setQuestionPositionsRaw] = useState<Record<string, { x: number; y: number }>>(
+    seed.questionPositions,
+  );
 
   // 对话状态。真实空间才用:加载中 / 发送中 / 这一轮的错误 / 还缺哪些规划条件。
   const [historyLoading, setHistoryLoading] = useState(space.kind === 'real');
@@ -368,11 +389,14 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     { busy: false, message: null, degraded: false },
   );
 
-  // 只存属于浏览器的两样(见 `LocalPrefs`)。计划与消息都在后端,不在这里。
+  // 只存属于浏览器的三样(见 `LocalPrefs`)。计划与消息都在后端,不在这里。
   useEffect(() => {
     if (!user || !isReal) return;
-    localStorage.setItem(storageKeyFor(user, space), JSON.stringify({ settings, positions }));
-  }, [isReal, positions, settings, user, space]);
+    localStorage.setItem(
+      storageKeyFor(user, space),
+      JSON.stringify({ settings, positions, questionPositions }),
+    );
+  }, [isReal, positions, questionPositions, settings, user, space]);
 
   // 计划。**这就是真实空间里计划的唯一来源。**
   useEffect(() => {
@@ -796,6 +820,21 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     for (const [key, value] of Object.entries(after)) next[key] = value;
     applyPositions(next);
   }, [applyPositions, historyOwner, setLayoutHistory]);
+
+  /**
+   * 问题节点拖动结束:**只更新 UI-only 位置表**。不记历史、不落后端。
+   *
+   * 问题节点是 `agent_questions` 的投影,不是 `plan_nodes` 的一行:它的位置既不属于
+   * 业务布局(会被 `put_layout` 整批拒绝),也不该占撤销步数(那会让“撤销”在业务
+   * 节点和问题卡之间来回跳,而用户以为撤销只管自己挪过的业务节点)。
+   */
+  const commitQuestionMove = useCallback((key: string, position: { x: number; y: number }) => {
+    setQuestionPositionsRaw((prev) => {
+      const old = prev[key];
+      if (old && old.x === position.x && old.y === position.y) return prev;
+      return { ...prev, [key]: { x: position.x, y: position.y } };
+    });
+  }, []);
 
   // 后端那份布局。**读失败不报错**:位置退回 localStorage 那份(视口没有),画布照样
   // 能用,下一次保存会把这份推上去 —— 这不是用户做错了什么,不该给他一行红字。
@@ -1572,6 +1611,8 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     // `canUndo`/`canRedo` 派生于两条栈,按钮因此不用自己判断;`historyNote` 说的是
     // "这一步里有东西已经被归档了,只恢复了一半"。
     commitNodeMove, undoLayout, redoLayout, historyNote, setHistoryNote,
+    // 问题节点的 UI-only 位置(不落后端,不与业务位置混用)。
+    questionPositions, commitQuestionMove,
     canUndo: layoutHistory.past.length > 0,
     canRedo: layoutHistory.future.length > 0,
     // 布局落库的那三样。`layoutReady` 是"后端那份问过了",自动 fit 要等它;

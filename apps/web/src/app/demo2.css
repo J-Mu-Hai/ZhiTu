@@ -31,31 +31,33 @@
 .proposal-item-detail { display: block; margin-top: 4px; font-size: 10px; font-style: normal; color: #8ea3bd; white-space: pre-wrap; }
 
 /* 画布问题节点。**是 agent_questions 的投影,不是知识节点** —— 不参与排期/统计/依赖。
+   视觉上必须和暖白画布是一家人:用已有语义色令牌,不再自带一套深色。
    状态不能只靠颜色表达:每张卡都有文字徽标与 aria-label。 */
-.react-flow__node-question { z-index: 4 !important; }
-.canvas-question-node { width: 264px; padding: 12px 13px; border-radius: 9px; border: 1px dashed #b98f4e; background: #1b1a14; color: #e7dcc4; box-shadow: 0 8px 22px #00000055; font-size: 11px; }
-.canvas-question-node.is-primary { border-style: solid; border-color: #e0b96a; box-shadow: 0 0 0 3px #e0b96a22, 0 8px 22px #00000066; }
-.canvas-question-node.is-focused { outline: 2px solid #8cb9fa; outline-offset: 2px; }
-.canvas-question-node.is-processing { border-color: #6f8bb0; color: #cdd9ea; background: #16202e; }
-.canvas-question-node.is-resolved { opacity: .5; border-color: #4a6079; }
+.react-flow__node-question { z-index: 4 !important; cursor: grab; }
+.react-flow__node-question:active { cursor: grabbing; }
+.canvas-question-node { width: 264px; padding: 12px 13px; border-radius: var(--radius-control); border: 1px dashed var(--line-strong); background: var(--surface-raised); color: var(--text); box-shadow: var(--shadow-card); font-size: 11px; }
+.canvas-question-node.is-primary { border-style: solid; border-color: var(--experience); box-shadow: 0 0 0 3px color-mix(in srgb, var(--experience) 20%, transparent), var(--shadow-card); }
+.canvas-question-node.is-focused { outline: 2px solid var(--line-selected); outline-offset: 2px; }
+.canvas-question-node.is-processing { border-color: var(--academic); background: var(--ink-2); }
+.canvas-question-node.is-resolved { opacity: .6; border-color: var(--line); }
 .cq-head { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
-.cq-badge { font-size: 9px; letter-spacing: .5px; padding: 1px 6px; border-radius: 4px; background: #332a17; color: #e8c27a; border: 1px solid #5a4a24; }
-.canvas-question-node.is-processing .cq-badge { background: #1d3350; color: #a9c7f0; border-color: #35507a; }
-.canvas-question-node.is-resolved .cq-badge { background: #22303f; color: #9fb2c7; border-color: #3a4d63; }
-.cq-primary { font-size: 8px; color: #e0b96a; }
-.cq-question { font-size: 12px; line-height: 1.6; margin: 2px 0 4px; color: #f0e7d4; }
-.cq-why { font-size: 9px; color: #a99a78; line-height: 1.6; margin-bottom: 6px; }
-.cq-source { font-size: 9px; color: #9db8dc; background: none; border: 0; padding: 0; margin-bottom: 6px; cursor: pointer; }
+.cq-badge { font-size: 9px; letter-spacing: .5px; padding: 1px 6px; border-radius: var(--radius-pill); background: color-mix(in srgb, var(--experience) 15%, transparent); color: var(--experience-ink); border: 1px solid color-mix(in srgb, var(--experience) 40%, transparent); }
+.canvas-question-node.is-processing .cq-badge { background: color-mix(in srgb, var(--academic) 15%, transparent); color: var(--academic); border-color: color-mix(in srgb, var(--academic) 42%, transparent); }
+.canvas-question-node.is-resolved .cq-badge { background: var(--ink-3); color: var(--muted); border-color: var(--line); }
+.cq-primary { font-size: 8px; color: var(--experience-ink); }
+.cq-question { font-size: 12px; line-height: 1.6; margin: 2px 0 4px; color: var(--text); }
+.cq-why { font-size: 9px; color: var(--muted); line-height: 1.6; margin-bottom: 6px; }
+.cq-source { font-size: 9px; color: var(--blue); background: none; border: 0; padding: 0; margin-bottom: 6px; cursor: pointer; }
 .cq-options { display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0 6px; }
-.cq-option { font-size: 10px; padding: 5px 9px; border: 1px solid #4a452f; border-radius: 5px; background: #12120c; color: #d8cba8; cursor: pointer; }
-.cq-option.is-active { border-color: #e0b96a; background: #2a2413; color: #f0e2c2; }
-.cq-input { width: 100%; height: 46px; resize: vertical; background: #101009; border: 1px solid #4a452f; border-radius: 5px; color: #ece3cf; font-size: 10px; line-height: 1.6; padding: 6px; outline: none; }
-.cq-input::placeholder { color: #8a7d5e; }
-.cq-error { font-size: 9px; color: #e0a0a0; margin: 5px 0; }
-.cq-status { font-size: 10px; color: #a9c7f0; margin-top: 6px; }
+.cq-option { font-size: 10px; padding: 5px 9px; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--surface-quiet); color: var(--text); cursor: pointer; }
+.cq-option.is-active { border-color: var(--experience); background: color-mix(in srgb, var(--experience) 14%, transparent); color: var(--experience-ink); }
+.cq-input { width: 100%; height: 46px; resize: vertical; background: var(--surface-panel); border: 1px solid var(--line); border-radius: var(--radius-control); color: var(--text); font-size: 10px; line-height: 1.6; padding: 6px; outline: none; }
+.cq-input::placeholder { color: var(--muted); }
+.cq-error { font-size: 9px; color: #b4533b; margin: 5px 0; }
+.cq-status { font-size: 10px; color: var(--blue); margin-top: 6px; }
 .cq-actions { display: flex; align-items: center; gap: 6px; margin-top: 9px; }
-.cq-text { font-size: 9px; color: #a99a78; background: none; border: 0; padding: 0; cursor: pointer; }
-.cq-submit { margin-left: auto; font-size: 10px; padding: 6px 10px; border-radius: 5px; background: #8a6d2f; border: 1px solid #b98f4e; color: #fdf3dd; cursor: pointer; }
+.cq-text { font-size: 9px; color: var(--muted); background: none; border: 0; padding: 0; cursor: pointer; }
+.cq-submit { margin-left: auto; font-size: 10px; padding: 6px 10px; border-radius: var(--radius-control); background: var(--blue); border: 1px solid var(--blue); color: #fff; cursor: pointer; }
 .cq-submit:disabled { opacity: .45; cursor: default; }
 /* 锚定虚线由 React Flow 画;这里只保证它不被误当成业务关系。 */
 .react-flow__edge.question-anchor-edge { pointer-events: none; }
