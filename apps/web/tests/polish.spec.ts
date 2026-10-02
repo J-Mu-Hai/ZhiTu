@@ -140,7 +140,7 @@ function nodeByTitle(page: Page, title: string) {
  * `count()` 是**立刻**回答的,它只答"在不在",不负责"等它出现"。
  */
 async function shootFloatCluster(page: Page, name: string): Promise<void> {
-  const parts = ['.space-breadcrumb', '.view-tabs', '.reopen-chat', '.space-floating-tools'];
+  const parts = ['.space-back', '.view-tabs', '.reopen-chat', '.space-floating-tools'];
   const boxes: { x: number; y: number; width: number; height: number }[] = [];
   for (const part of parts) {
     const locator = page.locator(part).first();

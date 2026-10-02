@@ -185,20 +185,14 @@
 /* 三块浮动区走同一套:同一档圆角、同一条描边、同一个底、同一层阴影。
    以前它们是 13 / 13 / 14 三种圆角、两种边框色、两种阴影 —— 差 1px 的那种不一致
    读的人说不出哪里不对,只觉得"不像一家人"。取值全部来自 `tokens.css`。 */
-.space-topbar .space-breadcrumb,.space-topbar .view-tabs,.space-topbar .reopen-chat { position:absolute; top:16px; pointer-events:auto; border:1px solid var(--line-float); border-radius:var(--radius-float); background:var(--float-surface); box-shadow:var(--shadow-float); backdrop-filter:blur(14px); }
-.space-topbar .space-breadcrumb { left:18px; max-width:min(38%,420px); padding:3px 8px; }
+.space-topbar .space-back,.space-topbar .view-tabs,.space-topbar .reopen-chat { position:absolute; top:8px; pointer-events:auto; border:1px solid var(--line-float); border-radius:var(--radius-float); background:var(--float-surface); box-shadow:var(--shadow-float); backdrop-filter:blur(14px); }
+.space-topbar .space-back { left:18px; width:38px; height:38px; }
 .space-topbar .view-tabs { left:50%; transform:translateX(-50%); gap:2px; padding:4px; margin:0; }
 .space-topbar .view-tabs button { padding:8px 11px; border:0; border-radius:var(--radius-control); }
 .space-topbar .view-tabs button.selected { background:var(--tint-selected); box-shadow:inset 0 0 0 1px var(--line-selected); }
-/* 路径里**当前这一层**也用同一个选中态。以前它只靠"字更深"来区分(dark-theme.css
-   给最后一个 `span` 里的按钮更深的颜色),而"深一点的字"和"浅一点的字"在一条
-   半透明的浮动条上差得很小 —— 用户在深层空间里看不出自己在哪一层。
-   整块 chip 的**高度不能动**(`--float-clear` 算的是这条浮动条的下沿,时间线
-   靠它让位),所以这里只收横向内边距。 */
-.space-topbar .space-breadcrumb>span:last-child button { padding:7px 9px; border-radius:var(--radius-control); background:var(--tint-selected); box-shadow:inset 0 0 0 1px var(--line-selected); }
 .space-topbar .reopen-chat { right:18px; width:38px; height:38px; }
-.space-breadcrumb { min-width:130px; }
-.path-canvas .space-floating-tools { top:72px; }
+
+.path-canvas .space-floating-tools { top:56px; }
 .space-floating-tools { gap:0; padding:6px; border:1px solid var(--line-float); border-radius:var(--radius-float); background:var(--float-surface); box-shadow:var(--shadow-float); }
 .space-floating-tools>button { box-shadow:none; border:0; background:transparent; }
 .space-floating-tools>button:nth-of-type(2) { margin-right:7px; }
@@ -213,7 +207,7 @@
 .canvas-help>p { width:250px; line-height:1.9; font-size:12px; color:#627e93; }
 @media(min-width:1600px) { .spaces-grid { grid-template-columns:repeat(4,minmax(0,1fr)); } }
 @media(max-width:1050px) { .top-brand small,.top-goal { display:none; } .top-navigation { gap:16px; padding:0 18px; } .top-navigation nav a { padding:9px; } .spaces-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .spaces-page,.editorial-page.journal-page,.editorial-page.today-page { padding:28px 24px 50px; } }
-@media(max-width:720px) { .top-navigation { height:54px; gap:10px; padding:0 12px; } .top-navigation nav { flex:1; justify-content:space-between; } .top-navigation nav a { padding:8px; } .top-brand strong { font-size:18px; } .top-navigation nav a span { display:none; } .top-profile { display:none; } .spaces-grid { grid-template-columns:1fr; } .space-stats { grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; } .space-stats>div { padding:12px 8px; flex-wrap:wrap; } .space-stats>div>span { font-size:10px; } .spaces-hero h1 { font-size:27px; } .journal-reading-layout,.today-page .today-columns { grid-template-columns:1fr; } .journal-reader { position:static; min-height:220px; padding:22px; } .journal-feed-header { flex-wrap:wrap; } .open-workbench .workspace { padding-right:0; } .open-workbench .conversation-overlay { top:auto; height:min(65dvh,540px); width:min(390px,94vw); } .open-workbench .floating-conversation { right:8px; } .space-topbar .space-breadcrumb { top:8px; left:8px; max-width:calc(100% - 58px); } .space-topbar .view-tabs { top:55px; left:8px; right:8px; transform:none; width:auto; justify-content:center; } .space-topbar .view-tabs button { flex:1; } .path-canvas .space-floating-tools { top:106px; left:8px; } .editorial-page .editorial-header h1 { font-size:25px; } }
+@media(max-width:720px) { .top-navigation { height:54px; gap:10px; padding:0 12px; } .top-navigation nav { flex:1; justify-content:space-between; } .top-navigation nav a { padding:8px; } .top-brand strong { font-size:18px; } .top-navigation nav a span { display:none; } .top-profile { display:none; } .spaces-grid { grid-template-columns:1fr; } .space-stats { grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; } .space-stats>div { padding:12px 8px; flex-wrap:wrap; } .space-stats>div>span { font-size:10px; } .spaces-hero h1 { font-size:27px; } .journal-reading-layout,.today-page .today-columns { grid-template-columns:1fr; } .journal-reader { position:static; min-height:220px; padding:22px; } .journal-feed-header { flex-wrap:wrap; } .open-workbench .workspace { padding-right:0; } .open-workbench .conversation-overlay { top:auto; height:min(65dvh,540px); width:min(390px,94vw); } .open-workbench .floating-conversation { right:8px; } .space-topbar .space-back { top:8px; left:8px; } .space-topbar .view-tabs { top:55px; left:8px; right:8px; transform:none; width:auto; justify-content:center; } .space-topbar .view-tabs button { flex:1; } .path-canvas .space-floating-tools { top:106px; left:8px; } .editorial-page .editorial-header h1 { font-size:25px; } }
 /*
  * ============================ 手机工作台(≤480px) ============================
  *
@@ -235,17 +229,16 @@
  */
 @media(max-width:480px) {
   /* 顶部三块收成一行:面包屑占剩下的宽度(超长横向滚动),视图切换与"展开对话"各自固定。 */
-  .space-topbar { height:auto; display:flex; align-items:center; gap:8px; padding:8px; }
-  .space-topbar .space-breadcrumb,.space-topbar .view-tabs,.space-topbar .reopen-chat { position:static; top:auto; left:auto; right:auto; transform:none; }
-  .space-topbar .space-breadcrumb { flex:1 1 auto; min-width:0; max-width:none; padding:3px 6px; }
-  .space-topbar .space-breadcrumb button,.space-topbar .space-breadcrumb>span { white-space:nowrap; }
-  .space-topbar .view-tabs { flex:0 0 auto; padding:4px; }
+  .space-topbar { height:auto; display:flex; align-items:center; justify-content:center; gap:8px; padding:8px; position:relative; }
+  .space-topbar .view-tabs { position:static; top:auto; left:auto; right:auto; transform:none; flex:0 0 auto; padding:4px; }
   .space-topbar .view-tabs button { flex:0 0 auto; padding:7px 8px; }
   /* 只留当前项的文字。`display:none` 的字不进可访问性树,所以按钮上始终挂着
      `aria-label`(见 `Workbench.tsx` 里那段),读屏听到的还是四个名字。 */
   .space-topbar .view-tabs button>span { display:none; }
   .space-topbar .view-tabs button.selected>span { display:inline; }
-  .space-topbar .reopen-chat { flex:0 0 auto; width:38px; height:38px; }
+  .space-topbar .space-back, .space-topbar .reopen-chat { position:absolute; top:50%; transform:translateY(-50%); flex:0 0 auto; width:38px; height:38px; }
+  .space-topbar .space-back { left:8px; }
+  .space-topbar .reopen-chat { right:8px; }
   /* 顶距 8 + 行高 39 + 呼吸 12。 */
   .workbench { --float-clear:60px; }
   /* 工具条挪到右下角,落在缩放按钮上面。

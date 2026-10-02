@@ -56,6 +56,20 @@ test('首页真实周排期与紧凑工作台保留四种视图', async ({ page 
   await page.screenshot({ path: artifactPath('ui-today-desktop.png') });
   await openSpacePage(page, '/workbench', id);
   for (const tab of ['路径', '时间线', '任务', '排期']) await expect(page.getByRole('tab', { name: tab, exact: true })).toBeVisible();
+  // 左上角的「全部空间 / 当前空间名」整组控件已经移除。
+  await expect(page.locator('.space-breadcrumb')).toHaveCount(0);
+  await expect(page.locator('.workspace-switch')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '全部空间' })).toHaveCount(0);
+  // 删掉左侧控件之后,四个视图标签仍然**视觉居中**(相对它们所在的画布容器)。
+  const workspaceBox = await page.locator('.workspace').boundingBox();
+  const tabsBox = await page.locator('.view-tabs').boundingBox();
+  expect(workspaceBox && tabsBox, '画布或视图标签没有尺寸,居中断言无从谈起').toBeTruthy();
+  const tabsCenter = tabsBox!.x + tabsBox!.width / 2;
+  const workspaceCenter = workspaceBox!.x + workspaceBox!.width / 2;
+  expect(
+    Math.abs(tabsCenter - workspaceCenter),
+    `视图标签中心 ${Math.round(tabsCenter)} 偏离画布中心 ${Math.round(workspaceCenter)}`,
+  ).toBeLessThan(40);
   const dock = await page.locator('.floating-conversation').boundingBox();
   expect(dock!.width).toBeLessThan(page.viewportSize()!.width * .35);
   await expect(page.locator('.canvas-tools-popover')).not.toBeVisible();
@@ -116,13 +130,13 @@ test('手机工作台上画布优先，AI 面板是底部抽屉', async ({ page 
     };
   });
 
-  // 1. 顶部三块在同一行,而且整行不深。两行的话最上面那一行的顶边会比下面那一行小
-  //    几十像素 —— 容差取 8px,它在"居中造成的 1~2px 参差"和"换行造成的 40px"之间。
-  const tops = await page.evaluate(() => ['.space-breadcrumb', '.view-tabs', '.reopen-chat']
+  // 1. 顶部浮动组件在同一行,而且整行不深。左上角的面包屑已移除,只留视图切换与
+  //    “展开对话”;两行的话顶边会差几十像素 —— 容差取 8px。
+  const tops = await page.evaluate(() => ['.view-tabs', '.reopen-chat']
     .map(selector => document.querySelector(selector))
     .filter((element): element is Element => element !== null)
     .map(element => Math.round(element.getBoundingClientRect().top)));
-  expect(tops.length).toBe(3);
+  expect(tops.length).toBe(2);
   expect(Math.max(...tops) - Math.min(...tops), `顶部浮动组件的顶边参差 ${tops.join('/')}`).toBeLessThanOrEqual(8);
   expect(Math.max(...tops), '顶部浮动组件的最下沿已经压到画布很深处').toBeLessThan(120);
 
@@ -142,8 +156,8 @@ test('手机工作台上画布优先，AI 面板是底部抽屉', async ({ page 
   if (!drawer) throw new Error('AI 抽屉没有尺寸,断言无从谈起');
   expect(drawer.width, '抽屉没有铺满宽度').toBeGreaterThanOrEqual(390 * .98);
   expect(drawer.y, '抽屉顶到屏幕顶上去了,画布一点没留').toBeGreaterThanOrEqual(100);
-  const breadcrumb = await centreHit(page.locator('.space-breadcrumb'));
-  expect(breadcrumb.self, `抽屉拉开之后空间路径被 ${breadcrumb.blockedBy} 盖住了`).toBe(true);
+  const tabs = await centreHit(page.locator('.view-tabs'));
+  expect(tabs.self, `抽屉拉开之后视图切换被 ${tabs.blockedBy} 盖住了`).toBe(true);
   await page.screenshot({ path: artifactPath('ui-workbench-mobile-drawer.png') });
 
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);

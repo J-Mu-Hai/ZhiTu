@@ -3,7 +3,7 @@
 .open-workbench .workspace{height:100%;padding-right:clamp(350px,36vw,540px);transition:padding .2s}
 .open-workbench .chat-hidden .workspace{padding-right:0}
 .space-topbar{position:relative;z-index:25;height:56px;gap:12px;overflow:visible}
-.space-breadcrumb{flex:1;max-width:none}.space-breadcrumb>span:last-child button{color:#233c60}
+
 .space-topbar .view-tabs{margin-left:0;flex-shrink:0}.space-topbar .view-tabs button{padding:9px 12px;font-size:12px;white-space:nowrap}
 .space-floating-tools{right:auto;max-width:calc(100% - 30px)}
 .conversation-overlay{left:auto;right:0;top:0;bottom:0;width:clamp(350px,36vw,540px);z-index:21;pointer-events:none}

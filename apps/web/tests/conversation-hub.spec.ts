@@ -83,7 +83,8 @@ test('对话页:只有这个空间那一条，而且和工作台是同一份', a
   // 点它回到那一层 —— 这是关联内容唯一的用处,点不动它就只是一行字。
   await linked.getByRole('button', { name: /联系导师/ }).click();
   await expect(page).toHaveURL(/\/workbench/);
-  await expect(page.locator('.space-breadcrumb')).toContainText('联系导师');
+  // 当前空间/根目标从**画布根节点**辨识(左上角的面包屑已经移除)。
+  await expect(page.locator('.growth-node.goal .node-title')).toContainText('联系导师');
 
   expect(errors).toEqual([]);
 });

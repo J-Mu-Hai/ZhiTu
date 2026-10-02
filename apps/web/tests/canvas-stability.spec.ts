@@ -232,11 +232,11 @@ test('换空间时草稿不串：新空间看不到旧空间的输入，切回�
   await expect(page.getByRole('dialog'), '换空间之后弹窗跟着串过来了').toHaveCount(0);
   await (await canvasTool(page, '新建节点')).click();
   await expect(titleField(page), '第二个空间里的新建弹窗带着第一个空间的字').toHaveValue('');
-  // 这个弹窗本来就是空手打开的,关掉它不丢任何东西 —— 但它挡着"全部空间"那个按钮
-  // (模态,见文件头),所以要先收起来。
+  // 这个弹窗本来就是空手打开的,关掉它不丢任何东西 —— 但它挡着全局导航,所以先收起来。
   await page.getByRole('dialog').getByRole('button', { name: '关闭弹窗' }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
-  await page.getByRole('button', { name: '全部空间' }).click();
+  // 工作台里的「全部空间」已移除;回空间列表走**顶部全局「成长空间」导航**。
+  await page.getByRole('link', { name: '成长空间', exact: true }).click();
   await expect(page).toHaveURL(/\/spaces$/);
 
   // 切回第一个空间:那一份草稿还在 —— 用户没说过要丢,而"点错了空间"是很常见的事。

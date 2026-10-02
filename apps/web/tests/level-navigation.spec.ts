@@ -48,12 +48,12 @@ test('进入子空间、在里面建节点、返回上级，每一层都对得�
 
   // --- 进阶段:阶段是它自己那一层的中心,树叶画在它旁边 --------------------------
   await enterSpace(page, stageId);
-  await expect(page.locator('.space-breadcrumb')).toContainText('联系导师');
+  await expect(page.locator('.growth-node.goal .node-title')).toContainText('联系导师');
   await expect.poll(() => renderedNodeIds(page)).toEqual([stageId, leafId].sort());
 
   // --- 进树叶:再深一层 ----------------------------------------------------------
   await page.getByRole('button', { name: '进入整理实验室资料空间', exact: true }).click();
-  await expect(page.locator('.space-breadcrumb')).toContainText('整理实验室资料');
+  await expect(page.locator('.growth-node.goal .node-title')).toContainText('整理实验室资料');
   await expect.poll(() => renderedNodeIds(page)).toEqual([leafId, grandId].sort());
 
   // --- 在这一层建一个新节点,走**真实的用户路径**(点按钮、填表单、提交) --------
@@ -86,7 +86,7 @@ test('进入子空间、在里面建节点、返回上级，每一层都对得�
   // --- 返回上级:回到阶段那一层,而文件**不**跟上来 ------------------------------
   await page.getByRole('tab', { name: '路径', exact: true }).click();
   await page.getByRole('button', { name: '返回上级空间' }).click();
-  await expect(page.locator('.space-breadcrumb')).toContainText('联系导师');
+  await expect(page.locator('.growth-node.goal .node-title')).toContainText('联系导师');
   await expect.poll(() => renderedNodeIds(page)).toEqual([stageId, leafId].sort());
 
   await page.getByRole('button', { name: /空间文件/ }).click();

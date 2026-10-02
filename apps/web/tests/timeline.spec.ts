@@ -264,11 +264,11 @@ test('语义缩放、锚点、平移、概览、卡片布局，以及改截止�
  *
  * ## 这条几何到底在防什么
  *
- * 时间线是这一页里唯一**从上往下排**的视图。`.space-breadcrumb`(空间路径)和
- * `.view-tabs`(四个视图入口)是绝对定位的浮动组件,`top:16px`,`z-index:25`;
- * 时间线的工具栏在普通流里,顶边原本只有 20px 内边距 —— 于是整组"年/季度/月/周/天"
- * 落在面包屑矩形里,而点击被面包屑接走。**失败的样子是"按钮点不动"**,不是"两个东西
- * 叠在一起",因为叠在上面的那一层本身就是可交互的元素(「全部空间」按钮、空间名)。
+ * 时间线是这一页里唯一**从上往下排**的视图。`.view-tabs`(四个视图入口)是绝对定位的
+ * 浮动组件,`top:16px`,`z-index:25`;时间线的工具栏在普通流里,顶边原本只有 20px
+ * 内边距 —— 于是整组"年/季度/月/周/天"落在它底下,而点击被它接走。**失败的样子是
+ * "按钮点不动"**,不是"两个东西叠在一起",因为叠在上面的那一层本身就是可交互的元素
+ * (四个视图标签)。
  *
  * ## 两条断言,一近一远
  *
@@ -323,17 +323,15 @@ test('时间线工具栏不被浮动路径与视图切换盖住', async ({ page 
     //
     // 比的是 `getBoundingClientRect` 意义上的**同一坐标系**(都以视口左上角为原点),
     // 所以三个 `boundingBox()` 可以直接比。
-    const [toolbar, breadcrumb, tabs] = await Promise.all([
-      scales.boundingBox(), page.locator('.space-breadcrumb').boundingBox(), page.locator('.view-tabs').boundingBox(),
+    const [toolbar, tabs] = await Promise.all([
+      scales.boundingBox(), page.locator('.view-tabs').boundingBox(),
     ]);
     if (!toolbar) throw new Error(`${label}:时间线工具栏没有尺寸,几何断言无从谈起`);
-    for (const [name, floating] of [['空间路径', breadcrumb], ['视图切换', tabs]] as const) {
-      if (!floating) throw new Error(`${label}:浮动组件「${name}」没有尺寸,几何断言无从谈起`);
-      expect(
-        toolbar.y,
-        `${label}:时间线工具栏的顶边(${Math.round(toolbar.y)}px)落在「${name}」的下沿(${Math.round(floating.y + floating.height)}px)之上`,
-      ).toBeGreaterThanOrEqual(floating.y + floating.height);
-    }
+    if (!tabs) throw new Error(`${label}:浮动组件「视图切换」没有尺寸,几何断言无从谈起`);
+    expect(
+      toolbar.y,
+      `${label}:时间线工具栏的顶边(${Math.round(toolbar.y)}px)落在「视图切换」的下沿(${Math.round(tabs.y + tabs.height)}px)之上`,
+    ).toBeGreaterThanOrEqual(tabs.y + tabs.height);
 
     // --- 2. 后果:按钮正中心的那一点,归按钮自己 --------------------------------
     const hit = await year.evaluate(element => {
