@@ -70,6 +70,7 @@ AUTHENTICATED_ROUTES = {
     ("PUT", "/api/workspaces/{workspace_id}/layout"),
     ("GET", "/api/workspaces/{workspace_id}/proposals"),
     ("GET", "/api/workspaces/{workspace_id}/questions"),
+    ("GET", "/api/workspaces/{workspace_id}/reasoning"),
     ("POST", "/api/workspaces/{workspace_id}/questions/{question_id}/answer"),
     ("POST", "/api/workspaces/{workspace_id}/questions/{question_id}/skip"),
     ("POST", "/api/workspaces/{workspace_id}/questions/{question_id}/later"),
@@ -102,6 +103,9 @@ CROSS_ACCOUNT_ROUTES = {
     ("GET", "/api/workspaces/{workspace_id}/proposals"): "workspace_id",
     # 问题列表只读,而且刚建好的空间必然返回 200(空列表也是列表) —— 反向断言成立。
     ("GET", "/api/workspaces/{workspace_id}/questions"): "workspace_id",
+    # 目标推理地图只读,新空间返回空地图(200) —— 反向断言成立;归属仍必须写进
+    # WHERE,否则 B 拿 A 的 id 会读到一份空地图而不是 404。
+    ("GET", "/api/workspaces/{workspace_id}/reasoning"): "workspace_id",
     # 分析列表进得来:它**只读**,而且刚建好的空间必然返回 200(空列表也是列表),
     # 反向断言成立。这条的归属校验必须真的存在 —— 分析是按 `workspace_id` 查的,
     # 而 `ctx` 已经在 SQL 的 WHERE 里写死了归属(见 get_workspace_context),

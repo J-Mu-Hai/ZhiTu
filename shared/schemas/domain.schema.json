@@ -25,6 +25,156 @@
       "title": "ActionError",
       "type": "object"
     },
+    "AgentTurnRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "contextVersion": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Contextversion"
+        },
+        "idempotencyKey": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Idempotencykey",
+          "type": "string"
+        },
+        "message": {
+          "anyOf": [
+            {
+              "maxLength": 4000,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Message"
+        },
+        "reasoningHandle": {
+          "anyOf": [
+            {
+              "maxLength": 16,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reasoninghandle"
+        },
+        "selectedNodeId": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Selectednodeid"
+        },
+        "trigger": {
+          "enum": [
+            "space_entered",
+            "user_message",
+            "node_selected",
+            "question_answered",
+            "strategy_confirmation",
+            "progress_update",
+            "execution_planning",
+            "retry"
+          ],
+          "title": "Trigger",
+          "type": "string"
+        }
+      },
+      "required": [
+        "trigger",
+        "idempotencyKey"
+      ],
+      "title": "AgentTurnRequest",
+      "type": "object"
+    },
+    "AgentTurnResponse": {
+      "additionalProperties": false,
+      "description": "一次显式 Agent turn 的结果。**所有正式计划写入仍走 proposal + 用户确认。**",
+      "properties": {
+        "changed": {
+          "default": false,
+          "title": "Changed",
+          "type": "boolean"
+        },
+        "degraded": {
+          "default": false,
+          "title": "Degraded",
+          "type": "boolean"
+        },
+        "degradedReason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Degradedreason"
+        },
+        "message": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MessageView"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "question": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/QuestionView"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "reasoning": {
+          "$ref": "#/$defs/GoalReasoningView"
+        },
+        "replayed": {
+          "default": false,
+          "title": "Replayed",
+          "type": "boolean"
+        },
+        "retryable": {
+          "default": false,
+          "title": "Retryable",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "reasoning"
+      ],
+      "title": "AgentTurnResponse",
+      "type": "object"
+    },
     "AnalysisFreshness": {
       "description": "一条分析的新鲜度。**由输入版本与结构摘要现算,不落库。**\n\n规范里写的是三档\"最新 / 过期 / 需要重新分析\"。这里只有两档,因为第三档不是\n另一个状态:它说的是**过期之后该做什么**,而不是数据本身多了一种处境。\n把它做成第三个枚举值,就得额外存一个\"用户点过重新分析、但还没做完\"的标记\n—— 而那个标记要么靠一次写入去维护、要么靠时间猜,两条都比\"界面把 `stale`\n说成「需要重新分析,点这里」\"更容易出错。\n\n所以:`FRESH` 是最新,`STALE` 是过期,是否需要重新分析由界面按 `STALE` 呈现。",
       "enum": [
@@ -1563,6 +1713,182 @@
       "title": "ExecutionRecordView",
       "type": "object"
     },
+    "GoalReasoningView": {
+      "additionalProperties": false,
+      "description": "当前目标推理地图。**读接口与 agent turn 都返回这一份。**",
+      "properties": {
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        },
+        "exploredAt": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exploredat"
+        },
+        "focusHandle": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Focushandle"
+        },
+        "focusReason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Focusreason"
+        },
+        "focusReasoningNodeId": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Focusreasoningnodeid"
+        },
+        "inputVersion": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Inputversion"
+        },
+        "lastEvaluatedAt": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Lastevaluatedat"
+        },
+        "links": {
+          "items": {
+            "$ref": "#/$defs/ReasoningLinkView"
+          },
+          "title": "Links",
+          "type": "array"
+        },
+        "mapVersion": {
+          "default": 0,
+          "title": "Mapversion",
+          "type": "integer"
+        },
+        "nodes": {
+          "items": {
+            "$ref": "#/$defs/ReasoningNodeView"
+          },
+          "title": "Nodes",
+          "type": "array"
+        },
+        "phase": {
+          "title": "Phase",
+          "type": "string"
+        },
+        "rootPlanNodeId": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rootplannodeid"
+        },
+        "sessionId": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sessionid"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "strategyProposalId": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Strategyproposalid"
+        },
+        "turnAction": {
+          "title": "Turnaction",
+          "type": "string"
+        },
+        "workspaceId": {
+          "format": "uuid",
+          "title": "Workspaceid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "workspaceId",
+        "phase",
+        "turnAction",
+        "status"
+      ],
+      "title": "GoalReasoningView",
+      "type": "object"
+    },
     "IssuedToken": {
       "additionalProperties": false,
       "description": "一张新签发的会话令牌。\n\n`absolute_expires_at` 与 `expires_at` 一起给出,是为了让前端能如实告诉用户\n\"这次登录最晚能用到什么时候\" —— 只给滑动过期,用户会以为可以无限续下去。",
@@ -2747,6 +3073,209 @@
         }
       },
       "title": "QuietHoursView",
+      "type": "object"
+    },
+    "ReasoningLinkView": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "linkType": {
+          "title": "Linktype",
+          "type": "string"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Note"
+        },
+        "sourceHandle": {
+          "title": "Sourcehandle",
+          "type": "string"
+        },
+        "targetHandle": {
+          "title": "Targethandle",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "sourceHandle",
+        "targetHandle",
+        "linkType"
+      ],
+      "title": "ReasoningLinkView",
+      "type": "object"
+    },
+    "ReasoningNodeView": {
+      "additionalProperties": false,
+      "properties": {
+        "assumptions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Assumptions",
+          "type": "array"
+        },
+        "confidence": {
+          "title": "Confidence",
+          "type": "integer"
+        },
+        "evidence": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence",
+          "type": "array"
+        },
+        "handle": {
+          "title": "Handle",
+          "type": "string"
+        },
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "impact": {
+          "title": "Impact",
+          "type": "integer"
+        },
+        "importance": {
+          "title": "Importance",
+          "type": "integer"
+        },
+        "linkedPlanNodeId": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Linkedplannodeid"
+        },
+        "nextAction": {
+          "title": "Nextaction",
+          "type": "string"
+        },
+        "nodeType": {
+          "title": "Nodetype",
+          "type": "string"
+        },
+        "parentHandle": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parenthandle"
+        },
+        "priority": {
+          "title": "Priority",
+          "type": "number"
+        },
+        "rationale": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rationale"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "summary": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Summary"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "uncertainty": {
+          "title": "Uncertainty",
+          "type": "integer"
+        },
+        "updatedAt": {
+          "format": "date-time",
+          "title": "Updatedat",
+          "type": "string"
+        },
+        "urgency": {
+          "title": "Urgency",
+          "type": "integer"
+        },
+        "userDescription": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Userdescription"
+        },
+        "version": {
+          "title": "Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "handle",
+        "title",
+        "nodeType",
+        "status",
+        "nextAction",
+        "importance",
+        "uncertainty",
+        "urgency",
+        "impact",
+        "confidence",
+        "priority",
+        "source",
+        "version",
+        "updatedAt"
+      ],
+      "title": "ReasoningNodeView",
       "type": "object"
     },
     "RecordExecutionRequest": {

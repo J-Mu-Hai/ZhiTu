@@ -47,6 +47,11 @@ class AgentQuestion(UuidPk, TimestampMixin, Base):
     source_message_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("messages.id", ondelete="SET NULL")
     )
+    #: 这个问题在**目标推理地图**上对应哪个节点。可空 —— 不是每个问题都来自地图。
+    #: 回答之后服务端靠它定位要重评的推理节点,而不是靠文本猜。
+    reasoning_node_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("reasoning_nodes.id", ondelete="SET NULL")
+    )
 
     question: Mapped[str] = mapped_column(Text, nullable=False)
     #: "为什么现在问这个"。与 question 分开:一个是问什么,一个是问的理由。
@@ -84,4 +89,5 @@ class AgentQuestion(UuidPk, TimestampMixin, Base):
         ),
         Index("ix_agent_questions_source_node_id", "source_node_id"),
         Index("ix_agent_questions_source_message_id", "source_message_id"),
+        Index("ix_agent_questions_reasoning_node_id", "reasoning_node_id"),
     )

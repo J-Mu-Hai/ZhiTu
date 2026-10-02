@@ -404,3 +404,86 @@ class ResearchCacheStatus(StrEnum):
 
 #: 模型可见事实的来源类型。**所有进入 state / 工具结果 / 分析的内容都带一个。**
 PROVENANCE_SOURCES = ("user", "system", "tool", "model_inference", "assumption")
+
+
+# ---------------------------------------------------------------------------------
+# 目标推理地图(阶段 7)。
+#
+# 这一组枚举属于**推理层**,与 `plan_nodes` 的业务规划层严格分开:它们不会出现在
+# 排期、依赖、任务统计或执行记录里,也不与 `NodeType` / `PlanningLevel` 混用。
+# ---------------------------------------------------------------------------------
+class ReasoningSessionPhase(StrEnum):
+    """一次目标推理会话处于哪个阶段。**与单轮动作分开** —— 见 `ReasoningTurnAction`。"""
+
+    STRATEGIC_EXPLORATION = "strategic_exploration"
+    STRATEGIC_CONVERGENCE = "strategic_convergence"
+    AWAITING_STRATEGY_CONFIRMATION = "awaiting_strategy_confirmation"
+    EXECUTION_PLANNING = "execution_planning"
+    MONITORING = "monitoring"
+
+
+class ReasoningTurnAction(StrEnum):
+    """一次 Agent turn 的主要动作。阶段与动作必须分开:同一阶段可以有不同的下一步。"""
+
+    ASK_USER = "ask_user"
+    ANALYZE = "analyze"
+    EXPAND = "expand"
+    CONFIRM = "confirm"
+    PAUSE = "pause"
+    COMPLETE = "complete"
+    REVISIT = "revisit"
+
+
+class ReasoningSessionStatus(StrEnum):
+    """自动进入的幂等状态。
+
+    - `idle`:还没探索过;
+    - `running`:某次探索正在进行(租约/并发保护);
+    - `ready`:最近一次探索成功,当前地图与输入一致;
+    - `failed`:最近一次探索失败或输出不合法;可安全重试,不写半成品。
+    """
+
+    IDLE = "idle"
+    RUNNING = "running"
+    READY = "ready"
+    FAILED = "failed"
+
+
+class ReasoningNodeType(StrEnum):
+    """推理地图节点的类型。**不是 `NodeType`** —— 它不参与计划。"""
+
+    #: 一个需要用户表明取舍/偏好的决策维度(用途、去向、成功定义…)。
+    DIMENSION = "dimension"
+    #: 需要用户或研究回答的问题。
+    QUESTION = "question"
+    #: 风险 / 约束。
+    RISK = "risk"
+    #: 资源(时间、资金、人脉、信息)。
+    RESOURCE = "resource"
+    #: 可选的战略路线。
+    ROUTE = "route"
+    #: 尚未验证的假设。
+    ASSUMPTION = "assumption"
+
+
+class ReasoningNodeStatus(StrEnum):
+    UNEXPLORED = "unexplored"
+    EXPLORING = "exploring"
+    RESOLVED = "resolved"
+    PAUSED = "paused"
+    ARCHIVED = "archived"
+
+
+class ReasoningSource(StrEnum):
+    """一个推理节点的结论从哪来。**用户说的与研究得来的必须分得开。**"""
+
+    AGENT = "agent"
+    USER = "user"
+    RESEARCH = "research"
+
+
+class ReasoningLinkType(StrEnum):
+    """推理层的边。**不可复用业务依赖/关系表。**"""
+
+    DEPENDS_ON = "depends_on"
+    INFLUENCES = "influences"

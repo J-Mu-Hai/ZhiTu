@@ -34,7 +34,14 @@ from backend.db.models.enums import (
     QuestionStatus,
     QuestionUserAction,
     ReasoningAction,
+    ReasoningLinkType,
+    ReasoningNodeStatus,
+    ReasoningNodeType,
+    ReasoningSessionPhase,
+    ReasoningSessionStatus,
+    ReasoningSource,
     ReasoningStatus,
+    ReasoningTurnAction,
     ResearchCacheStatus,
     RevisionActor,
     RevisionTrigger,
@@ -44,6 +51,7 @@ from backend.db.models.enums import (
     WorkspaceStatus,
 )
 from backend.db.models.event import DomainEvent
+from backend.db.models.goal_reasoning import GoalReasoningSession, ReasoningNode, ReasoningNodeLink
 from backend.db.models.layout import NodePosition, ScopeViewport
 from backend.db.models.note import NodeNote
 from backend.db.models.plan import Dependency, NodeRelation, PlanNode, PlanRevision
@@ -86,6 +94,7 @@ __all__ = [
     "DomainEvent",
     "ExecutionRecord",
     "ExecutionResult",
+    "GoalReasoningSession",
     "Message",
     "MessageRole",
     "ModelSource",
@@ -111,8 +120,17 @@ __all__ = [
     "QuestionStatus",
     "QuestionUserAction",
     "ReasoningAction",
+    "ReasoningLinkType",
+    "ReasoningNode",
+    "ReasoningNodeLink",
+    "ReasoningNodeStatus",
+    "ReasoningNodeType",
+    "ReasoningSessionPhase",
+    "ReasoningSessionStatus",
+    "ReasoningSource",
     "ReasoningState",
     "ReasoningStatus",
+    "ReasoningTurnAction",
     "ReminderState",
     "ResearchCache",
     "ResearchCacheStatus",
