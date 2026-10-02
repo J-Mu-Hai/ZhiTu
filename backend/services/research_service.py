@@ -33,6 +33,7 @@ import logging
 import time
 from dataclasses import dataclass
 from datetime import UTC
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -115,12 +116,45 @@ async def _fetch_tavily(query: str) -> list[dict]:
     return list(results) if isinstance(results, list) else []
 
 
+def _hostname_of(url: str) -> str | None:
+    """用 URL parser 取 hostname。**不用字符串包含。**"""
+    try:
+        host = urlsplit(url).hostname
+    except ValueError:
+        return None
+    if not host:
+        return None
+    return host.rstrip(".").lower()
+
+
 def _allowed_domains() -> tuple[str, ...]:
-    return tuple(
-        part.strip().lower()
-        for part in (settings.research_allowed_domains or "").split(",")
-        if part.strip()
-    )
+    entries: list[str] = []
+    for part in (settings.research_allowed_domains or "").split(","):
+        raw = part.strip().lower().lstrip(".")
+        if not raw:
+            continue
+        if "://" in raw:
+            host = _hostname_of(raw)
+            if host:
+                entries.append(host)
+            continue
+        # 去掉端口。
+        if ":" in raw and raw.count(":") == 1:
+            raw = raw.split(":", 1)[0]
+        entries.append(raw.rstrip("."))
+    return tuple(dict.fromkeys(entries))
+
+
+def domain_allowed(host: str, allowed: tuple[str, ...]) -> bool:
+    """只允许**精确域名**或**点边界子域名**。空白名单 = 不限制。
+
+    `gov.cn` 允许 `www.gov.cn`,但 `gov.cn.evil.example` 不算 —— 这是字符串包含
+    匹配会放过的绕过方式。
+    """
+    if not allowed:
+        return True
+    normalized = host.rstrip(".").lower()
+    return any(normalized == domain or normalized.endswith("." + domain) for domain in allowed)
 
 
 def _to_sources(raw: list[dict]) -> tuple[ResearchSource, ...]:
@@ -135,7 +169,8 @@ def _to_sources(raw: list[dict]) -> tuple[ResearchSource, ...]:
         content = str(item.get("content") or "").strip()
         if not url or not title:
             continue
-        if allowed and not any(domain in url.lower() for domain in allowed):
+        host = _hostname_of(url)
+        if not host or not domain_allowed(host, allowed):
             continue
         sources.append(
             ResearchSource(
@@ -236,6 +271,7 @@ __all__ = [
     "ResearchOutcome",
     "ResearchSource",
     "clear_cache",
+    "domain_allowed",
     "normalize_query",
     "provider_ready",
     "search",

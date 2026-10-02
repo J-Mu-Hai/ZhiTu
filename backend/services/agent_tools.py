@@ -365,8 +365,50 @@ _RESEARCH_PRIVATE_MARKERS = (
     "postgres://",
     "postgresql",
 )
+#: 私有/内部标识(带这些词的查询不应出网)。
+_RESEARCH_PRIVATE_URL_MARKERS = (
+    "cookie",
+    "sessionid",
+    "session_id",
+    "access_token",
+    "private",
+    "internal use",
+    "内网",
+    "内部资料",
+    "我的邮箱",
+    "我的手机号",
+)
 _UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 _HEX_RE = re.compile(r"\b[0-9a-f]{32,}\b")
+#: 邮箱、手机号、证件/卡号 —— 属于“只有用户知道”的个人信息,不能送去公网搜索。
+_EMAIL_RE = re.compile(r"[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}", re.IGNORECASE)
+_CN_MOBILE_RE = re.compile(r"(?<!\d)(?:\+?86[\s-]?)?1[3-9]\d{9}(?!\d)")
+_INTL_PHONE_RE = re.compile(r"\+\d[\d\s().\-]{7,}\d")
+_ID_CARD_RE = re.compile(r"(?<!\d)\d{17}[\dXx](?!\d)")
+_BANK_CARD_RE = re.compile(r"(?<!\d)\d{13,19}(?!\d)")
+#: 私有/内部地址与域名。
+_PRIVATE_HOST_TOKENS = (
+    "localhost",
+    "127.0.0.1",
+    "0.0.0.0",
+    "::1",
+    ".local",
+    ".internal",
+    ".corp",
+    ".lan",
+    ".home",
+)
+_PRIVATE_IP_RE = re.compile(
+    r"(?<!\d)(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}"
+    r"|192\.168\.\d{1,3}\.\d{1,3}"
+    r"|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})(?!\d)"
+)
+
+
+def _looks_private_host(text: str) -> bool:
+    if any(token in text for token in _PRIVATE_HOST_TOKENS):
+        return True
+    return _PRIVATE_IP_RE.search(text) is not None
 
 
 def _sanitize_research_query(query: object) -> str:
@@ -381,12 +423,26 @@ def _sanitize_research_query(query: object) -> str:
     limit = settings.research_max_query_chars or RESEARCH_QUERY_MAX_CHARS
     if len(text) > limit:
         raise ToolRejected(f"研究关键词最多 {limit} 字。")
+    # 整段对话/多行文本不是“关键词”。
+    if "\n" in text or "\r" in text:
+        raise ToolRejected("研究关键词只能是短语,不能是整段对话。")
     lowered = text.lower()
     for marker in _RESEARCH_PRIVATE_MARKERS:
         if marker in lowered:
             raise ToolRejected("研究关键词里不能包含密钥、令牌、连接串等私密内容。")
+    for marker in _RESEARCH_PRIVATE_URL_MARKERS:
+        if marker in lowered:
+            raise ToolRejected("研究关键词里不能包含私有或内部标识。")
+    if _EMAIL_RE.search(text):
+        raise ToolRejected("研究关键词里不能包含邮箱等个人标识。")
+    if _CN_MOBILE_RE.search(text) or _INTL_PHONE_RE.search(text):
+        raise ToolRejected("研究关键词里不能包含电话号码等个人标识。")
+    if _ID_CARD_RE.search(text) or _BANK_CARD_RE.search(text):
+        raise ToolRejected("研究关键词里不能包含证件号或卡号等个人标识。")
     if _UUID_RE.search(lowered) or _HEX_RE.search(lowered):
         raise ToolRejected("研究关键词里不能包含内部 id。")
+    if _looks_private_host(lowered):
+        raise ToolRejected("研究关键词里不能包含私有地址或内部域名。")
     return text
 
 

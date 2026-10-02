@@ -161,6 +161,45 @@ async def test_query_with_private_marker_is_rejected() -> None:
         agent_tools._sanitize_research_query("token sk-abcdefghijklmnop")
 
 
+def test_pii_and_private_targets_are_rejected_before_any_request() -> None:
+    for bad in (
+        "联系我 alice@example.com",
+        "手机号 13812345678",
+        "身份证 11010119900307123X",
+        "卡号 6222020200112233445",
+        "内网 192.168.1.10 服务怎么用",
+        "http://localhost:8000/private",
+        "company.internal 的接口",
+    ):
+        with pytest.raises(agent_tools.ToolRejected):
+            agent_tools._sanitize_research_query(bad)
+    # 多行 = 整段对话,不是关键词。
+    with pytest.raises(agent_tools.ToolRejected):
+        agent_tools._sanitize_research_query("第一行\n第二行")
+
+
+def test_domain_allowlist_is_boundary_safe() -> None:
+    assert research_service.domain_allowed("gov.cn", ("gov.cn",)) is True
+    assert research_service.domain_allowed("www.gov.cn", ("gov.cn",)) is True
+    assert research_service.domain_allowed("gov.cn.evil.example", ("gov.cn",)) is False
+    assert research_service.domain_allowed("evil-gov.cn", ("gov.cn",)) is False
+    assert research_service.domain_allowed("anything.test", ()) is True
+    assert research_service._hostname_of("https://www.gov.cn:8443/a?q=1") == "www.gov.cn"
+
+
+async def test_allowlisted_domain_cannot_be_bypassed(db, monkeypatch: pytest.MonkeyPatch) -> None:
+    _enable(monkeypatch, research_allowed_domains="gov.cn")
+    _mock_search(
+        monkeypatch,
+        [
+            {"title": "恶意", "url": "https://gov.cn.evil.example/x", "content": "no"},
+            {"title": "合法", "url": "https://www.gov.cn/x", "content": "ok"},
+        ],
+    )
+    outcome = await research_service.search(db, "公开政策")
+    assert [s.url for s in outcome.sources] == ["https://www.gov.cn/x"]
+
+
 # ---------------------------------------------------------------------------------
 # 通过工具循环:每轮一次 + 密钥不外泄 + 记录可追踪
 # ---------------------------------------------------------------------------------
