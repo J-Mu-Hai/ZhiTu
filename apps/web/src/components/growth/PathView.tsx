@@ -746,6 +746,14 @@ function Canvas() {
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   //: 画布上被“指着”的问题节点(来自点击,或来自右侧“定位到画布”)。这是纯 UI 状态。
   const [focusedQuestionId, setFocusedQuestionId] = useState<string | null>(null);
+  /**
+   * “思考层”是否展开。**默认折叠。**
+   *
+   * 阶段 8 的路线优先:主画布只放 根目标 → 推荐路线 → 阶段。决策维度、风险、假设、
+   * 多余的问题都是**思考材料**,不该和主线阶段平铺。它们仍然在,只是默认不占主画布
+   * 空间;点“思考层”才展开。它是纯 UI 状态,不进任何存储、不影响主路线。
+   */
+  const [showThinking, setShowThinking] = useState(false);
   const lastQuestionFocusNonce = useRef<number>(-1);
   //: 每个问题节点的输入草稿。放在这里而不是节点组件里 —— React Flow 重建节点时
   //: 组件局部 state 会被清空(点了选项按钮又变灰)。
@@ -885,6 +893,23 @@ function Canvas() {
    * 内容。三者都不存在时才显示空态;一旦地图存在,空态**完全不渲染**,不占画布位置。
    */
   const visibleQuestions = questions.filter((item) => item.status !== 'archived').length;
+  /**
+   * 折叠进“思考层”的东西有多少:非 route/stage 的推理节点 + 多余的问题。
+   * 只用于按钮上的数字,不参与布局。
+   */
+  const roadmapNodeHandles = new Set(
+    (reasoning?.nodes ?? [])
+      .filter((node) => node.nodeType === 'route' || node.nodeType === 'stage')
+      .map((node) => node.handle),
+  );
+  const thinkingCount =
+    (reasoning?.nodes.filter((node) => !roadmapNodeHandles.has(node.handle)).length ?? 0) +
+    Math.max(0, visibleQuestions - 1);
+  /** 只有真的存在**路线图**(route + stage)时才有“可折叠的思考层”。旧地图
+   *  (只有一级维度)全部直接展示 —— 否则折叠之后画布就空了。 */
+  const hasThinkingLayer =
+    (reasoning?.nodes ?? []).some((node) => node.nodeType === 'route') &&
+    (reasoning?.nodes ?? []).some((node) => node.nodeType === 'stage');
   const canvasHasContent =
     direct.length > 0 || (reasoning?.nodes.length ?? 0) > 0 || visibleQuestions > 0;
   // 对话框标题用。真实空间的根节点标题可能是空的(建空间时用户只填了空间名),
@@ -1085,10 +1110,15 @@ function Canvas() {
     const orderedQuestions = [...questions].sort((a, b) =>
       a.createdAt === b.createdAt ? a.id.localeCompare(b.id) : a.createdAt.localeCompare(b.createdAt),
     );
-    const primaryQuestionId = orderedQuestions.find((item) => item.status === 'pending')?.id ?? null;
+    const primaryQuestionId =
+      orderedQuestions.find((item) => item.status === 'pending')?.id ??
+      orderedQuestions.find((item) => item.status !== 'archived')?.id ??
+      null;
+    // **主画布只放当前一个活动问题。** 其余问题折进“思考层”的计数里 —— 六七张问题卡
+    // 和阶段节点并列会把主线读没(见 `showThinking`)。
+    const shownQuestions = orderedQuestions.filter((item) => item.id === primaryQuestionId);
     const anchorCounts: Record<string, number> = {};
-    orderedQuestions.forEach((item) => {
-      if (item.status === 'archived') return;
+    shownQuestions.forEach((item) => {
       const anchorId = item.sourceNodeId && positionById[item.sourceNodeId] ? item.sourceNodeId : spaceId;
       const anchor = positionById[anchorId] ?? { x: 0, y: 0 };
       const index = anchorCounts[anchorId] ?? 0;
@@ -1097,10 +1127,9 @@ function Canvas() {
       const positionKey = `${spaceId}:${nodeId}`;
       // 用户拖过就听用户的(UI-only 位置表);否则给一个确定性的扇出位置,
       // 保证同一锚点下多个问题不堆叠、刷新前后一致。
-      const fallback = {
-        x: anchor.x + 40 + (index % 2) * 300,
-        y: anchor.y + 150 + Math.floor(index / 2) * 210,
-      };
+      // 放在锚点(根目标)的**留白侧**，而不是往下铺 —— 主路线是竖向的，
+      // 问题卡压在路线上就没法读了。
+      const fallback = { x: anchor.x + 380, y: anchor.y - 10 };
       const placed = questionDragging[positionKey] ?? questionPositions[positionKey] ?? fallback;
       nextNodes.push({
         id: nodeId,
@@ -1140,22 +1169,78 @@ function Canvas() {
     // ---- 目标推理地图(纯 UI 投影,不是业务节点) ----------------------------
     // 它和 `growth`、`question` 是三种不同的节点类型。位置是确定性算出来的 ——
     // 推理节点不进业务位置表,刷新后按同一规则重建。
+    //
+    // 阶段 8:**路线优先**。主画布只放 根目标 → 推荐路线 → 阶段 1 → 阶段 2 …
+    // 其余推理节点(维度/风险/假设/多余的讨论)是“思考层”,默认折叠、不占主画布。
     if (reasoning && reasoning.nodes.length > 0) {
       const anchor = positionById[spaceId] ?? { x: 0, y: 0 };
       const reasoningPos: Record<string, { x: number; y: number }> = {};
-      const primaries = reasoning.nodes.filter((item) => !item.parentHandle);
-      primaries.forEach((item, index) => {
-        reasoningPos[item.handle] = { x: anchor.x + index * 300, y: anchor.y + 430 };
-      });
-      for (const item of reasoning.nodes) {
-        if (!item.parentHandle) continue;
-        const parent = reasoningPos[item.parentHandle] ?? { x: anchor.x, y: anchor.y + 430 };
-        const siblings = reasoning.nodes.filter((node) => node.parentHandle === item.parentHandle);
-        const index = siblings.indexOf(item);
-        reasoningPos[item.handle] = { x: parent.x + (index + 1) * 220, y: parent.y + 160 };
+      const nodeIdOf = (handle: string) => `reasoning:${handle}`;
+      // 用**真实 measured 高度**推进,长卡片不会和下一张叠上。
+      const heightOf = (handle: string, fallback = 120) =>
+        measurements[nodeIdOf(handle)]?.height ?? fallback;
+
+      // 一条“可当主路线”的 route:它至少有 3 个 stage 孩子。没有就退回旧布局
+      // —— 存量地图是 4–8 个一级维度,没有 route/stage。不丢数据。
+      const routeNodes = reasoning.nodes.filter(
+        (item) => item.nodeType === 'route' && !item.parentHandle,
+      );
+      const stagesOf = (handle: string) =>
+        reasoning.nodes.filter((item) => item.nodeType === 'stage' && item.parentHandle === handle);
+      const roadmapRoute = routeNodes.find((route) => stagesOf(route.handle).length >= 3) ?? null;
+      const byHandleOrder = (a: { handle: string }, b: { handle: string }) =>
+        a.handle.localeCompare(b.handle, undefined, { numeric: true });
+
+      if (roadmapRoute) {
+        // 竖排主链:根目标(已由业务布局排好)→ 路线 → 阶段 1 → 阶段 2 …
+        let cursor = anchor.y + (measurements[spaceId]?.height ?? 155) + 120;
+        reasoningPos[roadmapRoute.handle] = { x: anchor.x, y: cursor };
+        cursor += heightOf(roadmapRoute.handle, 110) + 80;
+        for (const stage of stagesOf(roadmapRoute.handle).sort(byHandleOrder)) {
+          reasoningPos[stage.handle] = { x: anchor.x, y: cursor };
+          cursor += heightOf(stage.handle, 150) + 72;
+        }
+      } else {
+        // 旧布局:一级节点横排、子节点挂右侧。保留是为了不丢存量地图。
+        const primaries = reasoning.nodes.filter((item) => !item.parentHandle);
+        primaries.forEach((item, index) => {
+          reasoningPos[item.handle] = { x: anchor.x + index * 300, y: anchor.y + 430 };
+        });
+        for (const item of reasoning.nodes) {
+          if (!item.parentHandle) continue;
+          const parent = reasoningPos[item.parentHandle] ?? { x: anchor.x, y: anchor.y + 430 };
+          const siblings = reasoning.nodes.filter((node) => node.parentHandle === item.parentHandle);
+          const index = siblings.indexOf(item);
+          reasoningPos[item.handle] = { x: parent.x + (index + 1) * 220, y: parent.y + 160 };
+        }
       }
-      for (const item of reasoning.nodes) {
-        const nodeId = `reasoning:${item.handle}`;
+
+      // 思考层:展开时才排;放在主路线**右侧**,竖向堆叠,不与主线争空间。
+      const roadmapHandles = new Set<string>();
+      if (roadmapRoute) {
+        roadmapHandles.add(roadmapRoute.handle);
+        for (const stage of stagesOf(roadmapRoute.handle)) roadmapHandles.add(stage.handle);
+      }
+      if (showThinking) {
+        const thinking = reasoning.nodes.filter((item) => !roadmapHandles.has(item.handle));
+        const originX = anchor.x + (roadmapRoute ? 460 : 0);
+        let cursorY = anchor.y + 430;
+        for (const item of thinking.filter((node) => !node.parentHandle)) {
+          reasoningPos[item.handle] = { x: originX, y: cursorY };
+          cursorY += heightOf(item.handle, 120) + 90;
+        }
+        for (const item of thinking) {
+          if (!item.parentHandle) continue;
+          const parent = reasoningPos[item.parentHandle] ?? { x: originX, y: anchor.y + 430 };
+          const siblings = thinking.filter((node) => node.parentHandle === item.parentHandle);
+          const index = siblings.indexOf(item);
+          reasoningPos[item.handle] = { x: parent.x + 260, y: parent.y + index * 180 };
+        }
+      }
+
+      const renderedReasoning = reasoning.nodes.filter((item) => reasoningPos[item.handle]);
+      for (const item of renderedReasoning) {
+        const nodeId = nodeIdOf(item.handle);
         nextNodes.push({
           id: nodeId,
           type: 'reasoning',
@@ -1167,22 +1252,30 @@ function Canvas() {
           // 而反复重测 —— 那是悬停/重建时闪烁的直接机制(与问题节点同一条)。
           measured: measurements[nodeId],
           ariaLabel: item.title,
-          position: reasoningPos[item.handle] ?? { x: anchor.x, y: anchor.y + 430 },
+          position: reasoningPos[item.handle],
           data: {
             node: item,
             isFocus: item.handle === reasoning.focusHandle,
           },
         });
       }
-      // 讨论锚定线:每个**顶层**推理节点(没有 `parentHandle` 的)都与当前目标
-      // 根节点连一条 UI-only 虚线,表达"这一层讨论是从这个目标长出来的"。
-      // 它继承的是绘制语义,不是业务语义:不进 NodeRelation、不是 depends_on、
-      // 不写任何表、不参与排期(见 `ReasoningAnchorEdge` 与验收用例)。
-      for (const item of primaries) {
+
+      const renderedHandles = new Set(renderedReasoning.map((item) => item.handle));
+      const linkPairs = new Set(
+        reasoning.links.map((link) => `${link.sourceHandle}->${link.targetHandle}`),
+      );
+      // 讨论锚定线:**顶层**节点锚到根目标,有父节点的(阶段)锚到父节点 —— 但父子的
+      // 语义链接已经在 `reasoning.links` 里画了就不重复画。它继承的是绘制语义,
+      // 不是业务语义:不进 NodeRelation、不写表、不参与排期(见 `ReasoningAnchorEdge`)。
+      for (const item of renderedReasoning) {
+        const parent = item.parentHandle;
+        if (parent && (!renderedHandles.has(parent) || linkPairs.has(`${parent}->${item.handle}`))) {
+          continue;
+        }
         nextEdges.push({
           id: `reasoning-anchor:${item.handle}`,
-          source: spaceId,
-          target: `reasoning:${item.handle}`,
+          source: parent ? nodeIdOf(parent) : spaceId,
+          target: nodeIdOf(item.handle),
           type: 'reasoningAnchor',
           className: 'reasoning-anchor-edge',
           // 不可选、不可删、不可重新连接、不可聚焦;压在节点与真实关系之下。
@@ -1194,11 +1287,11 @@ function Canvas() {
         });
       }
       for (const link of reasoning.links) {
-        if (!reasoningPos[link.sourceHandle] || !reasoningPos[link.targetHandle]) continue;
+        if (!renderedHandles.has(link.sourceHandle) || !renderedHandles.has(link.targetHandle)) continue;
         nextEdges.push({
           id: `reasoning-link:${link.id}`,
-          source: `reasoning:${link.sourceHandle}`,
-          target: `reasoning:${link.targetHandle}`,
+          source: nodeIdOf(link.sourceHandle),
+          target: nodeIdOf(link.targetHandle),
           type: 'reasoningLink',
           selectable: false,
           deletable: false,
@@ -1239,7 +1332,7 @@ function Canvas() {
       });
     });
     return { nodes: nextNodes, edges: nextEdges };
-  }, [growth, spaceId, isRootSpace, selectedId, selectedEdgeId, positions, dragging, questionPositions, questionDragging, files, measurements, handleMore, createdId, drawnEdgeId, clearCreated, clearDrawn, questions, focusedQuestionId, reasoning]);
+  }, [growth, spaceId, isRootSpace, selectedId, selectedEdgeId, positions, dragging, questionPositions, questionDragging, files, measurements, handleMore, createdId, drawnEdgeId, clearCreated, clearDrawn, questions, focusedQuestionId, reasoning, showThinking]);
 
   /*
    * hover / 拖动的高亮**只作用在边对象上**。
@@ -2011,6 +2104,19 @@ function Canvas() {
           onClick={() => { void refineStrategy(); }}
         >
           {refining ? '正在细化…' : '细化第一阶段'}
+        </button>
+      )}
+      {hasThinkingLayer && (
+        <button
+          className="thinking-toggle"
+          type="button"
+          aria-expanded={showThinking}
+          onClick={() => setShowThinking((value) => !value)}
+          title="决策维度、风险、假设与其余待澄清因素 —— 默认不占主画布"
+        >
+          <GitBranch size={14} />
+          {showThinking ? '收起思考层' : '思考层'}
+          {thinkingCount > 0 && <small>{thinkingCount}</small>}
         </button>
       )}
       {!canvasHasContent && (

@@ -34,7 +34,8 @@
             "status": "exploring",
             "timeframe": "约 2 周",
             "deliverable": "一组可运行的小练习",
-            "passCriteria": "能独立读写文件、写函数与循环"
+            "passCriteria": "能独立读写文件、写函数与循环",
+            "evidence": ["公开来源：Python 官方教程（example.edu.cn）"]
           },
           {
             "handle": "r3",
@@ -68,6 +69,20 @@
             "timeframe": "约 3 周",
             "deliverable": "一个可展示的项目",
             "passCriteria": "能在 10 分钟内讲清项目与结论"
+          },
+          {
+            "handle": "r6",
+            "title": "风险：时间可能不够",
+            "nodeType": "risk",
+            "parent": null,
+            "summary": "每周 150 分钟偏紧，需要接受范围收窄。",
+            "status": "exploring",
+            "importance": 3,
+            "uncertainty": 3,
+            "urgency": 2,
+            "impact": 3,
+            "confidence": 2,
+            "rationale": "它会改变总时长估计"
           }
         ],
         "links": [

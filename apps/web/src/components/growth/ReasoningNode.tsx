@@ -86,6 +86,18 @@ export function ReasoningNodeComponent({ data }: NodeProps<ReasoningFlowNode>) {
       {node.assumptions.length > 0 && (
         <p className="rn-assumption">含 {node.assumptions.length} 条假设</p>
       )}
+      {/*
+       * 研究 / 依据。**默认折叠** —— 阶段 8 里研究只作为阶段或推理节点的证据摘要，
+       * 不成为主路线上的独立大节点。用户展开“资料与依据”才看到具体条目。
+       */}
+      {node.evidence.length > 0 && (
+        <details className="rn-evidence">
+          <summary>资料与依据（{node.evidence.length}）</summary>
+          <ul>
+            {node.evidence.map((item, index) => <li key={index}>{item}</li>)}
+          </ul>
+        </details>
+      )}
       <Handle type="source" position={Position.Bottom} isConnectable={false} />
     </div>
   );

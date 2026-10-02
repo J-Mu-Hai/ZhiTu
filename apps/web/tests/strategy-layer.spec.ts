@@ -68,6 +68,43 @@ test('路线优先:先给推荐路线与阶段,确认战略后才允许细化', 
     '路线阶段不该被写进执行计划',
   ).toBe(false);
 
+  // ---- 1b. 思考层默认折叠:风险/维度不占主画布，点开才出现 ----
+  const thinkingToggle = page.getByRole('button', { name: /思考层/ });
+  await expect(thinkingToggle, '没有思考层开关').toBeVisible();
+  const riskCard = page.locator('.reasoning-node').filter({ hasText: '时间可能不够' });
+  await expect(riskCard, '风险节点默认不该占主画布').toHaveCount(0);
+  await thinkingToggle.click();
+  await expect(page.getByRole('button', { name: '收起思考层' })).toBeVisible();
+  await expect(riskCard, '展开思考层后应该看得到风险节点').toBeVisible();
+  await page.getByRole('button', { name: '收起思考层' }).click();
+  await expect(riskCard).toHaveCount(0);
+
+  // ---- 1d. 研究只做证据，不是主路线上的独立节点 ----
+  // 没有配置联网时路线照常生成（上面已经看到）；来源只折叠在阶段的“资料与依据”里。
+  const evidence = page.locator('.reasoning-node').filter({ hasText: '阶段 1' }).locator('.rn-evidence');
+  await expect(evidence, '阶段缺少“资料与依据”').toHaveCount(1);
+  await expect(evidence.locator('ul'), '依据默认应该是折叠的').not.toBeVisible();
+  await evidence.locator('summary').click();
+  await expect(evidence.locator('ul')).toBeVisible();
+  // 主路线节点里没有“研究/来源”这一类独立大节点。
+  await expect(page.locator('.reasoning-node .rn-type').filter({ hasText: '研究' })).toHaveCount(0);
+
+  // ---- 1c. 主路线节点之间不重叠 ----
+  const boxes = await page.locator('.react-flow__node-reasoning').evaluateAll((els) =>
+    els.map((el) => {
+      const rect = el.getBoundingClientRect();
+      return { x: rect.x, y: rect.y, w: rect.width, h: rect.height };
+    }),
+  );
+  for (let i = 0; i < boxes.length; i += 1) {
+    for (let j = i + 1; j < boxes.length; j += 1) {
+      const a = boxes[i];
+      const b = boxes[j];
+      const overlap = a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+      expect(overlap, `推理节点重叠:${JSON.stringify(a)} vs ${JSON.stringify(b)}`).toBe(false);
+    }
+  }
+
   // ---- 2. 战略阶段不问执行细节 ----
   // 最多一个活动问题;而且不问“每周投入”(用户已经给了 150 分钟)。
   await expect(questionCard(page), '战略阶段最多一个问题').toHaveCount(1);
