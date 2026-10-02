@@ -33,6 +33,7 @@ import re
 from datetime import date
 from typing import Any
 
+from backend.agent.prompts.goal_reasoning import render_reasoning_turn
 from backend.agent.prompts.planning import (
     TURN_TEMPLATE,
     render_brief_section,
@@ -48,6 +49,9 @@ from backend.agent.runtime.base import (
     BriefClaim,
     QuestionDraft,
     QuestionOptionDraft,
+    ReasoningMapDraft,
+    ReasoningMapLinkDraft,
+    ReasoningMapNodeDraft,
     ReasoningResult,
     ToolRequest,
     TurnContext,
@@ -138,6 +142,9 @@ def render_turn(turn: TurnContext) -> str:
     拒绝。反过来,`node_handles` 里那份记号到真实 id 的映射**绝不能**出现在这里,
     见 `base.TurnContext` 的注释。
     """
+    if turn.purpose == "goal_reasoning":
+        # 目标推理回合走另一份模板:它关心的是决策维度与取舍,不是任务拆解。
+        return render_reasoning_turn(turn)
     known = {
         "goal": turn.known.goal,
         "deadline": turn.known.deadline,
@@ -230,7 +237,16 @@ def render_turn(turn: TurnContext) -> str:
 #: 所以键的来源收在这里一处:加一栏只改 `parse_analysis` 与这个常量,测试会替人
 #: 盯住 `OUTPUT_CONFIG` 有没有跟上。
 PARSED_PAYLOAD_FIELDS = frozenset(
-    {"reply", "brief", "actions", "questions", "toolRequests", "stopReason", "analysis"}
+    {
+        "reply",
+        "brief",
+        "actions",
+        "questions",
+        "toolRequests",
+        "stopReason",
+        "analysis",
+        "reasoningMap",
+    }
 )
 
 
@@ -271,6 +287,7 @@ def payload_to_result(
         tool_requests=parse_tool_requests(payload.get("toolRequests")),
         stop_reason=parse_stop_reason(payload.get("stopReason")),
         analysis=parse_analysis(payload.get("analysis")),
+        reasoning_map=parse_reasoning_map(payload.get("reasoningMap")),
         request_id=request_id,
         prompt_version=prompt_version,
         model_name=model_name,
@@ -497,6 +514,156 @@ def parse_stop_reason(raw: Any) -> str | None:
 
 
 # ---------------------------------------------------------------------------------
+# reasoningMap(目标推理地图)
+# ---------------------------------------------------------------------------------
+#: 闭集。与 `db/models/enums.py` 的取值逐字对应 —— 这里多一个,服务层就写不进库。
+REASONING_NODE_TYPES = frozenset(
+    {"dimension", "question", "risk", "resource", "route", "assumption"}
+)
+REASONING_NODE_STATUSES = frozenset(
+    {"unexplored", "exploring", "resolved", "paused", "archived"}
+)
+REASONING_SOURCES = frozenset({"agent", "user", "research"})
+REASONING_LINK_TYPES = frozenset({"depends_on", "influences"})
+REASONING_PHASES = frozenset(
+    {
+        "strategic_exploration",
+        "strategic_convergence",
+        "awaiting_strategy_confirmation",
+        "execution_planning",
+        "monitoring",
+    }
+)
+REASONING_ACTIONS = frozenset(
+    {"ask_user", "analyze", "expand", "confirm", "pause", "complete", "revisit"}
+)
+
+#: 一次最多接受多少个地图节点 / 连线(护栏,防模型复读)。服务层还会再夹总上限。
+MAX_REASONING_NODES = 24
+MAX_REASONING_LINKS = 40
+#: 一个地图节点标题 / 摘要 / 理由的长度上限。
+MAX_REASONING_TITLE_CHARS = 200
+MAX_REASONING_TEXT_CHARS = 1000
+
+
+def _clean_text_list(raw: Any, limit: int = 12) -> tuple[str, ...]:
+    if raw is None:
+        return ()
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return ()
+    out: list[str] = []
+    for entry in raw[:limit]:
+        if isinstance(entry, dict):
+            entry = entry.get("text") or entry.get("value")
+        if isinstance(entry, str) and entry.strip():
+            out.append(entry.strip()[:MAX_REASONING_TEXT_CHARS])
+    return tuple(out)
+
+
+def _clean_reasoning_score(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    return max(0, min(5, int(value)))
+
+
+def parse_reasoning_map(raw: Any) -> ReasoningMapDraft | None:
+    """把模型的 `reasoningMap` 变成一份**形状合法**的草稿。
+
+    **只做形状判断** —— 父子引用是否成环、handle 是否与已有节点冲突、战略阶段的
+    问题是否合规,都需要数据库状态,在 `reasoning_service` 里做。这里丢掉的是
+    "连形状都不对"的条目,留着会让服务层的校验器多出一堆特例分支。
+    """
+    if not isinstance(raw, dict):
+        return None
+
+    nodes: list[ReasoningMapNodeDraft] = []
+    seen_handles: set[str] = set()
+    for entry in (raw.get("nodes") or [])[:MAX_REASONING_NODES]:
+        if not isinstance(entry, dict):
+            continue
+        handle = entry.get("handle")
+        title = entry.get("title")
+        if not isinstance(handle, str) or not handle.strip():
+            continue
+        if not isinstance(title, str) or not title.strip():
+            continue
+        clean_handle = handle.strip()[:16]
+        if clean_handle in seen_handles:
+            # 同一份草稿里重复的 handle:丢掉后一个,而不是让唯一约束在写入时炸。
+            logger.info("reasoningMap 出现重复 handle,已丢弃:%s", clean_handle)
+            continue
+        seen_handles.add(clean_handle)
+        node_type = entry.get("nodeType")
+        status = entry.get("status")
+        source = entry.get("source")
+        parent = entry.get("parent")
+        summary = entry.get("summary")
+        rationale = entry.get("rationale")
+        nodes.append(
+            ReasoningMapNodeDraft(
+                handle=clean_handle,
+                title=title.strip()[:MAX_REASONING_TITLE_CHARS],
+                node_type=node_type if node_type in REASONING_NODE_TYPES else "dimension",
+                parent_handle=parent.strip()[:16] if isinstance(parent, str) and parent.strip() else None,
+                summary=summary.strip()[:MAX_REASONING_TEXT_CHARS] if isinstance(summary, str) and summary.strip() else None,
+                status=status if status in REASONING_NODE_STATUSES else None,
+                importance=_clean_reasoning_score(entry.get("importance")),
+                uncertainty=_clean_reasoning_score(entry.get("uncertainty")),
+                urgency=_clean_reasoning_score(entry.get("urgency")),
+                impact=_clean_reasoning_score(entry.get("impact")),
+                confidence=_clean_reasoning_score(entry.get("confidence")),
+                rationale=rationale.strip()[:MAX_REASONING_TEXT_CHARS] if isinstance(rationale, str) and rationale.strip() else None,
+                assumptions=_clean_text_list(entry.get("assumptions")),
+                evidence=_clean_text_list(entry.get("evidence")),
+                source=source if source in REASONING_SOURCES else "agent",
+            )
+        )
+
+    links: list[ReasoningMapLinkDraft] = []
+    for entry in (raw.get("links") or [])[:MAX_REASONING_LINKS]:
+        if not isinstance(entry, dict):
+            continue
+        source = entry.get("source")
+        target = entry.get("target")
+        if not isinstance(source, str) or not isinstance(target, str):
+            continue
+        source, target = source.strip()[:16], target.strip()[:16]
+        if not source or not target or source == target:
+            continue
+        # 两端必须在本轮的 nodes 里或在已有节点里(服务层再校验已有节点)。
+        if source not in seen_handles and target not in seen_handles:
+            continue
+        link_type = entry.get("type")
+        note = entry.get("note")
+        links.append(
+            ReasoningMapLinkDraft(
+                source_handle=source,
+                target_handle=target,
+                link_type=link_type if link_type in REASONING_LINK_TYPES else "influences",
+                note=note.strip()[:MAX_REASONING_TEXT_CHARS] if isinstance(note, str) and note.strip() else None,
+            )
+        )
+
+    if not nodes and not links:
+        return None
+
+    focus = raw.get("focus")
+    focus_reason = raw.get("focusReason")
+    phase = raw.get("phase")
+    action = raw.get("turnAction")
+    return ReasoningMapDraft(
+        nodes=tuple(nodes),
+        links=tuple(links),
+        focus_handle=focus.strip()[:16] if isinstance(focus, str) and focus.strip() else None,
+        focus_reason=focus_reason.strip()[:MAX_REASONING_TEXT_CHARS] if isinstance(focus_reason, str) and focus_reason.strip() else None,
+        phase=phase if phase in REASONING_PHASES else None,
+        turn_action=action if action in REASONING_ACTIONS else None,
+    )
+
+
+# ---------------------------------------------------------------------------------
 # brief
 # ---------------------------------------------------------------------------------
 def parse_claims(raw_brief: Any) -> list[BriefClaim]:
@@ -710,12 +877,19 @@ __all__ = [
     "MINUTES_IN_WEEK",
     "PARSED_PAYLOAD_FIELDS",
     "QUESTION_RESPONSE_MODES",
+    "REASONING_ACTIONS",
+    "REASONING_LINK_TYPES",
+    "REASONING_NODE_STATUSES",
+    "REASONING_NODE_TYPES",
+    "REASONING_PHASES",
+    "REASONING_SOURCES",
     "PayloadInvalid",
     "clean_value",
     "parse_actions",
     "parse_analysis",
     "parse_claims",
     "parse_questions",
+    "parse_reasoning_map",
     "parse_stop_reason",
     "parse_tool_requests",
     "payload_from_chat_completion",

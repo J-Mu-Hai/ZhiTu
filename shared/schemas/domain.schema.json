@@ -2980,6 +2980,19 @@
           "title": "Question",
           "type": "string"
         },
+        "reasoningNodeId": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reasoningnodeid"
+        },
         "responseMode": {
           "title": "Responsemode",
           "type": "string"

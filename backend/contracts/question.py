@@ -58,6 +58,9 @@ class QuestionView(ApiModel):
     #: 在画布上找不到对应节点时不应再把它渲染成一个可跳转的引用。
     source_node_id: uuid.UUID | None = None
     source_message_id: uuid.UUID | None = None
+    #: 这个问题在目标推理地图上对应哪个节点。可空 —— 不是每个问题都来自地图。
+    #: 回答之后服务端靠它定位要重评的推理节点。
+    reasoning_node_id: uuid.UUID | None = None
     question: str
     why_now: str
     response_mode: str

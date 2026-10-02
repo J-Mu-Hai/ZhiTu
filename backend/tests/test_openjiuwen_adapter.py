@@ -239,6 +239,12 @@ def test_the_output_declaration_matches_what_the_parser_reads() -> None:
         ],
         "stopReason": "ready_to_propose",
         "analysis": {"known": ["n1 的正文里写着只能周末做"], "diagnosis": ["缺一个时长"]},
+        "reasoningMap": {
+            "phase": "strategic_exploration",
+            "focus": "r1",
+            "nodes": [{"handle": "r1", "title": "目标用途", "nodeType": "dimension"}],
+            "links": [],
+        },
     }
     assert set(payload) == set(OUTPUT_CONFIG), (
         "载荷的键与给 SDK 的输出声明对不上了 —— 有一边多写或少写了"
@@ -258,6 +264,8 @@ def test_the_output_declaration_matches_what_the_parser_reads() -> None:
     assert result.stop_reason == "ready_to_propose"
     assert result.analysis is not None, "解析器读了 analysis,结果里就必须有它"
     assert result.analysis.known == ("n1 的正文里写着只能周末做",)
+    assert result.reasoning_map is not None, "解析器读了 reasoningMap,结果里就必须有它"
+    assert result.reasoning_map.focus_handle == "r1"
 
 
 def test_the_forwarding_schemas_carry_every_declared_key() -> None:

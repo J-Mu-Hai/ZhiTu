@@ -92,6 +92,7 @@ from backend.agent.runtime.response import (
     parse_analysis,
     parse_claims,
     parse_questions,
+    parse_reasoning_map,
     parse_stop_reason,
     parse_tool_requests,
 )
@@ -164,12 +165,13 @@ def parse_script(raw: str) -> tuple[dict, ...]:
             "questions",
             "toolRequests",
             "stopReason",
+            "reasoningMap",
         }
         if unknown:
             # 静默忽略一个拼错的键(比如 `action`)会让整段脚本变成"什么都不提"。
             raise ScriptedConfigError(
                 f"{SCRIPT_ENV} 第 {index} 轮里有认不出的键:{'、'.join(sorted(unknown))}。"
-                "能写的是 reply / claims / actions / questions / toolRequests / stopReason / analysis。"
+                "能写的是 reply / claims / actions / questions / toolRequests / stopReason / analysis / reasoningMap。"
             )
     return tuple(turns)
 
@@ -258,6 +260,7 @@ class ScriptedReasoner:
             tool_requests=tuple(parse_tool_requests(scripted.get("toolRequests"))),
             stop_reason=parse_stop_reason(scripted.get("stopReason")),
             analysis=parse_analysis(scripted.get("analysis")),
+            reasoning_map=parse_reasoning_map(scripted.get("reasoningMap")),
             request_id=uuid.uuid4().hex,
             prompt_version=PROMPT_VERSION,
             model_name=None,

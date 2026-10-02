@@ -32,6 +32,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    Boolean,
     ForeignKey,
     Index,
     Integer,
@@ -94,6 +95,8 @@ class GoalReasoningSession(UuidPk, TimestampMixin, Base):
     map_version: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     #: 上一次成功探索时的输入摘要。幂等比较只用它,不用时间。
     input_version: Mapped[str | None] = mapped_column(String(128))
+    #: 最近一次成功回合的幂等键。同一把钥匙重放直接返回当前地图,不重复跑模型。
+    last_idempotency_key: Mapped[str | None] = mapped_column(String(64))
     #: 上一次失败的原因(可读,给人看)。成功后清空。**失败绝不写半成品地图。**
     last_error: Mapped[str | None] = mapped_column(Text)
     explored_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
@@ -133,6 +136,8 @@ class ReasoningNode(UuidPk, TimestampMixin, Base):
     #: 会话内稳定短记号(`r1`…)—— 模型只能用记号,不能用真实 UUID。
     handle: Mapped[str] = mapped_column(String(16), nullable=False)
     title: Mapped[str] = mapped_column(String(200), nullable=False)
+    #: 用户改过标题之后置真。**Agent 永远不再覆盖已锁定的标题。**
+    title_locked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     #: Agent 维护的摘要。**与用户原文分开**。
     summary: Mapped[str | None] = mapped_column(Text)
     #: 用户写的原文。**Agent 任何一轮都不许覆盖这一列。**

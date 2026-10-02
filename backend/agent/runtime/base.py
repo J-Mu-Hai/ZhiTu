@@ -381,6 +381,13 @@ class TurnContext:
     #: 而不是 dict,是为了和这个 dataclass 的"不可变"约定一致,也让它可哈希。
     node_handles: tuple[tuple[str, str], ...] = ()
 
+    #: 这一轮是"正常规划"还是"目标推理地图"回合。**两条路共用同一个 Reasoner 接缝**,
+    #: 由渲染层按 purpose 选提示词与输出形状。默认 `planning` —— 既有调用方一个字不改。
+    purpose: str = "planning"
+    #: 目标推理回合的当前地图快照(服务端渲染好的纯文本)。只有 `goal_reasoning` 用。
+    #: 它**不含真实 UUID**:节点用会话内短记号(`r1`…)表示。
+    reasoning_section: str = ""
+
 
 @dataclass(frozen=True, slots=True)
 class BriefClaim:
@@ -517,6 +524,51 @@ class ToolExchange:
 
 
 @dataclass(frozen=True, slots=True)
+class ReasoningMapNodeDraft:
+    """目标推理地图上的一个节点草稿。**还没有落库,也还没有校验。**
+
+    `handle` 是会话内短记号(`r1`…),由模型给出、由服务端校验与去重。用户字段
+    (`user_description`)**根本不在这里** —— 模型没有能力覆盖它。
+    """
+
+    handle: str
+    title: str
+    node_type: str = "dimension"
+    parent_handle: str | None = None
+    summary: str | None = None
+    status: str | None = None
+    importance: int = 0
+    uncertainty: int = 0
+    urgency: int = 0
+    impact: int = 0
+    confidence: int = 0
+    rationale: str | None = None
+    assumptions: tuple[str, ...] = ()
+    evidence: tuple[str, ...] = ()
+    source: str = "agent"
+
+
+@dataclass(frozen=True, slots=True)
+class ReasoningMapLinkDraft:
+    source_handle: str
+    target_handle: str
+    link_type: str = "influences"
+    note: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ReasoningMapDraft:
+    """一次目标推理回合产出的地图操作。**只到解析层,是否落库由服务层校验决定。**"""
+
+    nodes: tuple[ReasoningMapNodeDraft, ...] = ()
+    links: tuple[ReasoningMapLinkDraft, ...] = ()
+    focus_handle: str | None = None
+    focus_reason: str | None = None
+    phase: str | None = None
+    turn_action: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ReasoningResult:
     """一次模型调用的结果。**永远是可用的**,即使内容为空。"""
 
@@ -541,6 +593,9 @@ class ReasoningResult:
     stop_reason: str | None = None
     #: 模型这一轮形成的判断。None = 它这轮没给(纯聊天、纯提问)。
     analysis: AnalysisDraft | None = None
+    #: 目标推理回合产出的地图操作。None = 这一轮没有(或解析失败)。
+    #: **只有 `purpose == goal_reasoning` 的回合会读它。**
+    reasoning_map: ReasoningMapDraft | None = None
     request_id: str = ""
     prompt_version: str = ""
     model_name: str | None = None

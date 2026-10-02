@@ -23,6 +23,10 @@ from typing import Any
 
 import httpx
 
+from backend.agent.prompts.goal_reasoning import (
+    GOAL_REASONING_PROMPT_VERSION,
+    GOAL_REASONING_SYSTEM_PROMPT,
+)
 from backend.agent.prompts.planning import PROMPT_VERSION, SYSTEM_PROMPT
 from backend.agent.runtime.base import ReasoningResult, TurnContext
 from backend.agent.runtime.response import (
@@ -63,6 +67,7 @@ class DirectLLMReasoner:
     async def reason(self, turn: TurnContext) -> ReasoningResult:
         request_id = uuid.uuid4().hex
         started = time.monotonic()
+        system_prompt, prompt_version = _prompt_for(turn)
 
         if not self._settings.llm_api_key:
             # 没配 key 不算"失败",算"这条路没开"。retryable=False 是因为
@@ -72,9 +77,10 @@ class DirectLLMReasoner:
                 retryable=False,
                 request_id=request_id,
                 reply="还没有配置模型密钥,现在没法生成计划。",
+                prompt_version=prompt_version,
             )
 
-        payload = self._build_payload(turn)
+        payload = self._build_payload(turn, system_prompt)
         try:
             raw = await self._post(payload)
         except httpx.TimeoutException:
@@ -84,12 +90,14 @@ class DirectLLMReasoner:
                 request_id=request_id,
                 reply="这次响应太慢了,没能拿到结果。可以再试一次。",
                 started=started,
+                prompt_version=prompt_version,
             )
         except httpx.HTTPStatusError as exc:
             reason, retryable, reply = classify_http_error(exc)
             logger.warning("模型调用被拒绝: HTTP %s", exc.response.status_code)
             return self._degraded(
-                reason, retryable=retryable, request_id=request_id, reply=reply, started=started
+                reason, retryable=retryable, request_id=request_id, reply=reply, started=started,
+                prompt_version=prompt_version,
             )
         except httpx.RequestError:
             # 连不上(DNS、断网、代理)。**不把异常往上抛** ——
@@ -101,17 +109,24 @@ class DirectLLMReasoner:
                 request_id=request_id,
                 reply="连不上模型服务,没能生成回复。可以再试一次。",
                 started=started,
+                prompt_version=prompt_version,
             )
 
         latency_ms = int((time.monotonic() - started) * 1000)
-        return self._parse(raw, request_id=request_id, latency_ms=latency_ms, payload=payload)
+        return self._parse(
+            raw,
+            request_id=request_id,
+            latency_ms=latency_ms,
+            payload=payload,
+            prompt_version=prompt_version,
+        )
 
     # ---------------------------------------------------------------------------
-    def _build_payload(self, turn: TurnContext) -> dict[str, Any]:
+    def _build_payload(self, turn: TurnContext, system_prompt: str) -> dict[str, Any]:
         return {
             "model": self._settings.llm_model,
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 # 渲染出来的那段文本里全是 JSON 花括号 —— 它是**字面量**,不是模板。
                 {"role": "user", "content": render_turn(turn)},
             ],
@@ -137,6 +152,7 @@ class DirectLLMReasoner:
         request_id: str,
         latency_ms: int,
         payload: dict[str, Any],
+        prompt_version: str,
     ) -> ReasoningResult:
         try:
             body, usage = payload_from_chat_completion(raw)
@@ -144,7 +160,7 @@ class DirectLLMReasoner:
                 body,
                 source=ModelSource.DIRECT_LLM,
                 request_id=request_id,
-                prompt_version=PROMPT_VERSION,
+                prompt_version=prompt_version,
                 model_name=payload.get("model"),
                 latency_ms=latency_ms,
                 usage=usage,
@@ -160,6 +176,7 @@ class DirectLLMReasoner:
                 request_id=request_id,
                 reply="模型这次的回答没能解析出结果,可以再试一次。",
                 latency_ms=latency_ms,
+                prompt_version=prompt_version,
             )
 
     def _degraded(
@@ -171,6 +188,7 @@ class DirectLLMReasoner:
         reply: str,
         started: float | None = None,
         latency_ms: int | None = None,
+        prompt_version: str = PROMPT_VERSION,
     ) -> ReasoningResult:
         if latency_ms is None:
             latency_ms = int((time.monotonic() - started) * 1000) if started else None
@@ -181,10 +199,17 @@ class DirectLLMReasoner:
             degraded_reason=reason,
             retryable=retryable,
             request_id=request_id,
-            prompt_version=PROMPT_VERSION,
+            prompt_version=prompt_version,
             model_name=self._settings.llm_model,
             latency_ms=latency_ms,
         )
+
+
+def _prompt_for(turn: TurnContext) -> tuple[str, str]:
+    """按回合用途选系统提示词与版本号。**目标推理与正常规划是两份提示词。**"""
+    if turn.purpose == "goal_reasoning":
+        return GOAL_REASONING_SYSTEM_PROMPT, GOAL_REASONING_PROMPT_VERSION
+    return SYSTEM_PROMPT, PROMPT_VERSION
 
 
 __all__ = ["DirectLLMReasoner", "classify_http_error"]

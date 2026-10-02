@@ -147,6 +147,7 @@ async def create_from_drafts(
     *,
     source_message_id: uuid.UUID | None,
     source_node_id: uuid.UUID | None,
+    reasoning_node_id: uuid.UUID | None = None,
     strategy_phase: bool = False,
 ) -> list[AgentQuestion]:
     """把模型这一轮提的问题落库。**纯服务端校验在这里收口。**
@@ -210,6 +211,8 @@ async def create_from_drafts(
             workspace_id=ctx.id,
             source_node_id=source_node_id,
             source_message_id=source_message_id,
+            # 有推理地图时,把问题挂到它的地图节点上 —— 回答后靠它定位要重评的节点。
+            reasoning_node_id=reasoning_node_id,
             question=draft.question.strip(),
             why_now=draft.why_now.strip(),
             response_mode=QuestionResponseMode(mode),
@@ -437,6 +440,7 @@ def to_view(question: AgentQuestion) -> QuestionView:
         workspace_id=question.workspace_id,
         source_node_id=question.source_node_id,
         source_message_id=question.source_message_id,
+        reasoning_node_id=question.reasoning_node_id,
         question=question.question,
         why_now=question.why_now,
         response_mode=question.response_mode.value,

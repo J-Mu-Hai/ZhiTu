@@ -58,6 +58,10 @@ import time
 import uuid
 from typing import Any
 
+from backend.agent.prompts.goal_reasoning import (
+    GOAL_REASONING_PROMPT_VERSION,
+    GOAL_REASONING_SYSTEM_PROMPT,
+)
 from backend.agent.prompts.planning import PROMPT_VERSION, SYSTEM_PROMPT
 from backend.agent.runtime.base import ReasoningResult, TurnContext
 from backend.agent.runtime.response import (
@@ -206,6 +210,23 @@ OUTPUT_CONFIG: dict[str, Any] = {
             },
         },
     },
+    # 目标推理回合的地图操作。**必须声明** —— 与 analysis 同一条理由:openJiuwen
+    # 那条路拿到的对象是照这份声明重建的,不在这里的键会在到解析器之前被 pop 掉。
+    # nodes / links 只声明成数组,不声明 items:一条写坏不该让整轮失败,逐条校验
+    # 在无关 SDK 的 `response.parse_reasoning_map` 里做。
+    "reasoningMap": {
+        "type": "object",
+        "required": False,
+        "description": "目标推理地图操作(仅目标推理回合使用)",
+        "properties": {
+            "phase": {"type": "string"},
+            "turnAction": {"type": "string"},
+            "focus": {"type": "string"},
+            "focusReason": {"type": "string"},
+            "nodes": {"type": "array"},
+            "links": {"type": "array"},
+        },
+    },
 }
 
 def component_outputs_schema() -> dict[str, str]:
@@ -311,6 +332,7 @@ class OpenJiuwenReasoner:
     async def reason(self, turn: TurnContext) -> ReasoningResult:
         request_id = uuid.uuid4().hex
         started = time.monotonic()
+        prompt_version = _prompt_version(turn)
 
         if not self._settings.llm_api_key:
             return self._degraded(
@@ -318,6 +340,7 @@ class OpenJiuwenReasoner:
                 retryable=False,
                 request_id=request_id,
                 reply="还没有配置模型密钥,现在没法生成计划。",
+                prompt_version=prompt_version,
             )
 
         if not available():
@@ -328,6 +351,7 @@ class OpenJiuwenReasoner:
                 retryable=False,
                 request_id=request_id,
                 reply="openJiuwen 运行时不可用,这次没能生成计划。",
+                prompt_version=prompt_version,
             )
 
         try:
@@ -335,10 +359,14 @@ class OpenJiuwenReasoner:
             await _ensure_runner_started(runner)
             output = await runner.run_workflow(flow, {})
         except Exception as exc:
-            return self._failed(exc, request_id=request_id, started=started)
+            return self._failed(
+                exc, request_id=request_id, started=started, prompt_version=prompt_version
+            )
 
         latency_ms = int((time.monotonic() - started) * 1000)
-        return self._parse(output, request_id=request_id, latency_ms=latency_ms)
+        return self._parse(
+            output, request_id=request_id, latency_ms=latency_ms, prompt_version=prompt_version
+        )
 
     # ---------------------------------------------------------------------------
     def _build_flow(self, turn: TurnContext) -> tuple[Any, Any]:
@@ -370,7 +398,7 @@ class OpenJiuwenReasoner:
             ),
             # 字面量,不是插值模板 —— 见模块开头的第二处设计决定。
             template_content=[
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": _system_prompt(turn)},
                 {"role": "user", "content": render_turn(turn)},
             ],
             response_format={"type": "json"},
@@ -399,7 +427,12 @@ class OpenJiuwenReasoner:
         return flow, runner_module.Runner
 
     def _parse(
-        self, output: Any, *, request_id: str, latency_ms: int
+        self,
+        output: Any,
+        *,
+        request_id: str,
+        latency_ms: int,
+        prompt_version: str = PROMPT_VERSION,
     ) -> ReasoningResult:
         """从 `WorkflowOutput` 里取出模型那个对象。"""
         try:
@@ -408,7 +441,7 @@ class OpenJiuwenReasoner:
                 payload,
                 source=ModelSource.OPENJIUWEN,
                 request_id=request_id,
-                prompt_version=PROMPT_VERSION,
+                prompt_version=prompt_version,
                 model_name=self._settings.llm_model,
                 latency_ms=latency_ms,
             )
@@ -420,10 +453,16 @@ class OpenJiuwenReasoner:
                 request_id=request_id,
                 reply="模型这次的回答没能解析出结果,可以再试一次。",
                 latency_ms=latency_ms,
+                prompt_version=prompt_version,
             )
 
     def _failed(
-        self, exc: Exception, *, request_id: str, started: float | None
+        self,
+        exc: Exception,
+        *,
+        request_id: str,
+        started: float | None,
+        prompt_version: str = PROMPT_VERSION,
     ) -> ReasoningResult:
         """把 SDK 抛出来的东西翻译成"用户该看到什么 + 重试有没有用"。
 
@@ -449,7 +488,12 @@ class OpenJiuwenReasoner:
             reply = "模型服务暂时不可用,可以再试一次。"
 
         return self._degraded(
-            reason, retryable=retryable, request_id=request_id, reply=reply, started=started
+            reason,
+            retryable=retryable,
+            request_id=request_id,
+            reply=reply,
+            started=started,
+            prompt_version=prompt_version,
         )
 
     def _degraded(
@@ -461,6 +505,7 @@ class OpenJiuwenReasoner:
         reply: str,
         started: float | None = None,
         latency_ms: int | None = None,
+        prompt_version: str = PROMPT_VERSION,
     ) -> ReasoningResult:
         if latency_ms is None:
             latency_ms = int((time.monotonic() - started) * 1000) if started else None
@@ -471,10 +516,22 @@ class OpenJiuwenReasoner:
             degraded_reason=reason,
             retryable=retryable,
             request_id=request_id,
-            prompt_version=PROMPT_VERSION,
+            prompt_version=prompt_version,
             model_name=self._settings.llm_model,
             latency_ms=latency_ms,
         )
+
+
+def _system_prompt(turn: TurnContext) -> str:
+    if turn.purpose == "goal_reasoning":
+        return GOAL_REASONING_SYSTEM_PROMPT
+    return SYSTEM_PROMPT
+
+
+def _prompt_version(turn: TurnContext) -> str:
+    if turn.purpose == "goal_reasoning":
+        return GOAL_REASONING_PROMPT_VERSION
+    return PROMPT_VERSION
 
 
 def _payload_of(output: Any) -> Any:

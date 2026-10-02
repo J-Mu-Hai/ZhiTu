@@ -71,6 +71,7 @@ AUTHENTICATED_ROUTES = {
     ("GET", "/api/workspaces/{workspace_id}/proposals"),
     ("GET", "/api/workspaces/{workspace_id}/questions"),
     ("GET", "/api/workspaces/{workspace_id}/reasoning"),
+    ("POST", "/api/workspaces/{workspace_id}/agent/turn"),
     ("POST", "/api/workspaces/{workspace_id}/questions/{question_id}/answer"),
     ("POST", "/api/workspaces/{workspace_id}/questions/{question_id}/skip"),
     ("POST", "/api/workspaces/{workspace_id}/questions/{question_id}/later"),
@@ -106,6 +107,9 @@ CROSS_ACCOUNT_ROUTES = {
     # 目标推理地图只读,新空间返回空地图(200) —— 反向断言成立;归属仍必须写进
     # WHERE,否则 B 拿 A 的 id 会读到一份空地图而不是 404。
     ("GET", "/api/workspaces/{workspace_id}/reasoning"): "workspace_id",
+    # `space_entered` 在未探索时会跑模型 —— 归属校验必须**在选模型之前**发生。
+    # A 自己的反向断言在 rule 傅底下不会出网、也不会写地图节点。
+    ("POST", "/api/workspaces/{workspace_id}/agent/turn"): "workspace_id",
     # 分析列表进得来:它**只读**,而且刚建好的空间必然返回 200(空列表也是列表),
     # 反向断言成立。这条的归属校验必须真的存在 —— 分析是按 `workspace_id` 查的,
     # 而 `ctx` 已经在 SQL 的 WHERE 里写死了归属(见 get_workspace_context),
@@ -196,6 +200,11 @@ _BODIES: dict[tuple[str, str], dict] = {
     },
     ("POST", "/api/workspaces/{workspace_id}/questions/{question_id}/skip"): {
         "clientActionId": "anon-probe-key",
+    },
+    # 目标推理:形状合法的自动探索。匿名那条在 401 之前不会触到 reasoner。
+    ("POST", "/api/workspaces/{workspace_id}/agent/turn"): {
+        "trigger": "space_entered",
+        "idempotencyKey": "authz-probe",
     },
     ("POST", "/api/workspaces/{workspace_id}/questions/{question_id}/later"): {
         "clientActionId": "anon-probe-key",

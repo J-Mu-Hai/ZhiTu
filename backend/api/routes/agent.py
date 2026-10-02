@@ -15,8 +15,10 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.agent.runtime import Reasoner
+from backend.api.dependencies.agent import get_reasoner
 from backend.api.dependencies.workspace import get_workspace_context
-from backend.contracts.reasoning import GoalReasoningView
+from backend.contracts.reasoning import AgentTurnRequest, AgentTurnResponse, GoalReasoningView
 from backend.db.session import get_db
 from backend.services import reasoning_service
 from backend.services.context import WorkspaceContext
@@ -40,6 +42,28 @@ async def read_reasoning_map(
     `POST /agent/turn {trigger: space_entered}`(步骤 2)。
     """
     return await reasoning_service.load_map(db, ctx)
+
+
+@router.post(
+    "/{workspace_id}/agent/turn",
+    response_model=AgentTurnResponse,
+    summary="显式 Agent turn(自动探索 / 回答后重评 / 战略确认)",
+)
+async def run_agent_turn(
+    payload: AgentTurnRequest,
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+    reasoner: Reasoner = Depends(get_reasoner),
+) -> AgentTurnResponse:
+    """一次显式 Agent turn。**幂等由 `idempotencyKey` + `input_version` 共同保证。**
+
+    - `space_entered`:只在未探索、输入版本变化、或上次失败时真正跑模型;
+      否则直接返回当前地图(不重复建节点)。
+    - `retry`:显式重试上一次失败的探索。
+    - `question_answered` / `node_selected` / `user_message` / `strategy_confirmation`:
+      增量重评与战略收敛(步骤 4)。
+    """
+    return await reasoning_service.run_turn(db, ctx, reasoner, payload=payload)
 
 
 __all__ = ["router"]
