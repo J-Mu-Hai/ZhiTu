@@ -456,7 +456,7 @@ function ReasoningDetail({
 }: {
   node: ReasoningNodeView;
   onClose: () => void;
-  onAgentTurn: (payload: { trigger: 'node_selected' | 'user_message'; reasoningHandle: string; message?: string }) => void;
+  onAgentTurn: (payload: { trigger: 'node_selected' | 'user_message' | 'strategy_confirmation'; reasoningHandle: string; message?: string }) => void;
   onEdit: (patch: { title?: string; userDescription?: string; status?: string }) => void;
 }) {
   const [title, setTitle] = useState(node.title);
@@ -502,6 +502,11 @@ function ReasoningDetail({
         <button type="button" onClick={() => onAgentTurn({ trigger: 'node_selected', reasoningHandle: node.handle, message: '展开这个维度' })}>展开</button>
         <button type="button" onClick={() => onEdit({ status: 'paused' })}>暂缓</button>
         <button type="button" onClick={() => onEdit({ status: 'resolved' })}>标记完成</button>
+        {node.nodeType === 'route' && (
+          <button type="button" onClick={() => onAgentTurn({ trigger: 'strategy_confirmation', reasoningHandle: node.handle })}>
+            确认这条战略
+          </button>
+        )}
       </div>
       <div className="rd-discuss">
         <input value={discuss} onChange={event => setDiscuss(event.target.value)} placeholder="围绕它讨论一句…" aria-label="讨论内容" />

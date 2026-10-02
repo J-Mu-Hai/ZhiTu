@@ -1,0 +1,70 @@
+{
+  "turns": [
+    {
+      "reply": "在动手之前，我先把这个目标里几个需要你拍板的维度梳理出来。先看用途 —— 它决定后面哪几条路线成立。",
+      "reasoningMap": {
+        "phase": "strategic_exploration",
+        "turnAction": "ask_user",
+        "focus": "r1",
+        "focusReason": "用途决定后面哪几条路线成立",
+        "nodes": [
+          { "handle": "r1", "title": "目标用途", "nodeType": "dimension", "summary": "你主要想用它来做什么", "status": "exploring", "importance": 5, "uncertainty": 5, "urgency": 1, "impact": 5, "confidence": 1, "rationale": "用途决定能力清单与真实应用" },
+          { "handle": "r2", "title": "能力基础", "nodeType": "dimension", "summary": "现在会什么、缺什么", "status": "unexplored", "importance": 4, "uncertainty": 4, "urgency": 1, "impact": 4, "confidence": 2, "rationale": "决定从哪里起步" },
+          { "handle": "r3", "title": "最小可用能力", "nodeType": "dimension", "summary": "形成什么程度算能用", "status": "unexplored", "importance": 5, "uncertainty": 4, "urgency": 1, "impact": 5, "confidence": 2, "rationale": "决定第一阶段成果" },
+          { "handle": "r4", "title": "验证方式", "nodeType": "dimension", "summary": "怎么证明能力真的形成", "status": "unexplored", "importance": 4, "uncertainty": 3, "urgency": 1, "impact": 4, "confidence": 2, "rationale": "避免停在看完教程" }
+        ],
+        "links": [
+          { "source": "r1", "target": "r3", "type": "influences", "note": "用途影响最小能力的定义" }
+        ]
+      },
+      "questions": [
+        {
+          "question": "你希望优先把精力放在哪条路线上？",
+          "whyNow": "它决定我先展开哪几个维度",
+          "responseMode": "single_select",
+          "options": [
+            { "id": "english", "label": "英语" },
+            { "id": "math", "label": "数学" }
+          ],
+          "allowCustomInput": true
+        }
+      ],
+      "actions": []
+    },
+    {
+      "reply": "记下了。我先把这个事实放到地图上，再继续看下一层。",
+      "actions": []
+    },
+    {
+      "reply": "用途清楚了，我收敛出一条值得先验证的路线。",
+      "reasoningMap": {
+        "phase": "strategic_convergence",
+        "turnAction": "confirm",
+        "focus": "r5",
+        "focusReason": "它收益最大、成本可控，值得先验证",
+        "nodes": [
+          { "handle": "r1", "title": "目标用途", "nodeType": "dimension", "summary": "用户选择了英语方向", "status": "resolved", "importance": 5, "uncertainty": 1, "urgency": 1, "impact": 5, "confidence": 4, "rationale": "用途已确认" },
+          { "handle": "r5", "title": "战略:先英语", "nodeType": "route", "summary": "先形成英语的可用能力，用小项目暴露缺口", "status": "exploring", "importance": 5, "uncertainty": 2, "urgency": 1, "impact": 5, "confidence": 3, "rationale": "收益最大、成本可控" }
+        ],
+        "links": []
+      },
+      "questions": [],
+      "actions": []
+    },
+    {
+      "reply": "我把第一阶段拆成两个里程碑，你确认之后才会写进计划。",
+      "actions": [
+        {
+          "op": "create_node",
+          "localId": "n9",
+          "parentRef": "n1",
+          "title": "第一阶段:基础",
+          "nodeType": "stage",
+          "planningLevel": "phase",
+          "purpose": "planning",
+          "description": "先形成最小可用能力，再用一个小项目验证。"
+        }
+      ]
+    }
+  ]
+}

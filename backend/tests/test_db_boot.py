@@ -31,6 +31,11 @@ EXPECTED_TABLES = {
     # 公开研究的跨进程缓存与每日额度(阶段 6B,见 db/models/research.py)。
     "research_cache",
     "research_daily_quota",
+    # 目标推理地图(阶段 7,见 db/models/goal_reasoning.py)。**三张独立表** ——
+    # 推理层不是任务树:它们不在排期/依赖/统计的任何查询里。
+    "goal_reasoning_sessions",
+    "reasoning_nodes",
+    "reasoning_node_links",
     "conversations",
     "dependencies",
     "domain_events",
