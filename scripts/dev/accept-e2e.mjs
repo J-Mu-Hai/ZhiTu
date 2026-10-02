@@ -149,6 +149,24 @@ const reasonerLabel = scriptFile
   ? `script —— **测试脚手架**,念的是 ${relative(repoRoot, scriptFile)},不是产品能力`
   : 'rule（无模型 key,规则兜底）';
 
+/**
+ * `--research-mock`:让测试后端启用**测试专用的 mock 研究 provider**
+ * (`RESEARCH_PROVIDER=mock` + `RESEARCH_MOCK_ENABLED=true` + 非生产;三道闸见
+ * `backend/services/research_service.py::provider_ready`)。生产只支持真实 Tavily。
+ *
+ * 同时把每日额度压到 1(`ZHITU_E2E_RESEARCH_DAILY_LIMIT` 可覆盖):每次 accept 运行
+ * 都用全新临时库,额度从 0 开始 —— 于是一个真实调用之后,“额度耗尽”在一条运行里
+ * 可确定复现,并验证它真的不出网。
+ */
+const researchMock = argv.includes('--research-mock');
+if (researchMock) {
+  const index = forwarded.indexOf('--research-mock');
+  if (index >= 0) forwarded.splice(index, 1);
+}
+const researchLabel = researchMock
+  ? 'mock（测试专用,不走公网）'
+  : '未启用（research_public 全走真实 provider/未配置）';
+
 const workDir = mkdtempSync(join(tmpdir(), 'zhitu-e2e-'));
 const dbPath = join(workDir, 'zhitu_e2e.db');
 // `DATABASE_URL` 用绝对路径,且反斜杠要转成斜杠 —— Windows 上的 `sqlite:///E:\...`
@@ -219,6 +237,7 @@ function writeSummary({ finishedAt, exitCode, report }) {
     // **这一行是这一份记录里最容易漏、也最要紧的一行**:`script` 那几轮里,提案是
     // 念出来的,不是模型想出来的。少了它,一份现场会被当成"模型能走通访谈闭环"。
     `推理来源    ${reasonerLabel}`,
+    `研究来源    ${researchLabel}`,
     `测试数据库  ${dbSnapshot ? join(runDir, basename(dbPath)) : dbPath}`,
     '',
     `Playwright 退出码  ${exitCode}`,
@@ -357,6 +376,7 @@ try {
     `前端      http://127.0.0.1:${webPort}  (production 构建, 不复用 5173)`,
     `后端      http://127.0.0.1:${apiPort}  (独立数据库, 无模型 key)`,
     `推理来源  ${reasonerLabel}`,
+    `研究来源  ${researchLabel}`,
     `数据库    ${dbPath}`,
     `并发      ${forwarded.find((a) => a.startsWith('--workers'))}`,
     `现场目录  ${runDir}`,
@@ -383,6 +403,17 @@ try {
       // `ScriptedReasoner.from_env` 会直接抛错,而不是退回规则兜底:退回的话,
       // 一个"忘了配脚本"的验收会以"模型什么都没提"的方式悄悄通过(见那个模块)。
       ...(scriptFile ? { ZHITU_SCRIPTED_ACTIONS: scriptFile } : {}),
+      // 只有 `--research-mock` 那一轮会带。三道闸缺一不可,生产环境不会启用 mock。
+      ...(researchMock
+        ? {
+            RESEARCH_ENABLED: 'true',
+            RESEARCH_PROVIDER: 'mock',
+            RESEARCH_MOCK_ENABLED: 'true',
+            RESEARCH_ALLOWED_DOMAINS: 'example.edu.cn',
+            RESEARCH_MAX_CALLS_PER_DAY:
+              process.env.ZHITU_E2E_RESEARCH_DAILY_LIMIT ?? '1',
+          }
+        : {}),
       APP_ENV: 'development',
       APP_SECRET_KEY: 'e2e-only-not-a-secret',
       // 只放行测试前端端口。放行 5173 会让"测试其实打到了开发后端"变得可能。
@@ -463,6 +494,8 @@ try {
       // 访谈闭环那一条用例只有在脚本真的配上了才跑得起来,没有它就该是 `skipped`
       // —— **不能是"跑了但什么都没验"**,那种绿比红更难发现。
       ZHITU_SCRIPTED_ACTIONS: scriptFile ?? '',
+      // 公开研究 E2E 需要它才跑;没开 mock 时该用例 `skipped`,而不是悄悄验证 mock。
+      ZHITU_RESEARCH_MOCK: researchMock ? '1' : '',
     },
     echo: true,
     shell: process.platform === 'win32',

@@ -190,6 +190,25 @@ def space_key(turn: TurnContext) -> str:
     return ""
 
 
+def _interpolate(value: object, user_message: str) -> object:
+    """把脚本里的 `{{userMessage}}` 换成这一轮的用户原话。
+
+    存在理由:一轮脚本是**按空间重放**的(见模块 docstring「游标按空间分」)。
+    隔离 E2E 里每个场景用一个新空间,于是同一份脚本会被念很多遍;而
+    `research_public` 的查询如果写死,第二遍就会命中上一遍的缓存。把查询写成
+    `{{userMessage}}` 后,每个场景用自己的用户消息当查询,命不命中缓存也就确定可控。
+
+    只做这一种替换,不做模板引擎 —— 它是测试脚手架,越窄越好。
+    """
+    if isinstance(value, str):
+        return value.replace("{{userMessage}}", user_message)
+    if isinstance(value, list):
+        return [_interpolate(item, user_message) for item in value]
+    if isinstance(value, dict):
+        return {key: _interpolate(item, user_message) for key, item in value.items()}
+    return value
+
+
 class ScriptedReasoner:
     """按脚本回应。**只由 `build_reasoner` 在 `AGENT_REASONER=script` 时构造。**"""
 
@@ -220,8 +239,10 @@ class ScriptedReasoner:
 
         key = space_key(turn)
         used = self._used.get(key, 0)
-        scripted = self._turns[used] if used < len(self._turns) else {}
+        scripted = dict(self._turns[used]) if used < len(self._turns) else {}
         self._used[key] = used + 1
+        # `{{userMessage}}` 供测试 fixture 把查询绑定到当前场景的用户原话。
+        scripted = _interpolate(scripted, turn.user_message)  # type: ignore[assignment]
 
         return ReasoningResult(
             reply=str(scripted.get("reply") or _EXHAUSTED_REPLY),
