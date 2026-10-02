@@ -72,6 +72,49 @@ npm run dev          # 5173
 跑到别的端口会在浏览器里被 CORS 拦掉,注册/登录全失败 —— 而报错只在浏览器控制台,
 后端日志里什么都看不到。要换端口得同时改 `CORS_ORIGINS`。
 
+## 本地完整体验(不部署服务器)
+
+想在不碰生产、不部署的前提下,在浏览器里把 P0–阶段 4 的功能走一遍,用
+[`scripts/dev/dev-up.ps1`](../scripts/dev/dev-up.ps1)。它是 Windows PowerShell 脚本。
+
+```powershell
+# 启动(Auto:有真实 key 用真实模型,没有就脚本回放)
+powershell -ExecutionPolicy Bypass -File scripts\dev\dev-up.ps1
+
+# 固定脚本回放(不消耗任何模型额度)
+powershell -ExecutionPolicy Bypass -File scripts\dev\dev-up.ps1 -Mode Script
+
+# 看一眼将执行什么,什么都不动
+powershell -ExecutionPolicy Bypass -File scripts\dev\dev-up.ps1 -DryRun
+
+# 看状态 / 停止 / 重置数据库
+powershell -ExecutionPolicy Bypass -File scripts\dev\dev-up.ps1 -Status
+powershell -ExecutionPolicy Bypass -File scripts\dev\dev-up.ps1 -Stop
+powershell -ExecutionPolicy Bypass -File scripts\dev\dev-up.ps1 -Reset   # 会先打印完整路径并要求输入 yes
+```
+
+- **独立数据库**:`data/zhitu_local_experience.db`,通过子进程环境变量 `DATABASE_URL`
+  覆盖,**不改仓库根的 `.env`**。脚本只终止状态文件里记录、且命令行匹配本仓库的进程。
+- **`-Mode Real / Script / Auto`**:`Auto` 在根 `.env` 有真实 `LLM_API_KEY` 时用真实
+  模型(`AGENT_REASONER=auto`),否则自动切到脚本回放(`script` + 本地 demo fixture)。
+  `Real` 在没有真实 key 时拒绝启动。
+- 启动后地址:`http://127.0.0.1:5173/workbench`;后端 `http://127.0.0.1:8000/ready`。
+  日志与 PID 状态在 `logs/local-experience/`(Git 忽略)。
+
+### 脚本回放的体验顺序
+
+fixture 在 [`scripts/dev/fixtures/local-demo-script.json`](../scripts/dev/fixtures/local-demo-script.json)。
+**它不是产品能力** —— 界面上来源徽标会写「脚本回放」。按这个顺序对话:
+
+1. 说一句**没有截止日期**的事实(如「我现在排名 38」)→ 看信息节点提案;
+2. 再说一句让你先定方向 → 出现一张问题卡,选一个选项并提交;
+3. 提交后出现**战略选择**提案(优先/暂缓/依据/风险),点确认;
+4. 再让它往下走 → 它会先请求**只读排期模拟**,然后提出本周重点与关系建议;
+5. 每一步都点「确认,写入计划」才会真正落库;刷新页面看节点/关系是否还在。
+
+> 本地体验**不验证** HTTPS、Nginx、Vercel、生产 PostgreSQL 或线上 CORS。
+> 那几件事只能在真实部署上验,见 [08-DEPLOYMENT.md](08-DEPLOYMENT.md)。
+
 ## 移动端
 
 ```bash

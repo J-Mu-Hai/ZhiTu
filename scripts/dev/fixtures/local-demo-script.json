@@ -1,0 +1,92 @@
+{
+  "_note": "脚本回放 fixture —— 本地完整体验用。它念的是写死的台词,不是真实 AI;界面上来源徽标会写「脚本回放」。真实改动仍全部走 proposal -> 用户确认 -> 事务写入。",
+  "turns": [
+    {
+      "reply": "我先把这条事实记下来(它没有截止日期,所以不进日历)。",
+      "actions": [
+        {
+          "op": "create_node",
+          "localId": "n2",
+          "parentRef": "n1",
+          "title": "我现在排名 38",
+          "nodeType": "capability",
+          "purpose": "information",
+          "description": "专业排名 38,还没有截止日期。"
+        }
+      ],
+      "stopReason": "ready_to_propose"
+    },
+    {
+      "reply": "在往下拆之前,我想先确认一件事。",
+      "questions": [
+        {
+          "question": "这学期你希望把重心放在哪一边?",
+          "whyNow": "它决定我先拆英语还是先拆数学",
+          "responseMode": "single_select",
+          "options": [
+            { "id": "english", "label": "英语" },
+            { "id": "math", "label": "数学" }
+          ],
+          "allowCustomInput": true
+        }
+      ],
+      "stopReason": "need_user_answer"
+    },
+    {
+      "reply": "好,我给你一个战略选择,你看过之后决定要不要留下。",
+      "actions": [
+        {
+          "op": "create_node",
+          "localId": "n3",
+          "parentRef": "n1",
+          "title": "战略:先英语",
+          "nodeType": "goal",
+          "planningLevel": "strategy",
+          "description": "优先:英语阅读。暂缓:数学建模。依据:排名要提升,阅读量是瓶颈。风险:校内数学课不能掉队。"
+        }
+      ],
+      "stopReason": "ready_to_propose"
+    },
+    {
+      "reply": "我先用只读的排期模拟看一下现在的容量和缺口。",
+      "toolRequests": [
+        {
+          "id": "t1",
+          "name": "simulate_schedule",
+          "arguments": {},
+          "reason": "确认这一周到底排不排得开,而不是凭空说"
+        }
+      ],
+      "actions": [],
+      "stopReason": "ready_to_propose"
+    },
+    {
+      "reply": "模拟给的是事实;我据此提一条本周重点,并把关系标出来。它还没有生效,要你确认。",
+      "actions": [
+        {
+          "op": "create_node",
+          "localId": "n4",
+          "parentRef": "n3",
+          "title": "本周重点:精读两篇",
+          "nodeType": "task",
+          "planningLevel": "week",
+          "estimateMinutes": 120
+        },
+        {
+          "op": "create_relation",
+          "sourceRef": "n3",
+          "targetRef": "n4",
+          "relationType": "influences",
+          "note": "战略方向决定本周重点"
+        },
+        {
+          "op": "create_relation",
+          "sourceRef": "n2",
+          "targetRef": "n3",
+          "relationType": "related_to"
+        }
+      ],
+      "stopReason": "ready_to_propose"
+    }
+  ]
+}
