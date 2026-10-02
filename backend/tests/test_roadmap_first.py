@@ -190,3 +190,101 @@ async def test_roadmap_phase_blocks_execution_questions(
         select(AgentQuestion).where(AgentQuestion.workspace_id == uuid.UUID(account.workspace_id))
     )
     assert list(rows.scalars()) == []
+
+
+async def test_python_data_analysis_first_turn_is_roadmap_not_dimensions(
+    app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
+) -> None:
+    """用户说“Python 数据分析 + 每周 150 分钟”时,首轮必须是**路线 + 阶段**,
+    不能是旧的散乱一级维度图,也不能再问每周投入。"""
+    account = await make_account()
+    await app_client.patch(
+        f"/api/workspaces/{account.workspace_id}",
+        json={"intent": "我想学习 Python 做数据分析，每周 150 分钟。"},
+        headers=account.headers,
+    )
+    scheduling = QuestionDraft(
+        question="你每周能投入多少小时?",
+        why_now="排期需要",
+        response_mode="free_text",
+    )
+    strategic = QuestionDraft(
+        question="先求能跑通的最小闭环,还是先补统计基础?",
+        why_now="它决定阶段顺序",
+        response_mode="single_select",
+        options=(QuestionOptionDraft(id="minimal", label="最小闭环"),),
+    )
+    use_reasoner(
+        MapReasoner(drafts=(_roadmap_draft(stages=4),), questions=(scheduling, strategic))
+    )
+
+    body = await _enter(app_client, account)
+    view = body["reasoning"]
+    assert body["changed"] is True
+    assert view["phase"] == "roadmap_draft"
+
+    routes = [node for node in view["nodes"] if node["nodeType"] == "route"]
+    stages = [node for node in view["nodes"] if node["nodeType"] == "stage"]
+    assert len(routes) == 1, "首轮必须恰好一条路线"
+    assert 3 <= len(stages) <= 5, "首轮必须是 3–5 个阶段"
+    # **不是**旧的散乱一级维度图:除路线外没有顶层节点。
+    assert not [
+        node
+        for node in view["nodes"]
+        if node["parentHandle"] is None and node["nodeType"] != "route"
+    ]
+    assert all(node["parentHandle"] == routes[0]["handle"] for node in stages)
+    assert all(node["timeframe"] and node["deliverable"] and node["passCriteria"] for node in stages)
+
+    # 执行层问题(每周几小时)被拦掉;最多一个活动问题,而且不是投入类。
+    rows = list(
+        (
+            await db.execute(
+                select(AgentQuestion).where(
+                    AgentQuestion.workspace_id == uuid.UUID(account.workspace_id)
+                )
+            )
+        ).scalars()
+    )
+    assert len(rows) <= 1
+    assert all("每周" not in row.question for row in rows)
+
+    # 确认战略前没有任何周/日执行条目。
+    plan_rows = await db.execute(
+        select(PlanNode).where(PlanNode.workspace_id == uuid.UUID(account.workspace_id))
+    )
+    assert all((node.planning_level or "") not in {"week", "day"} for node in plan_rows.scalars())
+
+
+async def test_first_turn_legacy_dimension_map_is_rejected_then_retries(
+    app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
+) -> None:
+    """新首轮给旧形状 -> 整份拒绝、不写半成品;换成路线图后重试成功。"""
+    account = await make_account()
+    legacy = ReasoningMapDraft(
+        nodes=tuple(
+            ReasoningMapNodeDraft(handle=f"r{i}", title=f"决策维度 {i}")
+            for i in range(1, 7)
+        ),
+        focus_handle="r1",
+        phase="strategic_exploration",
+    )
+    use_reasoner(MapReasoner(drafts=(legacy,)))
+
+    body = await _enter(app_client, account)
+    assert body["changed"] is False
+    assert body["reasoning"]["status"] == "failed"
+    assert body["reasoning"]["nodes"] == []
+
+    good = MapReasoner(drafts=(_roadmap_draft(stages=3),))
+    use_reasoner(good)
+    retry = await app_client.post(
+        f"/api/workspaces/{account.workspace_id}/agent/turn",
+        json={"trigger": "retry", "idempotencyKey": "retry-after-legacy"},
+        headers=account.headers,
+    )
+    assert retry.status_code == 200, retry.text
+    retried = retry.json()
+    assert retried["reasoning"]["status"] == "ready"
+    assert len(retried["reasoning"]["nodes"]) == 4
+    assert retried["reasoning"]["nodes"][0]["nodeType"] == "route"

@@ -95,10 +95,30 @@ async function panAway(page: Page): Promise<string> {
   const before = await canvasTransform(page);
   const box = await page.locator('.react-flow__pane').boundingBox();
   if (!box) throw new Error('画布没渲染出来,拖不动');
-  // 从下缘中间起手:那里没有节点,也不会撞上左下角的缩略图和右下角的控件。
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height - 30);
+  /*
+   * 把内容往**右下**拖:视口一样会变,而左上角的节点不会跑到顶部导航条底下。
+   *
+   * 原来是从下缘中间向上/左拖。那时地图只有几个业务节点,没问题;但目标空间还会
+   * 自动生成一条纵向路线图,初始缩放更小、节点更靠上,向上拖会把业务节点顶到
+   * `top-navigation` 底下 —— 在那里它“可见但不稳定/被 header 拦截”,后续 hover 必超时。
+   *
+   * 起点用命中测试找一个**真的落在空白 pane 上**的点(同 `context-menu.spec`),
+   * 避免“一不小心拖走了一个节点”。
+   */
+  let from: { x: number; y: number } | null = null;
+  for (const [fx, fy] of [[0.55, 0.55], [0.7, 0.6], [0.45, 0.6], [0.6, 0.75]] as const) {
+    const x = box.x + box.width * fx;
+    const y = box.y + box.height * fy;
+    const isPane = await page.evaluate(
+      ([px, py]) => document.elementFromPoint(px, py)?.classList.contains('react-flow__pane') ?? false,
+      [x, y] as const,
+    );
+    if (isPane) { from = { x, y }; break; }
+  }
+  if (!from) throw new Error('找不到可以下手的空白 —— 平移这件事的前提不成立');
+  await page.mouse.move(from.x, from.y);
   await page.mouse.down();
-  await page.mouse.move(box.x + box.width / 2 - 140, box.y + box.height - 110, { steps: 12 });
+  await page.mouse.move(from.x + 150, from.y + 110, { steps: 12 });
   await page.mouse.up();
   await expect
     .poll(() => canvasTransform(page), { message: '没能把视口拖开 —— 这条测试的前提没成立,别把它读成产品有问题' })
@@ -271,7 +291,8 @@ test('一次真实的计划写入之后，画布不重建、视口不被打回�
   // 少了确认那一下,它测的就是一次空点击。
   await selectNodeMenuItem(page, doomedId, '删除');
   await page.getByRole('dialog').getByRole('button', { name: '归档' }).click();
-  await expect(page.locator('.react-flow__node')).toHaveCount(1);
+  // 只看**业务节点**:目标空间还会有一条路线图(推理节点),它们不是计划节点。
+  await expect(page.locator('.react-flow__node-growth')).toHaveCount(1);
 
   // 库里那一条真的没了 —— 不然上面那个"只剩根节点"可能只是画布少画了一个。
   const after = await getPlan(page, token, workspaceId);

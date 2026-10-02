@@ -368,32 +368,33 @@ def _validate_draft(
     """写入**之前**把整份草稿验一遍。任何一处不合法就整份拒绝。"""
     fresh = not existing
     if fresh:
-        # 阶段 8:**路线优先**。首选形状是一条约顶层战略路线 + 3–5 个阶段
-        # (阶段挂在路线上)。旧的“4–8 个一级维度”形状仍然接受 —— 存量脚本与
-        # 旧模型输出不该因为这次升级而写不进去。
+        # 阶段 8:**路线优先**。新建会话 / 首次目标梳理 / 未确认战略的首轮**只能**是
+        # “恰好一条顶层战略路线 + 3–5 个挂在它下面的阶段”。
+        #
+        # 旧的“4–8 个一级维度”形状**不再作为新一轮模型输出的成功条件**;
+        # 它只允许被**读取与展示**—— 存量会话里的历史地图(`existing` 非空时
+        # 根本不进这个分支)仍然读得出来、画得出来。
+        #
+        # 新首轮若给出散乱的一级维度,整份拒绝、**不写半成品**,下一次可安全重试。
+        top_routes = [
+            node for node in draft.nodes
+            if node.node_type == "route" and not node.parent_handle
+        ]
         stages = [node for node in draft.nodes if node.node_type == "stage"]
-        if stages:
-            top_routes = [
-                node for node in draft.nodes
-                if node.node_type == "route" and not node.parent_handle
-            ]
-            if len(top_routes) != 1:
-                raise MapValidationError(
-                    f"路线图需要**恰好一条**顶层战略路线,收到 {len(top_routes)} 条。"
-                )
-            if not 3 <= len(stages) <= 5:
-                raise MapValidationError(
-                    f"路线图需要 3–5 个有顺序的阶段,收到 {len(stages)} 个。"
-                )
-            route_handle = top_routes[0].handle
-            if any(node.parent_handle != route_handle for node in stages):
-                raise MapValidationError("每个阶段都必须挂在推荐路线上(parent = 路线 handle)。")
-        else:
-            primary = [node for node in draft.nodes if not node.parent_handle]
-            if not (MIN_PRIMARY_NODES <= len(primary) <= MAX_PRIMARY_NODES):
-                raise MapValidationError(
-                    f"首次探索需要 {MIN_PRIMARY_NODES}–{MAX_PRIMARY_NODES} 个一级决策维度,收到 {len(primary)} 个。"
-                )
+        top_level = [node for node in draft.nodes if not node.parent_handle]
+        if len(top_routes) != 1 or len(top_level) != 1:
+            raise MapValidationError(
+                f"首轮必须给出**恰好一条**顶层战略路线(顶层节点只有它一条),"
+                f"收到 {len(top_routes)} 条路线 / {len(top_level)} 个顶层节点;"
+                "旧的散乱一级维度图不再被接受。"
+            )
+        if not 3 <= len(stages) <= 5:
+            raise MapValidationError(
+                f"首轮路线图需要 3–5 个阶段,收到 {len(stages)} 个。"
+            )
+        route_handle = top_routes[0].handle
+        if any(node.parent_handle != route_handle for node in stages):
+            raise MapValidationError("每个阶段都必须挂在推荐路线上(parent = 路线 handle)。")
     if len(existing) + len(draft.nodes) > MAX_MAP_NODES:
         raise MapValidationError(f"推理地图节点数超过上限 {MAX_MAP_NODES}。")
 

@@ -1,7 +1,8 @@
-"""阶段 7 步骤 2:首次进入的幂等战略探索。
+"""阶段 7 步骤 2 / 阶段 8:首次进入的路线优先战略梳理。
 
 这一组验证**幂等、失败安全与结构约束**:
-- 首次进入生成地图与一个高价值问题;连续进入不重复生成;
+- 首次进入生成**路线图**(1 条 route + 3–5 个 stage)与一个高价值问题;连续进入不重复生成;
+- **新首轮只接受路线图**;旧的散乱一级维度形状整份拒绝、不写半成品、可安全重试;
 - 模型失败/结构不合法时**不写半成品**,可安全重试;
 - 战略阶段由服务端拦住排期类问题;
 - 根目标内容变化后才重新探索。
@@ -34,24 +35,75 @@ from backend.db.models import (
 from backend.db.models.enums import ModelSource, ReasoningSessionStatus
 
 
-def _map_draft(*, primary: int = 6, question: QuestionDraft | None = None) -> ReasoningMapDraft:
-    nodes = tuple(
+def _roadmap_draft(
+    *,
+    stages: int = 4,
+    route_title: str = "推荐路线:约 10 周",
+    question: QuestionDraft | None = None,
+) -> ReasoningMapDraft:
+    """首轮路线图:一条顶层 route + `stages` 个挂在它下面的 stage。"""
+    nodes: list[ReasoningMapNodeDraft] = [
         ReasoningMapNodeDraft(
-            handle=f"r{index}",
-            title=f"决策维度 {index}",
-            summary=f"关于维度 {index} 的摘要",
-            importance=5 - (index % 3),
-            uncertainty=4,
+            handle="r1",
+            title=route_title,
+            node_type="route",
+            summary="先打通最小闭环,再补统计与可视化",
+            timeframe="约 10 周",
+            deliverable="一个可展示的项目",
+            pass_criteria="能端到端做完并讲清结论",
+            importance=5,
+            uncertainty=2,
             urgency=1,
             impact=5,
-            confidence=2,
-            rationale=f"维度 {index} 会改变路线",
-            assumptions=["一个假设"],
+            confidence=3,
+            rationale="它决定阶段顺序",
         )
-        for index in range(1, primary + 1)
-    )
+    ]
+    for index in range(1, stages + 1):
+        nodes.append(
+            ReasoningMapNodeDraft(
+                handle=f"r{index + 1}",
+                title=f"阶段 {index}",
+                node_type="stage",
+                parent_handle="r1",
+                summary=f"阶段 {index} 的摘要",
+                timeframe=f"约 {index + 1} 周",
+                deliverable=f"成果 {index}",
+                pass_criteria=f"通过标准 {index}",
+                importance=4,
+                uncertainty=3,
+                urgency=1,
+                impact=4,
+                confidence=2,
+                rationale=f"它决定第 {index + 1} 步",
+            )
+        )
     return ReasoningMapDraft(
-        nodes=nodes,
+        nodes=tuple(nodes),
+        focus_handle="r2",
+        focus_reason="第一个阶段最该先定下来",
+        phase="roadmap_draft",
+        turn_action="ask_user",
+    )
+
+
+def _legacy_dimension_draft(primary: int = 4) -> ReasoningMapDraft:
+    """阶段 7 的旧形状(散乱一级维度)。**新首轮必须拒绝它。**"""
+    return ReasoningMapDraft(
+        nodes=tuple(
+            ReasoningMapNodeDraft(
+                handle=f"r{index}",
+                title=f"决策维度 {index}",
+                summary=f"关于维度 {index} 的摘要",
+                importance=5 - (index % 3),
+                uncertainty=4,
+                urgency=1,
+                impact=5,
+                confidence=2,
+                rationale=f"维度 {index} 会改变路线",
+            )
+            for index in range(1, primary + 1)
+        ),
         focus_handle="r1",
         focus_reason="它决定后面几条路线是否成立",
         phase="strategic_exploration",
@@ -84,7 +136,7 @@ class MapReasoner:
         draft = self.drafts[self._index] if self._index < len(self.drafts) else None
         self._index += 1
         return ReasoningResult(
-            reply="我梳理了一张问题地图。",
+            reply="我先给一条推荐路线与阶段。",
             source=ModelSource.DIRECT_LLM,
             reasoning_map=draft,
             questions=self.questions,
@@ -101,30 +153,62 @@ async def _enter(client: httpx.AsyncClient, account, key: str = "enter-1") -> di
     return response.json()
 
 
-async def test_space_entered_creates_map_and_is_idempotent(
+async def test_space_entered_creates_roadmap_and_is_idempotent(
     app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
 ) -> None:
     account = await make_account()
-    reasoner = MapReasoner(drafts=(_map_draft(primary=6),))
+    reasoner = MapReasoner(drafts=(_roadmap_draft(stages=4),))
     use_reasoner(reasoner)
 
     body = await _enter(app_client, account)
     assert body["changed"] is True
-    assert len(body["reasoning"]["nodes"]) == 6
-    assert body["reasoning"]["focusHandle"] == "r1"
-    assert body["reasoning"]["focusReason"] == "它决定后面几条路线是否成立"
+    assert body["reasoning"]["phase"] == "roadmap_draft"
+    # 1 条路线 + 4 个阶段。
+    assert len(body["reasoning"]["nodes"]) == 5
+    assert body["reasoning"]["focusHandle"] == "r2"
 
     # 第二次进入(同一输入):不重复建节点、不再跑模型。
     again = await _enter(app_client, account, key="enter-2")
     assert again["replayed"] is True
-    assert len(again["reasoning"]["nodes"]) == 6
+    assert len(again["reasoning"]["nodes"]) == 5
     assert len(reasoner.calls) == 1, "同一输入重复进入不该再跑模型"
 
     await db.rollback()
     session = await db.scalar(select(GoalReasoningSession))
     assert session is not None and session.status is ReasoningSessionStatus.READY
     node_count = await db.scalar(select(func.count()).select_from(ReasoningNode))
-    assert node_count == 6
+    assert node_count == 5
+
+
+async def test_first_turn_legacy_dimension_map_is_rejected(
+    app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
+) -> None:
+    """**路线优先的核心回归**:新首轮给旧的散乱一级维度图,整份拒绝、不写半成品。"""
+    account = await make_account()
+    use_reasoner(MapReasoner(drafts=(_legacy_dimension_draft(primary=6),)))
+
+    body = await _enter(app_client, account)
+    assert body["changed"] is False
+    assert body["reasoning"]["status"] == "failed"
+    assert body["reasoning"]["nodes"] == []
+    error = body["reasoning"]["error"] or ""
+    assert "战略路线" in error or "阶段" in error, error
+
+    await db.rollback()
+    assert await db.scalar(select(func.count()).select_from(ReasoningNode)) == 0
+
+    # 拒绝之后换成路线图,重试应当成功 —— 拒绝是安全的,不是死局。
+    good = MapReasoner(drafts=(_roadmap_draft(stages=3),))
+    use_reasoner(good)
+    retry = await app_client.post(
+        f"/api/workspaces/{account.workspace_id}/agent/turn",
+        json={"trigger": "retry", "idempotencyKey": "retry-after-legacy"},
+        headers=account.headers,
+    )
+    assert retry.status_code == 200, retry.text
+    retried = retry.json()
+    assert retried["reasoning"]["status"] == "ready"
+    assert len(retried["reasoning"]["nodes"]) == 4
 
 
 async def test_space_entered_failure_writes_no_half_map_then_retries(
@@ -142,8 +226,8 @@ async def test_space_entered_failure_writes_no_half_map_then_retries(
     await db.rollback()
     assert await db.scalar(select(func.count()).select_from(ReasoningNode)) == 0
 
-    # 换一个能用的 reasoner,重试应成功建立地图。
-    good = MapReasoner(drafts=(_map_draft(primary=5),))
+    # 换一个能用的 reasoner,重试应成功建立路线图。
+    good = MapReasoner(drafts=(_roadmap_draft(stages=5),))
     use_reasoner(good)
     retry = await app_client.post(
         f"/api/workspaces/{account.workspace_id}/agent/turn",
@@ -153,21 +237,21 @@ async def test_space_entered_failure_writes_no_half_map_then_retries(
     assert retry.status_code == 200, retry.text
     retried = retry.json()
     assert retried["reasoning"]["status"] == "ready"
-    assert len(retried["reasoning"]["nodes"]) == 5
+    assert len(retried["reasoning"]["nodes"]) == 6
 
 
-async def test_structurally_invalid_map_is_rejected_atomically(
+async def test_structurally_invalid_roadmap_is_rejected_atomically(
     app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
 ) -> None:
     account = await make_account()
-    # 只有 2 个一级维度 —— 低于 MIN_PRIMARY_NODES,整份地图拒绝。
-    reasoner = MapReasoner(drafts=(_map_draft(primary=2),))
+    # 只有 2 个阶段 —— 低于 3,整份路线图拒绝。
+    reasoner = MapReasoner(drafts=(_roadmap_draft(stages=2),))
     use_reasoner(reasoner)
 
     body = await _enter(app_client, account)
     assert body["reasoning"]["status"] == "failed"
     assert body["reasoning"]["nodes"] == []
-    assert "一级决策维度" in (body["reasoning"]["error"] or "")
+    assert "阶段" in (body["reasoning"]["error"] or "")
 
     await db.rollback()
     assert await db.scalar(select(func.count()).select_from(ReasoningNode)) == 0
@@ -188,7 +272,7 @@ async def test_strategy_phase_drops_scheduling_questions(
         response_mode="single_select",
         options=(QuestionOptionDraft(id="a", label="保研"),),
     )
-    reasoner = MapReasoner(drafts=(_map_draft(primary=4),), questions=(scheduling, strategic))
+    reasoner = MapReasoner(drafts=(_roadmap_draft(stages=4),), questions=(scheduling, strategic))
     use_reasoner(reasoner)
 
     await _enter(app_client, account)
@@ -204,7 +288,7 @@ async def test_root_change_triggers_a_new_exploration(
     app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
 ) -> None:
     account = await make_account()
-    reasoner = MapReasoner(drafts=(_map_draft(primary=4), _map_draft(primary=5)))
+    reasoner = MapReasoner(drafts=(_roadmap_draft(stages=3), _roadmap_draft(stages=5)))
     use_reasoner(reasoner)
 
     first = await _enter(app_client, account, key="enter-a")
@@ -220,7 +304,7 @@ async def test_root_change_triggers_a_new_exploration(
 
     second = await _enter(app_client, account, key="enter-b")
     assert second["changed"] is True, "根目标内容变了之后应该重新探索"
-    assert len(second["reasoning"]["nodes"]) == 5
+    assert len(second["reasoning"]["nodes"]) == 6
     assert len(reasoner.calls) == 2
 
 
@@ -228,7 +312,7 @@ async def test_user_edit_is_preserved_across_agent_turns(
     app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
 ) -> None:
     account = await make_account()
-    reasoner = MapReasoner(drafts=(_map_draft(primary=4), _map_draft(primary=4)))
+    reasoner = MapReasoner(drafts=(_roadmap_draft(stages=4), _roadmap_draft(stages=4)))
     use_reasoner(reasoner)
 
     first = await _enter(app_client, account)
@@ -237,12 +321,12 @@ async def test_user_edit_is_preserved_across_agent_turns(
     # 用户改标题 + 写原文。
     edited = await app_client.patch(
         f"/api/workspaces/{account.workspace_id}/reasoning/nodes/{node_id}",
-        json={"title": "我自己的用途", "userDescription": "这是我自己写的原文"},
+        json={"title": "我自己的路线", "userDescription": "这是我自己写的原文"},
         headers=account.headers,
     )
     assert edited.status_code == 200, edited.text
     view = edited.json()
-    assert view["nodes"][0]["title"] == "我自己的用途"
+    assert view["nodes"][0]["title"] == "我自己的路线"
     assert view["nodes"][0]["userDescription"] == "这是我自己写的原文"
 
     # 再跑一轮(force retry):模型又想写回原标题,但用户字段必须原样保留。
@@ -253,30 +337,12 @@ async def test_user_edit_is_preserved_across_agent_turns(
     )
     assert retry.status_code == 200, retry.text
     node = next(n for n in retry.json()["reasoning"]["nodes"] if n["id"] == node_id)
-    assert node["title"] == "我自己的用途", "Agent 覆盖了用户改过的标题"
+    assert node["title"] == "我自己的路线", "Agent 覆盖了用户改过的标题"
     assert node["userDescription"] == "这是我自己写的原文", "Agent 覆盖了用户原文"
 
 
 def _route_draft(route_title: str) -> ReasoningMapDraft:
-    base = _map_draft(primary=4)
-    route = ReasoningMapNodeDraft(
-        handle="r5",
-        title=route_title,
-        node_type="route",
-        summary="先形成可用能力,用小项目暴露缺口",
-        importance=5,
-        uncertainty=1,
-        urgency=1,
-        impact=5,
-        rationale="它收益最大、成本可控",
-    )
-    return ReasoningMapDraft(
-        nodes=(*base.nodes, route),
-        focus_handle="r5",
-        focus_reason="这是收敛出的路线",
-        phase="strategic_convergence",
-        turn_action="confirm",
-    )
+    return _roadmap_draft(stages=4, route_title=route_title)
 
 
 async def _plan(client: httpx.AsyncClient, account) -> dict:
@@ -292,7 +358,7 @@ async def test_answering_a_question_advances_the_map(
 ) -> None:
     account = await make_account()
     reasoner = MapReasoner(
-        drafts=(_map_draft(primary=4),),
+        drafts=(_roadmap_draft(stages=3),),
         questions=(
             QuestionDraft(
                 question="你主要用它做什么?",
@@ -343,7 +409,7 @@ async def test_strategy_confirmation_goes_through_pending_proposal(
 
     body = await app_client.post(
         f"/api/workspaces/{account.workspace_id}/agent/turn",
-        json={"trigger": "strategy_confirmation", "reasoningHandle": "r5", "idempotencyKey": "strategy-1"},
+        json={"trigger": "strategy_confirmation", "reasoningHandle": "r1", "idempotencyKey": "strategy-1"},
         headers=account.headers,
     )
     assert body.status_code == 200, body.text
@@ -363,7 +429,7 @@ async def test_strategy_confirmation_goes_through_pending_proposal(
     )
     assert confirm.status_code == 200, confirm.text
 
-    # 确认之后再跑一次:回写关联,进入执行规划。
+    # 确认之后再跑一次:回写关联,进入 strategy_confirmed。
     after = await app_client.post(
         f"/api/workspaces/{account.workspace_id}/agent/turn",
         json={"trigger": "strategy_confirmation", "idempotencyKey": "strategy-2"},
@@ -372,7 +438,7 @@ async def test_strategy_confirmation_goes_through_pending_proposal(
     assert after.status_code == 200, after.text
     final = after.json()["reasoning"]
     assert final["phase"] == "strategy_confirmed"
-    route = next(node for node in final["nodes"] if node["handle"] == "r5")
+    route = next(node for node in final["nodes"] if node["handle"] == "r1")
     assert route["linkedPlanNodeId"] is not None, "确认之后路线必须关联到真实战略节点"
 
     plan_after = await _plan(app_client, account)
@@ -405,7 +471,7 @@ async def test_refine_requires_a_confirmed_strategy(
 def test_scripted_reasoner_accepts_reasoning_map_fixture() -> None:
     turns = parse_script(
         '{"turns":[{"reply":"x","reasoningMap":{"focus":"r1","nodes":['
-        '{"handle":"r1","title":"用途","nodeType":"dimension","importance":5}]}}]}'
+        '{"handle":"r1","title":"路线","nodeType":"route","importance":5}]}}]}'
     )
     assert turns[0]["reasoningMap"]["focus"] == "r1"
 

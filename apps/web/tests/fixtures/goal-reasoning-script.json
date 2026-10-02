@@ -1,20 +1,86 @@
 {
   "turns": [
     {
-      "reply": "在动手之前，我先把这个目标里几个需要你拍板的维度梳理出来。先看用途 —— 它决定后面哪几条路线成立。",
+      "reply": "先给你一条推荐路线：约 10 周从基础到可展示项目，分四个阶段。",
       "reasoningMap": {
-        "phase": "strategic_exploration",
+        "phase": "roadmap_draft",
         "turnAction": "ask_user",
-        "focus": "r1",
-        "focusReason": "用途决定后面哪几条路线成立",
+        "focus": "r2",
+        "focusReason": "先确定优先方向，再排阶段顺序",
         "nodes": [
-          { "handle": "r1", "title": "目标用途", "nodeType": "dimension", "summary": "你主要想用它来做什么", "status": "exploring", "importance": 5, "uncertainty": 5, "urgency": 1, "impact": 5, "confidence": 1, "rationale": "用途决定能力清单与真实应用" },
-          { "handle": "r2", "title": "能力基础", "nodeType": "dimension", "summary": "现在会什么、缺什么", "status": "unexplored", "importance": 4, "uncertainty": 4, "urgency": 1, "impact": 4, "confidence": 2, "rationale": "决定从哪里起步" },
-          { "handle": "r3", "title": "最小可用能力", "nodeType": "dimension", "summary": "形成什么程度算能用", "status": "unexplored", "importance": 5, "uncertainty": 4, "urgency": 1, "impact": 5, "confidence": 2, "rationale": "决定第一阶段成果" },
-          { "handle": "r4", "title": "验证方式", "nodeType": "dimension", "summary": "怎么证明能力真的形成", "status": "unexplored", "importance": 4, "uncertainty": 3, "urgency": 1, "impact": 4, "confidence": 2, "rationale": "避免停在看完教程" }
+          {
+            "handle": "r1",
+            "title": "推荐路线：约 10 周从基础到可展示项目",
+            "nodeType": "route",
+            "parent": null,
+            "summary": "先打通最小闭环，再补统计与可视化。",
+            "status": "exploring",
+            "importance": 5,
+            "uncertainty": 2,
+            "urgency": 1,
+            "impact": 5,
+            "confidence": 3,
+            "rationale": "它决定阶段顺序",
+            "timeframe": "约 10 周",
+            "deliverable": "一个可展示的项目",
+            "passCriteria": "能端到端做完并讲清结论"
+          },
+          {
+            "handle": "r2",
+            "title": "阶段 1：目标用途",
+            "nodeType": "stage",
+            "parent": "r1",
+            "summary": "先确认这个目标主要用来做什么。",
+            "status": "exploring",
+            "importance": 5,
+            "uncertainty": 4,
+            "urgency": 1,
+            "impact": 5,
+            "confidence": 2,
+            "rationale": "它决定后面哪几条路线成立",
+            "timeframe": "约 1 周",
+            "deliverable": "一句用途说明",
+            "passCriteria": "能说清主要用途"
+          },
+          {
+            "handle": "r3",
+            "title": "阶段 2：基础与工具",
+            "nodeType": "stage",
+            "parent": "r1",
+            "summary": "环境就绪，能独立写出可运行的小练习。",
+            "status": "unexplored",
+            "timeframe": "约 3 周",
+            "deliverable": "一组可运行的小练习",
+            "passCriteria": "能独立写函数与循环"
+          },
+          {
+            "handle": "r4",
+            "title": "阶段 3：数据处理",
+            "nodeType": "stage",
+            "parent": "r1",
+            "summary": "完成一个公开数据集的端到端分析。",
+            "status": "unexplored",
+            "timeframe": "约 3 周",
+            "deliverable": "一份公开数据集分析",
+            "passCriteria": "能独立完成读取—清洗—聚合"
+          },
+          {
+            "handle": "r5",
+            "title": "阶段 4：作品项目",
+            "nodeType": "stage",
+            "parent": "r1",
+            "summary": "把成果收成一个可展示项目。",
+            "status": "unexplored",
+            "timeframe": "约 3 周",
+            "deliverable": "一个可展示的项目",
+            "passCriteria": "能讲清项目与结论"
+          }
         ],
         "links": [
-          { "source": "r1", "target": "r3", "type": "influences", "note": "用途影响最小能力的定义" }
+          { "source": "r1", "target": "r2", "type": "depends_on", "note": "先定用途再往下走" },
+          { "source": "r2", "target": "r3", "type": "depends_on", "note": "用途清楚之后打基础" },
+          { "source": "r3", "target": "r4", "type": "depends_on", "note": "基础之后做数据处理" },
+          { "source": "r4", "target": "r5", "type": "depends_on", "note": "分析之后做作品" }
         ]
       },
       "questions": [
@@ -28,41 +94,54 @@
           ],
           "allowCustomInput": true
         }
-      ],
+      ]
+    },
+    {
+      "reply": "记下了。我先把这个事实放到路线上，再继续看阶段。",
       "actions": []
     },
     {
-      "reply": "记下了。我先把这个事实放到地图上，再继续看下一层。",
-      "actions": []
-    },
-    {
-      "reply": "用途清楚了，我收敛出一条值得先验证的路线。",
+      "reply": "用途确认了，我把它收敛成一条可确认的战略路线。",
       "reasoningMap": {
-        "phase": "strategic_convergence",
+        "phase": "roadmap_review",
         "turnAction": "confirm",
-        "focus": "r5",
-        "focusReason": "它收益最大、成本可控，值得先验证",
+        "focus": "r1",
+        "focusReason": "路线已经收敛，等你确认",
         "nodes": [
-          { "handle": "r1", "title": "目标用途", "nodeType": "dimension", "summary": "用户选择了英语方向", "status": "resolved", "importance": 5, "uncertainty": 1, "urgency": 1, "impact": 5, "confidence": 4, "rationale": "用途已确认" },
-          { "handle": "r5", "title": "战略:先英语", "nodeType": "route", "summary": "先形成英语的可用能力，用小项目暴露缺口", "status": "exploring", "importance": 5, "uncertainty": 2, "urgency": 1, "impact": 5, "confidence": 3, "rationale": "收益最大、成本可控" }
+          {
+            "handle": "r1",
+            "title": "战略:先英语",
+            "nodeType": "route",
+            "parent": null,
+            "summary": "先形成英语的可用能力，用小项目暴露缺口。",
+            "status": "exploring",
+            "importance": 5,
+            "uncertainty": 1,
+            "urgency": 1,
+            "impact": 5,
+            "confidence": 4,
+            "rationale": "用途已确认",
+            "timeframe": "约 10 周",
+            "deliverable": "英语的可用能力",
+            "passCriteria": "能用英语完成一次真实任务"
+          }
         ],
         "links": []
       },
-      "questions": [],
-      "actions": []
+      "questions": []
     },
     {
-      "reply": "我把第一阶段拆成两个里程碑，你确认之后才会写进计划。",
+      "reply": "我把第一阶段拆成一个里程碑，你确认之后才会写进计划。",
       "actions": [
         {
           "op": "create_node",
           "localId": "n9",
-          "parentRef": "n1",
+          "parentRef": "n2",
           "title": "第一阶段:基础",
           "nodeType": "stage",
           "planningLevel": "phase",
           "purpose": "planning",
-          "description": "先形成最小可用能力，再用一个小项目验证。"
+          "description": "先形成最小可用能力。"
         }
       ]
     }

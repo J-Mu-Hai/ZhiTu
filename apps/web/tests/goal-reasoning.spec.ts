@@ -1,11 +1,12 @@
 /**
- * 阶段 7:目标推理智能体的隔离 E2E。
+ * 阶段 7–8:目标推理智能体的隔离 E2E(路线优先)。
  *
  * 用 `--script=apps/web/tests/fixtures/goal-reasoning-script.json` 起隔离栈:
- * 没有真实模型、没有真实联网,脚本化 reasoner 按轮次给出问题地图操作。
+ * 没有真实模型、没有真实联网,脚本化 reasoner 按轮次给出路线图操作。
  *
- * 覆盖:进入目标自动生成问题地图(幂等)、焦点与战略取舍问题、回答后地图状态推进、
- * 战略确认走既有 proposal、未确认不写业务计划、确认后才写战略节点并出现"细化第一阶段"。
+ * 覆盖:进入目标自动生成**路线图**(1 条 route + 4 个 stage,幂等)、焦点与战略取舍
+ * 问题、回答后地图状态推进、战略确认走既有 proposal、未确认不写业务计划、确认后才写
+ * 战略节点并出现“细化第一阶段”。
  */
 
 import { expect, test, type Page, type Request } from '@playwright/test';
@@ -31,10 +32,12 @@ test.beforeEach(async ({ request }) => {
 const reasoningNode = (page: Page) => page.locator('.react-flow__node-reasoning');
 const reasoningCard = (page: Page) => page.locator('.reasoning-node');
 const questionCard = (page: Page) => page.locator('.canvas-question-node');
+const routeCard = (page: Page) => reasoningCard(page).filter({ hasText: '推荐路线' });
 
 async function waitForMap(page: Page): Promise<void> {
-  await expect(reasoningNode(page)).toHaveCount(4, { timeout: 25000 });
-  await expect(reasoningCard(page).filter({ hasText: '目标用途' })).toBeVisible();
+  // 路线图 = 1 条 route + 4 个 stage。
+  await expect(reasoningNode(page)).toHaveCount(5, { timeout: 25000 });
+  await expect(routeCard(page)).toBeVisible();
 }
 
 /** 节点投影 memo 跑了几次(见 `PathView` 里 `__zhituNodeProjectionBuilds` 的说明)。 */
@@ -56,21 +59,21 @@ async function viewportTransform(page: Page): Promise<string> {
   return (await page.locator('.react-flow__viewport').getAttribute('style')) ?? '';
 }
 
-test('进入目标自动生成问题地图,重复进入不重复', async ({ page }) => {
+test('进入目标自动生成路线图,重复进入不重复', async ({ page }) => {
   test.slow();
   const { token } = await registerAccount(page, 'goal-reasoning-enter');
-  const workspaceId = await createWorkspace(page, token, '目标推理空间', '我想系统学习 Python');
+  const workspaceId = await createWorkspace(page, token, '目标推理空间', '我想系统学习 Python 做数据分析，每周 150 分钟。');
   await page.goto(`/workbench?workspace=${workspaceId}`);
   await waitForRealPlan(page);
 
   await waitForMap(page);
-  // 画布上已经有问题地图、但还没有任何**业务计划子节点** —— 空态必须完全不渲染。
+  // 有路线图、但还没有任何**业务计划子节点** —— 空态必须完全不渲染。
   await expect(page.locator('.empty-space-note'), '有推理地图时不该再显示空态').toHaveCount(0);
-  // 恰好一个焦点,而且焦点有"为什么先处理它"。
+  // 恰好一个焦点,而且焦点是第一个阶段。
   await expect(page.locator('.reasoning-node.is-focus')).toHaveCount(1, { timeout: 20000 });
   await expect(page.locator('.reasoning-node.is-focus')).toContainText('用途');
 
-  // 战略阶段先问取舍 —— 不能先问每周投入。
+  // 战略阶段先问取舍 —— 不能先问每周投入(用户已经给了 150 分钟)。
   await expect(questionCard(page)).toHaveCount(1, { timeout: 20000 });
   const questionText = await questionCard(page).innerText();
   expect(questionText).toContain('哪条路线');
@@ -113,11 +116,11 @@ test('进入目标自动生成问题地图,重复进入不重复', async ({ page
   expect(styles.textContrast, '问题提示正文对比度不足').toBeGreaterThanOrEqual(4.5);
   expect(styles.buttonContrast, '“定位到画布”对比度不足').toBeGreaterThanOrEqual(4.5);
 
-  // 重复进入(刷新)不重复一级节点。
+  // 重复进入(刷新)不重复建节点。
   await page.reload();
   await waitForRealPlan(page);
   await waitForMap(page);
-  await expect(reasoningNode(page)).toHaveCount(4);
+  await expect(reasoningNode(page)).toHaveCount(5);
 });
 
 test('回答推进地图,战略确认走提案,确认后才写计划', async ({ page }) => {
@@ -158,7 +161,7 @@ test('回答推进地图,战略确认走提案,确认后才写计划', async ({ 
   await expect(page.getByRole('button', { name: '细化第一阶段' })).toBeVisible({ timeout: 20000 });
 });
 
-test('顶层讨论锚定到目标根节点,悬停不重建画布、点击只开一次详情', async ({ page }) => {
+test('路线锚定到目标根节点,悬停不重建画布、点击只开一次详情', async ({ page }) => {
   test.slow();
   const { token } = await registerAccount(page, 'goal-reasoning-anchor');
   const workspaceId = await createWorkspace(page, token, '推理锚定空间', '我想系统学习 Python');
@@ -177,15 +180,13 @@ test('顶层讨论锚定到目标根节点,悬停不重建画布、点击只开�
   const root = plan.nodes.find((node) => node.parentId === null)!;
   await expect(page.locator(`.react-flow__node[data-id="${root.id}"]`)).toBeVisible();
 
-  // 每个顶层推理节点都有一条 `reasoning-anchor:*` 锚定边,source 是当前目标根节点。
-  for (const handle of ['r1', 'r2', 'r3', 'r4']) {
-    const edge = page.locator(`.react-flow__edge[data-id="reasoning-anchor:${handle}"]`);
-    await expect(edge, `顶层推理节点 ${handle} 缺少锚定线`).toHaveCount(1);
-    await expect(edge).toHaveAttribute('aria-label', `Edge from ${root.id} to reasoning:${handle}`);
-  }
-  await expect(page.locator('.react-flow__edge.reasoning-anchor-edge')).toHaveCount(4);
-  // 内部真实 links 仍在(r1→r3),锚定线没有替代它的语义。
-  await expect(page.locator('.react-flow__edge-reasoningLink')).toHaveCount(1);
+  // 顶层只有那一条路线,它与根目标连一条 `reasoning-anchor:r1` 锚定线。
+  const routeAnchor = page.locator('.react-flow__edge[data-id="reasoning-anchor:r1"]');
+  await expect(routeAnchor, '推荐路线缺少到根目标的锚定线').toHaveCount(1);
+  await expect(routeAnchor).toHaveAttribute('aria-label', `Edge from ${root.id} to reasoning:r1`);
+  await expect(page.locator('.react-flow__edge.reasoning-anchor-edge')).toHaveCount(1);
+  // 阶段链是真实的 reasoning links(r1→r2→r3→r4→r5)。
+  await expect(page.locator('.react-flow__edge-reasoningLink')).toHaveCount(4);
   // 推理节点**不是业务节点**:它没有业务“删除/建立关系”入口,也没有更多操作菜单。
   await expect(page.locator('.react-flow__node-reasoning .node-more')).toHaveCount(0);
   await expect(page.locator('.react-flow__node-question .node-more')).toHaveCount(0);
@@ -195,9 +196,8 @@ test('顶层讨论锚定到目标根节点,悬停不重建画布、点击只开�
   expect(relationPosts, '锚定线被写成了业务关系').toEqual([]);
 
   // ---- 悬停 10 次:节点投影不重建、视口不动、不发请求 ----
-  const card = reasoningCard(page).filter({ hasText: '目标用途' });
   const node = page.locator('.react-flow__node[data-id="reasoning:r1"]');
-  await expect(card).toBeVisible();
+  await expect(routeCard(page)).toBeVisible();
   // 等测量与初始定位都安静下来。
   await page.waitForTimeout(500);
 
@@ -216,7 +216,7 @@ test('顶层讨论锚定到目标根节点,悬停不重建画布、点击只开�
   };
   page.on('request', listener);
   for (let i = 0; i < 10; i += 1) {
-    await card.hover();
+    await routeCard(page).hover();
     await page.mouse.move(4, 4);
   }
   page.off('request', listener);
@@ -239,14 +239,10 @@ test('顶层讨论锚定到目标根节点,悬停不重建画布、点击只开�
 
   // ---- 点击一次:只出现一个详情面板;只按下指针不打开(重复入口已删除) ----
   const detail = page.locator('.reasoning-detail');
-  // 去掉了 `onPointerDown` 的重复入口:只按下指针(不松开)不该打开详情。
-  await card.dispatchEvent('pointerdown');
+  await routeCard(page).dispatchEvent('pointerdown');
   await expect(detail, '按下指针不该打开详情').toHaveCount(0);
-  // 完整一次点击:恰好一个详情面板。用 `.click()`(它自带滚动与稳定性等待)——
-  // 推理节点在 960 高的视口里靠下,直接拿坐标点会落在视口外。
-  await card.click();
+  await routeCard(page).click();
   await expect(detail, '点击一次应该只出现一个详情面板').toHaveCount(1);
   await expect(detail).toContainText('目标推理');
-  // 面板里就是刚才那个节点(输入框的值不属于 text content,单独验)。
-  await expect(detail.getByLabel('维度标题')).toHaveValue('目标用途');
+  await expect(detail.getByLabel('维度标题')).toHaveValue('推荐路线：约 10 周从基础到可展示项目');
 });

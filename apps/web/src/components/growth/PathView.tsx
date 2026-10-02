@@ -1127,9 +1127,9 @@ function Canvas() {
       const positionKey = `${spaceId}:${nodeId}`;
       // 用户拖过就听用户的(UI-only 位置表);否则给一个确定性的扇出位置,
       // 保证同一锚点下多个问题不堆叠、刷新前后一致。
-      // 放在锚点(根目标)的**留白侧**，而不是往下铺 —— 主路线是竖向的，
-      // 问题卡压在路线上就没法读了。
-      const fallback = { x: anchor.x + 380, y: anchor.y - 10 };
+      // 放在锚点(根目标)的**留白侧**：根的直接子节点在它右侧 y≈30，
+      // 主路线在它正下方。把问题卡放在“右侧偏下”那一块，既不压业务节点也不压路线。
+      const fallback = { x: anchor.x + 380, y: anchor.y + 200 };
       const placed = questionDragging[positionKey] ?? questionPositions[positionKey] ?? fallback;
       nextNodes.push({
         id: nodeId,
@@ -1222,19 +1222,13 @@ function Canvas() {
         for (const stage of stagesOf(roadmapRoute.handle)) roadmapHandles.add(stage.handle);
       }
       if (showThinking) {
+        // 思考材料**平铺**一列,不与主路线争位置;层级关系由图上的锚定线/链接表达。
         const thinking = reasoning.nodes.filter((item) => !roadmapHandles.has(item.handle));
         const originX = anchor.x + (roadmapRoute ? 460 : 0);
         let cursorY = anchor.y + 430;
-        for (const item of thinking.filter((node) => !node.parentHandle)) {
-          reasoningPos[item.handle] = { x: originX, y: cursorY };
-          cursorY += heightOf(item.handle, 120) + 90;
-        }
         for (const item of thinking) {
-          if (!item.parentHandle) continue;
-          const parent = reasoningPos[item.parentHandle] ?? { x: originX, y: anchor.y + 430 };
-          const siblings = thinking.filter((node) => node.parentHandle === item.parentHandle);
-          const index = siblings.indexOf(item);
-          reasoningPos[item.handle] = { x: parent.x + 260, y: parent.y + index * 180 };
+          reasoningPos[item.handle] = { x: originX, y: cursorY };
+          cursorY += heightOf(item.handle, 120) + 80;
         }
       }
 
@@ -1261,15 +1255,14 @@ function Canvas() {
       }
 
       const renderedHandles = new Set(renderedReasoning.map((item) => item.handle));
-      const linkPairs = new Set(
-        reasoning.links.map((link) => `${link.sourceHandle}->${link.targetHandle}`),
-      );
-      // 讨论锚定线:**顶层**节点锚到根目标,有父节点的(阶段)锚到父节点 —— 但父子的
-      // 语义链接已经在 `reasoning.links` 里画了就不重复画。它继承的是绘制语义,
-      // 不是业务语义:不进 NodeRelation、不写表、不参与排期(见 `ReasoningAnchorEdge`)。
+      // 已经有**入边**的节点(阶段链)不再重复画父锚定线 —— 否则会从路线拉出
+      // 一把散线,把主链读没。
+      const linkedTargets = new Set(reasoning.links.map((link) => link.targetHandle));
+      // 讨论锚定线:**顶层**节点锚到根目标,没有入边的子节点锚到父节点。它继承的是
+      // 绘制语义,不是业务语义:不进 NodeRelation、不写表、不参与排期。
       for (const item of renderedReasoning) {
         const parent = item.parentHandle;
-        if (parent && (!renderedHandles.has(parent) || linkPairs.has(`${parent}->${item.handle}`))) {
+        if (parent && (!renderedHandles.has(parent) || linkedTargets.has(item.handle))) {
           continue;
         }
         nextEdges.push({

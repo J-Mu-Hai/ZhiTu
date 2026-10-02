@@ -187,7 +187,11 @@ test('对话区不再挂常驻诊断，replan 只用在有执行计划时出现'
   // 没有已确认战略、也没有执行计划:replan 入口整块不渲染,不占一行。
   await expect(page.getByRole('button', { name: '按最近的执行情况调整计划' })).toHaveCount(0);
   // 没有问题、也没选节点 -> “选择画布中的节点”那条常驻说明不渲染。
-  await expect(page.locator('.context-hint')).toHaveCount(0);
+  // 用脚本化 reasoner 起栈时，目标会自动生成一个待澄清问题，那时不选节点会显示
+  // “选择画布中的节点”这条引导 —— 所以只在**确实没有问题**时断言它不存在。
+  if ((await page.locator('.canvas-question-node').count()) === 0) {
+    await expect(page.locator('.context-hint')).toHaveCount(0);
+  }
   // 输入入口本身还在。
   await expect(page.getByLabel('给 AI 的消息')).toBeVisible();
 });

@@ -23,10 +23,18 @@ import {
 
 const SCRIPTED = process.env.ZHITU_SCRIPTED_ACTIONS ?? '';
 
+/*
+ * **只在自己那份脚本被加载时才跑。** 隔离验收一次只能配一份 `--script`;
+ * 如果这里只写 `!SCRIPTED`,那么用别的脚本(例如 goal-reasoning)起栈时,
+ * 这一组会“跑起来”却拿不到它要的对话内容 —— 失败看起来像产品坏了。
+ * 与 `strategy-layer.spec.ts` 同一条纪律。
+ */
+const IS_QUESTION_SCRIPT = SCRIPTED.includes('question-script');
+
 test.beforeEach(async ({ request }) => {
   await assertBackendRunning(request);
   test.skip(
-    !SCRIPTED,
+    !IS_QUESTION_SCRIPT,
     '这一条要 --script=apps/web/tests/fixtures/question-script.json 才跑得起来',
   );
 });

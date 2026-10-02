@@ -74,7 +74,7 @@
             "handle": "r6",
             "title": "风险：时间可能不够",
             "nodeType": "risk",
-            "parent": null,
+            "parent": "r1",
             "summary": "每周 150 分钟偏紧，需要接受范围收窄。",
             "status": "exploring",
             "importance": 3,
