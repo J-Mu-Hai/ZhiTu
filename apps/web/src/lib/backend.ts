@@ -1837,3 +1837,11 @@ export function updateReasoningNode(
     { method: 'PATCH', body: payload },
   );
 }
+
+/** 细化已确认战略。**只有已确认战略存在时**服务端才接受。 */
+export function refineStrategy(workspaceId: string): Promise<SendMessageResponse> {
+  return apiFetch<SendMessageResponse>(`/api/workspaces/${workspaceId}/agent/strategy/refine`, {
+    method: 'POST',
+    body: {},
+  });
+}

@@ -539,6 +539,7 @@ function Canvas() {
     restoreArchived, restoringId,
     questions, submitAnswer, dismissQuestion, postponeQuestion, questionFocus,
     reasoning, reasoningLoading, ensureReasoningMap, agentTurn, editReasoningNode,
+    refineStrategy, refining,
   } = useDemo();
   const { fitView, setViewport, screenToFlowPosition } = useReactFlow();
   /*
@@ -1880,6 +1881,16 @@ function Canvas() {
             <button type="button" onClick={() => { void ensureReasoningMap({ retry: true }); }}>重试</button>
           )}
         </div>
+      )}
+      {reasoning?.phase === 'execution_planning' && (
+        <button
+          className="reasoning-refine"
+          type="button"
+          disabled={refining}
+          onClick={() => { void refineStrategy(); }}
+        >
+          {refining ? '正在细化…' : '细化第一阶段'}
+        </button>
       )}
       {direct.length === 0 && (
         <div className="empty-space-note">

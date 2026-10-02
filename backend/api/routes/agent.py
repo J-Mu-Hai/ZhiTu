@@ -20,6 +20,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.agent.runtime import Reasoner
 from backend.api.dependencies.agent import get_reasoner
 from backend.api.dependencies.workspace import get_workspace_context
+from backend.api.routes.workspaces import turn_response
+from backend.contracts.conversation import SendMessageResponse
 from backend.contracts.reasoning import (
     AgentTurnRequest,
     AgentTurnResponse,
@@ -94,6 +96,22 @@ async def update_reasoning_node(
         user_description=payload.user_description,
         status=payload.status,
     )
+
+
+@router.post(
+    "/{workspace_id}/agent/strategy/refine",
+    response_model=SendMessageResponse,
+    summary="细化已确认战略(生成阶段/里程碑/周计划提案)",
+)
+async def refine_strategy(
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+    reasoner: Reasoner = Depends(get_reasoner),
+) -> SendMessageResponse:
+    """**只有已确认战略存在时**才说得上细化阶段。它走的是完整对话工作流,
+    在对话里留下一条用户消息与一条助手消息;计划变更仍然要用户确认。"""
+    outcome = await reasoning_service.refine_strategy(db, ctx, reasoner)
+    return await turn_response(db, ctx, outcome)
 
 
 __all__ = ["router"]

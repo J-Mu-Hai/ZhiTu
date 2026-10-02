@@ -291,6 +291,12 @@ async def load_map(db: AsyncSession, ctx: WorkspaceContext) -> GoalReasoningView
 STALE_RUNNING_SECONDS = 120
 #: 系统自动探索时写进提示词的那句话。**不是用户消息**,不会落进对话历史。
 SPACE_ENTERED_PROMPT = "(系统)用户刚进入这个空间,请开始一次有界的目标探索与问题地图梳理。"
+#: “细化第一阶段”那个入口替用户说的那句话。**执行规划阶段才问排期条件。**
+REFINE_PHASE_MESSAGE = (
+    "基于已确认的战略,请细化第一阶段:给出阶段与里程碑。"
+    "需要时再问我在执行规划阶段才该问的条件(截止时间、每周可用时间、当前水平);"
+    "具体任务安排仍然提成待确认提案。"
+)
 
 
 class MapValidationError(Exception):
@@ -1034,6 +1040,44 @@ async def update_node(
     return await build_view(db, ctx, session)
 
 
+async def refine_strategy(
+    db: AsyncSession,
+    ctx: WorkspaceContext,
+    reasoner,
+    *,
+    node_id: uuid.UUID | None = None,
+):
+    """执行桥接:把**已确认**的战略细化成阶段/里程碑/周计划提案。
+
+    复用完全相同的对话工作流(`submit_turn`):它会把那句系统消息落成一条用户消息
+    与一条助手消息,并在对话里留下痕迹 —— 按钮与对话不能有两个真相。
+
+    **未确认战略时拒绝。** 这是产品规则,不是技术细节:没有已确认的方向就往
+    执行层拆,拆出来的东西没有依据。
+    """
+    strategy = await db.scalar(
+        select(PlanNode)
+        .where(
+            PlanNode.workspace_id == ctx.id,
+            PlanNode.planning_level == "strategy",
+            PlanNode.deleted_at.is_(None),
+        )
+        .order_by(PlanNode.created_at.desc())
+        .limit(1)
+    )
+    if strategy is None:
+        raise InvalidInput("还没有已确认的战略。先确认一个战略,再往下细化阶段。")
+    if node_id is not None and node_id != strategy.id:
+        raise InvalidInput("这个空间里没有这个已确认的战略。")
+    return await conversation_service.submit_turn(
+        db,
+        ctx,
+        reasoner,
+        content=REFINE_PHASE_MESSAGE,
+        context_node_id=strategy.id,
+    )
+
+
 __all__ = [
     "MAX_MAP_NODES",
     "MAX_PRIMARY_NODES",
@@ -1047,6 +1091,7 @@ __all__ = [
     "get_session",
     "input_version",
     "load_map",
+    "refine_strategy",
     "render_map_section",
     "root_plan_node",
     "run_space_entered",

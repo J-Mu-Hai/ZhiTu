@@ -105,3 +105,5 @@
 /* 自动梳理状态。可取消感来自“正在…” + 失败时给重试,而不是无限转圈。 */
 .reasoning-status { position: absolute; left: 50%; top: 14px; transform: translateX(-50%); z-index: 11; display: flex; align-items: center; gap: 8px; padding: 6px 12px; border: 1px solid var(--line-card); border-radius: var(--radius-pill); background: var(--float-surface); box-shadow: var(--shadow-float); color: var(--muted); font-size: 10px; }
 .reasoning-status button { font-size: 10px; color: var(--blue); }
+.reasoning-refine { position: absolute; right: 16px; bottom: 96px; z-index: 11; padding: 7px 14px; border: 1px solid var(--blue); border-radius: var(--radius-pill); background: var(--blue); color: #fff; font-size: 11px; box-shadow: var(--shadow-float); }
+.reasoning-refine:disabled { opacity: .5; }

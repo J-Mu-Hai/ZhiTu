@@ -535,6 +535,31 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     [space.id],
   );
 
+  /** 「细化第一阶段」:把已确认战略交给既有的对话工作流拆出阶段/里程碑提案。 */
+  const [refining, setRefining] = useState(false);
+  const refineStrategy = useCallback(async () => {
+    if (refining) return;
+    setRefining(true);
+    setSendError(null);
+    try {
+      const result = await backend.refineStrategy(space.id);
+      setMessages((old) => [
+        ...old,
+        toMessage(result.userMessage),
+        toMessage(result.assistantMessage),
+      ]);
+      setBrief(result.brief);
+      setProposalErrors(result.proposalErrors);
+      setInputChanged(result.inputChanged);
+      await refreshProposals();
+      await refreshQuestions();
+    } catch (cause) {
+      setSendError(cause instanceof ApiError ? cause.message : '细化没有完成,请重试。');
+    } finally {
+      setRefining(false);
+    }
+  }, [refining, refreshProposals, refreshQuestions, space.id]);
+
   // 计划第一次到达(或换空间)时自动梳理一次问题地图。**幂等由服务端保证** ——
   // 这个 effect 多跑几次不会重复建节点。依赖里不带 `ensureReasoningMap`(它依赖
   // `reasoning`,带上会自相触发)。
@@ -1713,6 +1738,7 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     questions, submitAnswer, dismissQuestion, postponeQuestion, questionFocus, focusQuestion,
     // 目标推理地图。与业务计划、问题都分开;进入空间会自动梳理一次(幂等)。
     reasoning, reasoningLoading, ensureReasoningMap, refreshReasoning, agentTurn, editReasoningNode,
+    refineStrategy, refining,
     replan, replanState,
     // 上一轮是不是基于已经变过的输入(见 `inputChanged` 的注释),以及"重新分析"
     // 那个入口。**两者一起给出去**:只有这个字段而没有入口,用户知道出事了却没法

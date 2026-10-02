@@ -378,6 +378,29 @@ async def test_strategy_confirmation_goes_through_pending_proposal(
     plan_after = await _plan(app_client, account)
     assert any(node["title"] == "战略:先英语" for node in plan_after["nodes"])
 
+    # 执行桥接:已确认战略之后才能细化阶段。
+    refine = await app_client.post(
+        f"/api/workspaces/{account.workspace_id}/agent/strategy/refine",
+        headers=account.headers,
+    )
+    assert refine.status_code == 200, refine.text
+    body = refine.json()
+    assert body["userMessage"]["content"].strip()
+    assert body["assistantMessage"]["content"].strip()
+
+
+async def test_refine_requires_a_confirmed_strategy(
+    app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
+) -> None:
+    account = await make_account()
+    use_reasoner(MapReasoner(drafts=()))
+    response = await app_client.post(
+        f"/api/workspaces/{account.workspace_id}/agent/strategy/refine",
+        headers=account.headers,
+    )
+    assert response.status_code == 400, response.text
+    assert response.json()["error"]["code"] == "INVALID_INPUT"
+
 
 def test_scripted_reasoner_accepts_reasoning_map_fixture() -> None:
     turns = parse_script(
