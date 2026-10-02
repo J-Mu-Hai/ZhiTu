@@ -38,6 +38,7 @@ from dataclasses import dataclass, replace
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.agent.runtime.base import ReasoningResult, ToolExchange, TurnContext
+from backend.core.config import settings
 from backend.db.base import utcnow
 from backend.db.models import ReasoningState, ToolCallRecord
 from backend.db.models.enums import (
@@ -187,6 +188,8 @@ async def run_turn(
     exchanges: list[ToolExchange] = []
     model_calls = 0
     tool_calls = 0
+    #: 本轮已发生的真实公网检索次数(受 `RESEARCH_MAX_CALLS_PER_TURN` 限制)。
+    research_calls = 0
     final: ReasoningResult | None = None
 
     for iteration in range(MAX_MODEL_CALLS):
@@ -221,9 +224,21 @@ async def run_turn(
             for request in result.tool_requests:
                 if tool_calls >= MAX_TOOL_CALLS:
                     break
-                exchange, sanitized, ok = await agent_tools.execute_tool(
-                    db, ctx, current_turn, name=request.name, arguments=request.arguments
-                )
+                if request.name == "research_public" and research_calls >= settings.research_max_calls_per_turn:
+                    # 每轮默认最多一次真实公网检索:超出的直接拒,不发请求。
+                    exchange = ToolExchange(
+                        tool_name="research_public",
+                        status="rejected",
+                        summary={"error": "每一轮最多允许一次真实公网检索。"},
+                    )
+                    sanitized = {}
+                    ok = False
+                else:
+                    exchange, sanitized, ok = await agent_tools.execute_tool(
+                        db, ctx, current_turn, name=request.name, arguments=request.arguments
+                    )
+                    if request.name == "research_public":
+                        research_calls += 1
                 tool_calls += 1
                 exchanges.append(exchange)
                 db.add(

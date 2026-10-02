@@ -40,6 +40,7 @@ from backend.db.models import (
     PlanNode,
     ScheduledSession,
 )
+from backend.services import research_service
 from backend.services.context import WorkspaceContext
 
 logger = logging.getLogger(__name__)
@@ -349,7 +350,7 @@ async def _get_recent_execution(db, ctx, turn, arguments) -> dict:
     }
 
 
-#: research_public 查询的长度上限。
+#: research_public 查询的长度上限的兼容默认值;实际取 `settings.research_max_query_chars`。
 RESEARCH_QUERY_MAX_CHARS = 120
 #: 查询里绝不能出现的私密标记。
 _RESEARCH_PRIVATE_MARKERS = (
@@ -377,8 +378,9 @@ def _sanitize_research_query(query: object) -> str:
     if not isinstance(query, str) or len(query.strip()) < 3:
         raise ToolRejected("research_public 需要一个至少 3 个字的关键词。")
     text = query.strip()
-    if len(text) > RESEARCH_QUERY_MAX_CHARS:
-        raise ToolRejected(f"研究关键词最多 {RESEARCH_QUERY_MAX_CHARS} 字。")
+    limit = settings.research_max_query_chars or RESEARCH_QUERY_MAX_CHARS
+    if len(text) > limit:
+        raise ToolRejected(f"研究关键词最多 {limit} 字。")
     lowered = text.lower()
     for marker in _RESEARCH_PRIVATE_MARKERS:
         if marker in lowered:
@@ -389,29 +391,25 @@ def _sanitize_research_query(query: object) -> str:
 
 
 async def _research_public(db, ctx, turn, arguments) -> dict:
-    """受限的公开研究。**默认未配置时如实说未配置,绝不假装查过。**
+    """受限的公开研究。**未配置/失败/超额时如实说“没有完成”,绝不假装查过。**
 
-    本版本只实现到“显式开关 + 诚实响应”。真正的搜索提供方适配器**尚未实现** ——
-    没有配置时返回 `configured=false`;即使配了未支持的提供方,也返回 `configured=false`
-    并说明本版本没有适配器,而不是编造来源。
+    真实检索只在 `RESEARCH_ENABLED=true` + `RESEARCH_PROVIDER=tavily` + 有 Key 时发生;
+    默认不发任何请求。返回的 `sources` 是公开来源(标题/URL/访问时间/摘录),属于
+    `tool` 来源,不是用户事实,也不能直接写计划。
     """
     query = _sanitize_research_query(arguments.get("query"))
-    provider = (settings.research_provider or "").strip().lower()
-    if provider in ("", "none", "off", "disabled"):
-        return {
-            "configured": False,
-            "query": query,
-            "note": (
-                "公开研究工具未配置(服务端没有启用 RESEARCH_PROVIDER);我没有联网查过。"
-                "不要把它当成查过了,也不要编造来源。"
-            ),
-        }
+    outcome = await research_service.search(db, query)
+    if not outcome.sources:
+        note = research_service.REASON_NOTE.get(
+            outcome.reason,
+            "公开研究没有完成;我没有拿到来源,不要编造。",
+        )
+        return {"configured": False, "query": query, "reason": outcome.reason, "note": note}
     return {
-        "configured": False,
-        "query": query,
+        **research_service.sources_to_summary(outcome),
         "note": (
-            f"研究提供方 {provider!r} 已配置,但本版本没有对应适配器;我没有联网查过。"
-            "不要编造来源。"
+            "这些是公开来源。引用外部事实时要标明来源;它只是依据,不能直接写进计划 —— "
+            "正式变更仍要提案并由用户确认。"
         ),
     }
 

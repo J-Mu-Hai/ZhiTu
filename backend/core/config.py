@@ -44,16 +44,30 @@ class Settings(BaseSettings):
     #: 于是一整轮变成"模型输出无法解析"。用户看到的是一句和真实原因毫不相干的
     #: 抱怨,而原因只是预算给少了。
     agent_max_tokens: int = 8192
-    #: 公开研究工具的提供方。**默认不配置**(空 = 没接)。
+    #: 公开研究工具的提供方。**默认 `none` = 不联网**。首期只支持 `tavily`。
     #:
-    #: 这是一个**显式开关**:没有配置时必须如实返回“未配置”,不允许假装查过。
-    #: 本版本只实现到“开关 + 诚实的未配置/无适配器响应”;真正的搜索提供方适配器
-    #: 尚未实现(见 `services/agent_tools._research_public`)。
-    research_provider: str = ""
-    #: 公开研究一次最多返回几条来源。真实提供方接入后生效。
-    research_max_results: int = 5
-    #: 公开研究的超时(秒)。真实提供方接入后生效。
-    research_timeout_seconds: float = 8.0
+    #: 这是一个**显式开关**:没有配置时如实返回“未配置”,不允许假装查过。
+    research_provider: str = "none"
+    #: Tavily 的 API Key。**绝不返回给 API / UI / 日志。**
+    tavily_api_key: str = ""
+    #: 总开关。默认 false —— 即使填了 provider 也不发请求。
+    research_enabled: bool = False
+    #: 每轮对话最多几次真实公网检索。
+    research_max_calls_per_turn: int = 1
+    #: 单次查询最多返回几条来源。
+    research_max_results: int = 3
+    #: 单次调用超时(秒)。
+    research_timeout_seconds: float = 6.0
+    #: 关键词长度上限。
+    research_max_query_chars: int = 180
+    #: 全局每日真实请求上限(按 `research_timezone` 的自然日)。
+    research_max_calls_per_day: int = 100
+    #: 相同规范化查询的缓存有效期(秒)。
+    research_cache_ttl_seconds: int = 86400
+    #: 每日额度按哪个时区算自然日。
+    research_timezone: str = "Asia/Shanghai"
+    #: 可选域名白名单(逗号分隔,子串匹配)。空 = 不限制(仅公开网页)。
+    research_allowed_domains: str = ""
     # 规划调用的实现路径:auto | openjiuwen | direct_llm | rule
     # auto 表示每次请求时探测 openjiuwen 是否可用,不可用则降级并在响应里如实标注。
     agent_reasoner: str = "auto"
