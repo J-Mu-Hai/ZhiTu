@@ -116,6 +116,43 @@ sudo certbot --nginx -d api.example.com
 到几十秒，而 Nginx 默认 60 秒就断开——用户看到 504，但**后端那一次调用还在跑**，
 他会以为没成功、再点一次。
 
+### 6. 更新一个已经部署的后端(安全脚本)
+
+发布新版本时,**先后端、再前端** —— 后端 `/ready` 通过之前不要动 Vercel,否则前端会
+拿到一个还没迁移完的 API。
+
+**先备份(脚本不会替你备份)**:
+
+```bash
+pg_dump -Fc "postgresql://<user>:<pass>@<host>:5432/<db>" \
+  -f /srv/backups/zhitu-$(date +%Y%m%d-%H%M).dump
+```
+
+**再用固定 commit 跑安全更新脚本**:
+
+```bash
+# 先看它打算做什么(不停服务、不迁移、不写任何东西)
+sudo scripts/deploy/update.sh --dry-run --ref <完整40位commit SHA> --backup /srv/backups/zhitu-....dump
+
+sudo scripts/deploy/update.sh --ref <完整40位commit SHA> --backup /srv/backups/zhitu-....dump
+```
+
+- **只接受完整 commit SHA**,不接受分支名或短 SHA;脚本内部是 `git checkout --detach`,
+  **从不 pull 一个移动分支**,部署的东西永远可追溯。
+- 可配置:`--repo-dir`(默认 `/srv/zhitu`)、`--service`(默认 `zhitu-api`)、
+  `--user`(默认 `zhitu`)、`--api-url`(默认 `http://127.0.0.1:8000`)。
+- 前置检查(任一失败就退出,且**此时服务还没被停**):工作树干净、指定 commit 已在
+  本机、备份存在/非空/24 小时内、systemd 服务与 `.venv` 可用、`.env` 里有
+  `DATABASE_URL` / `APP_SECRET_KEY`(只查键,**不打印值**)。
+- 更新顺序:记录当前 commit → 停服务 → fetch 后切到指定 commit → 装
+  `backend/requirements.txt` → 若已装 `openjiuwen` 再装 `requirements-agent.txt` →
+  `alembic upgrade head` → `alembic current` 必须等于 `alembic heads` → 起服务 →
+  等 `/ready`。
+- 任一步失败:打印失败步骤、`systemctl status`、最近 200 行 `journalctl`,**不自动
+  downgrade**,并提示用备份或旧 commit 人工回滚。**不会把失败伪装成成功。**
+- 脚本**不输出** `DATABASE_URL` / `LLM_API_KEY` / `APP_SECRET_KEY`;不处理 Vercel、
+  不写前端密钥、不跑 Docker。
+
 ## 二、Vercel
 
 1. New Project → 选这个仓库 → **Root Directory 填 `apps/web`**。
@@ -123,6 +160,13 @@ sudo certbot --nginx -d api.example.com
    （要不要加 `APP_ENV`？不用，那是后端的事。）
 3. Deploy。拿到域名后，**回到服务器把 `CORS_ORIGINS` 改成这个域名并重启服务**——
    这是最容易漏的一步，漏了的表现是前端所有请求都被浏览器挡掉。
+
+两条必须记住的约束:
+
+- `NEXT_PUBLIC_API_BASE_URL` 是**构建期**变量,会被烤进前端 JS —— 改完**必须重新部署
+  Vercel**,运行时改环境变量不生效。
+- 生产密钥(`LLM_API_KEY` / `DATABASE_URL` / `APP_SECRET_KEY`)**只放在后端服务器的
+  `.env`**;不要放进 Vercel,那里只有 `NEXT_PUBLIC_API_BASE_URL` 这一个公开地址。
 
 Vercel 部署的是 `next build` 的产物；本地开发用的是 `next dev`，两者偶尔会不一致
 （构建期的检查比 dev 严）。所以上线前在本地跑一次 `npm run build` 能提前发现问题 ——
