@@ -82,6 +82,9 @@ class ResearchOutcome:
     query: str
     sources: tuple[ResearchSource, ...] = ()
     cached: bool = False
+    #: 失败的类型(`timeout` / `error`)。**不改 `reason`** —— 既有语义保持
+    #: `RESEARCH_FAILED`,这里只是让引用契约能把超时与普通错误分开说。
+    error_kind: str | None = None
 
 
 def normalize_query(query: str) -> str:
@@ -497,10 +500,18 @@ async def search(db: AsyncSession, query: str) -> ResearchOutcome:
         # ---- 从这里起可能真的产生费用;后续任何失败都不退回额度。----
         try:
             raw = await _fetch_tavily(query)
+        except httpx.TimeoutException as exc:
+            logger.warning("公开研究调用超时: %s", type(exc).__name__)
+            await _mark_failed(session, key)
+            return ResearchOutcome(
+                configured=False, reason="RESEARCH_FAILED", query=query, error_kind="timeout"
+            )
         except Exception as exc:
             logger.warning("公开研究调用失败: %s", type(exc).__name__)
             await _mark_failed(session, key)
-            return ResearchOutcome(configured=False, reason="RESEARCH_FAILED", query=query)
+            return ResearchOutcome(
+                configured=False, reason="RESEARCH_FAILED", query=query, error_kind="error"
+            )
 
         sources = _to_sources(raw)
         if not sources:
@@ -528,6 +539,80 @@ def sources_to_summary(outcome: ResearchOutcome) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------------
+# 引用契约:给前端看的、**服务端验证过**的公开来源。
+#
+# 与 `sources_to_summary` 的区别是对象不同:那个进模型的提示词(可能被截断),
+# 这个进消息历史与响应。引用只能从**真实 provider 结果**里来 —— 模型无法写、
+# 无法改,也不包含搜索关键词本身。
+# ---------------------------------------------------------------------------------
+
+#: 没有来源时,按原因归到契约允许的 status。**不把"未配置"说成"查过"。**
+_UNAVAILABLE_REASONS = frozenset(
+    {
+        "RESEARCH_ENABLED_FALSE",
+        "RESEARCH_PROVIDER_NONE",
+        "RESEARCH_PROVIDER_UNSUPPORTED",
+        "TAVILY_API_KEY_MISSING",
+        "RESEARCH_LEASE_INVALID",
+    }
+)
+
+
+def source_id_for(url: str) -> str:
+    """一条来源的稳定 id。**由服务端从 URL 派生,模型拿不到也无法伪造。**"""
+    return blake2b(f"{PROVIDER}|{url}".encode(), digest_size=8).hexdigest()
+
+
+def _citation_payload(source: ResearchSource) -> dict:
+    return {
+        "sourceId": source_id_for(source.url),
+        "title": source.title,
+        "url": source.url,
+        "domain": _hostname_of(source.url) or "",
+        "excerpt": source.excerpt or None,
+        # 当前 provider 的 basic 深度不返回发布日期;契约允许它为 null。
+        "publishedAt": None,
+        "accessedAt": source.accessed_at,
+        "provider": PROVIDER,
+    }
+
+
+def citations_for(outcome: ResearchOutcome) -> list[dict]:
+    """把来源转成前端可点击的引用。**只反映真实 provider 结果。**"""
+    return [_citation_payload(source) for source in outcome.sources]
+
+
+def outcome_status(outcome: ResearchOutcome) -> str:
+    """一次研究结果对应的契约 status(闭集,见 contracts/conversation.py)。"""
+    if outcome.sources:
+        return "cached" if outcome.cached else "success"
+    if outcome.reason == "DAILY_LIMIT_REACHED":
+        return "limited"
+    if outcome.reason in _UNAVAILABLE_REASONS:
+        return "unavailable"
+    if outcome.error_kind == "timeout":
+        return "timeout"
+    return "failed"
+
+
+def research_record(outcome: ResearchOutcome) -> dict:
+    """把一次研究结果收敛成**只含服务端验证事实**的引用记录。
+
+    刻意**不带 query** —— 搜索关键词既不该回到提示词,也不该出现在历史响应里。
+    """
+    return {
+        "status": outcome_status(outcome),
+        "consulted": True,
+        "citations": citations_for(outcome),
+    }
+
+
+def uncited_record(status: str) -> dict:
+    """没有 provider 结果时的记录:隐私拦截 / 超每轮上限 / 工具错误。"""
+    return {"status": status, "consulted": True, "citations": []}
+
+
 #: 给调用方(agent_tools)用的诚实文案。**绝不含密钥。**
 REASON_NOTE: dict[str, str] = {
     "RESEARCH_ENABLED_FALSE": "公开研究未配置(总开关 RESEARCH_ENABLED=false);我没有联网查过。",
@@ -550,12 +635,17 @@ __all__ = [
     "ResearchOutcome",
     "ResearchSource",
     "cache_key_for",
+    "citations_for",
     "clear_cache",
     "domain_allowed",
     "lease_config_error",
     "local_day",
     "normalize_query",
+    "outcome_status",
     "provider_ready",
+    "research_record",
     "search",
+    "source_id_for",
     "sources_to_summary",
+    "uncited_record",
 ]

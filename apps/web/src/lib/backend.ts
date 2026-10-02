@@ -177,6 +177,55 @@ export type ModelSource =
   | 'unavailable'
   | 'scripted';
 
+/**
+ * 一次公开研究的结果。**闭集**,与后端 `ResearchView.status` 逐字对应。
+ *
+ * `null` 只为兼容更早的历史行,不是一种"结果"。
+ */
+export type ResearchStatus =
+  | 'success'
+  | 'cached'
+  | 'unavailable'
+  | 'blocked'
+  | 'limited'
+  | 'timeout'
+  | 'failed';
+
+/**
+ * 一条**服务端验证过**的公开来源。
+ *
+ * 它不由模型生成:`sourceId` / `domain` 由服务端从 URL 派生,其余来自真实
+ * provider 返回。所以模型无法凭空编出一条看起来像真的引用。
+ */
+export interface ResearchCitationView {
+  /** 服务端从 URL 派生的稳定标识,同一来源在不同轮次里 id 相同。 */
+  sourceId: string;
+  title: string;
+  url: string;
+  domain: string;
+  /** 提供方返回的摘录。可能为空 —— 它不影响这条来源是不是真的。 */
+  excerpt: string | null;
+  /** 发布日期。当前 provider 的 basic 深度不返回,通常为 null。 */
+  publishedAt: string | null;
+  /** 服务端抓到这条来源的时刻(ISO 字符串)。 */
+  accessedAt: string;
+  provider: 'tavily';
+}
+
+/**
+ * 一条助手回复所依据的公开研究。
+ *
+ * `status` 回答"这一轮公开研究到底发生了什么",界面据此决定显示引用列表、
+ * 还是如实的失败说明 —— **不能把"没查到"显示成"查过了"**。
+ */
+export interface ResearchView {
+  status: ResearchStatus | null;
+  /** 本轮是否尝试过公开研究(成功、缓存、限额、隐私拦截、失败都算)。 */
+  consulted: boolean;
+  /** 只有 `success` / `cached` 才非空。**不含搜索关键词。** */
+  citations: ResearchCitationView[];
+}
+
 export interface MessageView {
   id: string;
   role: 'user' | 'assistant' | 'system';
@@ -188,6 +237,8 @@ export interface MessageView {
   modelSource: ModelSource | null;
   degraded: boolean;
   degradedReason: DegradedReason | null;
+  /** 这条回复依据的公开来源。null = 这一轮没查过公开研究。 */
+  research: ResearchView | null;
 }
 
 export interface BriefView {
@@ -222,6 +273,8 @@ export interface SendMessageResponse {
   promptVersion: string;
   modelName: string | null;
   latencyMs: number | null;
+  /** 与 `assistantMessage.research` 同一份。 */
+  research: ResearchView | null;
   brief: BriefView;
   changedFields: string[];
   replayed: boolean;

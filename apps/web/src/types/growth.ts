@@ -1,3 +1,5 @@
+import type { ResearchView } from '@/lib/backend';
+
 export type Category = 'academic' | 'research' | 'experience' | 'personal';
 
 /**
@@ -169,6 +171,13 @@ export interface Message {
   source?: string;
   degraded?: boolean;
   degradedReason?: string | null;
+  /**
+   * 这条回复依据的**服务端验证过的**公开来源。
+   *
+   * 模型无法写入它 —— 来源来自真实的 `research_public` 工具执行。界面据此
+   * 渲染可点击的引用;`research` 不存在表示这一轮没查过。
+   */
+  research?: ResearchView;
   /** 用户消息已发出、助手还没回。本地占位,不落库。 */
   pending?: boolean;
   /** 这一轮失败了。界面显示错误与重试,**不显示一句编出来的 AI 回复**。 */

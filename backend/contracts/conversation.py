@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import Field
 
@@ -49,6 +50,52 @@ class SendMessageRequest(ApiModel):
     scope_root_id: uuid.UUID | None = None
 
 
+class ResearchCitationView(ApiModel):
+    """一条**服务端验证过**的公开来源。
+
+    它不是模型写的。每个字段都来自真实 provider 返回或服务端对 URL 的解析
+    (`sourceId` / `domain`),所以模型无法凭空编出一条看起来像真的引用。
+    """
+
+    #: 服务端从 URL 派生的稳定标识。同一来源在不同轮次里 id 相同。
+    source_id: str
+    title: str
+    url: str
+    domain: str
+    #: 提供方返回的摘录。可能为空(它不是判断来源真伪的必要条件)。
+    excerpt: str | None = None
+    #: 发布日期。当前 provider 的 basic 深度不返回,故通常为 None。
+    published_at: str | None = None
+    #: 服务端抓到这条来源的时刻(ISO 字符串)。
+    accessed_at: str
+    provider: Literal["tavily"] = "tavily"
+
+
+class ResearchView(ApiModel):
+    """一次助手回复所依据的公开研究。
+
+    ## 为什么单独一层,而不是几句文字
+
+    引用必须可点、可核对。把它写成模型的一段转述,用户无法区分"它真的查到了"
+    与"它编了个像来源的句子"。这里每一项都经过服务端工具执行,模型改不了。
+
+    ## status 为什么是闭集
+
+    它回答"这一轮公开研究到底发生了什么",界面据此决定显示引用列表还是如实的
+    失败说明。`null` 只为兼容更早的历史行,不是一种"结果"。
+    """
+
+    status: (
+        Literal["success", "cached", "unavailable", "blocked", "limited", "timeout", "failed"]
+        | None
+    ) = None
+    #: 本轮是否**尝试过**公开研究(成功、缓存、限额、隐私拦截、失败都算)。
+    #: 为假时下面必然什么都没有。
+    consulted: bool = False
+    #: 只有 `success` / `cached` 才非空。**不含搜索关键词。**
+    citations: list[ResearchCitationView] = Field(default_factory=list)
+
+
 class MessageView(ApiModel):
     id: uuid.UUID
     role: str
@@ -63,6 +110,9 @@ class MessageView(ApiModel):
     model_source: str | None = None
     degraded: bool = False
     degraded_reason: str | None = None
+
+    #: 这条回复依据的公开来源。None = 这一轮没查过公开研究。
+    research: ResearchView | None = None
 
 
 class SendMessageResponse(ApiModel):
@@ -83,6 +133,10 @@ class SendMessageResponse(ApiModel):
     prompt_version: str = ""
     model_name: str | None = None
     latency_ms: int | None = None
+
+    #: 与 `assistant_message.research` 是同一份。重复给一份,是因为前端渲染当前
+    #: 这一轮的来源时读它更直接 —— 与 `reply` 同样的理由。
+    research: ResearchView | None = None
 
     brief: BriefView
     #: 这一轮真正被记下的字段。界面可以据此显示"已记下:每周 4 小时",
@@ -128,6 +182,8 @@ __all__ = [
     "BriefView",
     "ConversationView",
     "MessageView",
+    "ResearchCitationView",
+    "ResearchView",
     "SendMessageRequest",
     "SendMessageResponse",
 ]

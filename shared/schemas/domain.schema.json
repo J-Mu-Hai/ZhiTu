@@ -1729,6 +1729,17 @@
           "default": null,
           "title": "Proposalid"
         },
+        "research": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResearchView"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "role": {
           "title": "Role",
           "type": "string"
@@ -3261,6 +3272,112 @@
       "title": "ReplanResponse",
       "type": "object"
     },
+    "ResearchCitationView": {
+      "additionalProperties": false,
+      "description": "一条**服务端验证过**的公开来源。\n\n它不是模型写的。每个字段都来自真实 provider 返回或服务端对 URL 的解析\n(`sourceId` / `domain`),所以模型无法凭空编出一条看起来像真的引用。",
+      "properties": {
+        "accessedAt": {
+          "title": "Accessedat",
+          "type": "string"
+        },
+        "domain": {
+          "title": "Domain",
+          "type": "string"
+        },
+        "excerpt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Excerpt"
+        },
+        "provider": {
+          "const": "tavily",
+          "default": "tavily",
+          "title": "Provider",
+          "type": "string"
+        },
+        "publishedAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Publishedat"
+        },
+        "sourceId": {
+          "title": "Sourceid",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "url": {
+          "title": "Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sourceId",
+        "title",
+        "url",
+        "domain",
+        "accessedAt"
+      ],
+      "title": "ResearchCitationView",
+      "type": "object"
+    },
+    "ResearchView": {
+      "additionalProperties": false,
+      "description": "一次助手回复所依据的公开研究。\n\n## 为什么单独一层,而不是几句文字\n\n引用必须可点、可核对。把它写成模型的一段转述,用户无法区分\"它真的查到了\"\n与\"它编了个像来源的句子\"。这里每一项都经过服务端工具执行,模型改不了。\n\n## status 为什么是闭集\n\n它回答\"这一轮公开研究到底发生了什么\",界面据此决定显示引用列表还是如实的\n失败说明。`null` 只为兼容更早的历史行,不是一种\"结果\"。",
+      "properties": {
+        "citations": {
+          "items": {
+            "$ref": "#/$defs/ResearchCitationView"
+          },
+          "title": "Citations",
+          "type": "array"
+        },
+        "consulted": {
+          "default": false,
+          "title": "Consulted",
+          "type": "boolean"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "enum": [
+                "success",
+                "cached",
+                "unavailable",
+                "blocked",
+                "limited",
+                "timeout",
+                "failed"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Status"
+        }
+      },
+      "title": "ResearchView",
+      "type": "object"
+    },
     "RestoreResponse": {
       "additionalProperties": false,
       "description": "一次恢复的结果。\n\n**排期那几个数字不是锦上添花。** 恢复会把归档期间冻结的场次一次性放回日历,\n它们可能已经过期、也可能和归档之后新排的挤在同一天。这份报告就是\"不许静默恢复\"\n的那一半:界面必须把\"回来几场、过期几场、哪几天超了\"说出来。",
@@ -3823,6 +3940,17 @@
         "reply": {
           "title": "Reply",
           "type": "string"
+        },
+        "research": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResearchView"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "retryable": {
           "default": false,

@@ -48,7 +48,7 @@ from backend.db.models.enums import (
     ReasoningStatus,
     ToolCallStatus,
 )
-from backend.services import agent_tools
+from backend.services import agent_tools, research_service
 from backend.services.context import WorkspaceContext
 
 logger = logging.getLogger(__name__)
@@ -76,6 +76,9 @@ class LoopOutcome:
     model_calls: int
     tool_calls: int
     stopped_reason: str
+    #: 本轮真实执行的公开研究引用记录(见 `research_service.research_record`)。
+    #: **只含服务端验证过的来源**,没有查过时为 None。
+    research: dict | None = None
 
 
 def _tool_record(
@@ -130,6 +133,19 @@ def _seed_state(
         assumptions=[],
         open_questions=[],
     )
+
+
+def _prefer_research(current: dict | None, incoming: dict) -> dict:
+    """保留第一次拿到来源的成功记录。
+
+    一轮里可能请求多次 `research_public`(只有第一次会真的出网)。后续的限额/拦截
+    记录**不能遮掉**已经拿到的来源;而已有来源时,后续成功也应保留第一次的那份。
+    """
+    if current is None:
+        return incoming
+    if not current.get("citations") and incoming.get("citations"):
+        return incoming
+    return current
 
 
 def _absorb_result(state: ReasoningState, result: ReasoningResult) -> None:
@@ -191,6 +207,8 @@ async def run_turn(
     tool_calls = 0
     #: 本轮已发生的真实公网检索次数(受 `RESEARCH_MAX_CALLS_PER_TURN` 限制)。
     research_calls = 0
+    #: 本轮公开研究的引用记录(服务端验证)。
+    research_signal: dict | None = None
     final: ReasoningResult | None = None
 
     for iteration in range(MAX_MODEL_CALLS):
@@ -217,6 +235,7 @@ async def run_turn(
                 model_calls=model_calls,
                 tool_calls=tool_calls,
                 stopped_reason="failed",
+                research=research_signal,
             )
 
         tool_budget_left = tool_calls < MAX_TOOL_CALLS
@@ -235,12 +254,24 @@ async def run_turn(
                     )
                     sanitized = {}
                     ok = False
+                    research_signal = _prefer_research(
+                        research_signal, research_service.uncited_record("limited")
+                    )
                 else:
-                    exchange, sanitized, ok = await agent_tools.execute_tool(
+                    execution = await agent_tools.execute_tool(
                         db, ctx, current_turn, name=request.name, arguments=request.arguments
                     )
+                    exchange = execution.exchange
+                    sanitized = execution.sanitized_arguments
+                    ok = execution.ok
                     if request.name == "research_public":
                         research_calls += 1
+                        # 成功/缓存带 citations;隐私拦截与工具错误没有 provider 结果,
+                        # 按 blocked / failed 如实记录。
+                        record = execution.research or research_service.uncited_record(
+                            "blocked" if exchange.status == "rejected" else "failed"
+                        )
+                        research_signal = _prefer_research(research_signal, record)
                 tool_calls += 1
                 exchanges.append(exchange)
                 db.add(
@@ -298,6 +329,7 @@ async def run_turn(
         model_calls=model_calls,
         tool_calls=tool_calls,
         stopped_reason=final.stop_reason or "ready_to_propose",
+        research=research_signal,
     )
 
 

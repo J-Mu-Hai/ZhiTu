@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ArrowUp, Plus, X, CornerDownLeft, AlertCircle, RotateCcw, RefreshCw } from 'lucide-react';
 import { useDemo } from '@/features/growth/provider';
 import { degradedHint, fieldLabel, sourceLabel } from '@/lib/backend';
-import type { QuestionView } from '@/lib/backend';
+import type { QuestionView, ResearchView } from '@/lib/backend';
 
 /**
  * 提案落下之后,卡片上显示的状态。
@@ -19,6 +19,63 @@ const PROPOSAL_STATUS_LABEL: Record<string, string> = {
   stale: '计划已经变了，这份提议作废',
   failed: '写入没有成功，计划未改动',
 };
+
+/**
+ * 没有拿到来源时,按 `status` 说清楚"这一轮公开研究发生了什么"。
+ *
+ * **不能沉默。** 沉默会让用户以为"它查过了、就是没找到",而事实可能是"根本没
+ * 启用"或"查询里带了私密信息被拦下"—— 这两件事对用户的意义完全不同。
+ */
+const RESEARCH_STATUS_LABEL: Record<string, string> = {
+  unavailable: '这一轮没有联网查询：公开研究未启用。',
+  blocked: '这个查询包含私密信息，服务端已拦下，没有发到公网。',
+  limited: '今天的公开研究额度已用完，这一轮没有联网查询。',
+  timeout: '公开研究超时，这次没有拿到来源。',
+  failed: '公开研究没有完成，这次没有拿到来源。',
+};
+
+/**
+ * 一条助手回复所依据的公开来源。
+ *
+ * ## 为什么它能被信任
+ *
+ * 这些引用**不是模型写的** —— 每一项都来自服务端真实执行的 `research_public`
+ * (见 `ResearchCitationView` 的注释)。所以它和下面的提案卡一样,是可以点开核对
+ * 的证据,而不是模型的一段转述。`status` 不是 `success` / `cached` 时如实说没有
+ * 拿到来源,绝不假装查过。
+ */
+function ResearchCitations({ research }: { research: ResearchView }) {
+  const cited = research.status === 'success' || research.status === 'cached';
+  if (cited && research.citations.length > 0) {
+    return (
+      <div className="research-citations">
+        <span className="eyebrow">
+          {research.status === 'cached' ? '参考的公开来源（缓存）' : '参考的公开来源'}
+        </span>
+        <ul>
+          {research.citations.map(citation => (
+            <li key={citation.sourceId}>
+              {/* `noreferrer` 不只是礼节:来源 URL 可能带查询参数,不该把当前页面
+                  的地址作为 Referer 送给第三方站点。 */}
+              <a href={citation.url} target="_blank" rel="noopener noreferrer">
+                {citation.title}
+              </a>
+              <span className="research-domain">{citation.domain}</span>
+              {citation.excerpt && <em className="research-excerpt">{citation.excerpt}</em>}
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
+  }
+  // 没有来源但确实尝试过:如实地说明这一轮公开研究的状态。
+  if (!research.consulted) return null;
+  return (
+    <p className="research-note" role="status">
+      {RESEARCH_STATUS_LABEL[research.status ?? ''] ?? '公开研究没有完成，这次没有拿到来源。'}
+    </p>
+  );
+}
 
 /**
  * 一个待回答的问题卡片。
@@ -207,6 +264,10 @@ export function ConversationPanel() {
                   {m.degraded && m.degradedReason ? ` · ${degradedHint(m.degradedReason)}` : ''}
                 </div>
               )}
+              {/* 服务端验证过的公开来源。**在来源徽标之下** —— 先说"这句话是谁
+                  生成的",再说"它依据了什么";顺序反了的话,用户会拿一段模型的
+                  推断去核对来源。 */}
+              {m.role === 'assistant' && m.research && <ResearchCitations research={m.research} />}
               {m.failed && <div className="message-note failed">这一条没有发出去。</div>}
               {m.pending && <div className="message-note">已记录，正在等 AI 回复…</div>}
 

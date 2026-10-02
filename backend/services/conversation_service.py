@@ -373,7 +373,9 @@ async def submit_turn(
     # 点确认),两段都要有,少一段就有一段窗口是空的。
     input_changed = await analysis_service.input_changed_since(db, ctx, turn.input_snapshot)
 
-    assistant_message = await _insert_assistant_message(db, ctx, conversation, user_message, result)
+    assistant_message = await _insert_assistant_message(
+        db, ctx, conversation, user_message, result, research=loop.research
+    )
     brief, changed = await apply_claims(
         db, ctx.id, result.brief_claims, source_message_id=user_message.id
     )
@@ -554,6 +556,8 @@ async def _insert_assistant_message(
     conversation: Conversation,
     user_message: Message,
     result: ReasoningResult,
+    *,
+    research: dict | None = None,
 ) -> Message:
     """事务 ②:落助手消息。**降级信息一并落库**,详见 models/conversation.py 的注释。"""
     message = Message(
@@ -571,6 +575,7 @@ async def _insert_assistant_message(
         model_name=result.model_name,
         latency_ms=result.latency_ms,
         usage=result.usage,
+        research=research,
         created_at=utcnow(),
     )
     db.add(message)

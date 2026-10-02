@@ -82,6 +82,26 @@ class ToolSpec:
     handler: Callable[[AsyncSession, WorkspaceContext, TurnContext, dict], Awaitable[dict]]
 
 
+#: 工具结果里**只给服务端看**的保留键。`execute_tool` 会在把摘要交给模型之前
+#: 摘掉它。它存在的原因只有一条:公开来源证据不能被摘要截断(`MAX_SUMMARY_CHARS`),
+#: 也不能进提示词。
+RESEARCH_EVIDENCE_KEY = "_researchEvidence"
+
+
+@dataclass(frozen=True, slots=True)
+class ToolExecution:
+    """一次工具执行的完整返回。
+
+    `exchange` 是要回填给模型、并写入 `ToolCallRecord` 的摘要;`research` 是
+    **服务端专用**的公开研究引用记录(只有 `research_public` 会带)。
+    """
+
+    exchange: ToolExchange
+    sanitized_arguments: dict
+    ok: bool
+    research: dict | None = None
+
+
 def _bounded(text: str | None, limit: int) -> tuple[str | None, bool]:
     if text is None:
         return None, False
@@ -455,18 +475,27 @@ async def _research_public(db, ctx, turn, arguments) -> dict:
     """
     query = _sanitize_research_query(arguments.get("query"))
     outcome = await research_service.search(db, query)
+    #: **服务端验证过的引用。** 它不经过摘要截断,也不进提示词。
+    evidence = research_service.research_record(outcome)
     if not outcome.sources:
         note = research_service.REASON_NOTE.get(
             outcome.reason,
             "公开研究没有完成;我没有拿到来源,不要编造。",
         )
-        return {"configured": False, "query": query, "reason": outcome.reason, "note": note}
+        return {
+            "configured": False,
+            "query": query,
+            "reason": outcome.reason,
+            "note": note,
+            RESEARCH_EVIDENCE_KEY: evidence,
+        }
     return {
         **research_service.sources_to_summary(outcome),
         "note": (
             "这些是公开来源。引用外部事实时要标明来源;它只是依据,不能直接写进计划 —— "
             "正式变更仍要提案并由用户确认。"
         ),
+        RESEARCH_EVIDENCE_KEY: evidence,
     }
 
 
@@ -547,63 +576,69 @@ async def execute_tool(
     *,
     name: str,
     arguments: object,
-) -> tuple[ToolExchange, dict, bool]:
+) -> ToolExecution:
     """执行一个只读工具。
 
-    返回 `(exchange, sanitized_arguments, ok)`。**绝不抛异常**:未知工具、非法参数、
-    执行失败都变成 `rejected`/`error` 的 exchange,让模型看到真实结果。
+    返回 `ToolExecution`。**绝不抛异常**:未知工具、非法参数、执行失败都变成
+    `rejected`/`error` 的 exchange,让模型看到真实结果。
     """
     spec = TOOL_SPECS.get(name)
     if spec is None:
-        return (
-            ToolExchange(
+        return ToolExecution(
+            exchange=ToolExchange(
                 tool_name=name,
                 status="rejected",
                 summary={"error": f"不认识工具 {name}。"},
             ),
-            {},
-            False,
+            sanitized_arguments={},
+            ok=False,
         )
     try:
         clean = _validate_arguments(spec, arguments)
         result = await spec.handler(db, ctx, turn, clean)
     except ToolRejected as exc:
-        return (
-            ToolExchange(tool_name=name, status="rejected", summary={"error": exc.message}),
-            sanitize_arguments(arguments if isinstance(arguments, dict) else {}),
-            False,
+        return ToolExecution(
+            exchange=ToolExchange(tool_name=name, status="rejected", summary={"error": exc.message}),
+            sanitized_arguments=sanitize_arguments(arguments if isinstance(arguments, dict) else {}),
+            ok=False,
         )
     except Exception as exc:  # 工具错误归一化成可读摘要
         logger.warning("工具 %s 执行失败: %s", name, exc)
-        return (
-            ToolExchange(
+        return ToolExecution(
+            exchange=ToolExchange(
                 tool_name=name,
                 status="error",
                 summary={"error": "工具执行失败,没有得到结果。"},
             ),
-            sanitize_arguments(arguments if isinstance(arguments, dict) else {}),
-            False,
+            sanitized_arguments=sanitize_arguments(arguments if isinstance(arguments, dict) else {}),
+            ok=False,
         )
-    summary, truncated = summarize_for_prompt(result)
-    return (
-        ToolExchange(
+    # 先摘掉**只给服务端**的证据,再截断:公开来源既不能被摘要截断,也不进提示词。
+    raw = dict(result)
+    evidence = raw.pop(RESEARCH_EVIDENCE_KEY, None)
+    summary, truncated = summarize_for_prompt(raw)
+    return ToolExecution(
+        exchange=ToolExchange(
             tool_name=name,
             arguments=sanitize_arguments(clean),
             status="ok",
             summary=summary,
             truncated=truncated,
         ),
-        sanitize_arguments(clean),
-        True,
+        sanitized_arguments=sanitize_arguments(clean),
+        ok=True,
+        research=evidence if isinstance(evidence, dict) else None,
     )
 
 
 __all__ = [
     "MAX_RESULT_ROWS",
     "MAX_SUMMARY_CHARS",
+    "RESEARCH_EVIDENCE_KEY",
     "RESEARCH_QUERY_MAX_CHARS",
     "TOOL_NAMES",
     "TOOL_SPECS",
+    "ToolExecution",
     "ToolRejected",
     "execute_tool",
     "sanitize_arguments",

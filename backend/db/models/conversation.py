@@ -118,6 +118,11 @@ class Message(UuidPk, Base):
     latency_ms: Mapped[int | None] = mapped_column(Integer)
     usage: Mapped[dict | None] = mapped_column(JsonDict)
 
+    #: 这条助手回复所依据的**服务端验证过的**公开来源(见 contracts/conversation.py
+    #: 的 `ResearchView`)。None = 这一轮没有调用过 `research_public`。
+    #: 只存真实 provider 结果派生出的 citations,模型无法写入或伪造。
+    research: Mapped[dict | None] = mapped_column(JsonDict)
+
     # 客户端生成的消息 id,用于重试去重:请求超时后用户再点一次不会产生两条消息。
     client_message_id: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False)

@@ -1173,6 +1173,37 @@ body {
   background: #fdf3e9;
   border-color: #efd9c2;
 }
+/* 公开来源。可点击、能核对,因此用链接色而不是徽标的胶囊色 —— 它不是状态标签,
+   是证据。区块按内容收窄,和徽标一样不铺满整张卡片。 */
+.research-citations {
+  width: fit-content;
+  max-width: 100%;
+  margin-top: 8px;
+  padding: 9px 11px;
+  border: 1px solid #dbe7f1;
+  border-radius: 11px;
+  background: #f6faff;
+}
+.research-citations .eyebrow {
+  display: block;
+  margin-bottom: 5px;
+  color: #5d7fa5;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+.research-citations ul { margin: 0; padding-left: 16px; }
+.research-citations li { margin-top: 4px; font-size: 11px; line-height: 1.6; }
+.research-citations a {
+  color: #2f6da3;
+  text-decoration: none;
+  border-bottom: 1px solid #b7d3e8;
+}
+.research-citations a:hover { color: #1f5587; border-bottom-color: #7fb0d4; }
+.research-domain { margin-left: 6px; color: #8397a8; font-size: 10px; }
+.research-excerpt { display: block; margin-top: 2px; color: #6f8494; font-style: normal; }
+/* 尝试过但没拿到来源。用暖色提示,与错误的红区分开 —— 它不是系统故障,
+   只是"这一轮没有可引用的证据"。 */
+.research-note { margin-top: 7px; color: #8a7a5f; font-size: 10px; }
 .message-note { margin-top: 7px; color: #7a8b99; font-size: 11px; }
 .message-note.failed { color: #a9603f; }
 .message.pending .message-text { opacity: 0.66; }

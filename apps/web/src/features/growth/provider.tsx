@@ -147,6 +147,7 @@ function toMessage(view: backend.MessageView): Message {
     source: view.modelSource ?? undefined,
     degraded: view.degraded,
     degradedReason: view.degradedReason,
+    research: view.research ?? undefined,
   };
 }
 

@@ -136,6 +136,8 @@ def _message_view(message: Message) -> MessageView:
         model_source=message.model_source.value if message.model_source else None,
         degraded=message.degraded,
         degraded_reason=message.degraded_reason.value if message.degraded_reason else None,
+        # 历史消息也带来源,理由与 model_source 相同:往上翻时同样看得见。
+        research=message.research,
     )
 
 
@@ -256,10 +258,11 @@ async def _turn_response(
     # 简报在这里重新取一次,而不是用 outcome.brief:重复提交时服务层不会去解析条件,
     # 那条路径上 outcome.brief 是 None,直接用它会让重试的响应里简报突然消失。
     brief = await brief_service.load_brief(db, ctx.id)
+    assistant_view = _message_view(outcome.assistant_message)
 
     return SendMessageResponse(
         user_message=_message_view(outcome.user_message),
-        assistant_message=_message_view(outcome.assistant_message),
+        assistant_message=assistant_view,
         reply=outcome.result.reply,
         source=outcome.result.source.value,
         degraded=outcome.result.degraded,
@@ -270,6 +273,8 @@ async def _turn_response(
         prompt_version=outcome.result.prompt_version,
         model_name=outcome.result.model_name,
         latency_ms=outcome.result.latency_ms,
+        # 与 assistant_message.research 同一份(见契约里的注释)。
+        research=assistant_view.research,
         brief=_brief_view(brief),
         changed_fields=list(outcome.changed_fields),
         # 提案在这里转成视图而不是直接把 ORM 对象交给 FastAPI 序列化:两者字段名
