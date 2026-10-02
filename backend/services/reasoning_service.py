@@ -125,7 +125,7 @@ async def get_or_create_session(
     session = GoalReasoningSession(
         workspace_id=ctx.id,
         root_plan_node_id=root.id,
-        phase=ReasoningSessionPhase.STRATEGIC_EXPLORATION,
+        phase=ReasoningSessionPhase.ORIENTATION,
         turn_action=ReasoningTurnAction.ANALYZE,
         status=ReasoningSessionStatus.IDLE,
     )
@@ -224,6 +224,9 @@ def _node_view(node: ReasoningNode, parent_handle: str | None) -> ReasoningNodeV
         rationale=node.rationale,
         assumptions=[str(item) for item in (node.assumptions or [])],
         evidence=[str(item) for item in (node.evidence or [])],
+        timeframe=node.timeframe,
+        deliverable=node.deliverable,
+        pass_criteria=node.pass_criteria,
         source=node.source.value,
         version=node.version,
         updated_at=node.updated_at,
@@ -241,7 +244,7 @@ async def build_view(
         return GoalReasoningView(
             workspace_id=ctx.id,
             root_plan_node_id=root.id if root else None,
-            phase="strategic_exploration",
+            phase="orientation",
             turn_action="analyze",
             status=ReasoningSessionStatus.IDLE.value,
         )
@@ -364,11 +367,33 @@ def _validate_draft(
 ) -> None:
     """写入**之前**把整份草稿验一遍。任何一处不合法就整份拒绝。"""
     fresh = not existing
-    primary = [node for node in draft.nodes if not node.parent_handle]
-    if fresh and not (MIN_PRIMARY_NODES <= len(primary) <= MAX_PRIMARY_NODES):
-        raise MapValidationError(
-            f"首次探索需要 {MIN_PRIMARY_NODES}–{MAX_PRIMARY_NODES} 个一级决策维度,收到 {len(primary)} 个。"
-        )
+    if fresh:
+        # 阶段 8:**路线优先**。首选形状是一条约顶层战略路线 + 3–5 个阶段
+        # (阶段挂在路线上)。旧的“4–8 个一级维度”形状仍然接受 —— 存量脚本与
+        # 旧模型输出不该因为这次升级而写不进去。
+        stages = [node for node in draft.nodes if node.node_type == "stage"]
+        if stages:
+            top_routes = [
+                node for node in draft.nodes
+                if node.node_type == "route" and not node.parent_handle
+            ]
+            if len(top_routes) != 1:
+                raise MapValidationError(
+                    f"路线图需要**恰好一条**顶层战略路线,收到 {len(top_routes)} 条。"
+                )
+            if not 3 <= len(stages) <= 5:
+                raise MapValidationError(
+                    f"路线图需要 3–5 个有顺序的阶段,收到 {len(stages)} 个。"
+                )
+            route_handle = top_routes[0].handle
+            if any(node.parent_handle != route_handle for node in stages):
+                raise MapValidationError("每个阶段都必须挂在推荐路线上(parent = 路线 handle)。")
+        else:
+            primary = [node for node in draft.nodes if not node.parent_handle]
+            if not (MIN_PRIMARY_NODES <= len(primary) <= MAX_PRIMARY_NODES):
+                raise MapValidationError(
+                    f"首次探索需要 {MIN_PRIMARY_NODES}–{MAX_PRIMARY_NODES} 个一级决策维度,收到 {len(primary)} 个。"
+                )
     if len(existing) + len(draft.nodes) > MAX_MAP_NODES:
         raise MapValidationError(f"推理地图节点数超过上限 {MAX_MAP_NODES}。")
 
@@ -450,6 +475,10 @@ def _apply_draft(
         node.rationale = item.rationale
         node.assumptions = list(item.assumptions)
         node.evidence = list(item.evidence)
+        # 阶段 8:路线 / 阶段的三个展示字段。非路线节点为空。
+        node.timeframe = item.timeframe
+        node.deliverable = item.deliverable
+        node.pass_criteria = item.pass_criteria
         # 父节点引用在 flush 之后才能解析 —— 先把 handle 暂存着。
         node._pending_parent_handle = item.parent_handle  # type: ignore[attr-defined]
 
@@ -697,10 +726,7 @@ async def run_space_entered(
     )
 
     # 问题:挂到当前焦点节点上;战略阶段由服务端拦住排期类问题。
-    strategy_phase = session.phase in (
-        ReasoningSessionPhase.STRATEGIC_EXPLORATION,
-        ReasoningSessionPhase.STRATEGIC_CONVERGENCE,
-    )
+    strategy_phase = session.phase.is_strategic
     created_questions = await question_service.create_from_drafts(
         db,
         ctx,
@@ -846,10 +872,7 @@ async def _run_incremental(
         focus_node = await db.scalar(
             select(ReasoningNode).where(ReasoningNode.id == session.focus_reasoning_node_id)
         )
-    strategy_phase = session.phase in (
-        ReasoningSessionPhase.STRATEGIC_EXPLORATION,
-        ReasoningSessionPhase.STRATEGIC_CONVERGENCE,
-    )
+    strategy_phase = session.phase.is_strategic
     created_questions = await question_service.create_from_drafts(
         db,
         ctx,
@@ -914,7 +937,7 @@ async def _confirm_strategy(
         )
         if proposal is not None and proposal.status is ProposalStatus.APPLIED:
             await _link_strategy_nodes(db, ctx, session)
-            session.phase = ReasoningSessionPhase.EXECUTION_PLANNING
+            session.phase = ReasoningSessionPhase.STRATEGY_CONFIRMED
             session.turn_action = ReasoningTurnAction.CONFIRM
             session.last_evaluated_at = utcnow()
             await db.commit()
@@ -973,7 +996,7 @@ async def _confirm_strategy(
     )
     if outcome.proposal is not None:
         session.strategy_proposal_id = outcome.proposal.id
-    session.phase = ReasoningSessionPhase.AWAITING_STRATEGY_CONFIRMATION
+    session.phase = ReasoningSessionPhase.ROADMAP_REVIEW
     session.turn_action = ReasoningTurnAction.CONFIRM
     session.last_evaluated_at = utcnow()
     await db.commit()
@@ -1074,6 +1097,13 @@ async def refine_strategy(
         raise InvalidInput("还没有已确认的战略。先确认一个战略,再往下细化阶段。")
     if node_id is not None and node_id != strategy.id:
         raise InvalidInput("这个空间里没有这个已确认的战略。")
+    # 用户**明确**点了“细化某个阶段”才允许进入执行细化。这样“问每天几点”就有了
+    # 一个确定的门槛:在此之前会话一直在战略档,服务端会拦住执行类问题。
+    session = await get_session(db, ctx)
+    if session is not None:
+        session.phase = ReasoningSessionPhase.EXECUTION_REFINEMENT
+        session.turn_action = ReasoningTurnAction.EXPAND
+        await db.flush()
     return await conversation_service.submit_turn(
         db,
         ctx,

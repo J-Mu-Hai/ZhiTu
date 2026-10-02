@@ -73,6 +73,11 @@ class ReasoningNodeView(ApiModel):
     rationale: str | None = None
     assumptions: list[str] = Field(default_factory=list)
     evidence: list[str] = Field(default_factory=list)
+    #: --- 阶段 8 的路线要素。只对 route / stage 节点有值。 ---
+    #: 粗粒度时间带(例如“约 2 周”),**不是排期/截止日期**。
+    timeframe: str | None = None
+    deliverable: str | None = None
+    pass_criteria: str | None = None
     source: str
     version: int
     updated_at: datetime

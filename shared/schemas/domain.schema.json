@@ -3151,6 +3151,18 @@
           "title": "Confidence",
           "type": "integer"
         },
+        "deliverable": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Deliverable"
+        },
         "evidence": {
           "items": {
             "type": "string"
@@ -3208,6 +3220,18 @@
           "default": null,
           "title": "Parenthandle"
         },
+        "passCriteria": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Passcriteria"
+        },
         "priority": {
           "title": "Priority",
           "type": "number"
@@ -3243,6 +3267,18 @@
           ],
           "default": null,
           "title": "Summary"
+        },
+        "timeframe": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeframe"
         },
         "title": {
           "title": "Title",

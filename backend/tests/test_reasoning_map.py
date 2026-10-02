@@ -72,7 +72,7 @@ async def test_read_reasoning_map_is_empty_and_does_not_create_a_session(
     )
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["phase"] == "strategic_exploration"
+    assert body["phase"] == "orientation"
     assert body["status"] == "idle"
     assert body["nodes"] == []
     assert body["links"] == []

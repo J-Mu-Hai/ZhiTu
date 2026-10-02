@@ -1751,6 +1751,10 @@ export interface ReasoningNodeView {
   rationale: string | null;
   assumptions: string[];
   evidence: string[];
+  /** 阶段 8:路线 / 阶段的粗粒度时间带、成果物、通过标准。 */
+  timeframe: string | null;
+  deliverable: string | null;
+  passCriteria: string | null;
   source: string;
   version: number;
   updatedAt: string;

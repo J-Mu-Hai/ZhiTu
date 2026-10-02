@@ -518,7 +518,7 @@ def parse_stop_reason(raw: Any) -> str | None:
 # ---------------------------------------------------------------------------------
 #: 闭集。与 `db/models/enums.py` 的取值逐字对应 —— 这里多一个,服务层就写不进库。
 REASONING_NODE_TYPES = frozenset(
-    {"dimension", "question", "risk", "resource", "route", "assumption"}
+    {"dimension", "question", "risk", "resource", "route", "stage", "assumption"}
 )
 REASONING_NODE_STATUSES = frozenset(
     {"unexplored", "exploring", "resolved", "paused", "archived"}
@@ -527,6 +527,13 @@ REASONING_SOURCES = frozenset({"agent", "user", "research"})
 REASONING_LINK_TYPES = frozenset({"depends_on", "influences"})
 REASONING_PHASES = frozenset(
     {
+        # 阶段 8(路线优先)的五个语义档。
+        "orientation",
+        "roadmap_draft",
+        "roadmap_review",
+        "strategy_confirmed",
+        "execution_refinement",
+        # 阶段 7 的旧值。存量会话仍在用,继续接受。
         "strategic_exploration",
         "strategic_convergence",
         "awaiting_strategy_confirmation",
@@ -566,6 +573,14 @@ def _clean_reasoning_score(value: Any) -> int:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return 0
     return max(0, min(5, int(value)))
+
+
+def _clean_reasoning_text(raw: Any) -> str | None:
+    """可选的长文本字段(timeframe / deliverable / pass_criteria)。空串当没有。"""
+    if not isinstance(raw, str):
+        return None
+    text = raw.strip()
+    return text[:MAX_REASONING_TEXT_CHARS] if text else None
 
 
 def parse_reasoning_map(raw: Any) -> ReasoningMapDraft | None:
@@ -618,6 +633,11 @@ def parse_reasoning_map(raw: Any) -> ReasoningMapDraft | None:
                 assumptions=_clean_text_list(entry.get("assumptions")),
                 evidence=_clean_text_list(entry.get("evidence")),
                 source=source if source in REASONING_SOURCES else "agent",
+                timeframe=_clean_reasoning_text(entry.get("timeframe")),
+                deliverable=_clean_reasoning_text(entry.get("deliverable")),
+                pass_criteria=_clean_reasoning_text(
+                    entry.get("passCriteria") if entry.get("passCriteria") is not None else entry.get("pass_criteria")
+                ),
             )
         )
 

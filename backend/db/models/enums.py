@@ -413,13 +413,54 @@ PROVENANCE_SOURCES = ("user", "system", "tool", "model_inference", "assumption")
 # 排期、依赖、任务统计或执行记录里,也不与 `NodeType` / `PlanningLevel` 混用。
 # ---------------------------------------------------------------------------------
 class ReasoningSessionPhase(StrEnum):
-    """一次目标推理会话处于哪个阶段。**与单轮动作分开** —— 见 `ReasoningTurnAction`。"""
+    """一次目标推理会话处于哪个阶段。**与单轮动作分开** —— 见 `ReasoningTurnAction`。
 
+    阶段 8(路线优先)在这里**明确**了五个语义档。旧值保留:存量会话仍可能是
+    `strategic_exploration` / `strategic_convergence`,迁移不重写它们。新会话从
+    `orientation` 开始。两者的对应关系:
+
+    | 旧值 | 新语义 |
+    | --- | --- |
+    | `strategic_exploration` | 先 `orientation`,产出路线后进 `roadmap_draft` |
+    | `strategic_convergence` | `roadmap_review` |
+    | `awaiting_strategy_confirmation` | `roadmap_review` 里点了确认、等提案落地 |
+    | `execution_planning` | `strategy_confirmed` 之后、用户点了细化 |
+    | `monitoring` | 执行中的复评 |
+    """
+
+    #: 理解目标与已有上下文。**这一步不产出执行问题。**
+    ORIENTATION = "orientation"
+    #: 已产出推荐路线与阶段草案(roadmap-first 的主产物)。
+    ROADMAP_DRAFT = "roadmap_draft"
+    #: 等用户确认 / 调整路线。
+    ROADMAP_REVIEW = "roadmap_review"
+    #: 路线已确认。沿用 proposal → 用户确认 → 校验 → 写入。
+    STRATEGY_CONFIRMED = "strategy_confirmed"
+    #: 用户明确选择细化某个阶段,才允许生成月/周/日。
+    EXECUTION_REFINEMENT = "execution_refinement"
+
+    # --- 阶段 7 的旧值。存量数据仍会读到,不迁移、不重写。 ---
     STRATEGIC_EXPLORATION = "strategic_exploration"
     STRATEGIC_CONVERGENCE = "strategic_convergence"
     AWAITING_STRATEGY_CONFIRMATION = "awaiting_strategy_confirmation"
     EXECUTION_PLANNING = "execution_planning"
     MONITORING = "monitoring"
+
+    @property
+    def is_strategic(self) -> bool:
+        """还在做战略判断(不能问执行问题)的档位。"""
+        return self in {
+            ReasoningSessionPhase.ORIENTATION,
+            ReasoningSessionPhase.ROADMAP_DRAFT,
+            ReasoningSessionPhase.ROADMAP_REVIEW,
+            ReasoningSessionPhase.STRATEGIC_EXPLORATION,
+            ReasoningSessionPhase.STRATEGIC_CONVERGENCE,
+            ReasoningSessionPhase.AWAITING_STRATEGY_CONFIRMATION,
+        }
+
+    @property
+    def is_execution(self) -> bool:
+        return not self.is_strategic
 
 
 class ReasoningTurnAction(StrEnum):
@@ -462,6 +503,8 @@ class ReasoningNodeType(StrEnum):
     RESOURCE = "resource"
     #: 可选的战略路线。
     ROUTE = "route"
+    #: 路线下的一个阶段(阶段 8)。它有粗粒度时间带、成果物、通过标准 —— 但还不是任务。
+    STAGE = "stage"
     #: 尚未验证的假设。
     ASSUMPTION = "assumption"
 

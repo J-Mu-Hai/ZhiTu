@@ -348,7 +348,7 @@ async def test_strategy_confirmation_goes_through_pending_proposal(
     )
     assert body.status_code == 200, body.text
     view = body.json()["reasoning"]
-    assert view["phase"] == "awaiting_strategy_confirmation"
+    assert view["phase"] == "roadmap_review"
     assert view["strategyProposalId"], body.json().get("proposalErrors")
 
     # **未确认前没有业务战略节点。**
@@ -371,7 +371,7 @@ async def test_strategy_confirmation_goes_through_pending_proposal(
     )
     assert after.status_code == 200, after.text
     final = after.json()["reasoning"]
-    assert final["phase"] == "execution_planning"
+    assert final["phase"] == "strategy_confirmed"
     route = next(node for node in final["nodes"] if node["handle"] == "r5")
     assert route["linkedPlanNodeId"] is not None, "确认之后路线必须关联到真实战略节点"
 

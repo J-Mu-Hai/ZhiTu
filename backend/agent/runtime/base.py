@@ -546,6 +546,10 @@ class ReasoningMapNodeDraft:
     assumptions: tuple[str, ...] = ()
     evidence: tuple[str, ...] = ()
     source: str = "agent"
+    #: 阶段 8:路线 / 阶段的粗粒度时间带、成果物、通过标准。其余节点为空。
+    timeframe: str | None = None
+    deliverable: str | None = None
+    pass_criteria: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -167,6 +167,13 @@ class ReasoningNode(UuidPk, TimestampMixin, Base):
     #: 尚未验证的假设与依据。JSON 列表,整体读写。
     assumptions: Mapped[list] = mapped_column(JsonDict, default=list, nullable=False)
     evidence: Mapped[list] = mapped_column(JsonDict, default=list, nullable=False)
+    #: --- 阶段 8 的路线要素。**只对 route / stage 节点有意义**,其余节点为 NULL。 ---
+    #: 粗粒度时间带,例如“约 2 周”“3–4 周”。**不是排期**,不是截止日期。
+    timeframe: Mapped[str | None] = mapped_column(String(64))
+    #: 这个阶段要交出的东西(可运行的练习 / 一份分析报告……)。
+    deliverable: Mapped[str | None] = mapped_column(Text)
+    #: 怎么算通过 —— 决定阶段能不能进入下一阶段的判据。
+    pass_criteria: Mapped[str | None] = mapped_column(Text)
     source: Mapped[ReasoningSource] = mapped_column(
         enum_type(ReasoningSource, "reasoning_source"),
         default=ReasoningSource.AGENT,
