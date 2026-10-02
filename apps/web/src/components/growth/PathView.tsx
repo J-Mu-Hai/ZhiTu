@@ -429,7 +429,35 @@ function ReasoningLinkEdge(props: EdgeProps) {
   );
 }
 
-const edgeTypes = { branch: BranchEdge, relation: RelationEdge, questionAnchor: QuestionAnchorEdge, reasoningLink: ReasoningLinkEdge };
+/**
+ * 讨论锚定线:目标根节点 → 顶层推理节点的**纯 UI** 虚线。
+ *
+ * 它回答的是"这些讨论维度是从哪个目标长出来的"。它**不是** `depends_on`、
+ * 不是 `related_to`、不是任何一张业务表里的一行 —— 不参与排期、不可编辑、
+ * 不可删除,也永远不会被写成业务关系。所以画法刻意与关系边不同:更细、更淡、
+ * 虚线间距更大,一眼看得出它是"归属说明",不是"用户建的业务线"。
+ */
+function ReasoningAnchorEdge(props: EdgeProps) {
+  const [path] = getSmoothStepPath({
+    sourceX: props.sourceX,
+    sourceY: props.sourceY,
+    targetX: props.targetX,
+    targetY: props.targetY,
+    sourcePosition: props.sourcePosition,
+    targetPosition: props.targetPosition,
+    borderRadius: 22,
+    offset: 20,
+  });
+  return (
+    <BaseEdge
+      id={props.id}
+      path={path}
+      style={{ strokeDasharray: '3 5', stroke: '#8a7fb0', strokeWidth: 1, opacity: 0.45 }}
+    />
+  );
+}
+
+const edgeTypes = { branch: BranchEdge, relation: RelationEdge, questionAnchor: QuestionAnchorEdge, reasoningLink: ReasoningLinkEdge, reasoningAnchor: ReasoningAnchorEdge };
 
 /**
  * `__zhituCanvasLifecycle` 最多留多少条。理由见 `Canvas` 里那个 effect 的说明。
@@ -937,7 +965,21 @@ function Canvas() {
     ],
   );
 
-  const { nodes, edges } = useMemo(() => {
+  const { nodes, edges: baseEdges } = useMemo(() => {
+    /*
+     * **节点投影重建计数(只给端到端测试看)。**
+     *
+     * 鼠标在节点上进进出出**不该**重建这份投影 —— 重建会让 React Flow 重新测量,
+     * 画布上就是那阵闪烁。这个计数是“悬停 10 次投影不重建”那句话的证据:它数的是
+     * **这份 memo 真的跑了几次**,不是从 DOM 上猜。写在 `window` 上而不是组件里,
+     * 重挂载也不会把证据清掉(与 `__zhituCanvasLifecycle` 同一个理由)。
+     *
+     * 它不参与任何产品逻辑,所以 SSR 下直接跳过。
+     */
+    if (typeof window !== 'undefined') {
+      const holder = window as unknown as { __zhituNodeProjectionBuilds?: number };
+      holder.__zhituNodeProjectionBuilds = (holder.__zhituNodeProjectionBuilds ?? 0) + 1;
+    }
     const nextNodes: FlowNode[] = [];
     const nextEdges: Edge[] = [];
     const all = Object.values(growth.nodes);
@@ -945,15 +987,11 @@ function Canvas() {
     const vertical = false;
 
     /*
-     * 此刻"被指着"的是哪个节点 —— hover 的那个,或者正在被拖的那个(拖动优先:
-     * 拖的时候指针可能已经不在节点上了,而用户关心的还是手里这一个)。
-     *
-     * 拖动的那个从 `dragging` 那份预览里读,键是 `${spaceId}:${nodeId}`
-     * (见 `onNodesChange`)。它和 `hoveredId` 一起决定哪些线要变清晰 ——
-     * **按真实 id 判断**,不是按标题。
+     * 节点投影**不读 hover**。`hoveredId` / `dragging` 只用来决定哪些线要变清晰,
+     * 而那只该改**边**、不该重建节点对象 —— 节点对象一换,React Flow 就要重新测量、
+     * 重排,鼠标一进一出就把整张图抖一遍。所以"谁被指着"这件事挪到了下面那份
+     * 只算边的 `edges` memo 里。
      */
-    const draggingKey = Object.keys(dragging).find((key) => key.startsWith(`${spaceId}:`));
-    const focusId = draggingKey ? draggingKey.slice(spaceId.length + 1) : hoveredId;
 
     // 兜底:`spaceId` 的契约是"一定指得到一个节点"(见 provider 里的 `currentSpaceId`)。
     // 万一将来这个契约被破坏,**这里不画比整个页面崩掉好** —— 在渲染中抛异常会把整棵
@@ -991,17 +1029,20 @@ function Canvas() {
     function connect(parent: string, node: GrowthNode) {
       // 父子连线也跟着 hover/拖动变清晰一点点 —— 它同样是"与这个节点相关的线"。
       // 默认值一个字没改:不相关的线看起来和以前完全一样。
+      //
+      // 这里只写**基础**宽度;hover/拖动时那 +0.7 由下面只算边的 `edges` memo
+      // 叠上去。hover 不重建这张投影,是这一轮修复的一半。
       const base = selectedId === node.id ? 1.8 : 1.35;
-      const focused = focusId !== null && (parent === focusId || node.id === focusId);
       nextEdges.push({
         id: `${parent}-${node.id}`,
         source: parent,
         target: node.id,
         type: 'branch',
+        data: { __baseWidth: base },
         style: {
           stroke: colors[node.category ?? 'academic'],
           opacity: 1,
-          strokeWidth: focused ? base + 0.7 : base,
+          strokeWidth: base,
         },
       });
     }
@@ -1114,20 +1155,42 @@ function Canvas() {
         reasoningPos[item.handle] = { x: parent.x + (index + 1) * 220, y: parent.y + 160 };
       }
       for (const item of reasoning.nodes) {
+        const nodeId = `reasoning:${item.handle}`;
         nextNodes.push({
-          id: `reasoning:${item.handle}`,
+          id: nodeId,
           type: 'reasoning',
           draggable: false,
           connectable: false,
           deletable: false,
           selectable: true,
+          // 已测量过就带上,避免 React Flow 把“没有 measured 的新对象”当成未测量
+          // 而反复重测 —— 那是悬停/重建时闪烁的直接机制(与问题节点同一条)。
+          measured: measurements[nodeId],
           ariaLabel: item.title,
           position: reasoningPos[item.handle] ?? { x: anchor.x, y: anchor.y + 430 },
           data: {
             node: item,
             isFocus: item.handle === reasoning.focusHandle,
-            onOpen: handleOpenReasoning,
           },
+        });
+      }
+      // 讨论锚定线:每个**顶层**推理节点(没有 `parentHandle` 的)都与当前目标
+      // 根节点连一条 UI-only 虚线,表达"这一层讨论是从这个目标长出来的"。
+      // 它继承的是绘制语义,不是业务语义:不进 NodeRelation、不是 depends_on、
+      // 不写任何表、不参与排期(见 `ReasoningAnchorEdge` 与验收用例)。
+      for (const item of primaries) {
+        nextEdges.push({
+          id: `reasoning-anchor:${item.handle}`,
+          source: spaceId,
+          target: `reasoning:${item.handle}`,
+          type: 'reasoningAnchor',
+          className: 'reasoning-anchor-edge',
+          // 不可选、不可删、不可重新连接、不可聚焦;压在节点与真实关系之下。
+          selectable: false,
+          deletable: false,
+          reconnectable: false,
+          focusable: false,
+          zIndex: 0,
         });
       }
       for (const link of reasoning.links) {
@@ -1165,7 +1228,6 @@ function Canvas() {
         data: {
           kind: edge.type,
           note: edge.note,
-          __focus: focusId !== null && (edge.source === focusId || edge.target === focusId),
           __drawn: edge.id === drawnEdgeId,
           onDrawnEnd: clearDrawn,
         },
@@ -1177,7 +1239,46 @@ function Canvas() {
       });
     });
     return { nodes: nextNodes, edges: nextEdges };
-  }, [growth, spaceId, isRootSpace, selectedId, selectedEdgeId, positions, dragging, questionPositions, questionDragging, files, measurements, handleMore, hoveredId, createdId, drawnEdgeId, clearCreated, clearDrawn, questions, focusedQuestionId, reasoning, handleOpenReasoning]);
+  }, [growth, spaceId, isRootSpace, selectedId, selectedEdgeId, positions, dragging, questionPositions, questionDragging, files, measurements, handleMore, createdId, drawnEdgeId, clearCreated, clearDrawn, questions, focusedQuestionId, reasoning]);
+
+  /*
+   * hover / 拖动的高亮**只作用在边对象上**。
+   *
+   * 上面那份 memo 产出的是稳定的节点投影:只要数据没变,`nodes` 里每个对象的
+   * id、position、measured、data 回调都不动 —— 鼠标在节点上进进出出不会重建它们,
+   * React Flow 也就不需要重新测量/重排(那正是"悬停闪烁"的来源)。
+   *
+   * 这里只按 `focusId` 复制**被指着的线**那一两条,其余边原样返回。于是:节点
+   * 对象一个不换,相关线高亮的能力一点没少。
+   */
+  const edges = useMemo(() => {
+    /*
+     * 与上面那个投影计数配对：hover 真的到达 React 时，这份**只算边**的 memo 会跑。
+     * 验收里同时看两个数 —— 边在动、节点投影不动，才能证明解耦真的生效。
+     */
+    if (typeof window !== 'undefined') {
+      const holder = window as unknown as { __zhituEdgeFocusBuilds?: number };
+      holder.__zhituEdgeFocusBuilds = (holder.__zhituEdgeFocusBuilds ?? 0) + 1;
+    }
+    // 拖动优先:拖的时候指针可能已经不在节点上了,而用户关心的还是手里这一个。
+    // 键是 `${spaceId}:${nodeId}`(见 `onNodesChange`),**按真实 id 判断**,
+    // 不是按标题。
+    const draggingKey = Object.keys(dragging).find((key) => key.startsWith(`${spaceId}:`));
+    const focusId = draggingKey ? draggingKey.slice(spaceId.length + 1) : hoveredId;
+    if (focusId === null) return baseEdges;
+    return baseEdges.map((edge) => {
+      if (edge.type === 'branch') {
+        if (edge.source !== focusId && edge.target !== focusId) return edge;
+        const base = (edge.data as { __baseWidth?: number } | undefined)?.__baseWidth ?? 1.35;
+        return { ...edge, style: { ...edge.style, strokeWidth: base + 0.7 } };
+      }
+      if (edge.type === 'relation') {
+        if (edge.source !== focusId && edge.target !== focusId) return edge;
+        return { ...edge, data: { ...edge.data, __focus: true } };
+      }
+      return edge;
+    });
+  }, [baseEdges, dragging, spaceId, hoveredId]);
 
   // 右侧「定位到画布」:等 question 节点投影出来之后 fit 一次,并选中它。
   useEffect(() => {
@@ -1720,6 +1821,9 @@ function Canvas() {
         onEdgeClick={(_, edge) => {
           // 问题锚定虚线不是业务关系:点它不该打开关系编辑器。
           if (edge.id.startsWith('question-anchor:')) return;
+          // 讨论锚定线同样不是业务关系 —— 它连不上任何 `growth.edges` 里的行,
+          // 但先挡一道,免得将来 id 形式变了之后被误当业务线。
+          if (edge.id.startsWith('reasoning-anchor:')) return;
           // 这个 handler 只收到关系边(父子连线由 `BranchEdge` 画,没有 onClick)。
           const relation = growth.edges.find((item) => item.id === edge.id);
           if (relation) openRelationEditor(relation);

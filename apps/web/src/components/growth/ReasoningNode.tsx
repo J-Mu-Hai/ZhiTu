@@ -15,11 +15,16 @@ import type { ReasoningNodeView } from '@/lib/backend';
  *
  * `summary` 是 Agent 维护的摘要;`userDescription` 是用户原文,**两者分区显示**。
  * Agent 的任何一轮都不会覆盖用户字段(标题一旦被用户改过也会锁定)。
+ *
+ * ## 打开详情只有**一个**入口
+ *
+ * 这一层原来在根元素上挂 `onPointerDown` 打开详情,而 ReactFlow 的 `onNodeClick`
+ * 也做同一件事 —— 一次点击会走两条路。现在统一由 `onNodeClick` 打开(见 `PathView`),
+ * 这一层不再自己抢指针事件:指针按下也不代表用户要打开它(拖、点空、点关闭都可能)。
  */
 export type ReasoningFlowData = {
   node: ReasoningNodeView;
   isFocus: boolean;
-  onOpen: (node: ReasoningNodeView) => void;
 };
 
 export type ReasoningFlowNode = Node<ReasoningFlowData, 'reasoning'>;
@@ -57,7 +62,6 @@ export function ReasoningNodeComponent({ data }: NodeProps<ReasoningFlowNode>) {
       className={classes}
       role="group"
       aria-label={`推理节点:${node.title}`}
-      onPointerDown={() => data.onOpen(node)}
     >
       <Handle type="target" position={Position.Top} isConnectable={false} />
       <div className="rn-head">

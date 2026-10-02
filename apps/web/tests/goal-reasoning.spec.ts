@@ -8,7 +8,7 @@
  * 战略确认走既有 proposal、未确认不写业务计划、确认后才写战略节点并出现"细化第一阶段"。
  */
 
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page, type Request } from '@playwright/test';
 import {
   assertBackendRunning,
   createWorkspace,
@@ -35,6 +35,25 @@ const questionCard = (page: Page) => page.locator('.canvas-question-node');
 async function waitForMap(page: Page): Promise<void> {
   await expect(reasoningNode(page)).toHaveCount(4, { timeout: 25000 });
   await expect(reasoningCard(page).filter({ hasText: '目标用途' })).toBeVisible();
+}
+
+/** 节点投影 memo 跑了几次(见 `PathView` 里 `__zhituNodeProjectionBuilds` 的说明)。 */
+async function projectionBuilds(page: Page): Promise<number> {
+  return page.evaluate(
+    () => (window as unknown as { __zhituNodeProjectionBuilds?: number }).__zhituNodeProjectionBuilds ?? 0,
+  );
+}
+
+/** 只算边的那份 memo 跑了几次 —— 用来证明 hover 真的到达了 React。 */
+async function edgeFocusBuilds(page: Page): Promise<number> {
+  return page.evaluate(
+    () => (window as unknown as { __zhituEdgeFocusBuilds?: number }).__zhituEdgeFocusBuilds ?? 0,
+  );
+}
+
+/** React Flow 此刻的平移与缩放。**从 DOM 里读**,与产品自己存了什么无关。 */
+async function viewportTransform(page: Page): Promise<string> {
+  return (await page.locator('.react-flow__viewport').getAttribute('style')) ?? '';
 }
 
 test('进入目标自动生成问题地图,重复进入不重复', async ({ page }) => {
@@ -137,4 +156,94 @@ test('回答推进地图,战略确认走提案,确认后才写计划', async ({ 
 
   // 已确认战略之后才出现"细化第一阶段"入口。
   await expect(page.getByRole('button', { name: '细化第一阶段' })).toBeVisible({ timeout: 20000 });
+});
+
+test('顶层讨论锚定到目标根节点,悬停不重建画布、点击只开一次详情', async ({ page }) => {
+  test.slow();
+  const { token } = await registerAccount(page, 'goal-reasoning-anchor');
+  const workspaceId = await createWorkspace(page, token, '推理锚定空间', '我想系统学习 Python');
+
+  // 锚定线绝不能写业务关系:任何 POST /relations 都记下来。
+  const relationPosts: string[] = [];
+  page.on('request', (request) => {
+    if (request.method() === 'POST' && request.url().includes('/relations')) relationPosts.push(request.url());
+  });
+
+  await page.goto(`/workbench?workspace=${workspaceId}`);
+  await waitForRealPlan(page);
+  await waitForMap(page);
+
+  const plan = await getPlan(page, token, workspaceId);
+  const root = plan.nodes.find((node) => node.parentId === null)!;
+  await expect(page.locator(`.react-flow__node[data-id="${root.id}"]`)).toBeVisible();
+
+  // 每个顶层推理节点都有一条 `reasoning-anchor:*` 锚定边,source 是当前目标根节点。
+  for (const handle of ['r1', 'r2', 'r3', 'r4']) {
+    const edge = page.locator(`.react-flow__edge[data-id="reasoning-anchor:${handle}"]`);
+    await expect(edge, `顶层推理节点 ${handle} 缺少锚定线`).toHaveCount(1);
+    await expect(edge).toHaveAttribute('aria-label', `Edge from ${root.id} to reasoning:${handle}`);
+  }
+  await expect(page.locator('.react-flow__edge.reasoning-anchor-edge')).toHaveCount(4);
+  // 内部真实 links 仍在(r1→r3),锚定线没有替代它的语义。
+  await expect(page.locator('.react-flow__edge-reasoningLink')).toHaveCount(1);
+
+  // 锚定线不是普通关系:正式 plan 里 relations 为空,也没发过 POST /relations。
+  expect((await getPlan(page, token, workspaceId)).relations).toHaveLength(0);
+  expect(relationPosts, '锚定线被写成了业务关系').toEqual([]);
+
+  // ---- 悬停 10 次:节点投影不重建、视口不动、不发请求 ----
+  const card = reasoningCard(page).filter({ hasText: '目标用途' });
+  const node = page.locator('.react-flow__node[data-id="reasoning:r1"]');
+  await expect(card).toBeVisible();
+  // 等测量与初始定位都安静下来。
+  await page.waitForTimeout(500);
+
+  await node.evaluate((element) => {
+    (element as unknown as Record<string, unknown>).__zhituStableMark = true;
+  });
+  const buildsBefore = await projectionBuilds(page);
+  const focusBuildsBefore = await edgeFocusBuilds(page);
+  const viewportBefore = await viewportTransform(page);
+  const rectBefore = await node.boundingBox();
+  if (!rectBefore) throw new Error('推理节点没有边界框');
+
+  const apiRequests: string[] = [];
+  const listener = (request: Request) => {
+    if (request.url().includes('/api/')) apiRequests.push(request.url());
+  };
+  page.on('request', listener);
+  for (let i = 0; i < 10; i += 1) {
+    await card.hover();
+    await page.mouse.move(4, 4);
+  }
+  page.off('request', listener);
+
+  expect(
+    await edgeFocusBuilds(page),
+    '悬停没有到达 React(边高亮那条路没跑)—— 这条测试的前提没成立',
+  ).toBeGreaterThan(focusBuildsBefore);
+  expect(await projectionBuilds(page), '悬停/移出重建了节点投影 —— 这正是闪烁的来源').toBe(buildsBefore);
+  expect(await viewportTransform(page), '悬停改变了画布视口(或触发了 fitView)').toBe(viewportBefore);
+  expect(apiRequests, '悬停产生了额外请求').toEqual([]);
+  const rectAfter = await node.boundingBox();
+  expect(rectAfter, '推理节点在悬停后消失了').not.toBeNull();
+  expect(Math.round(rectAfter!.x), '推理节点横向位置在悬停后变了').toBe(Math.round(rectBefore.x));
+  expect(Math.round(rectAfter!.y), '推理节点纵向位置在悬停后变了').toBe(Math.round(rectBefore.y));
+  expect(
+    await node.evaluate((element) => (element as unknown as Record<string, unknown>).__zhituStableMark === true),
+    '推理节点在悬停时被卸载/重挂载了',
+  ).toBe(true);
+
+  // ---- 点击一次:只出现一个详情面板;只按下指针不打开(重复入口已删除) ----
+  const detail = page.locator('.reasoning-detail');
+  // 去掉了 `onPointerDown` 的重复入口:只按下指针(不松开)不该打开详情。
+  await card.dispatchEvent('pointerdown');
+  await expect(detail, '按下指针不该打开详情').toHaveCount(0);
+  // 完整一次点击:恰好一个详情面板。用 `.click()`(它自带滚动与稳定性等待)——
+  // 推理节点在 960 高的视口里靠下,直接拿坐标点会落在视口外。
+  await card.click();
+  await expect(detail, '点击一次应该只出现一个详情面板').toHaveCount(1);
+  await expect(detail).toContainText('目标推理');
+  // 面板里就是刚才那个节点(输入框的值不属于 text content,单独验)。
+  await expect(detail.getByLabel('维度标题')).toHaveValue('目标用途');
 });

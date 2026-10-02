@@ -61,6 +61,8 @@
 .cq-submit:disabled { opacity: .45; cursor: default; }
 /* 锚定虚线由 React Flow 画;这里只保证它不被误当成业务关系。 */
 .react-flow__edge.question-anchor-edge { pointer-events: none; }
+/* 讨论锚定线同理:只表示“这个讨论属于该目标”,不可点、不可当业务关系编辑。 */
+.react-flow__edge.reasoning-anchor-edge { pointer-events: none; }
 /* 右侧对话区只留状态提示 + 定位,不再有第二份可提交问题卡。 */
 /* 对话区里的问题卡片。**用暖白主题令牌**,不再自带一套深色。
    pending 与 processing 的区别不能只靠颜色:徽标文案不同(见 ConversationPanel),
