@@ -433,12 +433,15 @@ async def submit_turn(
     # **输入变过时不建问题。** 问题也是模型基于当时上下文提出的,旧轮次的它同样
     # 可能问错东西;与提案保持同一条判断。
     if not input_changed:
+        # 战略阶段 = 还没有已确认的战略。这一阶段的问题**不先问排期条件**。
+        has_strategy = await strategy_review.has_strategy(db, ctx)
         await question_service.create_from_drafts(
             db,
             ctx,
             result.questions,
             source_message_id=assistant_message.id,
             source_node_id=context_node_id,
+            strategy_phase=not has_strategy,
         )
         # 战略复评触发器:**只创建一张问题卡,不改任何战略节点。**
         # 用户明确改了长期条件、或连续多周期失败时才问一次;

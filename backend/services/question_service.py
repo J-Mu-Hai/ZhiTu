@@ -58,6 +58,45 @@ MAX_QUESTIONS_PER_TURN = 2
 #: 用户补充输入的长度上限。与 `contracts/question.py::MAX_CUSTOM_INPUT_CHARS` 对齐。
 MAX_CUSTOM_INPUT_CHARS = 2000
 
+#: 战略阶段**不该问**的东西:精确投入时间、当前水平、具体截止日、日程/每日安排。
+#: 这些是阶段/周/排期层信息,不是战略层的默认门槛。
+#:
+#: 实现是**确定性的关键词判断**,不猜语义:它只拦那些一看就是排期问卷的问法,
+#: 宁可漏过也不误杀。误杀一个合理的战略问题(比如“你更看重哪个结果”)比漏掉一个
+#: 时间问题更贵 —— 前者直接阻断战略对话,后者只是多问一句。
+_STRATEGY_PHASE_FORBIDDEN: tuple[str, ...] = (
+    "每周",
+    "小时",
+    "可投入",
+    "投入时间",
+    "每天",
+    "每日",
+    "几点",
+    "日程",
+    "排期",
+    "排得开",
+    "工时",
+    "截止",
+    "deadline",
+    "当前水平",
+    "什么水平",
+    "水平如何",
+    "基础如何",
+    "掌握程度",
+)
+
+
+def strategy_phase_question_conflict(question: str) -> str | None:
+    """战略阶段问了一个属于阶段/排期层的问题时,返回原因;否则 `None`。
+
+    纯函数,便于测试。服务端用它过滤模型输出的问题 —— **不依赖提示词自觉**。
+    """
+    text = question.strip().lower()
+    for token in _STRATEGY_PHASE_FORBIDDEN:
+        if token in text:
+            return f"战略阶段不先问「{token}」这类阶段/排期信息"
+    return None
+
 
 @dataclass(frozen=True, slots=True)
 class AnswerOutcome:
@@ -108,6 +147,7 @@ async def create_from_drafts(
     *,
     source_message_id: uuid.UUID | None,
     source_node_id: uuid.UUID | None,
+    strategy_phase: bool = False,
 ) -> list[AgentQuestion]:
     """把模型这一轮提的问题落库。**纯服务端校验在这里收口。**
 
@@ -152,6 +192,13 @@ async def create_from_drafts(
             QuestionResponseMode.MULTI_SELECT.value,
         } and not draft.options:
             continue
+        # 战略阶段不先问排期条件（每周投入 / 当前水平 / 截止日 / 日程）。
+        # **服务端拦，不靠提示词自觉** —— 与去重、形状校验同一条纪律。
+        if strategy_phase:
+            phase_conflict = strategy_phase_question_conflict(draft.question)
+            if phase_conflict is not None:
+                logger.info("战略阶段丢弃一个排期类问题(%s):%r", phase_conflict, draft.question[:40])
+                continue
 
         key = (source_node_id, _normalize(draft.question))
         if key in seen:
@@ -511,5 +558,6 @@ __all__ = [
     "list_questions",
     "load_question",
     "skip_question",
+    "strategy_phase_question_conflict",
     "to_view",
 ]

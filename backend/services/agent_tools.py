@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import unicodedata
 import uuid
 from collections.abc import Awaitable, Callable
@@ -30,6 +31,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.agent.runtime.base import ToolExchange, TurnContext
+from backend.core.config import settings
 from backend.db.models import (
     Dependency,
     ExecutionRecord,
@@ -58,6 +60,7 @@ TOOL_NAMES = frozenset(
         "get_time_capacity",
         "get_recent_execution",
         "simulate_schedule",
+        "research_public",
     }
 )
 
@@ -346,6 +349,73 @@ async def _get_recent_execution(db, ctx, turn, arguments) -> dict:
     }
 
 
+#: research_public 查询的长度上限。
+RESEARCH_QUERY_MAX_CHARS = 120
+#: 查询里绝不能出现的私密标记。
+_RESEARCH_PRIVATE_MARKERS = (
+    "sk-",
+    "bearer ",
+    "authorization",
+    "password",
+    "api_key",
+    "api-key",
+    "token",
+    "database_url",
+    "postgres://",
+    "postgresql",
+)
+_UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+_HEX_RE = re.compile(r"\b[0-9a-f]{32,}\b")
+
+
+def _sanitize_research_query(query: object) -> str:
+    """研究关键词的入参校验:**不许把私密内容带出去**。
+
+    它不保证语义安全(一个关键词本身可能有隐私性),但能拦住可机读的密钥/连接串/
+    内部 id。真正“什么可以外发”的最终决定权在使用者:这是本地/自部署工具。
+    """
+    if not isinstance(query, str) or len(query.strip()) < 3:
+        raise ToolRejected("research_public 需要一个至少 3 个字的关键词。")
+    text = query.strip()
+    if len(text) > RESEARCH_QUERY_MAX_CHARS:
+        raise ToolRejected(f"研究关键词最多 {RESEARCH_QUERY_MAX_CHARS} 字。")
+    lowered = text.lower()
+    for marker in _RESEARCH_PRIVATE_MARKERS:
+        if marker in lowered:
+            raise ToolRejected("研究关键词里不能包含密钥、令牌、连接串等私密内容。")
+    if _UUID_RE.search(lowered) or _HEX_RE.search(lowered):
+        raise ToolRejected("研究关键词里不能包含内部 id。")
+    return text
+
+
+async def _research_public(db, ctx, turn, arguments) -> dict:
+    """受限的公开研究。**默认未配置时如实说未配置,绝不假装查过。**
+
+    本版本只实现到“显式开关 + 诚实响应”。真正的搜索提供方适配器**尚未实现** ——
+    没有配置时返回 `configured=false`;即使配了未支持的提供方,也返回 `configured=false`
+    并说明本版本没有适配器,而不是编造来源。
+    """
+    query = _sanitize_research_query(arguments.get("query"))
+    provider = (settings.research_provider or "").strip().lower()
+    if provider in ("", "none", "off", "disabled"):
+        return {
+            "configured": False,
+            "query": query,
+            "note": (
+                "公开研究工具未配置(服务端没有启用 RESEARCH_PROVIDER);我没有联网查过。"
+                "不要把它当成查过了,也不要编造来源。"
+            ),
+        }
+    return {
+        "configured": False,
+        "query": query,
+        "note": (
+            f"研究提供方 {provider!r} 已配置,但本版本没有对应适配器;我没有联网查过。"
+            "不要编造来源。"
+        ),
+    }
+
+
 async def _simulate_schedule(db, ctx, turn, arguments) -> dict:
     """只读排期模拟。**走的是既有确定性 `simulate`,不写任何数据。**"""
     from backend.services import schedule_service  # 延迟 import,避免服务层循环
@@ -399,6 +469,7 @@ TOOL_SPECS: dict[str, ToolSpec] = {
     "get_time_capacity": ToolSpec("get_time_capacity", frozenset(), _get_time_capacity),
     "get_recent_execution": ToolSpec("get_recent_execution", frozenset(), _get_recent_execution),
     "simulate_schedule": ToolSpec("simulate_schedule", frozenset(), _simulate_schedule),
+    "research_public": ToolSpec("research_public", frozenset({"query"}), _research_public),
 }
 
 
@@ -476,6 +547,7 @@ async def execute_tool(
 __all__ = [
     "MAX_RESULT_ROWS",
     "MAX_SUMMARY_CHARS",
+    "RESEARCH_QUERY_MAX_CHARS",
     "TOOL_NAMES",
     "TOOL_SPECS",
     "ToolRejected",

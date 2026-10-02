@@ -44,6 +44,16 @@ class Settings(BaseSettings):
     #: 于是一整轮变成"模型输出无法解析"。用户看到的是一句和真实原因毫不相干的
     #: 抱怨,而原因只是预算给少了。
     agent_max_tokens: int = 8192
+    #: 公开研究工具的提供方。**默认不配置**(空 = 没接)。
+    #:
+    #: 这是一个**显式开关**:没有配置时必须如实返回“未配置”,不允许假装查过。
+    #: 本版本只实现到“开关 + 诚实的未配置/无适配器响应”;真正的搜索提供方适配器
+    #: 尚未实现(见 `services/agent_tools._research_public`)。
+    research_provider: str = ""
+    #: 公开研究一次最多返回几条来源。真实提供方接入后生效。
+    research_max_results: int = 5
+    #: 公开研究的超时(秒)。真实提供方接入后生效。
+    research_timeout_seconds: float = 8.0
     # 规划调用的实现路径:auto | openjiuwen | direct_llm | rule
     # auto 表示每次请求时探测 openjiuwen 是否可用,不可用则降级并在响应里如实标注。
     agent_reasoner: str = "auto"
