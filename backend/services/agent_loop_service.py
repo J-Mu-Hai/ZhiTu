@@ -99,7 +99,7 @@ def _tool_record(
     now = utcnow()
     return ToolCallRecord(
         workspace_id=state.workspace_id,
-        reasoning_state_id=state.id,
+        reasoning_state=state,
         sequence=sequence,
         tool_name=exchange.tool_name,
         sanitized_arguments=sanitized,
@@ -119,6 +119,7 @@ def _seed_state(
     user_message: str,
 ) -> ReasoningState:
     return ReasoningState(
+        id=uuid.uuid4(),
         workspace_id=ctx.id,
         source_message_id=source_message_id,
         context_node_id=context_node_id,
@@ -197,10 +198,11 @@ async def run_turn(
         model_calls += 1
         # `Reasoner.reason` 对上游失败永不抛异常(见 base 模块契约)。
         result = await reasoner.reason(current_turn)
-        if state.id is None:
-            # 第一次模型返回之后才落 state,避免在模型思考期间持有写锁。
+        if state.id not in [obj.id for obj in db.new]:
+            # 第一次模型返回之后才 add(不 flush):**不要在这里落写锁** —— 工具要用
+            # 自己的短事务提交租约/额度,主事务一旦有未提交的写,SQLite 下会互相锁死
+            # (PostgreSQL 行锁不同,但延迟 flush 对两端都更安全)。最后统一 flush。
             db.add(state)
-            await db.flush()
         state.model_calls_used = model_calls
 
         if result.degraded:
@@ -258,7 +260,6 @@ async def run_turn(
                     ]
             state.tool_calls_used = tool_calls
             _absorb_result(state, result)
-            await db.flush()
             continue
 
         # ---- 终止轮 ----

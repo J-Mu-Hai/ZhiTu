@@ -64,6 +64,8 @@ class Settings(BaseSettings):
     research_max_calls_per_day: int = 100
     #: 相同规范化查询的缓存有效期(秒)。
     research_cache_ttl_seconds: int = 86400
+    #: 出网租约多久算过期(秒):过期后其他 worker 可接管,避免卡死。
+    research_lease_seconds: int = 15
     #: 每日额度按哪个时区算自然日。
     research_timezone: str = "Asia/Shanghai"
     #: 可选域名白名单(逗号分隔,子串匹配)。空 = 不限制(仅公开网页)。

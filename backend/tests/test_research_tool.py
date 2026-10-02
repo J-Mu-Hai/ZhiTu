@@ -6,7 +6,9 @@ HTTP)。密钥用假值,并断言它不出现在任何返回/记录里。
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
+from datetime import timedelta
 
 import httpx
 import pytest
@@ -14,8 +16,10 @@ from sqlalchemy import select
 
 from backend.agent.runtime.base import ReasoningResult, ToolRequest
 from backend.core.config import settings
-from backend.db.models import ToolCallRecord
-from backend.db.models.enums import ModelSource, ToolCallStatus
+from backend.db.base import utcnow
+from backend.db.models import ResearchCache, ToolCallRecord
+from backend.db.models.enums import ModelSource, ResearchCacheStatus, ToolCallStatus
+from backend.db.session import SessionLocal
 from backend.services import agent_tools, research_service
 
 FAKE_KEY = "tvly-this-is-a-fake-key-123456"
@@ -140,18 +144,139 @@ async def test_provider_failure_is_reported_not_fabricated(db, monkeypatch: pyte
 
 
 async def test_daily_limit_blocks_before_calling(db, monkeypatch: pytest.MonkeyPatch) -> None:
+    _enable(monkeypatch, research_max_calls_per_day=1)
+    calls: list[str] = []
+    _mock_search(monkeypatch, [{"title": "t", "url": "https://a.test", "content": "c"}], calls)
+
+    first = await research_service.search(db, "第一政策")
+    assert first.configured is True
+    assert len(calls) == 1
+    second = await research_service.search(db, "第二政策")
+    assert second.configured is False
+    assert second.reason == "DAILY_LIMIT_REACHED"
+    assert len(calls) == 1, "额度用完后不允许再发请求"
+
+
+async def test_real_attempt_consumes_quota_even_on_failure(
+    db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _enable(monkeypatch, research_max_calls_per_day=1)
+
+    async def _boom(query: str) -> list[dict]:
+        raise httpx.TimeoutException("timeout")
+
+    monkeypatch.setattr(research_service, "_fetch_tavily", _boom)
+    failed = await research_service.search(db, "会超时的查询")
+    assert failed.reason == "RESEARCH_FAILED"
+    _mock_search(monkeypatch, [{"title": "t", "url": "https://a.test", "content": "c"}])
+    blocked = await research_service.search(db, "另一个查询")
+    assert blocked.reason == "DAILY_LIMIT_REACHED"
+
+
+async def test_cache_hit_does_not_consume_quota(db, monkeypatch: pytest.MonkeyPatch) -> None:
+    _enable(monkeypatch, research_max_calls_per_day=1)
+    calls: list[str] = []
+    _mock_search(monkeypatch, [{"title": "t", "url": "https://a.test", "content": "c"}], calls)
+    await research_service.search(db, "同一个查询")
+    cached = await research_service.search(db, "同一个查询")
+    assert cached.cached is True
+    other = await research_service.search(db, "换个查询")
+    assert other.reason == "DAILY_LIMIT_REACHED"
+    assert len(calls) == 1
+
+
+async def test_cache_is_cross_session(db, monkeypatch: pytest.MonkeyPatch) -> None:
+    _enable(monkeypatch)
+    calls: list[str] = []
+    _mock_search(monkeypatch, [{"title": "t", "url": "https://a.test", "content": "c"}], calls)
+    await research_service.search(db, "跨会话查询")
+    async with SessionLocal() as other_session:
+        outcome = await research_service.search(other_session, "跨会话查询")
+    assert outcome.cached is True
+    assert len(calls) == 1
+
+
+async def test_same_query_concurrent_only_one_fetch(db, monkeypatch: pytest.MonkeyPatch) -> None:
+    _enable(monkeypatch)
+    calls: list[str] = []
+
+    async def _slow(query: str) -> list[dict]:
+        calls.append(query)
+        await asyncio.sleep(0.3)
+        return [{"title": "t", "url": "https://a.test", "content": "c"}]
+
+    monkeypatch.setattr(research_service, "_fetch_tavily", _slow)
+    results = await asyncio.gather(
+        research_service.search(db, "并发查询"),
+        research_service.search(db, "并发查询"),
+    )
+    assert len(calls) == 1, "同一 query 并发只允许一次真实出网"
+    assert any(result.sources for result in results)
+
+
+async def test_valid_lease_blocks_second_request_from_fetching(
+    db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _enable(monkeypatch)
+    calls: list[str] = []
+    _mock_search(monkeypatch, [{"title": "t", "url": "https://a.test", "content": "c"}], calls)
+    key = research_service.cache_key_for("tavily", research_service.normalize_query("租约查询"))
+    async with SessionLocal() as session:
+        session.add(
+            ResearchCache(
+                cache_key=key,
+                provider="tavily",
+                query="租约查询",
+                status=ResearchCacheStatus.FETCHING,
+                sources=[],
+                lease_expires_at=utcnow() + timedelta(seconds=60),
+            )
+        )
+        await session.commit()
+
+    outcome = await research_service.search(db, "租约查询")
+    assert outcome.reason == "IN_PROGRESS"
+    assert calls == [], "租约有效期间第二个请求不得出网"
+
+
+async def test_expired_lease_can_be_taken_over(db, monkeypatch: pytest.MonkeyPatch) -> None:
+    _enable(monkeypatch)
+    calls: list[str] = []
+    _mock_search(monkeypatch, [{"title": "t", "url": "https://a.test", "content": "c"}], calls)
+    key = research_service.cache_key_for("tavily", research_service.normalize_query("过期租约"))
+    async with SessionLocal() as session:
+        session.add(
+            ResearchCache(
+                cache_key=key,
+                provider="tavily",
+                query="过期租约",
+                status=ResearchCacheStatus.FETCHING,
+                sources=[],
+                lease_expires_at=utcnow() - timedelta(seconds=60),
+            )
+        )
+        await session.commit()
+
+    outcome = await research_service.search(db, "过期租约")
+    assert outcome.configured is True
+    assert len(calls) == 1
+
+
+async def test_concurrent_daily_quota_never_exceeds_limit(
+    db, monkeypatch: pytest.MonkeyPatch
+) -> None:
     _enable(monkeypatch, research_max_calls_per_day=3)
     calls: list[str] = []
     _mock_search(monkeypatch, [{"title": "t", "url": "https://a.test", "content": "c"}], calls)
 
-    async def _used(_db) -> int:
-        return 3
-
-    monkeypatch.setattr(research_service, "_daily_calls", _used)
-    outcome = await research_service.search(db, "某政策")
-    assert outcome.configured is False
-    assert outcome.reason == "DAILY_LIMIT_REACHED"
-    assert calls == [], "额度用完后不允许再发请求"
+    results = await asyncio.gather(
+        *[research_service.search(db, f"并发额度查询{i}") for i in range(6)]
+    )
+    allowed = [r for r in results if r.configured and r.sources]
+    limited = [r for r in results if r.reason == "DAILY_LIMIT_REACHED"]
+    assert len(allowed) == 3, f"并发下应恰好放行 3 次,实际 {len(allowed)}"
+    assert len(limited) == 3
+    assert len(calls) == 3, "被拒的请求不得出网"
 
 
 async def test_query_with_private_marker_is_rejected() -> None:

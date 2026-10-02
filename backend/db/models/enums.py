@@ -389,5 +389,18 @@ class ToolCallStatus(StrEnum):
     REJECTED = "rejected"
 
 
+class ResearchCacheStatus(StrEnum):
+    """研究缓存的跨进程状态。
+
+    - `fetching`:某个 worker 持有租约,正在出网;其他 worker 不得重复出网。
+    - `success`:TTL 内的成功结果,命中直接返回。
+    - `failed`:失败/无结果;**不当作成功缓存**,可被下一次重新接管。
+    """
+
+    FETCHING = "fetching"
+    SUCCESS = "success"
+    FAILED = "failed"
+
+
 #: 模型可见事实的来源类型。**所有进入 state / 工具结果 / 分析的内容都带一个。**
 PROVENANCE_SOURCES = ("user", "system", "tool", "model_inference", "assumption")

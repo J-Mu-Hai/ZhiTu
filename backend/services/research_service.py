@@ -4,57 +4,65 @@
 
 有些未知不是用户私有的,而是可公开验证、会随时间变化的事实(学校政策、申请截止、
 比赛规则、公开课程/岗位要求)。把这类问题直接问用户,是把本可以自己查清的负担推回去。
-`research_public` 工具在**显式配置**后可以真实检索,并把来源作为“可确认的信息依据”
-交给模型。
+`research_public` 工具在**显式配置**后可以真实检索,并把来源作为“可确认的信息依据”。
+
+## 跨进程状态:为什么要数据库
+
+服务可能跑多个 worker。进程内缓存与“先 count 再请求”在单进程下看着没问题,多进程会
+重复出网、重复计费、并轻微超过每日上限。所以:
+
+- `research_cache`:按稳定 hash 的 cache key 一行,带 `fetching` 租约;TTL 内的成功结果
+  直接命中,不联网、不占额度。
+- `research_daily_quota`:`(provider, local_day)` 唯一行,用**条件更新**原子预占额度,
+  绝不 `先 SELECT count 再决定`。
 
 ## 四条硬边界
 
-1. **默认关闭。** `RESEARCH_ENABLED=false` 或 `RESEARCH_PROVIDER=none` 时**不发任何
-   请求**,返回“未配置”。
-2. **密钥不出门。** `TAVILY_API_KEY` 只用于请求头/体,绝不进返回摘要、工具记录、
-   日志或界面。
-3. **只读、不写业务数据。** 研究结果只进工具摘要(供模型判断与引用);要写图谱/排期/
-   战略,仍然走 `proposal -> 用户确认`。
-4. **失败如实说。** 超时、HTTP 错误、没有结果、额度用完都返回明确的“没有完成公开
-   研究”,绝不编造来源或结论。
+1. **默认关闭。** 未配置时**不发任何请求**,返回“未配置”。
+2. **密钥不出门。** `TAVILY_API_KEY` 只用于请求,绝不进返回、记录或日志。
+3. **只读、不写业务数据。** 研究结果只进工具摘要与缓存;要写图谱/排期/战略仍走确认。
+4. **失败如实说。** 超时/HTTP 错误/无结果/额度用完都返回“没有完成公开研究”。
 
-## 缓存与额度的边界(如实说明)
+## 额度与租约的边界
 
-- 缓存是**进程内 TTL 缓存**(`_CACHE`)。当前服务单 worker,够用;多 worker 时各进程
-  各有一份,`RESEARCH_MAX_CALLS_PER_DAY` 的统计也可能被放大。要跨进程,需要把缓存与
-  计数换成数据库表 —— 本轮未做。
-- 每日额度按 `ToolCallRecord` 里 `research_public` 成功调用数统计(全局,按
-  `RESEARCH_TIMEZONE` 的自然日)。
+- 额度在**真实 HTTP 之前**预占;一旦预占,即便 timeout/429/5xx/解析失败也**不退回**
+  (它们可能已经产生提供商费用)。
+- 缓存命中、未配置、隐私拦截、同 query 正在拉取都不消耗额度。
+- 租约到期后其他 worker 可接管,避免进程崩溃导致永久卡死。
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
-import time
 from dataclasses import dataclass
-from datetime import UTC
+from datetime import datetime, timedelta
+from hashlib import blake2b
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 import httpx
-from sqlalchemy import func, select
+from sqlalchemy import or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.config import settings
 from backend.db.base import utcnow
-from backend.db.models import ToolCallRecord
-from backend.db.models.enums import ToolCallStatus
+from backend.db.models import ResearchCache, ResearchDailyQuota
+from backend.db.models.enums import ResearchCacheStatus
+from backend.db.session import SessionLocal
 
 logger = logging.getLogger(__name__)
 
 TAVILY_ENDPOINT = "https://api.tavily.com/search"
+PROVIDER = "tavily"
 #: 单条摘录的最多字符数。来源只需要“够判断”,不需要整页。
 MAX_EXCERPT_CHARS = 400
 MAX_TITLE_CHARS = 200
 MAX_URL_CHARS = 500
-
-#: 进程内 TTL 缓存:规范化查询 -> (过期时刻 monotonic, 来源)。
-_CACHE: dict[str, tuple[float, tuple[ResearchSource, ...]]] = {}
+#: 发现同 query 正在拉取时,最多轮询等待多久(秒)。等不到就返回 `in_progress` 降级。
+WAIT_ATTEMPTS = 10
+WAIT_DELAY_SECONDS = 0.2
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,9 +88,21 @@ def normalize_query(query: str) -> str:
     return " ".join(query.strip().lower().split())
 
 
+def _research_tz() -> ZoneInfo:
+    try:
+        return ZoneInfo(settings.research_timezone)
+    except Exception:
+        return ZoneInfo("Asia/Shanghai")
+
+
+def local_day() -> str:
+    """当前 `RESEARCH_TIMEZONE` 下的自然日(ISO)。"""
+    return utcnow().astimezone(_research_tz()).date().isoformat()
+
+
 def clear_cache() -> None:
-    """测试用:清空进程内缓存。"""
-    _CACHE.clear()
+    """测试用:清空进程内可能残留的缓存状态(现在缓存都在数据库,事务回滚即清)。"""
+    return None
 
 
 def provider_ready() -> tuple[bool, str]:
@@ -92,7 +112,7 @@ def provider_ready() -> tuple[bool, str]:
     provider = (settings.research_provider or "none").strip().lower()
     if provider in ("", "none", "off", "disabled"):
         return False, "RESEARCH_PROVIDER_NONE"
-    if provider != "tavily":
+    if provider != PROVIDER:
         return False, "RESEARCH_PROVIDER_UNSUPPORTED"
     if not (settings.tavily_api_key or "").strip():
         return False, "TAVILY_API_KEY_MISSING"
@@ -138,7 +158,6 @@ def _allowed_domains() -> tuple[str, ...]:
             if host:
                 entries.append(host)
             continue
-        # 去掉端口。
         if ":" in raw and raw.count(":") == 1:
             raw = raw.split(":", 1)[0]
         entries.append(raw.rstrip("."))
@@ -146,11 +165,7 @@ def _allowed_domains() -> tuple[str, ...]:
 
 
 def domain_allowed(host: str, allowed: tuple[str, ...]) -> bool:
-    """只允许**精确域名**或**点边界子域名**。空白名单 = 不限制。
-
-    `gov.cn` 允许 `www.gov.cn`,但 `gov.cn.evil.example` 不算 —— 这是字符串包含
-    匹配会放过的绕过方式。
-    """
+    """只允许**精确域名**或**点边界子域名**。空白名单 = 不限制。"""
     if not allowed:
         return True
     normalized = host.rstrip(".").lower()
@@ -185,66 +200,270 @@ def _to_sources(raw: list[dict]) -> tuple[ResearchSource, ...]:
     return tuple(sources)
 
 
-async def _daily_calls(db: AsyncSession) -> int:
-    """今天(按 `research_timezone` 的自然日)已经成功调用了几次真实研究。**全局。**"""
-    try:
-        tz = ZoneInfo(settings.research_timezone)
-    except Exception:
-        tz = ZoneInfo("Asia/Shanghai")
-    now = utcnow().astimezone(tz)
-    start_local = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    start_utc = start_local.astimezone(UTC)
-    used = await db.scalar(
-        select(func.count())
-        .select_from(ToolCallRecord)
+# ---------------------------------------------------------------------------------
+# 缓存键
+# ---------------------------------------------------------------------------------
+def cache_key_for(provider: str, normalized_query: str) -> str:
+    """稳定 hash:provider + 安全 query + 白名单 + 影响结果的参数。**不是原始文本。**"""
+    parts = "|".join(
+        [
+            provider,
+            normalized_query,
+            ",".join(sorted(_allowed_domains())),
+            str(settings.research_max_results),
+        ]
+    )
+    return blake2b(parts.encode("utf-8"), digest_size=32).hexdigest()
+
+
+def _sources_to_json(sources: tuple[ResearchSource, ...]) -> list[dict]:
+    return [
+        {"title": s.title, "url": s.url, "accessedAt": s.accessed_at, "excerpt": s.excerpt}
+        for s in sources
+    ]
+
+
+def _sources_from_json(raw: object) -> tuple[ResearchSource, ...]:
+    if not isinstance(raw, list):
+        return ()
+    sources: list[ResearchSource] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or "")
+        url = str(item.get("url") or "")
+        if not title or not url:
+            continue
+        sources.append(
+            ResearchSource(
+                title=title,
+                url=url,
+                accessed_at=str(item.get("accessedAt") or ""),
+                excerpt=str(item.get("excerpt") or ""),
+            )
+        )
+    return tuple(sources)
+
+
+async def _read_cache(session: AsyncSession, key: str) -> ResearchCache | None:
+    return await session.scalar(select(ResearchCache).where(ResearchCache.cache_key == key))
+
+
+async def _acquire_lease(
+    session: AsyncSession, *, key: str, query: str, now: datetime
+) -> bool:
+    """抢租约。成功返回 True(该请求可以出网)。**原子。**"""
+    lease_until = now + timedelta(seconds=settings.research_lease_seconds)
+    result = await session.execute(
+        update(ResearchCache)
         .where(
-            ToolCallRecord.tool_name == "research_public",
-            ToolCallRecord.status == ToolCallStatus.OK,
-            ToolCallRecord.created_at >= start_utc,
+            ResearchCache.cache_key == key,
+            or_(
+                ResearchCache.status != ResearchCacheStatus.FETCHING,
+                ResearchCache.lease_expires_at.is_(None),
+                ResearchCache.lease_expires_at <= now,
+            ),
+        )
+        .values(status=ResearchCacheStatus.FETCHING, lease_expires_at=lease_until, updated_at=now)
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount == 1:
+        await session.commit()
+        return True
+    # 没有行 -> 插入一个 fetching 行;唯一约束保证只有一个赢家。
+    session.add(
+        ResearchCache(
+            cache_key=key,
+            provider=PROVIDER,
+            query=query,
+            status=ResearchCacheStatus.FETCHING,
+            sources=[],
+            lease_expires_at=lease_until,
+            expires_at=None,
         )
     )
-    return int(used or 0)
+    try:
+        await session.commit()
+        return True
+    except IntegrityError:
+        await session.rollback()
+        return False
+
+
+async def _release_lease(session: AsyncSession, key: str) -> None:
+    """把租约置成 failed,让下一次可以重试(比如额度用完时)。"""
+    now = utcnow()
+    await session.execute(
+        update(ResearchCache)
+        .where(ResearchCache.cache_key == key)
+        .values(status=ResearchCacheStatus.FAILED, lease_expires_at=None, updated_at=now)
+        .execution_options(synchronize_session=False)
+    )
+    await session.commit()
+
+
+async def _mark_success(
+    session: AsyncSession, key: str, sources: tuple[ResearchSource, ...]
+) -> None:
+    now = utcnow()
+    await session.execute(
+        update(ResearchCache)
+        .where(ResearchCache.cache_key == key)
+        .values(
+            status=ResearchCacheStatus.SUCCESS,
+            sources=_sources_to_json(sources),
+            lease_expires_at=None,
+            expires_at=now + timedelta(seconds=settings.research_cache_ttl_seconds),
+            updated_at=now,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    await session.commit()
+
+
+async def _mark_failed(session: AsyncSession, key: str) -> None:
+    now = utcnow()
+    await session.execute(
+        update(ResearchCache)
+        .where(ResearchCache.cache_key == key)
+        .values(
+            status=ResearchCacheStatus.FAILED,
+            sources=[],
+            lease_expires_at=None,
+            expires_at=None,
+            updated_at=now,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    await session.commit()
+
+
+async def _reserve_quota(session: AsyncSession, limit: int) -> bool:
+    """原子预占一个每日额度。**不做“先 count 再请求”。**
+
+    先条件 UPDATE(行存在且未满才 +1);没有行时靠唯一约束 INSERT;并发插入输的一方
+    回滚后重试一次条件 UPDATE。两条路径都不会超过 `limit`。
+    """
+    day = utcnow().astimezone(_research_tz()).date()
+    if limit <= 0:
+        return False
+    result = await session.execute(
+        update(ResearchDailyQuota)
+        .where(
+            ResearchDailyQuota.provider == PROVIDER,
+            ResearchDailyQuota.local_day == day,
+            ResearchDailyQuota.reserved < limit,
+        )
+        .values(reserved=ResearchDailyQuota.reserved + 1)
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount == 1:
+        await session.commit()
+        return True
+    # 这一行存在吗?存在说明已经到上限(条件更新没匹配)。
+    exists = await session.scalar(
+        select(ResearchDailyQuota.id).where(
+            ResearchDailyQuota.provider == PROVIDER, ResearchDailyQuota.local_day == day
+        )
+    )
+    if exists is not None:
+        await session.rollback()
+        return False
+    session.add(ResearchDailyQuota(provider=PROVIDER, local_day=day, reserved=1))
+    try:
+        await session.commit()
+        return True
+    except IntegrityError:
+        await session.rollback()
+        result = await session.execute(
+            update(ResearchDailyQuota)
+            .where(
+                ResearchDailyQuota.provider == PROVIDER,
+                ResearchDailyQuota.local_day == day,
+                ResearchDailyQuota.reserved < limit,
+            )
+            .values(reserved=ResearchDailyQuota.reserved + 1)
+            .execution_options(synchronize_session=False)
+        )
+        await session.commit()
+        return result.rowcount == 1
+
+
+def _cached_outcome(row: ResearchCache) -> ResearchOutcome:
+    return ResearchOutcome(
+        configured=True,
+        reason="cached",
+        query=row.query,
+        sources=_sources_from_json(row.sources),
+        cached=True,
+    )
+
+
+async def _wait_for_cache(key: str) -> ResearchOutcome | None:
+    """同 query 正在被别的 worker 拉取时,短暂轮询等成功缓存。**不出网、不占额度。**"""
+    for _ in range(WAIT_ATTEMPTS):
+        await asyncio.sleep(WAIT_DELAY_SECONDS)
+        async with SessionLocal() as session:
+            row = await _read_cache(session, key)
+        if row is None:
+            continue
+        if row.status is ResearchCacheStatus.SUCCESS and row.expires_at and row.expires_at > utcnow():
+            return _cached_outcome(row)
+        if row.status is ResearchCacheStatus.FAILED:
+            return ResearchOutcome(configured=False, reason="RESEARCH_FAILED", query=row.query)
+    return None
 
 
 async def search(db: AsyncSession, query: str) -> ResearchOutcome:
-    """执行一次受控研究。**未配置/失败/超额时 `sources` 为空。**"""
+    """执行一次受控研究。**未配置/失败/超额时 `sources` 为空。**
+
+    `db` 参数保留是为了调用方签名稳定;缓存与额度必须用自己的短事务并**立即提交**,
+    否则其他 worker 看不到租约与预留。
+    """
     ready, reason = provider_ready()
     if not ready:
         return ResearchOutcome(configured=False, reason=reason, query=query)
 
-    key = normalize_query(query)
-    cached = _CACHE.get(key)
-    now = time.monotonic()
-    if cached is not None and cached[0] > now:
-        return ResearchOutcome(configured=True, reason="cached", query=query, sources=cached[1], cached=True)
+    normalized = normalize_query(query)
+    key = cache_key_for(PROVIDER, normalized)
+    now = utcnow()
 
-    if await _daily_calls(db) >= settings.research_max_calls_per_day:
-        return ResearchOutcome(configured=False, reason="DAILY_LIMIT_REACHED", query=query)
+    async with SessionLocal() as session:
+        row = await _read_cache(session, key)
+        if row is not None and row.status is ResearchCacheStatus.SUCCESS and row.expires_at and row.expires_at > now:
+            return _cached_outcome(row)
+        if (
+            row is not None
+            and row.status is ResearchCacheStatus.FETCHING
+            and row.lease_expires_at is not None
+            and row.lease_expires_at > now
+        ):
+            waited = await _wait_for_cache(key)
+            return waited or ResearchOutcome(configured=False, reason="IN_PROGRESS", query=query)
 
-    try:
-        raw = await _fetch_tavily(query)
-    except Exception as exc:
-        logger.warning("公开研究调用失败: %s", type(exc).__name__)
-        return ResearchOutcome(configured=False, reason="RESEARCH_FAILED", query=query)
+        if not await _acquire_lease(session, key=key, query=normalized, now=now):
+            waited = await _wait_for_cache(key)
+            return waited or ResearchOutcome(configured=False, reason="IN_PROGRESS", query=query)
 
-    sources = _to_sources(raw)
-    if not sources:
-        return ResearchOutcome(configured=False, reason="NO_RESULTS", query=query)
+        if not await _reserve_quota(session, settings.research_max_calls_per_day):
+            await _release_lease(session, key)
+            return ResearchOutcome(configured=False, reason="DAILY_LIMIT_REACHED", query=query)
 
-    _CACHE[key] = (now + settings.research_cache_ttl_seconds, sources)
-    return ResearchOutcome(configured=True, reason="ok", query=query, sources=sources)
+        # ---- 从这里起可能真的产生费用;后续任何失败都不退回额度。----
+        try:
+            raw = await _fetch_tavily(query)
+        except Exception as exc:
+            logger.warning("公开研究调用失败: %s", type(exc).__name__)
+            await _mark_failed(session, key)
+            return ResearchOutcome(configured=False, reason="RESEARCH_FAILED", query=query)
 
+        sources = _to_sources(raw)
+        if not sources:
+            await _mark_failed(session, key)
+            return ResearchOutcome(configured=False, reason="NO_RESULTS", query=query)
 
-#: 给调用方(agent_tools)用的诚实文案。**绝不含密钥。**
-REASON_NOTE: dict[str, str] = {
-    "RESEARCH_ENABLED_FALSE": "公开研究未配置(总开关 RESEARCH_ENABLED=false);我没有联网查过。",
-    "RESEARCH_PROVIDER_NONE": "公开研究工具未配置(RESEARCH_PROVIDER=none);我没有联网查过。",
-    "RESEARCH_PROVIDER_UNSUPPORTED": "配置的研究提供方本版本没有适配器;我没有联网查过。",
-    "TAVILY_API_KEY_MISSING": "公开研究缺少 API Key;我没有联网查过。",
-    "DAILY_LIMIT_REACHED": "今天的公开研究额度已经用完;我没有联网查过。",
-    "RESEARCH_FAILED": "公开研究调用失败或超时;我没有拿到来源,不要编造。",
-    "NO_RESULTS": "这次公开研究没有返回可用来源;不要编造。",
-}
+        await _mark_success(session, key, sources)
+        return ResearchOutcome(configured=True, reason="ok", query=query, sources=sources)
 
 
 def sources_to_summary(outcome: ResearchOutcome) -> dict:
@@ -264,14 +483,30 @@ def sources_to_summary(outcome: ResearchOutcome) -> dict:
     }
 
 
+#: 给调用方(agent_tools)用的诚实文案。**绝不含密钥。**
+REASON_NOTE: dict[str, str] = {
+    "RESEARCH_ENABLED_FALSE": "公开研究未配置(总开关 RESEARCH_ENABLED=false);我没有联网查过。",
+    "RESEARCH_PROVIDER_NONE": "公开研究工具未配置(RESEARCH_PROVIDER=none);我没有联网查过。",
+    "RESEARCH_PROVIDER_UNSUPPORTED": "配置的研究提供方本版本没有适配器;我没有联网查过。",
+    "TAVILY_API_KEY_MISSING": "公开研究缺少 API Key;我没有联网查过。",
+    "DAILY_LIMIT_REACHED": "今天的公开研究额度已经用完;我没有联网查过。",
+    "RESEARCH_FAILED": "公开研究调用失败或超时;我没有拿到来源,不要编造。",
+    "NO_RESULTS": "这次公开研究没有返回可用来源;不要编造。",
+    "IN_PROGRESS": "同一个公开研究正在进行中;我没有重复联网,请稍后再看。",
+}
+
+
 __all__ = [
     "MAX_EXCERPT_CHARS",
+    "PROVIDER",
     "REASON_NOTE",
     "TAVILY_ENDPOINT",
     "ResearchOutcome",
     "ResearchSource",
+    "cache_key_for",
     "clear_cache",
     "domain_allowed",
+    "local_day",
     "normalize_query",
     "provider_ready",
     "search",

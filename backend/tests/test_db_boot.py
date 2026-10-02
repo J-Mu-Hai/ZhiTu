@@ -28,6 +28,9 @@ EXPECTED_TABLES = {
     # 服务端控制的推理状态与只读工具调用记录(阶段 4,见 db/models/reasoning.py)。
     "reasoning_states",
     "tool_call_records",
+    # 公开研究的跨进程缓存与每日额度(阶段 6B,见 db/models/research.py)。
+    "research_cache",
+    "research_daily_quota",
     "conversations",
     "dependencies",
     "domain_events",

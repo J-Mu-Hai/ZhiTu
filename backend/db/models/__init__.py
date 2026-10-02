@@ -35,6 +35,7 @@ from backend.db.models.enums import (
     QuestionUserAction,
     ReasoningAction,
     ReasoningStatus,
+    ResearchCacheStatus,
     RevisionActor,
     RevisionTrigger,
     ScheduledSessionOrigin,
@@ -50,6 +51,7 @@ from backend.db.models.proposal import Proposal, ProposalDecision, ProposalItem
 from backend.db.models.question import AgentQuestion
 from backend.db.models.reasoning import ReasoningState, ToolCallRecord
 from backend.db.models.reminder import ReminderState
+from backend.db.models.research import ResearchCache, ResearchDailyQuota
 from backend.db.models.schedule import ExecutionRecord, ScheduleApplication, ScheduledSession
 from backend.db.models.user import (
     AuthSession,
@@ -112,6 +114,9 @@ __all__ = [
     "ReasoningState",
     "ReasoningStatus",
     "ReminderState",
+    "ResearchCache",
+    "ResearchCacheStatus",
+    "ResearchDailyQuota",
     "RevisionActor",
     "RevisionTrigger",
     "ScheduleApplication",
