@@ -131,21 +131,9 @@ test('手机工作台上画布优先，AI 面板是底部抽屉', async ({ page 
   const node = await centreHit(page.getByRole('group', { name: '手机工作台' }));
   expect(node.self, `根节点的正中心被 ${node.blockedBy} 盖住了`).toBe(true);
 
-  // 3. 工具条与缩放按钮不叠。两块的矩形相交就是叠了 —— 它们都在右下角,差了 9px 就会
-  //    压住缩放按钮的顶边(工具条有边框和阴影,压上去看得出来)。
-  const overlap = await page.evaluate(() => {
-    const tools = document.querySelector('.space-floating-tools')?.getBoundingClientRect();
-    const controls = document.querySelector('.react-flow__controls')?.getBoundingClientRect();
-    if (!tools || !controls) return null;
-    return {
-      tools: `${Math.round(tools.x)},${Math.round(tools.y)} → ${Math.round(tools.right)},${Math.round(tools.bottom)}`,
-      controls: `${Math.round(controls.x)},${Math.round(controls.y)} → ${Math.round(controls.right)},${Math.round(controls.bottom)}`,
-      x: Math.max(0, Math.min(tools.right, controls.right) - Math.max(tools.left, controls.left)),
-      y: Math.max(0, Math.min(tools.bottom, controls.bottom) - Math.max(tools.top, controls.top)),
-    };
-  });
-  expect(overlap, '这一档里画布右下角应该有工具条与缩放按钮').not.toBeNull();
-  expect(overlap!.x * overlap!.y, `工具条(${overlap!.tools})与缩放按钮(${overlap!.controls})重叠`).toBe(0);
+  // 3. 右下角的缩放控件与「聚焦所选」按钮已经移除 —— 它们不再出现,也不占位。
+  await expect(page.locator('.react-flow__controls')).toHaveCount(0);
+  await expect(page.locator('.focus-button')).toHaveCount(0);
 
   // 4. 抽屉:铺满宽度,顶上留出画布,顶部那条浮动组件仍然点得到。
   await page.getByRole('button', { name: '展开对话', exact: true }).click();

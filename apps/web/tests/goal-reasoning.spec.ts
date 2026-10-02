@@ -45,6 +45,8 @@ test('进入目标自动生成问题地图,重复进入不重复', async ({ page
   await waitForRealPlan(page);
 
   await waitForMap(page);
+  // 画布上已经有问题地图、但还没有任何**业务计划子节点** —— 空态必须完全不渲染。
+  await expect(page.locator('.empty-space-note'), '有推理地图时不该再显示空态').toHaveCount(0);
   // 恰好一个焦点,而且焦点有"为什么先处理它"。
   await expect(page.locator('.reasoning-node.is-focus')).toHaveCount(1, { timeout: 20000 });
   await expect(page.locator('.reasoning-node.is-focus')).toContainText('用途');
@@ -54,6 +56,43 @@ test('进入目标自动生成问题地图,重复进入不重复', async ({ page
   const questionText = await questionCard(page).innerText();
   expect(questionText).toContain('哪条路线');
   expect(questionText, '战略层不该先问每周投入').not.toContain('每周');
+
+  // QuestionStatusHint 必须跟暖白主题一致,而且"定位到画布"要有足够对比度。
+  const hint = page.locator('.question-hint');
+  await expect(hint).toBeVisible({ timeout: 20000 });
+  const styles = await hint.evaluate((element) => {
+    const parse = (value: string) => {
+      const numbers = (value.match(/[\d.]+/g) ?? []).map(Number);
+      // Chrome 对 `color-mix(...)` 的结果返回 `color(srgb r g b)`(0–1),
+      // 不是 `rgb(r g b)`(0–255)。不归一化会把浅色读成近黑。
+      return value.trim().startsWith('color(srgb') ? numbers.map((n) => n * 255) : numbers;
+    };
+    const luminance = (rgb: number[]) => {
+      const [r, g, b] = rgb.slice(0, 3).map((channel) => {
+        const s = channel / 255;
+        return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+      });
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const ratio = (a: number[], b: number[]) => {
+      const [lighter, darker] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+      return (lighter + 0.05) / (darker + 0.05);
+    };
+    const computed = getComputedStyle(element);
+    const background = parse(computed.backgroundColor);
+    const button = element.querySelector('.question-locate');
+    const buttonColor = button ? parse(getComputedStyle(button).color) : [];
+    return {
+      background: computed.backgroundColor,
+      backgroundLuminance: luminance(background),
+      textContrast: ratio(parse(computed.color), background),
+      buttonContrast: buttonColor.length ? ratio(buttonColor, background) : 0,
+    };
+  });
+  expect(styles.background, '问题提示还在用旧的深色硬编码背景').not.toBe('rgb(26, 24, 16)');
+  expect(styles.backgroundLuminance, '问题提示背景不是浅色').toBeGreaterThan(0.6);
+  expect(styles.textContrast, '问题提示正文对比度不足').toBeGreaterThanOrEqual(4.5);
+  expect(styles.buttonContrast, '“定位到画布”对比度不足').toBeGreaterThanOrEqual(4.5);
 
   // 重复进入(刷新)不重复一级节点。
   await page.reload();

@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Background,
   BaseEdge,
-  Controls,
   Handle,
   MarkerType,
   MiniMap,
@@ -27,7 +26,6 @@ import {
   Crosshair,
   FileText,
   Flag,
-  Focus,
   FolderOpen,
   GitBranch,
   MoreHorizontal,
@@ -850,6 +848,17 @@ function Canvas() {
   // 后端全是好的,接口也返回了 200,没有任何东西会报错。
   const direct = Object.values(growth.nodes).filter((node) => node.parentId === spaceId);
   const isRootSpace = spaceId === growth.goalId;
+  /**
+   * 画布上**到底有没有可见内容**。
+   *
+   * 它**不等于**"这一层有没有业务子节点"。问题地图(reasoning)与问题节点(question)
+   * 也是画布内容 —— 只看 `direct.length` 的话,一个刚由目标推理拉起整张地图、但还没有
+   * 任何计划子节点的空间会错误地显示“这里，还可以长出更多可能”,而画布上明明已经有
+   * 内容。三者都不存在时才显示空态;一旦地图存在,空态**完全不渲染**,不占画布位置。
+   */
+  const visibleQuestions = questions.filter((item) => item.status !== 'archived').length;
+  const canvasHasContent =
+    direct.length > 0 || (reasoning?.nodes.length ?? 0) > 0 || visibleQuestions > 0;
   // 对话框标题用。真实空间的根节点标题可能是空的(建空间时用户只填了空间名),
   // 那时退回空间名 —— 对话框上写着「在「」中新建节点」是一句废话。
   const spaceTitle = growth.nodes[spaceId]?.title || growth.title;
@@ -1868,7 +1877,6 @@ function Canvas() {
           pannable
           zoomable
         />
-        <Controls position="bottom-right" showInteractive={false} />
       </ReactFlow>
       </QuestionInteractionContext.Provider>
       {openReasoningNode && (
@@ -1897,7 +1905,7 @@ function Canvas() {
           {refining ? '正在细化…' : '细化第一阶段'}
         </button>
       )}
-      {direct.length === 0 && (
+      {!canvasHasContent && (
         <div className="empty-space-note">
           <span>这里，还可以长出更多可能。</span>
           <button onClick={() => { setPlanError(null); patchDraft({ dialog: 'node' }); }}>
@@ -1916,16 +1924,6 @@ function Canvas() {
       {paneMenu && (
         <ContextMenu state={paneMenu} onClose={() => setPaneMenu(null)} boundary={canvasRef.current} />
       )}
-      <button
-        className="focus-button"
-        disabled={!selectedId || !nodes.some((node) => node.id === selectedId)}
-        onClick={() => {
-          if (selectedId) void fitView({ nodes: [{ id: selectedId }], duration: 220, maxZoom: 1.2, padding: 0.8 });
-        }}
-      >
-        <Focus size={15} />
-        聚焦所选
-      </button>
       {dialog === 'node' && (
         <Dialog
           title={isRootSpace ? `在「${spaceTitle}」中新建节点` : `为「${spaceTitle}」添加树叶`}

@@ -105,7 +105,7 @@ function QuestionStatusHint({
   const processing = question.status === 'answered' || question.status === 'investigating';
   return (
     <div
-      className="question-hint"
+      className={`question-hint${processing ? ' is-processing' : ''}`}
       role="status"
       aria-label={`画布上有一个${processing ? '正在处理' : '待澄清'}的问题`}
     >

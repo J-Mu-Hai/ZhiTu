@@ -256,9 +256,6 @@
   .path-canvas .space-floating-tools { top:auto; left:auto; right:8px; bottom:61px; }
   /* 弹层向上开、贴右边缘:它挂在「更多」那个 `details` 上,而 `details` 现在靠画布右边缘。 */
   .canvas-tools-popover,.canvas-help>p { top:auto; bottom:100%; left:auto; right:0; margin:0 0 10px; }
-  /* 「聚焦所选」放到小地图上方(小地图顶边离下沿 101px + 呼吸 8)。放右下角会和缩放
-     按钮、工具条三层叠在一起,放底部中间则会被时间线的底部检查器压住。 */
-  .open-workbench .focus-button { top:auto; left:8px; right:auto; bottom:109px; }
   /* AI 面板:从底部升起的抽屉,留出顶部 15% 让画布看得见(844 上约 127px,足够到
      `--float-clear` 那一条浮动组件)。宽度铺满:窄屏上"贴在右边的卡片"没有意义,
      它要么占满一行,要么不出现。

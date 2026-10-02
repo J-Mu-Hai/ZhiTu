@@ -174,10 +174,17 @@ test('平移并缩放之后双击，节点落在指针那一格，刷新后还�
   // **先把视口弄乱。** 不平移不缩放的话,"位置准"这件事在 zoom=1、pan=初始 的
   // 特例下自动成立 —— 而 §9.1.1 要的正是"缩放平移后位置仍准确"。
   await panAway(page);
-  await page.locator('.react-flow__controls-zoomout').click();
-  await page.locator('.react-flow__controls-zoomout').click();
+  // 右下角的缩放控件已经移除 —— 用**滚轮**把视口缩小(用户手势,而不是被删的按钮)。
+  const pane = await page.locator('.react-flow__pane').boundingBox();
+  if (!pane) throw new Error('画布没渲染出来,缩放不了');
+  await page.mouse.move(pane.x + pane.width / 2, pane.y + pane.height / 2);
+  await page.mouse.wheel(0, 320);
+  await page.mouse.wheel(0, 320);
   const viewport = await viewportAt(page);
   expect(viewport.zoom, '没缩上 —— 这条测试的前提没成立').toBeLessThan(0.95);
+  // 这两个可见控件已经删除,画布上不该再有它们的任何痕迹。
+  await expect(page.locator('.react-flow__controls')).toHaveCount(0);
+  await expect(page.locator('.focus-button')).toHaveCount(0);
 
   let scope = root.id;
   for (const depth of [1, 2]) {
