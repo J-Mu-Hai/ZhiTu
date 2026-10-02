@@ -174,6 +174,35 @@ async def _next_seq(db, conversation_id: uuid.UUID) -> int:
     return int(current or 0) + 1
 
 
+async def _append_message_with_retry(db, conversation, build) -> Message:
+    """给一条助手消息分配 seq 并落库,**撞 seq 时重试**。
+
+    ## 为什么需要重试
+
+    同一段对话**可能有多个写入者**:用户发消息/回答问题(`submit_turn`)、复盘与目标
+    推理的追加回复(`append_reply`)。它们各自算 seq,而 `(conversation_id, seq)` 是唯一
+    约束 —— 撞上时 SQLite 抛 `IntegrityError`,未处理的异常在跨域请求里会丢掉 CORS 头,
+    浏览器把它读成“连不上后端服务”,而真正的原因是一次 seq 冲突。
+
+    这里用 savepoint **只回滚这一条插入**,重算 seq 再试;调用方在此前写下的其它东西
+    (推理状态、工具记录、地图节点)不受影响。
+    """
+    last_error: IntegrityError | None = None
+    for _ in range(_SEQ_RETRIES):
+        seq = await _next_seq(db, conversation.id)
+        try:
+            async with db.begin_nested():
+                message = build(seq)
+                db.add(message)
+                await db.flush()
+        except IntegrityError as exc:
+            last_error = exc
+            continue
+        conversation.last_message_at = message.created_at
+        return message
+    raise last_error  # type: ignore[misc]
+
+
 async def _find_user_message(
     db, conversation_id: uuid.UUID, client_message_id: str | None
 ) -> Message | None:
@@ -560,28 +589,30 @@ async def _insert_assistant_message(
     research: dict | None = None,
 ) -> Message:
     """事务 ②:落助手消息。**降级信息一并落库**,详见 models/conversation.py 的注释。"""
-    message = Message(
-        conversation_id=conversation.id,
-        workspace_id=ctx.id,
-        user_id=ctx.owner_id,
-        role=MessageRole.ASSISTANT,
-        content=result.reply,
-        seq=user_message.seq + 1,
-        context_node_id=user_message.context_node_id,
-        model_source=result.source,
-        degraded=result.degraded,
-        degraded_reason=result.degraded_reason,
-        prompt_version=result.prompt_version or None,
-        model_name=result.model_name,
-        latency_ms=result.latency_ms,
-        usage=result.usage,
-        research=research,
-        created_at=utcnow(),
-    )
-    db.add(message)
-    conversation.last_message_at = message.created_at
-    await db.flush()
-    return message
+
+    def build(seq: int) -> Message:
+        return Message(
+            conversation_id=conversation.id,
+            workspace_id=ctx.id,
+            user_id=ctx.owner_id,
+            role=MessageRole.ASSISTANT,
+            content=result.reply,
+            # **不写死 `user_message.seq + 1`**:并发写入者可能已经占用了那个号。
+            # `_append_message_with_retry` 会重算真正的下一个号并重试冲突。
+            seq=seq,
+            context_node_id=user_message.context_node_id,
+            model_source=result.source,
+            degraded=result.degraded,
+            degraded_reason=result.degraded_reason,
+            prompt_version=result.prompt_version or None,
+            model_name=result.model_name,
+            latency_ms=result.latency_ms,
+            usage=result.usage,
+            research=research,
+            created_at=utcnow(),
+        )
+
+    return await _append_message_with_retry(db, conversation, build)
 
 
 async def append_reply(
@@ -604,27 +635,27 @@ async def append_reply(
     复盘那条路径上模型的回复**必须留下来**:它解释了为什么建议这么调整,而用户点开
     提案卡片看到的"理由"应该是它当时真的说过的那一句。
     """
-    message = Message(
-        conversation_id=conversation.id,
-        workspace_id=ctx.id,
-        user_id=ctx.owner_id,
-        role=MessageRole.ASSISTANT,
-        content=result.reply,
-        seq=await _next_seq(db, conversation.id),
-        model_source=result.source,
-        degraded=result.degraded,
-        degraded_reason=result.degraded_reason,
-        prompt_version=result.prompt_version or None,
-        model_name=result.model_name,
-        latency_ms=result.latency_ms,
-        usage=result.usage,
-        proposal_id=proposal_id,
-        created_at=utcnow(),
-    )
-    db.add(message)
-    conversation.last_message_at = message.created_at
-    await db.flush()
-    return message
+
+    def build(seq: int) -> Message:
+        return Message(
+            conversation_id=conversation.id,
+            workspace_id=ctx.id,
+            user_id=ctx.owner_id,
+            role=MessageRole.ASSISTANT,
+            content=result.reply,
+            seq=seq,
+            model_source=result.source,
+            degraded=result.degraded,
+            degraded_reason=result.degraded_reason,
+            prompt_version=result.prompt_version or None,
+            model_name=result.model_name,
+            latency_ms=result.latency_ms,
+            usage=result.usage,
+            proposal_id=proposal_id,
+            created_at=utcnow(),
+        )
+
+    return await _append_message_with_retry(db, conversation, build)
 
 
 def _result_from_stored(message: Message) -> ReasoningResult:

@@ -29,7 +29,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 from hashlib import blake2b
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.agent.runtime.base import ReasoningMapDraft, ReasoningResult, TurnContext
@@ -151,14 +151,21 @@ async def root_plan_node(db: AsyncSession, ctx: WorkspaceContext) -> PlanNode | 
 async def input_version(
     db: AsyncSession, ctx: WorkspaceContext, root: PlanNode
 ) -> str:
-    """把"会影响地图的输入"压成一个稳定摘要。**幂等比较只用它,不用时间。**"""
+    """把"会影响地图的输入"压成一个稳定摘要。**幂等比较只用它,不用时间。**
+
+    ## 只认根目标与简报,**不认整个空间的计划版本**
+
+    最初的版本把 `current_revision_version` 和活节点数也算进来了。后果是**每一次计划
+    写入**(用户确认提案、AI 建一个节点)都会让 `input_version` 变化,于下一次进入时
+    重新跑一整轮模型 —— 既贵,又与用户的对话轮次抢同一个会话的写入,直接造成
+    `messages.seq` 唯一约束冲突。
+
+    “根目标内容/版本显著变化才重新探索”里的“根目标”就是字面意思:把根目标的
+    正文版本、标题与已确认简报算进来就够了。改一个子节点、确认一份提案,不该让整张
+    地图重来。
+    """
     brief_version = await db.scalar(
         select(PlanningBrief.version).where(PlanningBrief.workspace_id == ctx.id)
-    )
-    live_nodes = await db.scalar(
-        select(func.count())
-        .select_from(PlanNode)
-        .where(PlanNode.workspace_id == ctx.id, PlanNode.deleted_at.is_(None))
     )
     parts = "|".join(
         [
@@ -166,8 +173,6 @@ async def input_version(
             str(root.content_version),
             (root.title or "").strip(),
             str(brief_version or 0),
-            str(int(live_nodes or 0)),
-            str(ctx.workspace.current_revision_version),
         ]
     )
     return blake2b(parts.encode(), digest_size=16).hexdigest()

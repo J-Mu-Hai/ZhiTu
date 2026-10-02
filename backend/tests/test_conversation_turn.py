@@ -358,3 +358,37 @@ async def test_an_invalid_date_claim_is_dropped_not_stored(
         }
     )
     assert [c.field for c in claims] == ["goal"]
+
+
+async def test_assistant_message_seq_collision_is_retried(
+    app_client: httpx.AsyncClient, make_account, use_reasoner, db, monkeypatch
+) -> None:
+    """并发写入者占用同一个 seq 时,助手消息必须重算 seq,而不是抛出 500。
+
+    这是阶段 7 引入并发写入(用户回合 + 目标推理追加回复)之后暴露的:未处理的
+    `IntegrityError` 在跨域请求里会丢掉 CORS 头,浏览器把它读成“连不上后端服务”,
+    而真正的原因只是一次 `(conversation_id, seq)` 唯一约束冲突。
+    """
+    account = await make_account()
+    use_reasoner(FakeReasoner(reply="好的。"))
+
+    from backend.services import conversation_service
+
+    real_next_seq = conversation_service._next_seq
+    state = {"n": 0}
+
+    async def flaky(db, conversation_id):
+        state["n"] += 1
+        if state["n"] == 2:
+            # 第二次调用是助手消息:故意返回一个已经被用户消息占用的号。
+            return 1
+        return await real_next_seq(db, conversation_id)
+
+    monkeypatch.setattr(conversation_service, "_next_seq", flaky)
+
+    response = await _send(app_client, account, "你好")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["userMessage"]["seq"] == 1
+    assert body["assistantMessage"]["seq"] == 2
+    assert await _count(db, Message) == 2
