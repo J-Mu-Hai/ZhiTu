@@ -257,6 +257,128 @@ async def test_user_edit_is_preserved_across_agent_turns(
     assert node["userDescription"] == "这是我自己写的原文", "Agent 覆盖了用户原文"
 
 
+def _route_draft(route_title: str) -> ReasoningMapDraft:
+    base = _map_draft(primary=4)
+    route = ReasoningMapNodeDraft(
+        handle="r5",
+        title=route_title,
+        node_type="route",
+        summary="先形成可用能力,用小项目暴露缺口",
+        importance=5,
+        uncertainty=1,
+        urgency=1,
+        impact=5,
+        rationale="它收益最大、成本可控",
+    )
+    return ReasoningMapDraft(
+        nodes=(*base.nodes, route),
+        focus_handle="r5",
+        focus_reason="这是收敛出的路线",
+        phase="strategic_convergence",
+        turn_action="confirm",
+    )
+
+
+async def _plan(client: httpx.AsyncClient, account) -> dict:
+    response = await client.get(
+        f"/api/workspaces/{account.workspace_id}/plan", headers=account.headers
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+async def test_answering_a_question_advances_the_map(
+    app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
+) -> None:
+    account = await make_account()
+    reasoner = MapReasoner(
+        drafts=(_map_draft(primary=4),),
+        questions=(
+            QuestionDraft(
+                question="你主要用它做什么?",
+                why_now="它决定路线",
+                response_mode="free_text",
+                allow_custom_input=True,
+            ),
+        ),
+    )
+    use_reasoner(reasoner)
+    body = await _enter(app_client, account)
+    question = body["question"]
+    assert question is not None and question["reasoningNodeId"]
+    handle = next(
+        node["handle"] for node in body["reasoning"]["nodes"] if node["id"] == question["reasoningNodeId"]
+    )
+
+    answered = await app_client.post(
+        f"/api/workspaces/{account.workspace_id}/questions/{question['id']}/answer",
+        json={"selectedOptionIds": [], "clientAnswerId": "answer-key-1", "customInput": "主要用来做数据分析"},
+        headers=account.headers,
+    )
+    assert answered.status_code == 200, answered.text
+
+    turn = await app_client.post(
+        f"/api/workspaces/{account.workspace_id}/agent/turn",
+        json={
+            "trigger": "question_answered",
+            "reasoningHandle": handle,
+            "message": "主要用来做数据分析",
+            "idempotencyKey": "qa-1",
+        },
+        headers=account.headers,
+    )
+    assert turn.status_code == 200, turn.text
+    view = turn.json()["reasoning"]
+    node = next(item for item in view["nodes"] if item["handle"] == handle)
+    assert node["status"] == "resolved", "回答之后地图节点状态必须真实推进"
+
+
+async def test_strategy_confirmation_goes_through_pending_proposal(
+    app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
+) -> None:
+    account = await make_account()
+    reasoner = MapReasoner(drafts=(_route_draft("战略:先英语"),))
+    use_reasoner(reasoner)
+    await _enter(app_client, account)
+
+    body = await app_client.post(
+        f"/api/workspaces/{account.workspace_id}/agent/turn",
+        json={"trigger": "strategy_confirmation", "reasoningHandle": "r5", "idempotencyKey": "strategy-1"},
+        headers=account.headers,
+    )
+    assert body.status_code == 200, body.text
+    view = body.json()["reasoning"]
+    assert view["phase"] == "awaiting_strategy_confirmation"
+    assert view["strategyProposalId"], body.json().get("proposalErrors")
+
+    # **未确认前没有业务战略节点。**
+    plan = await _plan(app_client, account)
+    assert len(plan["nodes"]) == 1, "未确认前不该写入任何业务计划节点"
+    assert not any(node["title"] == "战略:先英语" for node in plan["nodes"])
+
+    confirm = await app_client.post(
+        f"/api/workspaces/{account.workspace_id}/proposals/{view['strategyProposalId']}/confirm",
+        json={"idempotencyKey": "confirm-strategy"},
+        headers=account.headers,
+    )
+    assert confirm.status_code == 200, confirm.text
+
+    # 确认之后再跑一次:回写关联,进入执行规划。
+    after = await app_client.post(
+        f"/api/workspaces/{account.workspace_id}/agent/turn",
+        json={"trigger": "strategy_confirmation", "idempotencyKey": "strategy-2"},
+        headers=account.headers,
+    )
+    assert after.status_code == 200, after.text
+    final = after.json()["reasoning"]
+    assert final["phase"] == "execution_planning"
+    route = next(node for node in final["nodes"] if node["handle"] == "r5")
+    assert route["linkedPlanNodeId"] is not None, "确认之后路线必须关联到真实战略节点"
+
+    plan_after = await _plan(app_client, account)
+    assert any(node["title"] == "战略:先英语" for node in plan_after["nodes"])
+
+
 def test_scripted_reasoner_accepts_reasoning_map_fixture() -> None:
     turns = parse_script(
         '{"turns":[{"reply":"x","reasoningMap":{"focus":"r1","nodes":['

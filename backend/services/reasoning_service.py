@@ -46,11 +46,13 @@ from backend.db.models import (
     GoalReasoningSession,
     PlanningBrief,
     PlanNode,
+    Proposal,
     ReasoningNode,
     ReasoningNodeLink,
 )
 from backend.db.models.enums import (
     ACTIVE_QUESTION_STATUSES,
+    ProposalStatus,
     ReasoningLinkType,
     ReasoningNodeStatus,
     ReasoningNodeType,
@@ -58,8 +60,9 @@ from backend.db.models.enums import (
     ReasoningSessionStatus,
     ReasoningSource,
     ReasoningTurnAction,
+    RevisionTrigger,
 )
-from backend.services import conversation_service, question_service, turn_context
+from backend.services import conversation_service, proposal_service, question_service, turn_context
 from backend.services.context import WorkspaceContext
 from backend.services.errors import InvalidInput, NodeNotFound
 
@@ -544,6 +547,7 @@ async def _response(
     result: ReasoningResult | None = None,
     replayed: bool = False,
     changed: bool = False,
+    proposal_errors=(),
 ) -> AgentTurnResponse:
     if question is None:
         question = await _primary_pending_question(db, ctx)
@@ -553,6 +557,7 @@ async def _response(
         question=question_service.to_view(question) if question is not None else None,
         replayed=replayed,
         changed=changed,
+        proposal_errors=list(proposal_errors),
         degraded=bool(result.degraded) if result else False,
         degraded_reason=(
             result.degraded_reason.value
@@ -715,6 +720,255 @@ async def run_space_entered(
     )
 
 
+async def _advance_after_answer(
+    db: AsyncSession,
+    ctx: WorkspaceContext,
+    session: GoalReasoningSession,
+    payload: AgentTurnRequest,
+) -> str:
+    """回答之后**确定性**地推进一步:标记节点已澄清、选新焦点。
+
+    返回一句给模型看的触发说明(含用户答案原文)。这一步不依赖模型 —— 即使模型
+    这一轮失败,地图上的状态与焦点也已经真实推进。
+    """
+    node: ReasoningNode | None = None
+    if payload.reasoning_handle:
+        node = await db.scalar(
+            select(ReasoningNode).where(
+                ReasoningNode.session_id == session.id,
+                ReasoningNode.handle == payload.reasoning_handle,
+            )
+        )
+    if node is None:
+        question = await db.scalar(
+            select(AgentQuestion)
+            .where(
+                AgentQuestion.workspace_id == ctx.id,
+                AgentQuestion.reasoning_node_id.is_not(None),
+            )
+            .order_by(AgentQuestion.created_at.desc())
+            .limit(1)
+        )
+        if question is not None and question.reasoning_node_id is not None:
+            node = await db.scalar(
+                select(ReasoningNode).where(ReasoningNode.id == question.reasoning_node_id)
+            )
+    answer_text = (payload.message or "").strip()[:500]
+    if node is not None:
+        node.status = ReasoningNodeStatus.RESOLVED
+        node.version += 1
+        if answer_text:
+            # 用户答案作为**依据**记录下来,但不假装成用户的原文。
+            evidence = list(node.evidence or [])
+            evidence.append(f"用户回答:{answer_text}")
+            node.evidence = evidence[-12:]
+    focus = await _pick_focus(db, session.id, ReasoningMapDraft())
+    if focus is not None:
+        session.focus_reasoning_node_id = focus.id
+        session.focus_reason = "回答已记录,它成为下一个最值得处理的维度。"
+    suffix = f"用户回答:{answer_text}" if answer_text else "(没有附带文本答案)"
+    return f"用户回答了上一轮的问题。{suffix}。请据此更新相关节点的状态与摘要,并选择新焦点。"
+
+
+async def _run_incremental(
+    db: AsyncSession,
+    ctx: WorkspaceContext,
+    reasoner,
+    *,
+    payload: AgentTurnRequest,
+    trigger_message: str,
+) -> AgentTurnResponse:
+    """回答/选中/讨论后的增量重评。**地图只增量更新,不重头建。**"""
+    root = await root_plan_node(db, ctx)
+    session = await get_session(db, ctx)
+    if root is None or session is None:
+        raise InvalidInput("这个空间还没有开始目标推理,请先进入空间触发一次探索。")
+    now = utcnow()
+    if session.status == ReasoningSessionStatus.RUNNING and not _running_is_stale(session, now):
+        return await _response(db, ctx, session, replayed=True)
+
+    if payload.trigger == "question_answered":
+        trigger_message = await _advance_after_answer(db, ctx, session, payload)
+
+    session.status = ReasoningSessionStatus.RUNNING
+    await db.commit()
+
+    turn = await _build_reasoning_context(
+        db, ctx, root, session, trigger_message=trigger_message
+    )
+    result = await reasoner.reason(turn)
+
+    changed = False
+    if not result.degraded and result.reasoning_map is not None:
+        existing_rows = await _load_nodes(db, session.id)
+        existing = {row.handle: row for row in existing_rows}
+        handle_of_id = {row.id: row.handle for row in existing_rows}
+        try:
+            _validate_draft(result.reasoning_map, existing=existing, handle_of_id=handle_of_id)
+        except MapValidationError as exc:
+            session.status = ReasoningSessionStatus.READY
+            session.last_error = str(exc)
+            await db.commit()
+            return await _response(db, ctx, session, result=result)
+        _apply_draft(db, session, result.reasoning_map, existing)
+        await _resolve_parents(db, session.id)
+        await _apply_links(db, session.id, result.reasoning_map)
+        focus = await _pick_focus(db, session.id, result.reasoning_map)
+        if focus is not None:
+            session.focus_reasoning_node_id = focus.id
+            if result.reasoning_map.focus_reason:
+                session.focus_reason = result.reasoning_map.focus_reason
+        if result.reasoning_map.phase:
+            session.phase = ReasoningSessionPhase(result.reasoning_map.phase)
+        if result.reasoning_map.turn_action:
+            session.turn_action = ReasoningTurnAction(result.reasoning_map.turn_action)
+        session.map_version += 1
+        changed = True
+
+    # 助手说明:增量轮次也说话,但每一轮只讲变化与焦点。
+    conversation = await conversation_service.get_or_create_primary_conversation(db, ctx)
+    message = await conversation_service.append_reply(
+        db, ctx, conversation=conversation, result=result
+    )
+    focus_node = None
+    if session.focus_reasoning_node_id is not None:
+        focus_node = await db.scalar(
+            select(ReasoningNode).where(ReasoningNode.id == session.focus_reasoning_node_id)
+        )
+    strategy_phase = session.phase in (
+        ReasoningSessionPhase.STRATEGIC_EXPLORATION,
+        ReasoningSessionPhase.STRATEGIC_CONVERGENCE,
+    )
+    created_questions = await question_service.create_from_drafts(
+        db,
+        ctx,
+        result.questions[:MAX_QUESTIONS_PER_TURN],
+        source_message_id=message.id,
+        source_node_id=root.id,
+        reasoning_node_id=focus_node.id if focus_node is not None else None,
+        strategy_phase=strategy_phase,
+    )
+    session.status = ReasoningSessionStatus.READY
+    session.last_evaluated_at = now
+    await db.commit()
+    return await _response(
+        db,
+        ctx,
+        session,
+        message=message,
+        question=created_questions[0] if created_questions else None,
+        result=result,
+        changed=changed,
+    )
+
+
+async def _link_strategy_nodes(
+    db: AsyncSession, ctx: WorkspaceContext, session: GoalReasoningSession
+) -> None:
+    """策略提案被确认后,把路线节点关联到真实的战略计划节点。"""
+    strategy_nodes = list(
+        (
+            await db.execute(
+                select(PlanNode).where(
+                    PlanNode.workspace_id == ctx.id,
+                    PlanNode.planning_level == "strategy",
+                    PlanNode.deleted_at.is_(None),
+                )
+            )
+        ).scalars()
+    )
+    if not strategy_nodes:
+        return
+    for route in await _load_nodes(db, session.id):
+        if route.node_type is not ReasoningNodeType.ROUTE or route.linked_plan_node_id:
+            continue
+        match = next((node for node in strategy_nodes if node.title == route.title), None)
+        if match is not None:
+            route.linked_plan_node_id = match.id
+
+
+async def _confirm_strategy(
+    db: AsyncSession, ctx: WorkspaceContext, *, payload: AgentTurnRequest
+) -> AgentTurnResponse:
+    """战略确认:产出待确认提案;提案被确认后再回写关联并进入执行规划。"""
+    root = await root_plan_node(db, ctx)
+    session = await get_session(db, ctx)
+    if root is None or session is None:
+        raise InvalidInput("这个空间还没有开始目标推理。")
+
+    # 已经有一份战略提案且用户确认过了 -> 回写关联,进入执行规划阶段。
+    if session.strategy_proposal_id is not None:
+        proposal = await db.scalar(
+            select(Proposal).where(Proposal.id == session.strategy_proposal_id)
+        )
+        if proposal is not None and proposal.status is ProposalStatus.APPLIED:
+            await _link_strategy_nodes(db, ctx, session)
+            session.phase = ReasoningSessionPhase.EXECUTION_PLANNING
+            session.turn_action = ReasoningTurnAction.CONFIRM
+            session.last_evaluated_at = utcnow()
+            await db.commit()
+            return await _response(db, ctx, session, changed=True)
+
+    # 选一条路线(用户点的,或优先级最高的一条 route 节点)。
+    route: ReasoningNode | None = None
+    if payload.reasoning_handle:
+        route = await db.scalar(
+            select(ReasoningNode).where(
+                ReasoningNode.session_id == session.id,
+                ReasoningNode.handle == payload.reasoning_handle,
+            )
+        )
+    if route is None or route.node_type is not ReasoningNodeType.ROUTE:
+        routes = [
+            node for node in await _load_nodes(db, session.id)
+            if node.node_type is ReasoningNodeType.ROUTE
+        ]
+        route = routes[0] if routes else None
+    if route is None:
+        raise InvalidInput("问题地图里还没有可确认的战略路线。")
+
+    conversation = await conversation_service.get_or_create_primary_conversation(db, ctx)
+    turn = await turn_context.build_turn_context(
+        db,
+        ctx,
+        conversation_id=conversation.id,
+        user_message="确认战略",
+        scope_root_id=root.id,
+    )
+    root_handle = next(
+        (handle for handle, node_id in turn.node_handles if node_id == str(root.id)), None
+    )
+    if root_handle is None:  # pragma: no cover - 根目标一定在记号表里
+        raise InvalidInput("找不到根目标的记号。")
+    action = {
+        "op": "create_node",
+        "localId": "n9",
+        "parentRef": root_handle,
+        "title": route.title,
+        "nodeType": "goal",
+        "planningLevel": "strategy",
+        "description": route.summary or route.rationale or "",
+    }
+    outcome = await proposal_service.build_from_actions(
+        db,
+        ctx,
+        conversation_id=conversation.id,
+        actions=(action,),
+        handles=turn.node_handles,
+        reasoning="由目标推理地图收敛得到的战略草案。",
+        assistant_message=None,
+        trigger_type=RevisionTrigger.MANUAL_REPLAN,
+        writable_handles=turn.writable_handles,
+    )
+    if outcome.proposal is not None:
+        session.strategy_proposal_id = outcome.proposal.id
+    session.phase = ReasoningSessionPhase.AWAITING_STRATEGY_CONFIRMATION
+    session.turn_action = ReasoningTurnAction.CONFIRM
+    session.last_evaluated_at = utcnow()
+    await db.commit()
+    return await _response(db, ctx, session, changed=True, proposal_errors=outcome.errors)
+
+
 async def run_turn(
     db: AsyncSession,
     ctx: WorkspaceContext,
@@ -727,11 +981,18 @@ async def run_turn(
         return await run_space_entered(
             db, ctx, reasoner, payload=payload, force=payload.trigger == "retry"
         )
-    # 回答后重评 / 战略收敛由步骤 4 接入;在那之前如实返回当前地图,不假装做了事。
-    session = await get_session(db, ctx)
-    if session is None:
-        raise InvalidInput("这个空间还没有开始目标推理,请先进入空间触发一次探索。")
-    return await _response(db, ctx, session, replayed=True)
+    if payload.trigger == "strategy_confirmation":
+        return await _confirm_strategy(db, ctx, payload=payload)
+
+    trigger_message = {
+        "node_selected": f"用户点了地图节点 {payload.reasoning_handle or '?'}。请重新评估它,必要时更新状态并选新的焦点。",
+        "user_message": payload.message or "用户发来一句话,请据此更新问题地图。",
+        "progress_update": "用户报告了执行进展,请按影响范围局部重评地图。",
+        "question_answered": "用户回答了上一轮的问题。请据此更新相关节点的状态与摘要,并选择新焦点。",
+    }.get(payload.trigger, payload.message or "请更新问题地图。")
+    return await _run_incremental(
+        db, ctx, reasoner, payload=payload, trigger_message=trigger_message
+    )
 
 
 async def update_node(

@@ -510,6 +510,7 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
         });
         setReasoning(response.reasoning);
         if (response.message) setMessages((old) => [...old, toMessage(response.message as backend.MessageView)]);
+        if (response.proposalErrors.length) setProposalErrors(response.proposalErrors);
         await refreshQuestions().catch(() => undefined);
         await refreshProposals().catch(() => undefined);
         return response;
@@ -1424,6 +1425,10 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     try {
       await backend.confirmProposal(space.id, proposalId, keyFor(proposalId));
       await Promise.all([refreshPlan(), refreshProposals()]);
+      // 如果被确认的是推理地图收敛出的战略草案,让地图把关联写回并进入执行规划。
+      if (reasoning?.strategyProposalId === proposalId) {
+        void agentTurn({ trigger: 'strategy_confirmation' });
+      }
       return true;
     } catch (cause) {
       // 失败的原因必须原样告诉用户:**计划在提案生成后被人改过**(409
@@ -1627,6 +1632,19 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
       }
       // 后续模型可能又提了新问题;列表以服务端为准。
       await refreshQuestions();
+      // 如果问题挂在地图节点上,让推理地图也跟着增量重评(状态、摘要、焦点)。
+      const reasoningNodeId = result.question.reasoningNodeId;
+      const handle = reasoningNodeId
+        ? reasoning?.nodes.find(node => node.id === reasoningNodeId)?.handle
+        : undefined;
+      if (handle) {
+        const answerText = payload.customInput?.trim() || payload.selectedOptionIds.join('、');
+        void agentTurn({
+          trigger: 'question_answered',
+          reasoningHandle: handle,
+          message: answerText || undefined,
+        });
+      }
       return true;
     } catch (cause) {
       // 双击时第二下会撞上“已经回答过”。那不是错误,把它当成“状态已推进,

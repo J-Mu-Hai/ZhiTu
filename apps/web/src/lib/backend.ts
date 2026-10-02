@@ -1803,6 +1803,8 @@ export interface AgentTurnResponse {
   degradedReason: DegradedReason | null;
   retryable: boolean;
   changed: boolean;
+  /** 战略确认提案没通过校验时的逐条原因。 */
+  proposalErrors: { code: string; message: string; ordinal?: number }[];
 }
 
 export interface UpdateReasoningNodeRequest {

@@ -21,6 +21,7 @@ from pydantic import Field
 
 from backend.contracts.common import ApiModel
 from backend.contracts.conversation import MessageView
+from backend.contracts.proposal import ActionError
 from backend.contracts.question import QuestionView
 
 #: 显式 Agent turn 的触发来源。**闭集** —— 服务端按它选阶段与动作,前端不拼状态。
@@ -135,6 +136,8 @@ class AgentTurnResponse(ApiModel):
     retryable: bool = False
     #: 这一轮是否真的改动了地图。前端据此决定要不要重画。
     changed: bool = False
+    #: 战略确认提案没通过校验时的逐条原因。**必须显示出来。**
+    proposal_errors: list[ActionError] = Field(default_factory=list)
 
 
 __all__ = [
