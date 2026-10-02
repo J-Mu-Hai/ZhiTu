@@ -1,13 +1,20 @@
 /**
- * 战略层与分层规划的前端闭环。
+ * 阶段 8:路线优先的战略规划闭环。
  *
- * 验的是产品行为,不是模型的判断(脚本是测试脚手架,后端会记 `model_source=scripted`):
+ * 验的是产品行为(脚本是测试脚手架,后端会记 `model_source=scripted`):
  *
- * 1. 节点卡 / 提案卡显示 planningLevel 标签;战略提案展示优先项、暂缓项、依据与风险;
- * 2. 战略未确认时,界面不再有常驻的"先确认战略"提示条,也不显示 replan 入口 ——
- *    没有战略就没有调整依据;
- * 3. 确认战略 -> 刷新页面后层级状态保持;
- * 4. 确认战略后才允许下一层(周);有了执行计划层,replan 入口才出现。
+ * 1. 第一轮先给**推荐路线 + 3–5 个阶段**,每阶段有粗粒度时间与成果物;
+ * 2. 战略阶段不问执行细节(最多一个活动问题,且不问每周投入);
+ * 3. 确认战略前没有任何 PlanNode 执行写入;
+ * 4. 确认战略走既有 proposal → 校验 → 用户确认链路;
+ * 5. **用户明确点“细化第一阶段”之后**,才生成阶段/里程碑计划条目。
+ *
+ * ## 脚本游标:自动探索也吃一轮
+ *
+ * `space_entered`(进入目标时的自动探索)本身会调一次 reasoner,按空间占用脚本的
+ * **第一轮**。所以本 fixture 的第一轮就是路线图,第二轮留给“细化第一阶段”。
+ * 之前 strategy-layer 的旧 fixture 把第一轮当成用户消息轮,结果被自动探索吃掉,
+ * 第二轮“细化”拿到空脚本 —— 现在按这个顺序写死,不再靠运气。
  *
  * 没有脚本时整组 `skip`(与 `interview-loop.spec.ts` 同一条纪律)。
  */
@@ -26,94 +33,82 @@ const SCRIPTED = process.env.ZHITU_SCRIPTED_ACTIONS ?? '';
 test.beforeEach(async ({ request }) => {
   await assertBackendRunning(request);
   test.skip(
-    !SCRIPTED,
+    !SCRIPTED.includes('strategy-script'),
     '这一条要 --script=apps/web/tests/fixtures/strategy-script.json 才跑得起来',
   );
 });
 
-async function say(page: Page, text: string): Promise<void> {
-  const replies = page.locator('.message.assistant');
-  const before = await replies.count();
-  await page.getByLabel('给 AI 的消息').fill(text);
-  await page.getByLabel('发送消息').click();
-  await expect(replies, '这一轮没有回复 —— 后端可能没在 script 模式里').toHaveCount(before + 1, {
-    timeout: 20000,
-  });
-}
+const routeCard = (page: Page) => page.locator('.reasoning-node').filter({ hasText: '推荐路线' });
+const stageCards = (page: Page) => page.locator('.reasoning-node .rn-type').filter({ hasText: '阶段' });
+const questionCard = (page: Page) => page.locator('.canvas-question-node');
 
-test('战略先确认,再往下分层;层级标签可见且刷新保持', async ({ page }) => {
+test('路线优先:先给推荐路线与阶段,确认战略后才允许细化', async ({ page }) => {
   test.slow();
-  const { token } = await registerAccount(page, 'strategy');
-  const workspaceId = await createWorkspace(page, token, '战略验收空间', '提升英语和数学');
+  const { token } = await registerAccount(page, 'strategy-roadmap');
+  const workspaceId = await createWorkspace(
+    page,
+    token,
+    '战略路线空间',
+    '我想学习 Python 做数据分析，每周 150 分钟。',
+  );
   await page.goto(`/workbench?workspace=${workspaceId}`);
   await waitForRealPlan(page);
 
-  // 战略未确认:不再有常驻提示条,也不显示 replan 入口 —— 没有战略就没有调整
-  // 依据。两件事都用"不存在"表达,而不是一条系统诊断。
-  await expect(page.locator('.strategy-hint')).toHaveCount(0);
-  await expect(page.getByRole('button', { name: '按最近的执行情况调整计划' })).toHaveCount(0);
+  // ---- 1. 第一轮就是路线图:一条路线 + 4 个阶段 ----
+  await expect(routeCard(page), '没有出现推荐路线').toBeVisible({ timeout: 25000 });
+  await expect(stageCards(page), '阶段数量不对').toHaveCount(4);
+  // 每阶段有粗粒度时间带与成果物。
+  await expect(routeCard(page)).toContainText('约 12 周');
+  await expect(page.locator('.reasoning-node .rn-timeframe').first()).toContainText('周');
+  await expect(page.locator('.reasoning-node .rn-deliverable').first()).toContainText('成果');
+  // 路线/阶段不是业务计划任务。
+  const roadmapPlan = await getPlan(page, token, workspaceId);
+  expect(
+    roadmapPlan.nodes.some((node) => ['phase', 'week', 'day'].includes(node.planningLevel ?? '')),
+    '路线阶段不该被写进执行计划',
+  ).toBe(false);
 
-  // ---- 第一轮:战略提议 ----
-  await say(page, '帮我定个长期方向。');
-  const proposal = page.locator('.proposal').last();
+  // ---- 2. 战略阶段不问执行细节 ----
+  // 最多一个活动问题;而且不问“每周投入”(用户已经给了 150 分钟)。
+  await expect(questionCard(page), '战略阶段最多一个问题').toHaveCount(1);
+  await expect(questionCard(page)).not.toContainText('每周');
+
+  // ---- 3. 确认战略前没有任何执行写入 ----
+  const beforeConfirm = await getPlan(page, token, workspaceId);
+  expect(beforeConfirm.nodes.some((node) => node.planningLevel === 'strategy')).toBe(false);
+
+  // ---- 4. 确认战略:点路线 -> 确认这条战略 -> 提案 -> 确认写入 ----
+  await routeCard(page).click();
+  const detail = page.locator('.reasoning-detail');
+  await expect(detail).toBeVisible();
+  await detail.getByRole('button', { name: '确认这条战略' }).click();
+
+  const proposal = page.locator('.proposal').filter({ hasText: '推荐路线' }).first();
   await expect(proposal).toBeVisible({ timeout: 20000 });
-  await expect(proposal).toContainText('建立战略选择');
-  // 战略 proposal 卡要能读到优先项 / 暂缓项 / 依据 / 风险(模型写在 description 里)。
-  await expect(proposal).toContainText('优先');
-  await expect(proposal).toContainText('暂缓');
-  await expect(proposal).toContainText('依据');
-  await expect(proposal).toContainText('风险');
-
-  // 确认前:画布上没有战略节点。
-  const before = await getPlan(page, token, workspaceId);
-  expect(before.nodes.some(node => node.planningLevel === 'strategy')).toBe(false);
+  // 提案确认之前,战略节点仍未写入。
+  const stillBefore = await getPlan(page, token, workspaceId);
+  expect(stillBefore.nodes.some((node) => node.planningLevel === 'strategy')).toBe(false);
 
   await proposal.getByRole('button', { name: '确认，写入计划' }).click();
   await expect
     .poll(
-      async () => (await getPlan(page, token, workspaceId)).nodes.some(n => n.planningLevel === 'strategy'),
-      { message: '确认之后画布上还是没有战略节点', timeout: 15000 },
+      async () => (await getPlan(page, token, workspaceId)).nodes.some((node) => node.planningLevel === 'strategy'),
+      { message: '确认之后画布上还是没有战略节点', timeout: 20000 },
     )
     .toBe(true);
 
-  // 节点卡上出现"战略层"标签。
-  const strategyNode = page.locator('.react-flow__node').filter({ hasText: '战略:先英语' }).first();
-  await expect(strategyNode.locator('.node-level-strategy')).toContainText('战略层');
-  // 战略已确认,提示消失。**但仍然没有 replan 入口** —— 这时只有战略层,还没有可
-  // 调整的阶段/周/日执行计划。
-  await expect(page.locator('.strategy-hint')).toHaveCount(0);
-  await expect(page.getByRole('button', { name: '按最近的执行情况调整计划' })).toHaveCount(0);
+  // ---- 5. 只有用户明确点“细化第一阶段”之后,才生成阶段计划 ----
+  const refine = page.getByRole('button', { name: '细化第一阶段' });
+  await expect(refine, '战略确认后没有出现“细化第一阶段”').toBeVisible({ timeout: 20000 });
+  await refine.click();
 
-  // ---- 刷新:层级状态从后端恢复 ----
-  await page.reload();
-  await waitForRealPlan(page);
-  await expect(
-    page.locator('.react-flow__node').filter({ hasText: '战略:先英语' }).first().locator('.node-level-strategy'),
-  ).toContainText('战略层');
-
-  // ---- 确认战略之后,才允许下一层(周) ----
-  await say(page, '那这一周先做什么?');
-  const weekProposal = page.locator('.proposal').last();
-  await expect(weekProposal).toBeVisible({ timeout: 20000 });
-  await expect(weekProposal).toContainText('本周重点');
-  await weekProposal.getByRole('button', { name: '确认，写入计划' }).click();
+  const phaseProposal = page.locator('.proposal').filter({ hasText: '第一阶段' }).first();
+  await expect(phaseProposal, '细化之后没有生成阶段提案').toBeVisible({ timeout: 20000 });
+  await phaseProposal.getByRole('button', { name: '确认，写入计划' }).click();
   await expect
     .poll(
-      async () => (await getPlan(page, token, workspaceId)).nodes.some(n => n.planningLevel === 'week'),
-      { message: '确认之后还是没有周层级节点', timeout: 15000 },
+      async () => (await getPlan(page, token, workspaceId)).nodes.some((node) => node.planningLevel === 'phase'),
+      { message: '确认之后还是没有阶段层节点', timeout: 20000 },
     )
     .toBe(true);
-  // 周节点是战略的子节点,要进入战略这一层才看得见它的卡片。
-  await page
-    .locator('.react-flow__node')
-    .filter({ hasText: '战略:先英语' })
-    .first()
-    .getByLabel(/进入.*空间/)
-    .click();
-  await expect(
-    page.locator('.react-flow__node').filter({ hasText: '本周重点:精读两篇' }).first().locator('.node-level-week'),
-  ).toContainText('周重点');
-
-  // 有了执行计划层,replan 入口才出现。
-  await expect(page.getByRole('button', { name: '按最近的执行情况调整计划' })).toBeVisible();
 });

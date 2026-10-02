@@ -1,30 +1,107 @@
 {
   "turns": [
     {
-      "reply": "先定一个大方向，再谈这周做什么。",
-      "actions": [
+      "reply": "目标重述：12 周内能独立完成一次数据分折。推荐路线：先打通最小闭环，再补统计与可视化。",
+      "reasoningMap": {
+        "phase": "roadmap_draft",
+        "turnAction": "ask_user",
+        "focus": "r2",
+        "focusReason": "先跑通最小闭环还是先补统计基础，决定阶段顺序",
+        "nodes": [
+          {
+            "handle": "r1",
+            "title": "推荐路线：约 12 周从基础到可展示项目",
+            "nodeType": "route",
+            "parent": null,
+            "summary": "先最小闭环，再补统计与可视化；按每周 150 分钟约需 12 周。",
+            "status": "exploring",
+            "importance": 5,
+            "uncertainty": 2,
+            "urgency": 1,
+            "impact": 5,
+            "confidence": 3,
+            "rationale": "它决定阶段顺序与总时长",
+            "timeframe": "约 12 周",
+            "deliverable": "一个可展示的数据分析项目",
+            "passCriteria": "能独立完成一个端到端分析项目并讲清结论"
+          },
+          {
+            "handle": "r2",
+            "title": "阶段 1：Python 基础与工具环境",
+            "nodeType": "stage",
+            "parent": "r1",
+            "summary": "环境就绪，能独立写出可运行的小练习。",
+            "status": "exploring",
+            "timeframe": "约 2 周",
+            "deliverable": "一组可运行的小练习",
+            "passCriteria": "能独立读写文件、写函数与循环"
+          },
+          {
+            "handle": "r3",
+            "title": "阶段 2：数据处理核心",
+            "nodeType": "stage",
+            "parent": "r1",
+            "summary": "完成一个公开数据集的端到端分析。",
+            "status": "unexplored",
+            "timeframe": "约 3 周",
+            "deliverable": "一个公开数据集分析",
+            "passCriteria": "能独立完成读取—清洗—聚合全流程"
+          },
+          {
+            "handle": "r4",
+            "title": "阶段 3：可视化与统计表达",
+            "nodeType": "stage",
+            "parent": "r1",
+            "summary": "把分析结果讲成一份可解释的报告。",
+            "status": "unexplored",
+            "timeframe": "约 2 周",
+            "deliverable": "一份可解释的分析报告",
+            "passCriteria": "能解释图表与统计结论的取舍"
+          },
+          {
+            "handle": "r5",
+            "title": "阶段 4：作品项目",
+            "nodeType": "stage",
+            "parent": "r1",
+            "summary": "把整条链路的成果收成一个可展示项目。",
+            "status": "unexplored",
+            "timeframe": "约 3 周",
+            "deliverable": "一个可展示的项目",
+            "passCriteria": "能在 10 分钟内讲清项目与结论"
+          }
+        ],
+        "links": [
+          { "source": "r1", "target": "r2", "type": "influences", "note": "路线决定阶段顺序" },
+          { "source": "r2", "target": "r3", "type": "depends_on", "note": "基础之后才做数据处理" },
+          { "source": "r3", "target": "r4", "type": "depends_on", "note": "拿到数据结果再做可视化" },
+          { "source": "r4", "target": "r5", "type": "depends_on", "note": "表达清楚之后才做作品集" }
+        ]
+      },
+      "questions": [
         {
-          "op": "create_node",
-          "localId": "n2",
-          "parentRef": "n1",
-          "title": "战略:先英语",
-          "nodeType": "goal",
-          "planningLevel": "strategy",
-          "description": "优先:英语阅读。暂缓:数学建模。依据:目标需要阅读量。风险:时间可能不够。"
+          "question": "你更想先求能跑通的最小闭环，还是先补齐统计基础？",
+          "whyNow": "它决定阶段顺序",
+          "responseMode": "single_select",
+          "options": [
+            { "id": "minimal", "label": "先跑通最小闭环" },
+            { "id": "stats", "label": "先补统计基础" }
+          ],
+          "allowCustomInput": true
         }
       ]
     },
     {
-      "reply": "战略定了，这一周先精读两篇。",
+      "reply": "我把第一阶段拆成了一个阶段里程碑，你确认之后才会写进计划。",
       "actions": [
         {
           "op": "create_node",
           "localId": "n3",
           "parentRef": "n2",
-          "title": "本周重点:精读两篇",
-          "nodeType": "task",
-          "planningLevel": "week",
-          "estimateMinutes": 120
+          "title": "第一阶段：Python 基础与工具环境",
+          "nodeType": "stage",
+          "planningLevel": "phase",
+          "purpose": "planning",
+          "description": "先形成最小可用能力：能读写文件、写函数与循环。"
         }
       ]
     }

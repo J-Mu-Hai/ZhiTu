@@ -2003,7 +2003,7 @@ function Canvas() {
           )}
         </div>
       )}
-      {reasoning?.phase === 'execution_planning' && (
+      {(reasoning?.phase === 'strategy_confirmed' || reasoning?.phase === 'execution_planning' || reasoning?.phase === 'execution_refinement') && (
         <button
           className="reasoning-refine"
           type="button"

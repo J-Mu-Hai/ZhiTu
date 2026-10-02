@@ -43,6 +43,7 @@ const TYPE_LABEL: Record<string, string> = {
   risk: '风险',
   resource: '资源',
   route: '路线',
+  stage: '阶段',
   assumption: '假设',
 };
 
@@ -71,6 +72,10 @@ export function ReasoningNodeComponent({ data }: NodeProps<ReasoningFlowNode>) {
       </div>
       <strong className="rn-title">{node.title}</strong>
       {node.summary && <p className="rn-summary">{node.summary}</p>}
+      {/* 阶段 8:路线 / 阶段的粗粒度时间、成果物与通过标准。不是排期。 */}
+      {node.timeframe && <p className="rn-timeframe">约 {node.timeframe.replace(/^约\s*/, '')}</p>}
+      {node.deliverable && <p className="rn-deliverable">成果：{node.deliverable}</p>}
+      {node.passCriteria && <p className="rn-pass">通过标准：{node.passCriteria}</p>}
       {node.userDescription && (
         <p className="rn-user">
           <span className="rn-user-label">你写的</span>
