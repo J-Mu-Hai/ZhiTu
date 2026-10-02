@@ -395,3 +395,154 @@ async def test_only_one_real_research_per_turn_and_key_never_leaks(
     # 来源可追踪:成功那条记录里带 URL。
     ok_records = [r for r in records if r.status is ToolCallStatus.OK]
     assert ok_records and "example.edu.cn" in str(ok_records[0].result_summary)
+
+
+# ---------------------------------------------------------------------------------
+# 6B-1.1:新鲜 success 不被抢租约 / 配置安全 / 交错
+# ---------------------------------------------------------------------------------
+def test_insecure_lease_config_is_rejected() -> None:
+    from backend.services import research_service as rs
+
+    original_timeout = settings.research_timeout_seconds
+    original_lease = settings.research_lease_seconds
+    try:
+        settings.research_timeout_seconds = 10
+        settings.research_lease_seconds = 5
+        assert rs.lease_config_error() == "lease_not_greater_than_timeout"
+        settings.research_lease_seconds = 11
+        assert rs.lease_config_error() == "lease_buffer_too_small"
+        settings.research_lease_seconds = 12
+        assert rs.lease_config_error() is None
+    finally:
+        settings.research_timeout_seconds = original_timeout
+        settings.research_lease_seconds = original_lease
+
+
+async def test_insecure_lease_config_does_not_go_online(
+    db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _enable(monkeypatch, research_timeout_seconds=10, research_lease_seconds=5)
+    calls: list[str] = []
+    _mock_search(monkeypatch, [{"title": "t", "url": "https://a.test", "content": "c"}], calls)
+    outcome = await research_service.search(db, "配置不安全")
+    assert outcome.configured is False
+    assert outcome.reason == "RESEARCH_LEASE_INVALID"
+    assert calls == []
+
+
+async def test_fresh_success_cannot_be_stolen_by_lease(
+    db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _enable(monkeypatch)
+    key = research_service.cache_key_for("tavily", research_service.normalize_query("新鲜缓存"))
+    async with SessionLocal() as session:
+        session.add(
+            ResearchCache(
+                cache_key=key,
+                provider="tavily",
+                query="新鲜缓存",
+                status=ResearchCacheStatus.SUCCESS,
+                sources=[{"title": "t", "url": "https://a.test", "excerpt": "e", "accessedAt": "now"}],
+                expires_at=utcnow() + timedelta(hours=1),
+            )
+        )
+        await session.commit()
+
+    async with SessionLocal() as session:
+        acquired = await research_service._acquire_lease(
+            session, key=key, query="新鲜缓存", now=utcnow()
+        )
+    assert acquired is False, "新鲜 success 不能被抢租约"
+    async with SessionLocal() as session:
+        row = await session.scalar(select(ResearchCache).where(ResearchCache.cache_key == key))
+    assert row is not None and row.status is ResearchCacheStatus.SUCCESS
+
+
+async def test_expired_success_can_be_taken_over(db, monkeypatch: pytest.MonkeyPatch) -> None:
+    _enable(monkeypatch)
+    calls: list[str] = []
+    _mock_search(monkeypatch, [{"title": "t", "url": "https://a.test", "content": "c"}], calls)
+    key = research_service.cache_key_for("tavily", research_service.normalize_query("过期缓存"))
+    async with SessionLocal() as session:
+        session.add(
+            ResearchCache(
+                cache_key=key,
+                provider="tavily",
+                query="过期缓存",
+                status=ResearchCacheStatus.SUCCESS,
+                sources=[],
+                expires_at=utcnow() - timedelta(seconds=10),
+            )
+        )
+        await session.commit()
+
+    outcome = await research_service.search(db, "过期缓存")
+    assert outcome.configured is True
+    assert len(calls) == 1
+
+
+async def test_failed_cache_can_be_retried(db, monkeypatch: pytest.MonkeyPatch) -> None:
+    _enable(monkeypatch)
+    calls: list[str] = []
+    _mock_search(monkeypatch, [{"title": "t", "url": "https://a.test", "content": "c"}], calls)
+    key = research_service.cache_key_for("tavily", research_service.normalize_query("失败重试"))
+    async with SessionLocal() as session:
+        session.add(
+            ResearchCache(
+                cache_key=key,
+                provider="tavily",
+                query="失败重试",
+                status=ResearchCacheStatus.FAILED,
+                sources=[],
+            )
+        )
+        await session.commit()
+
+    outcome = await research_service.search(db, "失败重试")
+    assert outcome.configured is True
+    assert len(calls) == 1
+
+
+async def test_interleaving_does_not_let_stale_reader_overwrite_fresh_cache(
+    db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A 读到过期 success;B 在 A 抢租约前完成查询并写入新鲜 success;
+    A 必须读到 B 的结果、不得再次出网、不得把 success 改成 fetching。"""
+    _enable(monkeypatch)
+    calls: list[str] = []
+    _mock_search(monkeypatch, [{"title": "t", "url": "https://a.test", "content": "c"}], calls)
+    key = research_service.cache_key_for("tavily", research_service.normalize_query("交错查询"))
+    async with SessionLocal() as session:
+        session.add(
+            ResearchCache(
+                cache_key=key,
+                provider="tavily",
+                query="交错查询",
+                status=ResearchCacheStatus.SUCCESS,
+                sources=[],
+                expires_at=utcnow() - timedelta(seconds=10),
+            )
+        )
+        await session.commit()
+
+    real_acquire = research_service._acquire_lease
+    state = {"n": 0}
+
+    async def interleaving(session, *, key, query, now):
+        state["n"] += 1
+        if state["n"] == 1:
+            # A 已读到过期缓存,尚未抢租约;B 此时完成一次真实查询。
+            await research_service.search(db, "交错查询")
+        return await real_acquire(session, key=key, query=query, now=now)
+
+    monkeypatch.setattr(research_service, "_acquire_lease", interleaving)
+
+    outcome_a = await research_service.search(db, "交错查询")
+    assert outcome_a.cached is True, "A 应读到 B 写入的新鲜缓存"
+    assert len(calls) == 1, "只允许 B 出网一次,A 不得重复调用 provider"
+
+    async with SessionLocal() as session:
+        row = await session.scalar(select(ResearchCache).where(ResearchCache.cache_key == key))
+    assert row is not None
+    assert row.status is ResearchCacheStatus.SUCCESS
+    assert row.expires_at is not None and row.expires_at > utcnow(), "新鲜 success 必须保留"

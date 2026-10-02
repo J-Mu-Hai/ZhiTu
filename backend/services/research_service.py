@@ -42,7 +42,7 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 import httpx
-from sqlalchemy import or_, select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -105,6 +105,23 @@ def clear_cache() -> None:
     return None
 
 
+#: 租约至少要比单次 HTTP 超时多这么多秒,否则“HTTP 还没超时、租约却过期了”会再出网。
+LEASE_MIN_BUFFER_SECONDS = 2.0
+
+
+def lease_config_error() -> str | None:
+    """租约/超时组合是否安全。不安全时返回原因,否则 `None`。
+
+    必须 `RESEARCH_LEASE_SECONDS >= RESEARCH_TIMEOUT_SECONDS + 缓冲`:否则一个还没
+    超时的出网请求,其租约可能已经过期,第二个 worker 会接管并重复出网。
+    """
+    if settings.research_lease_seconds <= settings.research_timeout_seconds:
+        return "lease_not_greater_than_timeout"
+    if settings.research_lease_seconds < settings.research_timeout_seconds + LEASE_MIN_BUFFER_SECONDS:
+        return "lease_buffer_too_small"
+    return None
+
+
 def provider_ready() -> tuple[bool, str]:
     """提供商是否可用。返回 (就绪, 不可用原因)。**原因里不含密钥。**"""
     if not settings.research_enabled:
@@ -116,6 +133,8 @@ def provider_ready() -> tuple[bool, str]:
         return False, "RESEARCH_PROVIDER_UNSUPPORTED"
     if not (settings.tavily_api_key or "").strip():
         return False, "TAVILY_API_KEY_MISSING"
+    if lease_config_error() is not None:
+        return False, "RESEARCH_LEASE_INVALID"
     return True, "ok"
 
 
@@ -258,10 +277,22 @@ async def _acquire_lease(
         update(ResearchCache)
         .where(
             ResearchCache.cache_key == key,
+            # **只允许这三种可以抢占的状态。** 尤其:新鲜的 success 不能被抢 ——
+            # 否则一个读到过期缓存的旧请求会把另一个 worker 刚写入的新结果改成
+            # fetching,导致重复出网。
             or_(
-                ResearchCache.status != ResearchCacheStatus.FETCHING,
-                ResearchCache.lease_expires_at.is_(None),
-                ResearchCache.lease_expires_at <= now,
+                ResearchCache.status == ResearchCacheStatus.FAILED,
+                and_(
+                    ResearchCache.status == ResearchCacheStatus.SUCCESS,
+                    or_(ResearchCache.expires_at.is_(None), ResearchCache.expires_at <= now),
+                ),
+                and_(
+                    ResearchCache.status == ResearchCacheStatus.FETCHING,
+                    or_(
+                        ResearchCache.lease_expires_at.is_(None),
+                        ResearchCache.lease_expires_at <= now,
+                    ),
+                ),
             ),
         )
         .values(status=ResearchCacheStatus.FETCHING, lease_expires_at=lease_until, updated_at=now)
@@ -428,20 +459,34 @@ async def search(db: AsyncSession, query: str) -> ResearchOutcome:
     key = cache_key_for(PROVIDER, normalized)
     now = utcnow()
 
+    # 1) 读缓存(**短事务,读完就关** —— 不拿着旧快照去抢租约/写入)。
     async with SessionLocal() as session:
         row = await _read_cache(session, key)
-        if row is not None and row.status is ResearchCacheStatus.SUCCESS and row.expires_at and row.expires_at > now:
-            return _cached_outcome(row)
-        if (
-            row is not None
-            and row.status is ResearchCacheStatus.FETCHING
-            and row.lease_expires_at is not None
-            and row.lease_expires_at > now
-        ):
-            waited = await _wait_for_cache(key)
-            return waited or ResearchOutcome(configured=False, reason="IN_PROGRESS", query=query)
+    if row is not None and row.status is ResearchCacheStatus.SUCCESS and row.expires_at and row.expires_at > now:
+        return _cached_outcome(row)
+    if (
+        row is not None
+        and row.status is ResearchCacheStatus.FETCHING
+        and row.lease_expires_at is not None
+        and row.lease_expires_at > now
+    ):
+        waited = await _wait_for_cache(key)
+        return waited or ResearchOutcome(configured=False, reason="IN_PROGRESS", query=query)
 
-        if not await _acquire_lease(session, key=key, query=normalized, now=now):
+    # 2) 用**新事务**抢租约(只允许 failed / 过期 success / 过期 fetching)。
+    async with SessionLocal() as session:
+        if not await _acquire_lease(session, key=key, query=normalized, now=utcnow()):
+            # 抢租约失败:先重读当前缓存。若已经是新鲜 success(别的 worker 刚写完),
+            # 直接返回缓存 —— **绝不立即再次出网**。
+            async with SessionLocal() as fresh:
+                latest = await _read_cache(fresh, key)
+            if (
+                latest is not None
+                and latest.status is ResearchCacheStatus.SUCCESS
+                and latest.expires_at
+                and latest.expires_at > utcnow()
+            ):
+                return _cached_outcome(latest)
             waited = await _wait_for_cache(key)
             return waited or ResearchOutcome(configured=False, reason="IN_PROGRESS", query=query)
 
@@ -493,6 +538,7 @@ REASON_NOTE: dict[str, str] = {
     "RESEARCH_FAILED": "公开研究调用失败或超时;我没有拿到来源,不要编造。",
     "NO_RESULTS": "这次公开研究没有返回可用来源;不要编造。",
     "IN_PROGRESS": "同一个公开研究正在进行中;我没有重复联网,请稍后再看。",
+    "RESEARCH_LEASE_INVALID": "公开研究的租约时长配置不安全(必须大于单次超时并留缓冲);我没有联网查过。",
 }
 
 
@@ -506,6 +552,7 @@ __all__ = [
     "cache_key_for",
     "clear_cache",
     "domain_allowed",
+    "lease_config_error",
     "local_day",
     "normalize_query",
     "provider_ready",
