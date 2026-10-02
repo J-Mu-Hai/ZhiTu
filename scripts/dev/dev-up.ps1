@@ -275,7 +275,18 @@ function Resolve-EffectiveMode() {
   if ($Mode -eq 'Real' -and -not $hasRealKey) {
     Fail "Mode=Real 需要根 .env 里有真实 LLM_API_KEY;现在没有或它看起来是占位符。可改用 -Mode Script 做脚本演示。"
   }
-  $reasoner = if ($effective -eq 'Real') { 'auto' } else { 'script' }
+  # Real 模式选哪条模型路。**默认直连 DeepSeek(`direct`)。**
+  #
+  # 主路径本来是 openJiuwen(`auto` 装了就用它)。但本机 openJiuwen 0.1.18 拿到
+  # DeepSeek 的回答后会在自己的 JSON 解析上失败:
+  #   component llm_config is invalid, reason: Json parse error
+  # 于是每一轮都降级成"模型服务暂时不可用"。同一份提示词、同一个 key 走直连是好的。
+  # 想重新启用 SDK 时,在根 .env 里写 `AGENT_REASONER=openjiuwen`(显式)、或 `rule` 兜底;
+  # 这里**不认 `auto`** —— 那正是会落到 openJiuwen 上的值,写了它还是走 direct。
+  $envReasoner = Get-EnvFileValue $DotEnvPath 'AGENT_REASONER'
+  $reasoner = if ($effective -eq 'Script') { 'script' }
+    elseif ($envReasoner -in @('direct', 'openjiuwen', 'rule')) { $envReasoner }
+    else { 'direct' }
   return [pscustomobject]@{ Effective = $effective; Reasoner = $reasoner; HasRealKey = $hasRealKey }
 }
 

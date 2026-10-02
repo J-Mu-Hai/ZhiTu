@@ -344,3 +344,43 @@ test('根目标的删除项禁用并说明原因', async ({ page }) => {
   await expect(remove, '根目标的删除入口要在,只是不可选').toHaveAttribute('aria-disabled', 'true');
   await expect(remove.locator('.context-menu-why')).toHaveText('根目标不能归档');
 });
+
+/**
+ * 成长空间的「删除」= 可恢复归档。
+ *
+ * 后端没有 workspace 的 DELETE(级联删除会连整棵计划树一起抹掉,不可恢复),
+ * 走的是 `PATCH status=archived`。所以这一条同时钉三件事:
+ * 1. 卡片上有删除入口,而且它说的是"可恢复";
+ * 2. 确认之后空间从活动列表消失;
+ * 3. 「已归档的空间」里能找到它,并且能恢复回来 —— 少了这一条,"可恢复"就是空话。
+ */
+test('成长空间可删除（可恢复）:归档后进已归档，并能恢复回来', async ({ page }) => {
+  const { token } = await registerAccount(page, 'ui-space-archive');
+  await createWorkspace(page, token, '待归档空间');
+  await page.goto('/spaces');
+
+  const card = page.locator('.space-card', { hasText: '待归档空间' });
+  await expect(card).toBeVisible();
+
+  // 删除入口在卡片上,名字里写明是"可恢复"。
+  const remove = card.getByRole('button', { name: /删除.*可恢复/ });
+  await expect(remove, '空间卡上没有删除入口').toBeVisible();
+  await remove.click();
+
+  const confirm = page.getByRole('dialog');
+  await expect(confirm.getByRole('heading')).toHaveText('归档「待归档空间」？');
+  await expect(confirm, '确认框没说清能恢复').toContainText('已归档');
+  await confirm.getByRole('button', { name: '归档' }).click();
+
+  // 活动列表里没有了。
+  await expect(page.locator('.space-card', { hasText: '待归档空间' })).toHaveCount(0);
+
+  // 已归档区里能找到它,并且能恢复。
+  const toggle = page.getByRole('button', { name: /已归档的空间/ });
+  await expect(toggle, '归档之后没有任何恢复入口 —— “可恢复”是空话').toBeVisible();
+  await toggle.click();
+  const row = page.locator('.archived-spaces li', { hasText: '待归档空间' });
+  await expect(row).toHaveCount(1);
+  await row.getByRole('button', { name: '恢复' }).click();
+  await expect(page.locator('.space-card', { hasText: '待归档空间' })).toHaveCount(1);
+});

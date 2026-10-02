@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { AlertCircle, ArrowRight, Bot, CheckCircle2, FolderPlus, Layers3, ListTodo, Plus } from 'lucide-react';
+import { AlertCircle, Archive, ArrowRight, Bot, CheckCircle2, FolderPlus, Layers3, ListTodo, Plus, RotateCcw, Trash2 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { Dialog } from '@/components/ui/Dialog';
 import { AmbientGlow } from '@/components/ui/AmbientGlow';
@@ -35,15 +35,31 @@ export default function SpacesPage() {
   const [title, setTitle] = useState('');
   const [intent, setIntent] = useState('');
   const [creating, setCreating] = useState(false);
+  const [archived, setArchived] = useState<backend.WorkspaceSummary[]>([]);
+  const [showArchived, setShowArchived] = useState(false);
+  /** 等着确认归档的那一个。 */
+  const [pendingDelete, setPendingDelete] = useState<backend.WorkspaceSummary | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [restoring, setRestoring] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const list = await backend.listWorkspaces();
-      setSpaces(list);
+      // **不要等详情**。列表接口返回的 `WorkspaceSummary` 不带 status/archivedAt,
+      // 但它默认就只给活动空间;再拿一次 `includeArchived=true`,两次的差集就是
+      // 已归档的那些 —— 不需要为这一点去逐条读详情(那样会把整个列表拖在
+      // `GET /workspaces/{id}` 后面,列表已经不依赖它了)。
+      // 详情的唯一用处仍是 `counts`,它在卡片已经画出来之后才补上。
+      const [active, all] = await Promise.all([
+        backend.listWorkspaces(false),
+        backend.listWorkspaces(true),
+      ]);
+      const activeIds = new Set(active.map((space) => space.id));
+      setSpaces(active);
+      setArchived(all.filter((space) => !activeIds.has(space.id)));
       const details = await Promise.all(
-        list.map((space) =>
+        active.map((space) =>
           backend
             .getWorkspace(space.id)
             .then((detail) => [space.id, detail.counts] as const)
@@ -77,6 +93,43 @@ export default function SpacesPage() {
     } catch (cause) {
       setError(cause instanceof ApiError ? cause.message : '创建失败。');
       setCreating(false);
+    }
+  }
+
+  /**
+   * 「删除空间」= **可恢复归档**,与节点那条一模一样。
+   *
+   * 后端没有 `DELETE`(空间级联删除会连整棵计划树、全部历史版本与执行记录一起抹掉,
+   * 而且不可恢复 —— 见 `api/routes/workspaces.py` 开头那段)。走的是
+   * `PATCH status=archived`:空间从活动列表里消失,但可以在「已归档的空间」里原样恢复。
+   * 所以按钮上写的也是「删除(可恢复)」,而不是一个会骗人的「彻底删除」。
+   */
+  async function archiveSpace() {
+    if (!pendingDelete || deleting) return;
+    setDeleting(true);
+    setError(null);
+    try {
+      await backend.updateWorkspace(pendingDelete.id, { status: 'archived' });
+      setPendingDelete(null);
+      await load();
+    } catch (cause) {
+      setError(cause instanceof ApiError ? cause.message : '归档失败,请重试。');
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  async function restoreSpace(id: string) {
+    if (restoring) return;
+    setRestoring(id);
+    setError(null);
+    try {
+      await backend.updateWorkspace(id, { status: 'active' });
+      await load();
+    } catch (cause) {
+      setError(cause instanceof ApiError ? cause.message : '恢复失败,请重试。');
+    } finally {
+      setRestoring(null);
     }
   }
 
@@ -132,6 +185,16 @@ export default function SpacesPage() {
       <div className="spaces-grid">
         {spaces.map((space, index) => (
           <article className="space-card" key={space.id}>
+            {/* 删除(可恢复)。绝对定位在右上角 —— 不挤走下面那行「进入工作台」。 */}
+            <button
+              type="button"
+              className="space-card-delete"
+              aria-label={`删除${space.title}(可恢复)`}
+              title="删除(可恢复):移到「已归档的空间」,随时能恢复"
+              onClick={() => setPendingDelete(space)}
+            >
+              <Trash2 size={14} />
+            </button>
             <div className="space-card-icon">{index === 1 ? <Bot size={19} /> : <Layers3 size={19} />}</div>
             <span className="eyebrow">GROWTH SPACE</span>
             <h2>{space.title}</h2>
@@ -155,6 +218,54 @@ export default function SpacesPage() {
           <span>{spaces.length ? '从一个目标或现实问题开始' : '还没有空间 —— 从一个目标开始'}</span>
         </button>
       </div>
+
+      {/* 已归档的空间。**恢复的入口必须在这里** —— 没有它,「可恢复」就是一句空话:
+          用户删掉之后找不到任何地方能把空间拿回来。 */}
+      {archived.length > 0 && (
+        <section className="archived-spaces">
+          <button type="button" className="text-button" onClick={() => setShowArchived((value) => !value)}>
+            <Archive size={13} />
+            已归档的空间（{archived.length}）{showArchived ? '收起' : '展开'}
+          </button>
+          {showArchived && (
+            <ul>
+              {archived.map((space) => (
+                <li key={space.id}>
+                  <div>
+                    <strong>{space.title}</strong>
+                    <small>已归档,可恢复</small>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={restoring !== null}
+                    onClick={() => void restoreSpace(space.id)}
+                  >
+                    <RotateCcw size={13} />{restoring === space.id ? '恢复中…' : '恢复'}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      )}
+
+      {pendingDelete && (
+        <Dialog title={`归档「${pendingDelete.title}」？`} onClose={() => setPendingDelete(null)}>
+          <div className="archive-panel">
+            <p className="archive-hint">
+              归档之后这个空间会从列表里消失，但<b>可以</b>在「已归档的空间」里恢复。
+              空间里的路径、时间线、任务与对话都会保留。
+            </p>
+            {error && <p className="form-error" role="alert">{error}</p>}
+            <div className="archive-actions">
+              <button type="button" onClick={() => setPendingDelete(null)}>取消</button>
+              <button className="primary-button" type="button" disabled={deleting} onClick={() => void archiveSpace()}>
+                {deleting ? '归档中…' : '归档'}
+              </button>
+            </div>
+          </div>
+        </Dialog>
+      )}
 
       {open && (
         <Dialog title="创建成长空间" onClose={() => setOpen(false)}>
