@@ -192,7 +192,18 @@
 .space-topbar .view-tabs button.selected { background:var(--tint-selected); box-shadow:inset 0 0 0 1px var(--line-selected); }
 .space-topbar .reopen-chat { right:18px; width:38px; height:38px; }
 
-.path-canvas .space-floating-tools { top:56px; }
+/* 画布左侧操作条(撤销 / 重做 / 空间文件 / 更多)。
+
+   面包屑删除之后,左上角的空位由它填上:**与顶部居中标签同一行、贴左**。"返回上级
+   空间"只在子空间里出现,所以根这一层让它贴左(18,与顶部其他浮动块同一条内边距),
+   子空间里右移一个按钮位避免叠在一起。窄一些的桌面(≤1100)放不下两排,就回到标签
+   下方一行。 */
+.path-canvas .space-floating-tools { top:8px; left:18px; }
+.path-canvas.leaf-path .space-floating-tools { left:64px; }
+@media (max-width:1100px) {
+  .path-canvas .space-floating-tools { top:56px; left:18px; }
+  .path-canvas.leaf-path .space-floating-tools { left:18px; }
+}
 .space-floating-tools { gap:0; padding:6px; border:1px solid var(--line-float); border-radius:var(--radius-float); background:var(--float-surface); box-shadow:var(--shadow-float); }
 .space-floating-tools>button { box-shadow:none; border:0; background:transparent; }
 .space-floating-tools>button:nth-of-type(2) { margin-right:7px; }
