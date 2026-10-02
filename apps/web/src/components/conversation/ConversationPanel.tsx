@@ -36,129 +36,29 @@ const PROPOSAL_STATUS_LABEL: Record<string, string> = {
  * “正在处理你的回答…” —— 它对应的是后端真实的 `answered` / `investigating` 状态,
  * 不是一段假的动画。
  */
-function PrimaryQuestionCard({
+function QuestionStatusHint({
   question,
   sourceTitle,
   onLocate,
-  onAnswer,
-  onSkip,
-  onLater,
 }: {
   question: QuestionView;
   sourceTitle: string | null;
-  onLocate: (nodeId: string) => void;
-  onAnswer: (
-    id: string,
-    payload: { selectedOptionIds: string[]; customInput?: string | null },
-  ) => Promise<boolean>;
-  onSkip: (id: string) => Promise<boolean>;
-  onLater: (id: string) => Promise<boolean>;
+  onLocate: (questionId: string) => void;
 }) {
-  const [selected, setSelected] = useState<string[]>([]);
-  const [custom, setCustom] = useState('');
-  const [busy, setBusy] = useState(false);
-
   const processing = question.status === 'answered' || question.status === 'investigating';
-  const resolved = question.status === 'resolved';
-  const showOptions = question.responseMode !== 'free_text' && question.options.length > 0;
-  const multiple = question.responseMode === 'multi_select';
-  const showCustom = question.allowCustomInput || question.responseMode === 'free_text';
-  const hasInput = selected.length > 0 || custom.trim().length > 0;
-
-  function toggle(optionId: string) {
-    setSelected(old => {
-      if (multiple) {
-        return old.includes(optionId) ? old.filter(id => id !== optionId) : [...old, optionId];
-      }
-      return old.includes(optionId) ? [] : [optionId];
-    });
-  }
-
-  async function submit() {
-    if (busy || !hasInput) return;
-    setBusy(true);
-    await onAnswer(question.id, {
-      selectedOptionIds: selected,
-      customInput: showCustom ? custom.trim() || null : null,
-    });
-    setBusy(false);
-  }
-
-  if (processing || resolved) {
-    return (
-      <div className="proposal question-card" role="status">
-        <span className="eyebrow">AI 的问题</span>
-        <strong>{question.question}</strong>
-        <p className="question-processing">
-          {resolved ? '已记下你的回答。' : '正在处理你的回答…'}
-        </p>
-      </div>
-    );
-  }
-
   return (
-    <div className="proposal question-card">
-      <span className="eyebrow">AI 想先问一句</span>
+    <div
+      className="question-hint"
+      role="status"
+      aria-label={`画布上有一个${processing ? '正在处理' : '待澄清'}的问题`}
+    >
+      <span className="eyebrow">{processing ? '正在处理' : '画布上有待澄清问题'}</span>
       <strong>{question.question}</strong>
-      {question.whyNow && <p className="question-why">{question.whyNow}</p>}
-      {sourceTitle && question.sourceNodeId && (
-        <button
-          type="button"
-          className="question-source"
-          disabled={busy}
-          onClick={() => onLocate(question.sourceNodeId as string)}
-        >
-          关于「{sourceTitle}」· 定位到画布
-        </button>
-      )}
-
-      {showOptions && (
-        <div className="question-options">
-          {question.options.map(option => {
-            const active = selected.includes(option.id);
-            return (
-              <button
-                type="button"
-                key={option.id}
-                className={active ? 'question-option active' : 'question-option'}
-                aria-pressed={active}
-                disabled={busy}
-                onClick={() => toggle(option.id)}
-              >
-                {option.label}
-              </button>
-            );
-          })}
-        </div>
-      )}
-
-      {showCustom && (
-        <textarea
-          className="question-input"
-          aria-label="补充你的回答"
-          placeholder={showOptions ? '也可以补充一句…' : '写下你的回答…'}
-          value={custom}
-          disabled={busy}
-          onChange={event => setCustom(event.target.value)}
-        />
-      )}
-
-      <div className="question-actions">
-        <button type="button" disabled={busy} onClick={() => void onLater(question.id)}>
-          稍后回答
-        </button>
-        <button type="button" disabled={busy} onClick={() => void onSkip(question.id)}>
-          跳过
-        </button>
-        <button
-          type="button"
-          className="primary-button"
-          disabled={busy || !hasInput}
-          onClick={() => void submit()}
-        >
-          {busy ? '提交中…' : '提交回答'}
-        </button>
-      </div>
+      {sourceTitle && <p className="question-why">关于「{sourceTitle}」</p>}
+      {/* 回答在**画布节点**上完成;这里只负责定位,不提供第二份可提交控件。 */}
+      <button type="button" className="question-locate" onClick={() => onLocate(question.id)}>
+        定位到画布
+      </button>
     </div>
   );
 }
@@ -182,7 +82,7 @@ function PrimaryQuestionCard({
  *    它跟模型能不能用没关系。
  */
 export function ConversationPanel() {
-  const { growth, selectedId, select, messages, remoteProposals, proposalErrors, inputChanged, deciding, confirmRemote, rejectRemote, replan, replanState, send, retry, sending, sendError, retryable, brief, historyLoading, messagesTruncated, spaceId, questions, submitAnswer, dismissQuestion, postponeQuestion } = useDemo();
+  const { growth, selectedId, select, messages, remoteProposals, proposalErrors, inputChanged, deciding, confirmRemote, rejectRemote, replan, replanState, send, retry, sending, sendError, retryable, brief, historyLoading, messagesTruncated, spaceId, questions, focusQuestion } = useDemo();
   const [input, setInput] = useState('');
   const [showContexts, setShowContexts] = useState(false);
   const bottom = useRef<HTMLDivElement>(null);
@@ -443,7 +343,7 @@ export function ConversationPanel() {
             与 source node 的关联在这里看得见:有标题就写“关于「…」”,节点归档后
             找不到标题就不写 —— 不去渲染一个指向失效节点的引用。 */}
         {primaryQuestion && (
-          <PrimaryQuestionCard
+          <QuestionStatusHint
             key={primaryQuestion.id}
             question={primaryQuestion}
             sourceTitle={
@@ -451,10 +351,7 @@ export function ConversationPanel() {
                 ? growth.nodes[primaryQuestion.sourceNodeId]?.title ?? null
                 : null
             }
-            onLocate={id => select(id)}
-            onAnswer={submitAnswer}
-            onSkip={dismissQuestion}
-            onLater={postponeQuestion}
+            onLocate={questionId => focusQuestion(questionId)}
           />
         )}
         {questions.length > 1 && (

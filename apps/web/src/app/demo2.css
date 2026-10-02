@@ -29,3 +29,38 @@
 .node-level-detail { font-size: 11px; color: #9db8dc; }
 .strategy-hint { display: flex; align-items: center; gap: 7px; font-size: 10px; color: #e0b96a; margin: 0 1px 8px; }
 .proposal-item-detail { display: block; margin-top: 4px; font-size: 10px; font-style: normal; color: #8ea3bd; white-space: pre-wrap; }
+
+/* 画布问题节点。**是 agent_questions 的投影,不是知识节点** —— 不参与排期/统计/依赖。
+   状态不能只靠颜色表达:每张卡都有文字徽标与 aria-label。 */
+.react-flow__node-question { z-index: 4 !important; }
+.canvas-question-node { width: 264px; padding: 12px 13px; border-radius: 9px; border: 1px dashed #b98f4e; background: #1b1a14; color: #e7dcc4; box-shadow: 0 8px 22px #00000055; font-size: 11px; }
+.canvas-question-node.is-primary { border-style: solid; border-color: #e0b96a; box-shadow: 0 0 0 3px #e0b96a22, 0 8px 22px #00000066; }
+.canvas-question-node.is-focused { outline: 2px solid #8cb9fa; outline-offset: 2px; }
+.canvas-question-node.is-processing { border-color: #6f8bb0; color: #cdd9ea; background: #16202e; }
+.canvas-question-node.is-resolved { opacity: .5; border-color: #4a6079; }
+.cq-head { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.cq-badge { font-size: 9px; letter-spacing: .5px; padding: 1px 6px; border-radius: 4px; background: #332a17; color: #e8c27a; border: 1px solid #5a4a24; }
+.canvas-question-node.is-processing .cq-badge { background: #1d3350; color: #a9c7f0; border-color: #35507a; }
+.canvas-question-node.is-resolved .cq-badge { background: #22303f; color: #9fb2c7; border-color: #3a4d63; }
+.cq-primary { font-size: 8px; color: #e0b96a; }
+.cq-question { font-size: 12px; line-height: 1.6; margin: 2px 0 4px; color: #f0e7d4; }
+.cq-why { font-size: 9px; color: #a99a78; line-height: 1.6; margin-bottom: 6px; }
+.cq-source { font-size: 9px; color: #9db8dc; background: none; border: 0; padding: 0; margin-bottom: 6px; cursor: pointer; }
+.cq-options { display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0 6px; }
+.cq-option { font-size: 10px; padding: 5px 9px; border: 1px solid #4a452f; border-radius: 5px; background: #12120c; color: #d8cba8; cursor: pointer; }
+.cq-option.is-active { border-color: #e0b96a; background: #2a2413; color: #f0e2c2; }
+.cq-input { width: 100%; height: 46px; resize: vertical; background: #101009; border: 1px solid #4a452f; border-radius: 5px; color: #ece3cf; font-size: 10px; line-height: 1.6; padding: 6px; outline: none; }
+.cq-input::placeholder { color: #8a7d5e; }
+.cq-error { font-size: 9px; color: #e0a0a0; margin: 5px 0; }
+.cq-status { font-size: 10px; color: #a9c7f0; margin-top: 6px; }
+.cq-actions { display: flex; align-items: center; gap: 6px; margin-top: 9px; }
+.cq-text { font-size: 9px; color: #a99a78; background: none; border: 0; padding: 0; cursor: pointer; }
+.cq-submit { margin-left: auto; font-size: 10px; padding: 6px 10px; border-radius: 5px; background: #8a6d2f; border: 1px solid #b98f4e; color: #fdf3dd; cursor: pointer; }
+.cq-submit:disabled { opacity: .45; cursor: default; }
+/* 锚定虚线由 React Flow 画;这里只保证它不被误当成业务关系。 */
+.react-flow__edge.question-anchor-edge { pointer-events: none; }
+/* 右侧对话区只留状态提示 + 定位,不再有第二份可提交问题卡。 */
+.question-hint { padding: 11px 13px; margin-bottom: 10px; border: 1px dashed #8a6d2f; border-radius: 8px; background: #1a1810; display: flex; flex-direction: column; gap: 5px; }
+.question-hint strong { font-size: 12px; color: #eee4cf; }
+.question-hint .question-why { font-size: 9px; color: #a99a78; }
+.question-locate { align-self: flex-start; font-size: 10px; color: #9db8dc; background: none; border: 0; padding: 0; cursor: pointer; }

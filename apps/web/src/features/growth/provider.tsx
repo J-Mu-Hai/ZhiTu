@@ -356,6 +356,11 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
    * 默认只拿还没结束的那些(pending / answered / investigating)。
    */
   const [questions, setQuestions] = useState<backend.QuestionView[]>([]);
+  /**
+   * 让画布定位到某个问题节点的通道。`nonce` 让“再点一次定位”也能重新触发。
+   * 它不是计划状态,不持久化 —— 只是一个 UI 意图。
+   */
+  const [questionFocus, setQuestionFocus] = useState<{ id: string; nonce: number } | null>(null);
   const [deciding, setDeciding] = useState(false);
   /** 「按执行情况调整」的状态。`message` 是给用户看的那句话,成败都有。 */
   const [replanState, setReplanState] = useState<{ busy: boolean; message: string | null; degraded: boolean }>(
@@ -1449,6 +1454,10 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
    * 后续那一轮如果真的产出了提案,它会和发消息一样进入 `remoteProposals`,仍然
    * 要用户点“确认,写入计划”—— 这里**不碰计划**。
    */
+  function focusQuestion(questionId: string) {
+    setQuestionFocus(prev => ({ id: questionId, nonce: (prev?.nonce ?? 0) + 1 }));
+  }
+
   async function submitAnswer(
     questionId: string,
     payload: { selectedOptionIds: string[]; customInput?: string | null },
@@ -1543,7 +1552,7 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     remoteProposals, proposalErrors, deciding, confirmRemote, rejectRemote,
     // 问题节点。与提案分开:问题落库即成卡片,不需要确认;回答后模型提的变更
     // 仍然进 `remoteProposals`,仍然要用户点确认。
-    questions, submitAnswer, dismissQuestion, postponeQuestion,
+    questions, submitAnswer, dismissQuestion, postponeQuestion, questionFocus, focusQuestion,
     replan, replanState,
     // 上一轮是不是基于已经变过的输入(见 `inputChanged` 的注释),以及"重新分析"
     // 那个入口。**两者一起给出去**:只有这个字段而没有入口,用户知道出事了却没法

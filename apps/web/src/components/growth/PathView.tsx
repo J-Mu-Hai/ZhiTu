@@ -53,8 +53,9 @@ import { useDemo } from '@/features/growth/provider';
 import { useMobileLayout } from '@/lib/media';
 import type { GrowthEdge, GrowthNode, GrowthRelationType } from '@/types/growth';
 import { SpaceFiles } from './SpaceFiles';
+import { CanvasQuestionNodeComponent, EMPTY_QUESTION_DRAFT, type CanvasQuestionDraft, type QuestionFlowNode } from './CanvasQuestionNode';
 
-type FlowNode = Node<{
+type GrowthFlowData = {
   object: GrowthNode;
   root: boolean;
   children: number;
@@ -83,7 +84,9 @@ type FlowNode = Node<{
   created: boolean;
   /** 创建动画播完了。参数是节点 id —— 摘标记前要确认摘的还是同一个。 */
   onCreatedEnd: (id: string) => void;
-}, 'growth'>;
+};
+type GrowthFlowNode = Node<GrowthFlowData, 'growth'>;
+type FlowNode = GrowthFlowNode | QuestionFlowNode;
 
 const colors = {
   academic: '#749ce1',
@@ -144,7 +147,7 @@ function onEmptyPane(event: { target: EventTarget | null }): boolean {
   return Boolean(target?.classList?.contains('react-flow__pane'));
 }
 
-function GrowthNodeComponent({ id, data, selected }: NodeProps<FlowNode>) {
+function GrowthNodeComponent({ id, data, selected }: NodeProps<GrowthFlowNode>) {
   // 这里**不挂 `onDoubleClick`**,而"双击进子空间"这件事本身也已经没有了(步骤 4):
   // 单击开正文与详情,进子空间只走右上角那个箭头按钮(下面那个 `node-enter`)。
   // 两件事拆开之后,节点上就不该再有任何"看时间/看次数"的隐藏语义。
@@ -276,7 +279,7 @@ type BodyNote =
   /** 别处改过同一段正文。带上服务端那一份,由用户决定留哪一段。 */
   | { kind: 'conflict'; serverBody: string; message: string };
 
-const nodeTypes = { growth: GrowthNodeComponent };
+const nodeTypes = { growth: GrowthNodeComponent, question: CanvasQuestionNodeComponent };
 
 /** Siblings share an outgoing lane, without drawing extra junction dots. */
 function BranchEdge(props: EdgeProps) {
@@ -384,7 +387,28 @@ function RelationEdge(props: EdgeProps) {
   );
 }
 
-const edgeTypes = { branch: BranchEdge, relation: RelationEdge };
+/** 仅 UI 的问题锚定虚线:表示“这个问题由此处引出”。**不是业务关系。** */
+function QuestionAnchorEdge(props: EdgeProps) {
+  const [path] = getSmoothStepPath({
+    sourceX: props.sourceX,
+    sourceY: props.sourceY,
+    targetX: props.targetX,
+    targetY: props.targetY,
+    sourcePosition: props.sourcePosition,
+    targetPosition: props.targetPosition,
+    borderRadius: 20,
+    offset: 18,
+  });
+  return (
+    <BaseEdge
+      id={props.id}
+      path={path}
+      style={{ strokeDasharray: '6 4', stroke: '#c7a06e', strokeWidth: 1.2, opacity: 0.75 }}
+    />
+  );
+}
+
+const edgeTypes = { branch: BranchEdge, relation: RelationEdge, questionAnchor: QuestionAnchorEdge };
 
 /**
  * `__zhituCanvasLifecycle` 最多留多少条。理由见 `Canvas` 里那个 effect 的说明。
@@ -411,6 +435,7 @@ function Canvas() {
     archiveConfirm, closeArchiveConfirm, confirmArchive,
     archiveOpen, setArchiveOpen, archived, archiveListError, archiveNote, setArchiveNote,
     restoreArchived, restoringId,
+    questions, submitAnswer, dismissQuestion, postponeQuestion, questionFocus,
   } = useDemo();
   const { fitView, setViewport, screenToFlowPosition } = useReactFlow();
   /*
@@ -569,6 +594,12 @@ function Canvas() {
    * 和 `selectedId` 一个待遇。
    */
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  //: 画布上被“指着”的问题节点(来自点击,或来自右侧“定位到画布”)。这是纯 UI 状态。
+  const [focusedQuestionId, setFocusedQuestionId] = useState<string | null>(null);
+  const lastQuestionFocusNonce = useRef<number>(-1);
+  //: 每个问题节点的输入草稿。放在这里而不是节点组件里 —— React Flow 重建节点时
+  //: 组件局部 state 会被清空(点了选项按钮又变灰)。
+  const [questionDrafts, setQuestionDrafts] = useState<Record<string, CanvasQuestionDraft>>({});
 
   /* ------------------------- 正文自动保存(步骤 4)的状态 ------------------------- */
   /** 编辑器里此刻的正文。**存的是 ref**:`flushBody` 是从定时器里被调用的,
@@ -743,8 +774,13 @@ function Canvas() {
     // 而且节点数对不上的断言会立刻指出问题。
     if (!growth.nodes[spaceId]) return { nodes: [], edges: [] };
 
+    //: 每个真实节点**本次画在哪**。问题节点靠它做锚定(见下面那些投影)。
+    const positionById: Record<string, { x: number; y: number }> = {};
+
     function add(node: GrowthNode, x: number, y: number, root = false) {
       const key = `${spaceId}:${node.id}`;
+      const placed = dragging[key] ?? positions[key] ?? { x, y };
+      positionById[node.id] = placed;
       nextNodes.push({
         id: node.id,
         measured: measurements[node.id],
@@ -764,7 +800,6 @@ function Canvas() {
         ariaLabel: node.title,
       });
     }
-
     function connect(parent: string, node: GrowthNode) {
       // 父子连线也跟着 hover/拖动变清晰一点点 —— 它同样是"与这个节点相关的线"。
       // 默认值一个字没改:不相关的线看起来和以前完全一样。
@@ -813,6 +848,59 @@ function Canvas() {
     const rootCenter = centers.length ? (centers[0] + centers[centers.length - 1]) / 2 : 90;
     add(root, 0, rootCenter - height(root) / 2, true);
 
+    // ---- 问题节点(纯投影) --------------------------------------------------
+    // 来源:`agent_questions` 的 `questions`(provider 从 `GET /questions` 拉)。
+    // 它们**不是** `plan_nodes`:不参与排期/依赖/统计,也不写进任何关系表。
+    // 锚定到源节点;源节点缺失或未加载时锚到当前空间根。同锚点的多个问题按
+    // `createdAt` 确定性排序 + 固定偏移,避免堆叠、保证刷新前后位置稳定。
+    const orderedQuestions = [...questions].sort((a, b) =>
+      a.createdAt === b.createdAt ? a.id.localeCompare(b.id) : a.createdAt.localeCompare(b.createdAt),
+    );
+    const primaryQuestionId = orderedQuestions.find((item) => item.status === 'pending')?.id ?? null;
+    const anchorCounts: Record<string, number> = {};
+    orderedQuestions.forEach((item) => {
+      if (item.status === 'archived') return;
+      const anchorId = item.sourceNodeId && positionById[item.sourceNodeId] ? item.sourceNodeId : spaceId;
+      const anchor = positionById[anchorId] ?? { x: 0, y: 0 };
+      const index = anchorCounts[anchorId] ?? 0;
+      anchorCounts[anchorId] = index + 1;
+      const nodeId = `question:${item.id}`;
+      nextNodes.push({
+        id: nodeId,
+        type: 'question',
+        draggable: false,
+        connectable: false,
+        deletable: false,
+        selectable: true,
+        ariaLabel: item.question,
+        position: { x: anchor.x + 40, y: anchor.y + 150 + index * 200 },
+        data: {
+          questionId: item.id,
+          question: item,
+          isPrimary: item.id === primaryQuestionId,
+          isFocused: focusedQuestionId === item.id,
+          draft: questionDrafts[item.id] ?? EMPTY_QUESTION_DRAFT,
+          onDraftChange: (questionId: string, next: CanvasQuestionDraft) =>
+            setQuestionDrafts((prev) => ({ ...prev, [questionId]: next })),
+          onSubmit: submitAnswer,
+          onSkip: dismissQuestion,
+          onLater: postponeQuestion,
+          onLocateSource: (sourceNodeId: string) => select(sourceNodeId),
+        },
+      });
+      // 仅 UI 的锚定虚线:**不是 NodeRelation、不是 dependency**,不写任何表。
+      nextEdges.push({
+        id: `question-anchor:${item.id}`,
+        source: anchorId,
+        target: nodeId,
+        type: 'questionAnchor',
+        className: 'question-anchor-edge',
+        selectable: false,
+        focusable: false,
+        zIndex: -1,
+      });
+    });
+
     /*
      * 关系边。**只画两头都在场的那一条。**
      *
@@ -845,7 +933,18 @@ function Canvas() {
       });
     });
     return { nodes: nextNodes, edges: nextEdges };
-  }, [growth, spaceId, isRootSpace, selectedId, selectedEdgeId, positions, dragging, files, measurements, handleMore, hoveredId, createdId, drawnEdgeId, clearCreated, clearDrawn]);
+  }, [growth, spaceId, isRootSpace, selectedId, selectedEdgeId, positions, dragging, files, measurements, handleMore, hoveredId, createdId, drawnEdgeId, clearCreated, clearDrawn, questions, focusedQuestionId, questionDrafts, submitAnswer, dismissQuestion, postponeQuestion, select]);
+
+  // 右侧「定位到画布」:等 question 节点投影出来之后 fit 一次,并选中它。
+  useEffect(() => {
+    if (!questionFocus) return;
+    const targetId = `question:${questionFocus.id}`;
+    if (!nodes.some((node) => node.id === targetId)) return;
+    if (lastQuestionFocusNonce.current === questionFocus.nonce) return;
+    lastQuestionFocusNonce.current = questionFocus.nonce;
+    setFocusedQuestionId(questionFocus.id);
+    void fitView({ nodes: [{ id: targetId }], duration: 260, maxZoom: 1.5, padding: 0.6 });
+  }, [questionFocus, nodes, fitView]);
 
   // Initial fit must wait for wrapped text to be measured and layout to settle.
   // Do not re-fit while the user drags or edits an already opened scope.
@@ -1180,7 +1279,7 @@ function Canvas() {
    * 不如把选择范围收成与眼睛看到的一致。跨层关系是步骤 4 的事(那时每层都能看到
    * 挂在自己下面的东西),这一批不含。
    */
-  const relationCandidates = nodes.map((node) => node.data.object);
+  const relationCandidates = nodes.flatMap((node) => (node.type === 'growth' ? [node.data.object] : []));
   const nodeLabel = (id: string) => growth.nodes[id]?.title || '（已删除的节点）';
 
   /** 一条关系用一句话说清方向。**依赖必须写成「前置 → 后续」**,别处也照这个说法。 */
@@ -1350,7 +1449,13 @@ function Canvas() {
         maxZoom={1.7}
         // 单击 = 打开正文与详情,**立刻开**。进入子空间不再挂在这里(见上面那段注释:
         // 拆开之后这条路上没有任何计时器,按下去发生什么是一定的)。
-        onNodeClick={(_, node) => openDetail(node.data.object)}
+        onNodeClick={(_, node) => {
+          if (node.type === 'question') {
+            setFocusedQuestionId(node.data.questionId);
+            return;
+          }
+          openDetail(node.data.object);
+        }}
         /*
          * 指针进出节点。只记 id —— 一个字符串。让整张图按 hover 重算一次的代价
          * 是有的,所以它必须换来看得见的东西:与这个节点直接相连的线在 140ms 内
@@ -1364,11 +1469,13 @@ function Canvas() {
           connectNodes(connection.source, connection.target);
         }}
         onEdgeClick={(_, edge) => {
+          // 问题锚定虚线不是业务关系:点它不该打开关系编辑器。
+          if (edge.id.startsWith('question-anchor:')) return;
           // 这个 handler 只收到关系边(父子连线由 `BranchEdge` 画,没有 onClick)。
           const relation = growth.edges.find((item) => item.id === edge.id);
           if (relation) openRelationEditor(relation);
         }}
-        onPaneClick={() => { select(null); setSelectedEdgeId(null); }}
+        onPaneClick={() => { select(null); setSelectedEdgeId(null); setFocusedQuestionId(null); }}
         /*
           `screenToFlowPosition` —— **不手搓** `(clientX - rect.left - panX) / zoom`。
           手搓的那一份在缩放不为 1、或者画布有 padding 的时候就会偏,而偏差是
@@ -1392,6 +1499,8 @@ function Canvas() {
         }}
         onNodeContextMenu={(event, node) => {
           event.preventDefault();
+          // 问题节点没有业务右键菜单。
+          if (node.type !== 'growth') return;
           openNodeMenu(node.data.object, null, { x: event.clientX, y: event.clientY });
         }}
         onPaneContextMenu={(event) => {
