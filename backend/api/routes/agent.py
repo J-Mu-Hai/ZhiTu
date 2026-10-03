@@ -170,7 +170,9 @@ async def v1_generate_weekly(
     )
     db.add(trace)
     await db.commit()
-    return await v1_service.generate_weekly_plan(db, ctx, session, trace=trace)
+    return await v1_service.advance_v1_workflow(
+        db, ctx, session, event="weekly_refinement_requested", trace=trace
+    )
 
 
 @router.post(
@@ -185,7 +187,9 @@ async def v1_generate_daily(
     from backend.services import v1_service
 
     session = await _v1_session(ctx, db)
-    return await v1_service.generate_daily_plan(db, ctx, session)
+    return await v1_service.advance_v1_workflow(
+        db, ctx, session, event="daily_refinement_requested"
+    )
 
 
 @router.post(
@@ -346,7 +350,9 @@ async def v1_reopen_direction(
     from backend.services import v1_service
 
     session = await _v1_session(ctx, db)
-    return await v1_service.reopen_direction_selection(db, ctx, session)
+    return await v1_service.advance_v1_workflow(
+        db, ctx, session, event="direction_reselection_requested"
+    )
 
 
 @router.get(

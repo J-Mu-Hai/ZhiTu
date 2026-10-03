@@ -2286,6 +2286,10 @@ V1_EVENTS = frozenset(
         "weekly_review_due",
         "retry",
         "recovery_after_restart",
+        # R3:细化入口同样是编排事件,由编排器统一决定阶段。
+        "weekly_refinement_requested",
+        "daily_refinement_requested",
+        "direction_reselection_requested",
     }
 )
 
@@ -2384,6 +2388,9 @@ async def advance_v1_workflow(
         "strategy_confirmed",
         "execution_feedback",
         "weekly_review_due",
+        "weekly_refinement_requested",
+        "daily_refinement_requested",
+        "direction_reselection_requested",
     }
     explicit = entry_event in explicit_events
     if session.v1_status == V1_STATUS_RUNNING:
@@ -2430,6 +2437,12 @@ async def advance_v1_workflow(
         )
     if entry_event == "weekly_review_due":
         return await weekend_review(db, ctx, session, trace=trace)
+    if entry_event == "weekly_refinement_requested":
+        return await generate_weekly_plan(db, ctx, session, trace=trace)
+    if entry_event == "daily_refinement_requested":
+        return await generate_daily_plan(db, ctx, session, trace=trace)
+    if entry_event == "direction_reselection_requested":
+        return await reopen_direction_selection(db, ctx, session)
 
     # 2.5)R4:周末首次进入空间**自动发起周回顾**,同一个周末只触发一次。
     today = today_in(ctx.timezone)
