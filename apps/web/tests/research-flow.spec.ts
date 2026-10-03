@@ -149,7 +149,7 @@ test('公开研究:对话显示可信来源,画布提出问题,拖动/刷新恢�
   await questionCard(page).getByRole('button', { name: '提交回答' }).click();
   const proposal = page.locator('.proposal').filter({ hasText: '这学期重心:英语' }).first();
   await expect(proposal).toBeVisible({ timeout: 20000 });
-  const hint = page.locator('.question-hint');
+  const hint = page.locator('.question-status-bar');
   await expect(hint.getByRole('button', { name: '提交回答' })).toHaveCount(0);
   await expect(hint.locator('.cq-option')).toHaveCount(0);
 

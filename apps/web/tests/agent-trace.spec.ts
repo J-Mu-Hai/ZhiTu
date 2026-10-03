@@ -14,6 +14,7 @@
 
 import { expect, test } from '@playwright/test';
 import {
+  API_BASE,
   assertBackendRunning,
   createWorkspace,
   registerAccount,
@@ -69,4 +70,47 @@ test('运行记录:入口可见、状态来自服务端、不泄漏用户原文'
   await expect(
     page.locator('.floating-conversation .message').filter({ hasText: 'ZEBRA-9911' }),
   ).toBeVisible();
+});
+
+test('运行记录展示地图轮触发来源(进入空间)', async ({ page }) => {
+  const { token } = await registerAccount(page, 'agent-trace-map');
+  const workspaceId = await createWorkspace(page, token, '地图轮轨迹空间');
+  await page.goto(`/workbench?workspace=${workspaceId}`);
+  await waitForRealPlan(page);
+
+  /*
+   * 进入空间时服务端会自动跑一轮地图探索(`space_entered`,幂等)。它**不经过**
+   * 普通对话循环,但必须出现在同一个抽屉里。
+   *
+   * 先直接轮询接口等它落库,再开抽屉 —— 否则"抽屉在轨迹创建前打开"会让它读不到,
+   * 而那不是产品问题,是测试的时序。
+   */
+  await expect
+    .poll(
+      async () => {
+        const response = await page.request.get(
+          `${API_BASE}/api/workspaces/${workspaceId}/agent/trace`,
+          { headers: { Authorization: `Bearer ${token}` } },
+        );
+        if (!response.ok()) return 0;
+        const body = (await response.json()) as { turns: { trigger: string }[] };
+        return body.turns.filter(turn => turn.trigger === 'space_entered').length;
+      },
+      { timeout: 20000 },
+    )
+    .toBeGreaterThan(0);
+
+  const entry = page.getByTestId('trace-entry');
+  await expect(entry).toBeVisible();
+  await entry.click();
+  const inspector = page.getByTestId('trace-inspector');
+  await expect(inspector).toBeVisible();
+
+  const mapTurn = inspector.locator('[data-testid="trace-turn"][data-trigger="space_entered"]');
+  await expect(mapTurn.first()).toBeVisible();
+  // 触发来源是给人看的中文标签,不是枚举值。
+  await expect(mapTurn.first()).toContainText('进入空间');
+  // 终态来自服务端(rule 兜底下通常是 failed/ROADMAP_INVALID,同样可读)。
+  await expect(mapTurn.first()).toHaveAttribute('data-status', /completed|failed|timed_out/);
+  await expect(mapTurn.first().locator('.trace-summary')).not.toHaveCount(0);
 });

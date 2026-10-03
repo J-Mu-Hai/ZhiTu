@@ -80,9 +80,12 @@ test('进入目标自动生成路线图,重复进入不重复', async ({ page })
   expect(questionText).toContain('哪条路线');
   expect(questionText, '战略层不该先问每周投入').not.toContain('每周');
 
-  // QuestionStatusHint 必须跟暖白主题一致,而且"定位到画布"要有足够对比度。
-  const hint = page.locator('.question-hint');
+  // 标题栏下的紧凑状态条必须跟暖白主题一致，而且“定位到画布”要有足够对比度。
+  const hint = page.locator('.question-status-bar');
   await expect(hint).toBeVisible({ timeout: 20000 });
+  await expect(hint).toContainText('待回答问题');
+  // 旧版的正文大卡片已经移除。
+  await expect(page.locator('.question-hint')).toHaveCount(0);
   const styles = await hint.evaluate((element) => {
     const parse = (value: string) => {
       const numbers = (value.match(/[\d.]+/g) ?? []).map(Number);

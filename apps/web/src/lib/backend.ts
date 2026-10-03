@@ -1865,6 +1865,7 @@ export type AgentTraceStep =
   | 'resolving_context'
   | 'waiting_model'
   | 'running_tool'
+  | 'retrying'
   | 'validating_output'
   | 'persisting'
   | 'completed'

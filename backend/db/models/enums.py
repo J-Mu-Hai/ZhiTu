@@ -415,6 +415,11 @@ class AgentTraceStep(StrEnum):
 
     终态是 `completed | failed | timed_out | cancelled`;其余都是可运行的中间态。中间态
     的 `current_step` 可以停住(等待模型可以很久),但 `last_progress_at` 由心跳更新。
+
+    写入点覆盖两条真实执行路径:
+
+    - `agent_loop_service`(普通对话轮:发模型请求前、工具执行前后、终态);
+    - `reasoning_service`(显式地图轮:探索 / 纠错重试 / 增量 / 确认战略)。
     """
 
     QUEUED = "queued"
@@ -424,6 +429,8 @@ class AgentTraceStep(StrEnum):
     WAITING_MODEL = "waiting_model"
     #: 正在执行只读工具。
     RUNNING_TOOL = "running_tool"
+    #: 路线结构不合法后的**结构化纠错重试**。它只出现在真实发生第二次模型调用的地方。
+    RETRYING = "retrying"
     #: 正在校验模型输出结构。
     VALIDATING_OUTPUT = "validating_output"
     #: 校验通过、正在把结果落库(调用方在同一事务里)。

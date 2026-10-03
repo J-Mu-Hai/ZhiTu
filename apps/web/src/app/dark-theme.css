@@ -585,8 +585,7 @@ select {
   background-color: #4785d4;
 }
 
-.task-view,
-.timeline-view {
+.task-view{
   color: #304b62;
   background: #fbfaf6;
 }
@@ -613,32 +612,15 @@ select {
   border-color: #bfd6e5;
 }
 
-.timeline-tools,
-.date-inspector {
-  background-color: #0e1621;
-  border-color: #243246;
-}
 
-.scale-tabs {
-  background-color: #0d1621;
-  border-color: #29384b;
-}
 
-.timeline-label,
-.timeline-category,
-.month-row {
-  color: #a6b7cc !important;
-  background-color: #0f1722 !important;
-}
 
-.timeline-row,
-.month-row {
-  border-color: #233043;
-}
 
-.timeline-track {
-  background-image: linear-gradient(to right, #202d3d 1px, transparent 1px);
-}
+
+
+
+
+
 
 .demo-dialog {
   color: #dce5f1;
@@ -656,8 +638,7 @@ select {
 .node-form select,
 .node-form textarea,
 .journal-options input,
-.journal-options select,
-.date-editor input {
+.journal-options select{
   color: #d5dfec;
   background-color: #0b131e;
   border-color: #304157;
@@ -1295,19 +1276,14 @@ body {
 }
 .conversation-abilities .tiny-dot { margin-top: 6px; }
 
-.timeline-view,
+
 .task-view,
 .scroll-area { color: #2e455a; background-color: rgba(255, 254, 250, 0.7); }
-.timeline-tools,
-.timeline-grid,
-.month-row,
-.timeline-label,
-.timeline-category { color: #405b72; background-color: #f8faf8; border-color: #dbe5e8; }
-.timeline-row,
+
+
 .task-row,
-.stage-summary,
-.date-inspector { border-color: #dce6e9; background-color: transparent; }
-.timeline-track { background-image: linear-gradient(to right, #dce7eb 1px, transparent 1px); }
+.stage-summary{ border-color: #dce6e9; background-color: transparent; }
+
 .task-detail,
 .task-detail time,
 .section-heading h2,
@@ -1375,8 +1351,7 @@ body {
 .node-form select,
 .node-form textarea,
 .journal-options input,
-.journal-options select,
-.date-editor input {
+.journal-options select{
   color: #304b62;
   background: #f8faf8;
   border-color: #d4e1e5;
@@ -1442,8 +1417,7 @@ body {
 .behavior-stats strong,
 .spaces-hero p,
 .text-button,
-.filter-row button,
-.scale-tabs button { color: var(--muted); }
+.filter-row button{ color: var(--muted); }
 
 /* 焦点卡里的四行字。`#a4b5cd`(2.07:1)和 `#6f859f`(3.76:1)是同一批残留,
    这张卡是首页最该被读到的一张,里面的话却最浅。

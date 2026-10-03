@@ -49,9 +49,11 @@ from backend.db.models import (
     Proposal,
     ReasoningNode,
     ReasoningNodeLink,
+    ReasoningState,
 )
 from backend.db.models.enums import (
     ACTIVE_QUESTION_STATUSES,
+    AgentTraceStep,
     ProposalStatus,
     ReasoningLinkType,
     ReasoningNodeStatus,
@@ -62,7 +64,13 @@ from backend.db.models.enums import (
     ReasoningTurnAction,
     RevisionTrigger,
 )
-from backend.services import conversation_service, proposal_service, question_service, turn_context
+from backend.services import (
+    agent_trace_service,
+    conversation_service,
+    proposal_service,
+    question_service,
+    turn_context,
+)
 from backend.services.context import WorkspaceContext
 from backend.services.errors import InvalidInput, NodeNotFound
 
@@ -742,7 +750,12 @@ async def run_space_entered(
     ):
         return await _response(db, ctx, session, replayed=True)
 
-    # 标记 running 并**立即提交** —— 并发的第二次进入看得到,不会重复跑模型。
+    # 标记 running 并**立即提交** —— 并发的第二次进入看得到,不会重复跑模型;
+    # 轨迹行也随着这次提交可被诊断入口读到。
+    trace = agent_trace_service.start_map_trace(
+        ctx, trigger=payload.trigger, context_node_id=root.id
+    )
+    db.add(trace)
     session.status = ReasoningSessionStatus.RUNNING
     session.last_error = None
     await db.commit()
@@ -750,6 +763,7 @@ async def run_space_entered(
     return await _explore_and_apply(
         db, ctx, root, session, reasoner,
         trigger_message=SPACE_ENTERED_PROMPT,
+        trace=trace,
         current_iv=await input_version(db, ctx, root),
         idempotency_key=payload.idempotency_key,
     )
@@ -763,6 +777,7 @@ async def _explore_and_apply(
     reasoner,
     *,
     trigger_message: str,
+    trace: ReasoningState,
     current_iv: str | None = None,
     idempotency_key: str | None = None,
 ) -> AgentTurnResponse:
@@ -774,6 +789,10 @@ async def _explore_and_apply(
     3. 再失败就写 `failed` + 可读原因,**不写问题节点、不降级成“先问一个碎问题”**。
 
     只有校验通过才真的动地图,调用方在同一个事务里提交。
+
+    `trace` 是调用方建好并已 `add` 的轨迹行(见 `agent_trace_service.start_map_trace`)。
+    本函数在每个**真实执行边界**推进它:发模型请求前 `waiting_model`、返回后
+    `validating_output`、结构不合法时 `retrying`、校验通过后 `persisting`、终态收口。
     """
     existing_rows = await _load_nodes(db, session.id)
     existing = {row.handle: row for row in existing_rows}
@@ -783,12 +802,21 @@ async def _explore_and_apply(
     turn = await _build_reasoning_context(
         db, ctx, root, session, trigger_message=trigger_message
     )
+    # **发模型请求前就写 waiting_model 并提交。** 模型卡住时诊断入口能读到
+    # “正在等模型”和最后一次心跳,而不是一片空白。
+    agent_trace_service.mark_step(trace, AgentTraceStep.WAITING_MODEL)
+    await db.commit()
     result = await reasoner.reason(turn)
+    agent_trace_service.mark_step(trace, AgentTraceStep.VALIDATING_OUTPUT)
     error = _roadmap_error(
         result, existing=existing, handle_of_id=handle_of_id, force_roadmap=force_roadmap
     )
     # 模型**可用**但输出不合格 -> 结构化纠错,再试一次(有限预算内一次)。
     if error is not None and not result.degraded:
+        # 第一次模型输出不合法这一事实**必须留在轨迹里**;`retrying` 只在这里出现。
+        agent_trace_service.mark_retry(trace)
+        agent_trace_service.mark_step(trace, AgentTraceStep.WAITING_MODEL)
+        await db.commit()
         retry_turn = await _build_reasoning_context(
             db,
             ctx,
@@ -798,12 +826,29 @@ async def _explore_and_apply(
         )
         retry = await reasoner.reason(retry_turn)
         result = retry
+        agent_trace_service.mark_step(trace, AgentTraceStep.VALIDATING_OUTPUT)
         error = _roadmap_error(
             retry, existing=existing, handle_of_id=handle_of_id, force_roadmap=force_roadmap
         )
     if error is not None:
         session.status = ReasoningSessionStatus.FAILED
         session.last_error = error
+        if result.degraded:
+            agent_trace_service.mark_terminal(
+                trace,
+                degraded=True,
+                degraded_reason=result.degraded_reason,
+                stopped_reason="failed",
+            )
+        else:
+            # 模型可用,但结构不合法 —— 用**自己的**闭集码,不是模型的自由文本。
+            agent_trace_service.mark_terminal(
+                trace,
+                degraded=False,
+                degraded_reason=None,
+                stopped_reason="failed",
+                code="ROADMAP_INVALID",
+            )
         await db.commit()
         return await _response(db, ctx, session, result=result)
 
@@ -811,6 +856,7 @@ async def _explore_and_apply(
     assert draft is not None  # `_roadmap_error` 已经确认过
 
     # ---- 全部校验通过,才动地图 ----
+    agent_trace_service.mark_step(trace, AgentTraceStep.PERSISTING)
     _apply_draft(db, session, draft, existing)
     await _resolve_parents(db, session.id)
     await _apply_links(db, session.id, draft)
@@ -850,6 +896,12 @@ async def _explore_and_apply(
     session.map_version += 1
     session.explored_at = utcnow()
     session.last_evaluated_at = session.explored_at
+    agent_trace_service.mark_terminal(
+        trace,
+        degraded=False,
+        degraded_reason=None,
+        stopped_reason="ready_to_propose",
+    )
     await db.commit()
 
     return await _response(
@@ -880,12 +932,17 @@ async def regenerate_roadmap(
         raise InvalidInput("这个空间还没有根目标,先建一个再开始目标推理。")
     session = await get_or_create_session(db, ctx)
     assert session is not None
+    trace = agent_trace_service.start_map_trace(
+        ctx, trigger=payload.trigger, context_node_id=root.id
+    )
+    db.add(trace)
     session.status = ReasoningSessionStatus.RUNNING
     session.last_error = None
     await db.commit()
     return await _explore_and_apply(
         db, ctx, root, session, reasoner,
         trigger_message=REGENERATE_ROADMAP_MESSAGE,
+        trace=trace,
         current_iv=await input_version(db, ctx, root),
         idempotency_key=payload.idempotency_key,
     )
@@ -961,6 +1018,12 @@ async def _run_incremental(
     if payload.trigger == "question_answered":
         trigger_message = await _advance_after_answer(db, ctx, session, payload)
 
+    # 轨迹:这一轮的真实执行从这里开始。触发来源就是显式的 `payload.trigger`。
+    trace = agent_trace_service.start_map_trace(
+        ctx, trigger=payload.trigger, context_node_id=root.id
+    )
+    db.add(trace)
+
     # **旧地图优先补路线。** 阶段 8 前留下的地图顶层是一堆一级 dimension;用户
     # 下一条消息(包括回答问题)不应该继续把它们展开,而应该先把宏观路线补上。
     existing_rows = await _load_nodes(db, session.id)
@@ -971,6 +1034,7 @@ async def _run_incremental(
         return await _explore_and_apply(
             db, ctx, root, session, reasoner,
             trigger_message=f"{trigger_message}\n\n{ROADMAP_CORRECTION_MESSAGE}",
+            trace=trace,
         )
 
     session.status = ReasoningSessionStatus.RUNNING
@@ -979,7 +1043,11 @@ async def _run_incremental(
     turn = await _build_reasoning_context(
         db, ctx, root, session, trigger_message=trigger_message
     )
+    # 发模型请求前写 waiting_model 并提交:等待期间诊断入口可读。
+    agent_trace_service.mark_step(trace, AgentTraceStep.WAITING_MODEL)
+    await db.commit()
     result = await reasoner.reason(turn)
+    agent_trace_service.mark_step(trace, AgentTraceStep.VALIDATING_OUTPUT)
 
     changed = False
     if not result.degraded and result.reasoning_map is not None:
@@ -991,8 +1059,16 @@ async def _run_incremental(
         except MapValidationError as exc:
             session.status = ReasoningSessionStatus.READY
             session.last_error = str(exc)
+            agent_trace_service.mark_terminal(
+                trace,
+                degraded=False,
+                degraded_reason=None,
+                stopped_reason="failed",
+                code="ROADMAP_INVALID",
+            )
             await db.commit()
             return await _response(db, ctx, session, result=result)
+        agent_trace_service.mark_step(trace, AgentTraceStep.PERSISTING)
         _apply_draft(db, session, result.reasoning_map, existing)
         await _resolve_parents(db, session.id)
         await _apply_links(db, session.id, result.reasoning_map)
@@ -1030,6 +1106,20 @@ async def _run_incremental(
     )
     session.status = ReasoningSessionStatus.READY
     session.last_evaluated_at = now
+    if result.degraded:
+        agent_trace_service.mark_terminal(
+            trace,
+            degraded=True,
+            degraded_reason=result.degraded_reason,
+            stopped_reason="failed",
+        )
+    else:
+        agent_trace_service.mark_terminal(
+            trace,
+            degraded=False,
+            degraded_reason=None,
+            stopped_reason="ready_to_propose",
+        )
     await db.commit()
     return await _response(
         db,
@@ -1076,6 +1166,14 @@ async def _confirm_strategy(
     if root is None or session is None:
         raise InvalidInput("这个空间还没有开始目标推理。")
 
+    # 战略确认本身**不调模型**:它把已选中的路线收敛成一份待确认提案。所以它的轨迹
+    # 从 queued -> resolving_context 直接进入校验/写入,不会出现 waiting_model ——
+    # 那不是遗漏,是这一轮真的没有模型等待。
+    trace = agent_trace_service.start_map_trace(
+        ctx, trigger=payload.trigger, context_node_id=root.id
+    )
+    db.add(trace)
+
     # 已经有一份战略提案且用户确认过了 -> 回写关联,进入执行规划阶段。
     if session.strategy_proposal_id is not None:
         proposal = await db.scalar(
@@ -1086,6 +1184,10 @@ async def _confirm_strategy(
             session.phase = ReasoningSessionPhase.STRATEGY_CONFIRMED
             session.turn_action = ReasoningTurnAction.CONFIRM
             session.last_evaluated_at = utcnow()
+            agent_trace_service.mark_step(trace, AgentTraceStep.PERSISTING)
+            agent_trace_service.mark_terminal(
+                trace, degraded=False, degraded_reason=None, stopped_reason="ready_to_propose"
+            )
             await db.commit()
             return await _response(db, ctx, session, changed=True)
 
@@ -1129,6 +1231,7 @@ async def _confirm_strategy(
         "planningLevel": "strategy",
         "description": route.summary or route.rationale or "",
     }
+    agent_trace_service.mark_step(trace, AgentTraceStep.VALIDATING_OUTPUT)
     outcome = await proposal_service.build_from_actions(
         db,
         ctx,
@@ -1145,6 +1248,19 @@ async def _confirm_strategy(
     session.phase = ReasoningSessionPhase.ROADMAP_REVIEW
     session.turn_action = ReasoningTurnAction.CONFIRM
     session.last_evaluated_at = utcnow()
+    if outcome.proposal is None and outcome.errors:
+        # 提案没通过校验 —— 本轮没有战略可确认。用**自己的**闭集码,不写模型原文。
+        agent_trace_service.mark_terminal(
+            trace,
+            degraded=False,
+            degraded_reason=None,
+            stopped_reason="failed",
+            code="PROPOSAL_VALIDATION_FAILED",
+        )
+    else:
+        agent_trace_service.mark_terminal(
+            trace, degraded=False, degraded_reason=None, stopped_reason="ready_to_propose"
+        )
     await db.commit()
     return await _response(db, ctx, session, changed=True, proposal_errors=outcome.errors)
 

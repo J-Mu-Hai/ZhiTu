@@ -12,7 +12,8 @@
    模型原始 prompt、隐藏思维链、用户原文、密钥、Cookie 或连接串。
 2. **不另造一份状态。** 读的是 `ReasoningState.current_step` / `started_at` /
    `last_progress_at` / `terminal_code` / `safe_summary` —— 这些字段由
-   `agent_loop_service` 在发模型请求前、工具执行前后、终态处写入。前端只读,不猜。
+   `agent_loop_service` 与 `reasoning_service` 在发模型请求前、工具执行前后、终态处
+   写入。前端只读,不猜。
 3. **不返回 ORM 原始 JSON。** 工具详情只保留 `tool_name` / `status` / 耗时,以及一个
    由白名单字段拼出的中文摘要;`result_summary` 的原始内容一律不出接口。
 
@@ -25,6 +26,7 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 
 from sqlalchemy import select
@@ -42,6 +44,7 @@ from backend.db.models import ReasoningState, ToolCallRecord
 from backend.db.models.enums import (
     AgentTraceStep,
     DegradedReason,
+    ReasoningAction,
     ReasoningStatus,
     ToolCallStatus,
 )
@@ -54,10 +57,10 @@ MAX_TRACE_LIMIT = 50
 #: 等待模型多久算"仍在等待"并给出一句提示。**只看服务端时间**。
 WAITING_MODEL_NOTICE_SECONDS = 25
 
-#: 触发来源 -> 给人看的短标签。与 `AgentTurnTrigger` 以及对话路径的三个内部来源对齐。
+#: 触发来源 -> 给人看的短标签。与 `AgentTurnTrigger` 以及对话路径的内部来源对齐。
 TRIGGER_LABELS: dict[str, str] = {
     "space_entered": "进入空间",
-    "user_message": "回答问题",
+    "user_message": "用户消息",
     "node_selected": "选中节点",
     "question_answered": "回答问题",
     "strategy_confirmation": "确认战略",
@@ -76,6 +79,7 @@ STEP_LABELS: dict[str, str] = {
     AgentTraceStep.RESOLVING_CONTEXT.value: "准备上下文",
     AgentTraceStep.WAITING_MODEL.value: "等待模型",
     AgentTraceStep.RUNNING_TOOL.value: "执行工具",
+    AgentTraceStep.RETRYING.value: "纠错重试",
     AgentTraceStep.VALIDATING_OUTPUT.value: "校验输出",
     AgentTraceStep.PERSISTING.value: "写入",
     AgentTraceStep.COMPLETED.value: "已完成",
@@ -97,6 +101,8 @@ TERMINAL_SUMMARIES: dict[str, str] = {
     "OPENJIUWEN_NOT_INSTALLED": "编排层未安装，已回退到直连模型。",
     "BUDGET_EXHAUSTED": "本轮达到模型/工具调用上限，未应用任何未确认更改。",
     "TOOL_ERROR": "只读工具执行失败，本轮记录已保留。",
+    "ROADMAP_INVALID": "模型给出的路线结构不合法，本轮没有写入任何节点，可以重试。",
+    "PROPOSAL_VALIDATION_FAILED": "这一轮生成的战略提案没有通过校验，计划没有改动。",
     "INTERNAL": "服务端在处理这一轮时出错，本轮没有写入任何更改。",
     "COMPLETED": "本轮已完成，等待你确认或无需更改。",
 }
@@ -134,6 +140,15 @@ def _terminal_from_result(
     if stopped_reason == "budget_exhausted":
         return AgentTraceStep.FAILED, "BUDGET_EXHAUSTED"
     return AgentTraceStep.COMPLETED, "COMPLETED"
+
+
+def _step_for_code(code: str) -> AgentTraceStep:
+    """显式终态码 -> 步骤。只允许闭集里的码走到这里。"""
+    if code == "MODEL_TIMEOUT":
+        return AgentTraceStep.TIMED_OUT
+    if code == "COMPLETED":
+        return AgentTraceStep.COMPLETED
+    return AgentTraceStep.FAILED
 
 
 def _tool_duration_ms(record: ToolCallRecord) -> int | None:
@@ -284,7 +299,7 @@ async def load_trace(
 
 
 # ---------------------------------------------------------------------------------
-# 写入辅助(由 `agent_loop_service` 在真实边界调用)
+# 写入辅助(由 `agent_loop_service` / `reasoning_service` 在真实边界调用)
 # ---------------------------------------------------------------------------------
 def mark_step(
     state: ReasoningState,
@@ -310,23 +325,42 @@ def mark_step(
         ]
 
 
+def mark_retry(state: ReasoningState, *, now: datetime | None = None) -> None:
+    """记录一次**结构化纠错重试**并进入它。
+
+    只在地图轮真的因为路线结构不合法而第二次调用模型时调用。它不改业务数据,
+    只把“第一次输出不合法、现在重试”这件事写进真实轨迹。
+    """
+    state.attempt = max(1, state.attempt) + 1
+    mark_step(state, AgentTraceStep.RETRYING, now=now)
+
+
 def mark_terminal(
     state: ReasoningState,
     *,
     degraded: bool,
     degraded_reason: DegradedReason | None,
     stopped_reason: str,
+    code: str | None = None,
     now: datetime | None = None,
 ) -> None:
-    """写入终态 step / code / 脱敏摘要。**这里不会写入任何原始文本。**"""
+    """写入终态 step / code / 脱敏摘要。**这里不会写入任何原始文本。**
+
+    `code` 提供时优先:地图轮的“路线结构不合法”/“战略提案未过校验”不是 `degraded`,
+    但同样是可读的失败终态。码必须来自 `TERMINAL_SUMMARIES` 闭集。
+    """
     stamp = now or utcnow()
-    step, code = _terminal_from_result(
-        degraded=degraded, degraded_reason=degraded_reason, stopped_reason=stopped_reason
-    )
+    if code is None:
+        step, resolved_code = _terminal_from_result(
+            degraded=degraded, degraded_reason=degraded_reason, stopped_reason=stopped_reason
+        )
+    else:
+        resolved_code = code
+        step = _step_for_code(code)
     previous = state.current_step
     state.current_step = step
-    state.terminal_code = code
-    state.safe_summary = safe_terminal_summary(code)
+    state.terminal_code = resolved_code
+    state.safe_summary = safe_terminal_summary(resolved_code)
     state.last_progress_at = stamp
     if state.started_at is None:
         state.started_at = stamp
@@ -338,8 +372,42 @@ def mark_terminal(
     if state.status is ReasoningStatus.EXPLORING:
         # 轨迹终态与业务状态互不覆盖:这里只在业务层没有给结论时补一个诚实状态。
         state.status = (
-            ReasoningStatus.BLOCKED if degraded else ReasoningStatus.RESOLVED
+            ReasoningStatus.RESOLVED
+            if step is AgentTraceStep.COMPLETED
+            else ReasoningStatus.BLOCKED
         )
+
+
+def start_map_trace(
+    ctx: WorkspaceContext,
+    *,
+    trigger: str,
+    source_message_id: uuid.UUID | None = None,
+    context_node_id: uuid.UUID | None = None,
+) -> ReasoningState:
+    """为一个**地图轮**建一条真实轨迹。**调用方负责 add + commit。**
+
+    它不另建表:写进的就是 `agent_loop_service` 用的那张 `reasoning_states`。
+    `question` 存的是触发标签(闭集),不是用户原文。
+    """
+    state = ReasoningState(
+        id=uuid.uuid4(),
+        workspace_id=ctx.id,
+        source_message_id=source_message_id,
+        context_node_id=context_node_id,
+        question=TRIGGER_LABELS.get(trigger, "推进当前目标"),
+        status=ReasoningStatus.EXPLORING,
+        next_action=ReasoningAction.SYNTHESIZE,
+        facts_summary=[],
+        assumptions=[],
+        open_questions=[],
+        trace_steps=[],
+        trigger=trigger,
+        attempt=1,
+    )
+    mark_step(state, AgentTraceStep.QUEUED)
+    mark_step(state, AgentTraceStep.RESOLVING_CONTEXT)
+    return state
 
 
 __all__ = [
@@ -352,8 +420,10 @@ __all__ = [
     "build_turn_view",
     "load_trace",
     "load_turns",
+    "mark_retry",
     "mark_step",
     "mark_terminal",
     "safe_terminal_summary",
+    "start_map_trace",
     "trace_ui_enabled",
 ]

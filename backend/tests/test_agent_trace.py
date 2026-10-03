@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass, field
 
 import httpx
@@ -16,17 +17,37 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.agent.runtime.base import ReasoningResult, ToolRequest
+from backend.agent.runtime.base import (
+    ReasoningMapDraft,
+    ReasoningMapNodeDraft,
+    ReasoningResult,
+    ToolRequest,
+)
+from backend.contracts.proposal import ActionError
 from backend.core.config import settings
-from backend.db.models import Message, ReasoningState, ToolCallRecord
+from backend.db.models import (
+    GoalReasoningSession,
+    Message,
+    PlanNode,
+    ReasoningNode,
+    ReasoningState,
+    ToolCallRecord,
+    Workspace,
+)
 from backend.db.models.enums import (
     AgentTraceStep,
     DegradedReason,
     ModelSource,
+    ReasoningNodeStatus,
+    ReasoningNodeType,
+    ReasoningSessionPhase,
+    ReasoningSessionStatus,
+    ReasoningSource,
+    ReasoningTurnAction,
     ToolCallStatus,
 )
 from backend.db.session import SessionLocal
-from backend.services import agent_loop_service
+from backend.services import agent_loop_service, proposal_service
 
 
 @dataclass
@@ -321,6 +342,341 @@ def _degraded_reasoner(reason: DegradedReason) -> InspectingReasoner:
             )
 
     return _Degraded()  # type: ignore[return-value]
+
+
+# ---------------------------------------------------------------------------------
+# 8. 地图轮(reasoning_service)也必须有真实轨迹
+#
+# 阶段 9.1:**不能再拿“它不经过 agent_loop_service”当理由**。所有显式地图轮
+# (space_entered / regenerate_roadmap / user_message 增量 / question_answered /
+# strategy_confirmation / progress_update / execution_planning / refine)都写进同一张
+# `reasoning_states`、同一个读取 API、同一个脱敏投影。
+# ---------------------------------------------------------------------------------
+def _roadmap_draft(stages: int = 4) -> ReasoningMapDraft:
+    """一条合法的首轮路线图:恰好一条顶层 route + N 个 stage。"""
+    nodes: list[ReasoningMapNodeDraft] = [
+        ReasoningMapNodeDraft(
+            handle="r1",
+            title="推荐路线:约 8 周",
+            node_type="route",
+            summary="先打通最小闭环",
+            timeframe="约 8 周",
+            deliverable="一个可展示的项目",
+            pass_criteria="能端到端做完并讲清结论",
+        )
+    ]
+    for index in range(1, stages + 1):
+        nodes.append(
+            ReasoningMapNodeDraft(
+                handle=f"r{index + 1}",
+                title=f"阶段 {index}",
+                node_type="stage",
+                parent_handle="r1",
+                timeframe=f"约 {index} 周",
+                deliverable=f"成果 {index}",
+                pass_criteria=f"通过标准 {index}",
+            )
+        )
+    return ReasoningMapDraft(
+        nodes=tuple(nodes),
+        focus_handle="r2",
+        focus_reason="第一阶段最该先定下来",
+        phase="roadmap_draft",
+        turn_action="ask_user",
+    )
+
+
+def _map_result(draft: ReasoningMapDraft | None, *, degraded: bool = False) -> ReasoningResult:
+    if degraded:
+        return ReasoningResult(
+            reply="模型这次没有成功。",
+            source=ModelSource.UNAVAILABLE,
+            degraded=True,
+            degraded_reason=DegradedReason.MODEL_UNAVAILABLE,
+            retryable=True,
+        )
+    return ReasoningResult(
+        reply="这是推荐路线与阶段。",
+        source=ModelSource.DIRECT_LLM,
+        reasoning_map=draft,
+    )
+
+
+@dataclass
+class MapInspectingReasoner:
+    """在模型“思考期间”用另一个会话回读轨迹的地图轮假模型。"""
+
+    draft: ReasoningMapDraft | None = None
+    degraded: bool = False
+    observed: dict = field(default_factory=dict)
+
+    async def reason(self, turn):
+        async with SessionLocal() as other:
+            state = await other.scalar(
+                select(ReasoningState).order_by(ReasoningState.created_at.desc()).limit(1)
+            )
+            if state is not None:
+                self.observed["step"] = state.current_step
+                self.observed["trigger"] = state.trigger
+                self.observed["started_at"] = state.started_at
+        return _map_result(self.draft, degraded=self.degraded)
+
+
+@dataclass
+class MapSequenceReasoner:
+    """按顺序返回地图轮结果,用来验结构化纠错重试。"""
+
+    results: tuple[ReasoningResult, ...]
+    calls: list = field(default_factory=list)
+    _index: int = 0
+
+    async def reason(self, turn):
+        self.calls.append(turn)
+        result = self.results[min(self._index, len(self.results) - 1)]
+        self._index += 1
+        return result
+
+
+async def _map_turn(client: httpx.AsyncClient, account, trigger: str, key: str, **extra) -> dict:
+    response = await client.post(
+        f"/api/workspaces/{account.workspace_id}/agent/turn",
+        json={"trigger": trigger, "idempotencyKey": key, **extra},
+        headers=account.headers,
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+async def _make_legacy_map(db: AsyncSession, account) -> None:
+    """造一张阶段 8 之前的旧地图(顶层一堆一级 dimension),用来触发重生成。"""
+    root = await db.scalar(
+        select(PlanNode).where(
+            PlanNode.workspace_id == uuid.UUID(account.workspace_id), PlanNode.depth == 0
+        )
+    )
+    assert root is not None
+    session = GoalReasoningSession(
+        workspace_id=uuid.UUID(account.workspace_id),
+        root_plan_node_id=root.id,
+        phase=ReasoningSessionPhase.STRATEGIC_EXPLORATION,
+        turn_action=ReasoningTurnAction.ANALYZE,
+        status=ReasoningSessionStatus.READY,
+    )
+    db.add(session)
+    await db.flush()
+    for index in range(1, 5):
+        db.add(
+            ReasoningNode(
+                session_id=session.id,
+                handle=f"old{index}",
+                title=f"旧维度 {index}",
+                node_type=ReasoningNodeType.DIMENSION,
+                status=ReasoningNodeStatus.EXPLORING,
+                next_action=ReasoningTurnAction.ANALYZE,
+                source=ReasoningSource.AGENT,
+            )
+        )
+    await db.commit()
+
+
+async def test_space_entered_trace_shows_waiting_model_during_the_call(
+    app_client: httpx.AsyncClient, make_account, use_reasoner
+) -> None:
+    """地图轮在模型等待期间也必须读得到 `waiting_model`。"""
+    account = await make_account()
+    reasoner = use_reasoner(MapInspectingReasoner(draft=_roadmap_draft()))
+    await _map_turn(app_client, account, "space_entered", "map-enter-1")
+
+    assert reasoner.observed.get("step") is AgentTraceStep.WAITING_MODEL
+    assert reasoner.observed.get("trigger") == "space_entered"
+    assert reasoner.observed.get("started_at") is not None
+
+    turn = (await _trace(app_client, account))["turns"][0]
+    assert turn["trigger"] == "space_entered"
+    assert turn["triggerLabel"] == "进入空间"
+    assert turn["status"] == "completed"
+    assert "waiting_model" in turn["steps"]
+    assert "validating_output" in turn["steps"]
+    assert "persisting" in turn["steps"]
+    assert turn["safeSummary"]
+
+
+async def test_regenerate_roadmap_traces_success(
+    app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
+) -> None:
+    account = await make_account()
+    await _make_legacy_map(db, account)
+    use_reasoner(MapInspectingReasoner(draft=_roadmap_draft()))
+    await _map_turn(app_client, account, "regenerate_roadmap", "regen-ok")
+
+    turn = (await _trace(app_client, account))["turns"][0]
+    assert turn["trigger"] == "regenerate_roadmap"
+    assert turn["triggerLabel"] == "重新生成路线"
+    assert turn["status"] == "completed"
+    assert turn["terminalCode"] == "COMPLETED"
+
+
+async def test_regenerate_roadmap_traces_failure(
+    app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
+) -> None:
+    account = await make_account()
+    await _make_legacy_map(db, account)
+    use_reasoner(MapInspectingReasoner(degraded=True))
+    await _map_turn(app_client, account, "regenerate_roadmap", "regen-fail")
+
+    turn = (await _trace(app_client, account))["turns"][0]
+    assert turn["trigger"] == "regenerate_roadmap"
+    assert turn["status"] == "failed"
+    assert turn["terminalCode"] == "MODEL_UNAVAILABLE"
+    assert turn["safeSummary"]
+
+
+async def test_roadmap_correction_retry_is_traced_then_succeeds(
+    app_client: httpx.AsyncClient, make_account, use_reasoner
+) -> None:
+    """第一次输出不合法 -> 结构化纠错重试 -> 成功,全过程留痕。"""
+    account = await make_account()
+    use_reasoner(
+        MapSequenceReasoner(
+            results=(
+                _map_result(None),  # 第一次只回文字,没有结构
+                _map_result(_roadmap_draft()),  # 纠错后拿到合法路线图
+            )
+        )
+    )
+    await _map_turn(app_client, account, "space_entered", "enter-retry-ok")
+
+    turn = (await _trace(app_client, account))["turns"][0]
+    assert turn["status"] == "completed"
+    assert turn["attempt"] == 2, "纠错重试必须体现为第二次尝试"
+    assert "retrying" in turn["steps"]
+    assert turn["steps"].count("waiting_model") == 2, "两次模型调用都要有等待边界"
+    assert turn["steps"][-1] == "completed"
+
+
+async def test_roadmap_correction_retry_exhausted_is_traced_as_failed(
+    app_client: httpx.AsyncClient, make_account, use_reasoner
+) -> None:
+    """两次都不合法 -> 最终失败,而且**不泄露模型原文**。"""
+    account = await make_account()
+    use_reasoner(
+        MapSequenceReasoner(
+            results=(
+                _map_result(None),
+                ReasoningResult(
+                    reply="第二次还是只有一句自然语言 SECRET_ROADMAP_TEXT",
+                    source=ModelSource.DIRECT_LLM,
+                    reasoning_map=None,
+                ),
+            )
+        )
+    )
+    await _map_turn(app_client, account, "space_entered", "enter-retry-fail")
+
+    body = await _trace(app_client, account)
+    turn = body["turns"][0]
+    assert turn["status"] == "failed"
+    assert turn["terminalCode"] == "ROADMAP_INVALID"
+    assert "retrying" in turn["steps"]
+    assert "SECRET_ROADMAP_TEXT" not in str(body)
+
+
+async def test_strategy_confirmation_failure_is_readable(
+    app_client: httpx.AsyncClient, make_account, use_reasoner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """战略提案没过校验时,轨迹是可读的失败终态,而且只含脱敏码。"""
+    account = await make_account()
+    use_reasoner(MapInspectingReasoner(draft=_roadmap_draft()))
+    await _map_turn(app_client, account, "space_entered", "strategy-enter")
+
+    async def _reject(*args, **kwargs):
+        return proposal_service.ProposalOutcome(
+            proposal=None,
+            errors=(ActionError(ordinal=1, code="ROUTE_CONFLICT", message="这条路线与现有战略冲突。"),),
+        )
+
+    monkeypatch.setattr(proposal_service, "build_from_actions", _reject)
+    body = await _map_turn(app_client, account, "strategy_confirmation", "strategy-fail")
+    assert body["proposalErrors"], "提案校验失败必须如实返回"
+
+    turn = (await _trace(app_client, account))["turns"][0]
+    assert turn["trigger"] == "strategy_confirmation"
+    assert turn["triggerLabel"] == "确认战略"
+    assert turn["status"] == "failed"
+    assert turn["terminalCode"] == "PROPOSAL_VALIDATION_FAILED"
+    assert "校验" in turn["safeSummary"]
+
+
+async def test_strategy_confirmation_version_conflict_stays_readable(
+    app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
+) -> None:
+    """确认战略**成功**产生提案后,用户在旧版本上确认 -> 版本冲突仍可读。"""
+    account = await make_account()
+    use_reasoner(MapInspectingReasoner(draft=_roadmap_draft()))
+    await _map_turn(app_client, account, "space_entered", "strategy-v-enter")
+    created = await _map_turn(app_client, account, "strategy_confirmation", "strategy-v-create")
+    proposal_id = created["reasoning"]["strategyProposalId"]
+    assert proposal_id, created.get("proposalErrors")
+
+    # 计划版本前进 -> 这份提案基于的版本已经旧了。
+    workspace = await db.scalar(
+        select(Workspace).where(Workspace.id == uuid.UUID(account.workspace_id))
+    )
+    assert workspace is not None
+    workspace.current_revision_version += 1
+    await db.commit()
+
+    confirm = await app_client.post(
+        f"/api/workspaces/{account.workspace_id}/proposals/{proposal_id}/confirm",
+        json={"idempotencyKey": "strategy-stale-confirm"},
+        headers=account.headers,
+    )
+    assert confirm.status_code == 409, confirm.text
+    assert confirm.json()["error"]["code"] == "STALE_BASE_REVISION"
+
+    # 战略确认那一轮本身是**成功**的(冲突发生在用户点确认,不是 Agent turn),
+    # 轨迹必须如实,而不是把两者混成一句。
+    turn = (await _trace(app_client, account))["turns"][0]
+    assert turn["trigger"] == "strategy_confirmation"
+    assert turn["status"] == "completed"
+
+
+async def test_map_turn_trace_does_not_leak_user_message(
+    app_client: httpx.AsyncClient, make_account, use_reasoner
+) -> None:
+    account = await make_account()
+    use_reasoner(MapInspectingReasoner(draft=_roadmap_draft()))
+    await _map_turn(app_client, account, "space_entered", "leak-enter")
+
+    secret = "地图轮私密原文 MAPSECRET-7788"
+    await _map_turn(
+        app_client, account, "user_message", "leak-msg", message=secret
+    )
+    body = await _trace(app_client, account)
+    turn = body["turns"][0]
+    assert turn["trigger"] == "user_message"
+    raw = str(body)
+    assert secret not in raw
+    assert "MAPSECRET" not in raw
+    # 摘要来自闭集,不是模型自由文本。
+    from backend.services import agent_trace_service
+
+    assert turn["safeSummary"] in agent_trace_service.TERMINAL_SUMMARIES.values()
+
+
+async def test_cross_workspace_map_trace_is_rejected(
+    app_client: httpx.AsyncClient, make_account, use_reasoner
+) -> None:
+    account_a = await make_account(email="a@example.com")
+    account_b = await make_account(email="b@example.com", workspace_title="另一个空间")
+    use_reasoner(MapInspectingReasoner(draft=_roadmap_draft()))
+    await _map_turn(app_client, account_a, "space_entered", "cross-enter")
+
+    response = await app_client.get(
+        f"/api/workspaces/{account_a.workspace_id}/agent/trace",
+        headers=account_b.headers,
+    )
+    assert response.status_code == 404
 
 
 #: 引用一下,避免 ruff 把未使用的 import 报掉(它在类型注解里用到)。

@@ -29,6 +29,7 @@ const STEP_LABEL: Record<string, string> = {
   resolving_context: '准备上下文',
   waiting_model: '等待模型',
   running_tool: '执行工具',
+  retrying: '纠错重试',
   validating_output: '校验输出',
   persisting: '写入',
   completed: '已完成',
