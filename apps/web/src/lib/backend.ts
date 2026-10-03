@@ -1944,6 +1944,10 @@ export interface GoalReasoningView {
   v1ActualPendingQuestionCount: number;
   /** P2.2:分析维度投影。 */
   v1Dimensions: V1DimensionView[];
+  /** P2.3:显式下一步动作(如 `continue_strategy`)。null = 当前没有额外 CTA。 */
+  v1NextAction: string | null;
+  /** P2.3:是否仍可切换候选起点(只在 goal_reframe)。 */
+  v1CanReselectDirection: boolean;
   /** P5:是否允许导出决策审计记录(后端 `AGENT_AUDIT_EXPORT`)。 */
   v1AuditExportEnabled: boolean;
   /** 阶段 11:时间架构里的日期是否已校准。false = 只有相对周,不伪造日历日期。 */
@@ -2061,6 +2065,22 @@ export async function downloadV1Audit(
   anchor.click();
   anchor.remove();
   URL.revokeObjectURL(url);
+}
+
+/** 规划智能体重构 V1(P2.3):responseMode=none 的兜底 CTA —— 继续形成战略路径。 */
+export function continueV1Strategy(workspaceId: string): Promise<AgentTurnResponse> {
+  return apiFetch<AgentTurnResponse>(
+    `/api/workspaces/${workspaceId}/agent/v1/strategy/continue`,
+    { method: 'POST', body: {} },
+  );
+}
+
+/** 规划智能体重构 V1(P2.3):重新选择起点(回到 goal_reframe)。 */
+export function reopenV1Direction(workspaceId: string): Promise<AgentTurnResponse> {
+  return apiFetch<AgentTurnResponse>(`/api/workspaces/${workspaceId}/agent/v1/direction/reopen`, {
+    method: 'POST',
+    body: {},
+  });
 }
 
 /** 规划智能体重构 V1(P2.2):确认目标定义,进入问题结构。 */

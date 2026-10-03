@@ -216,11 +216,14 @@ function IntakeChips({
  * 被"截止时间/每周投入"干扰。`replan` 入口只在**已确认战略 + 存在执行计划**时才出现。
  */
 export function ConversationPanel() {
-  const { growth, selectedId, select, messages, remoteProposals, proposalErrors, inputChanged, deciding, confirmRemote, rejectRemote, replan, replanState, send, retry, sending, sendError, retryable, historyLoading, messagesTruncated, spaceId, questions, focusQuestion, openTrace, traceAvailability, reasoning, agentStatus, confirmV1Strategy, confirmV1Goal, runV1PlanStep, selectV1Direction, requestChat } = useDemo();
+  const { growth, selectedId, select, messages, remoteProposals, proposalErrors, inputChanged, deciding, confirmRemote, rejectRemote, replan, replanState, send, retry, sending, sendError, retryable, historyLoading, messagesTruncated, spaceId, questions, focusQuestion, openTrace, traceAvailability, reasoning, agentStatus, confirmV1Strategy, confirmV1Goal, continueV1Strategy, reopenV1Direction,
+  runV1PlanStep, selectV1Direction, requestChat } = useDemo();
   const [input, setInput] = useState('');
   const [showContexts, setShowContexts] = useState(false);
   /** P2.2:候选方向选择中 —— 立刻禁用按钮,避免重复点击。 */
   const [v1Selecting, setV1Selecting] = useState(false);
+  /** P2.3:确认目标定义后,面板显示“正在形成战略路径”。 */
+  const [v1GoalPending, setV1GoalPending] = useState(false);
   /** 输入框的 DOM 元素。高度按内容算(见下面那个 effect)。 */
   const composer = useRef<HTMLTextAreaElement>(null);
   const bottom = useRef<HTMLDivElement>(null);
@@ -282,6 +285,8 @@ export function ConversationPanel() {
   const isV1 = Boolean(reasoning?.v1Stage);
   const v1Thesis = reasoning?.v1StrategicThesis ?? null;
   const v1GoalConfirmable = reasoning?.v1Stage === 'goal_reframe' && Boolean(reasoning?.v1StrategicThesis);
+  const v1CanReselect = reasoning?.v1CanReselectDirection ?? false;
+  const v1NextAction = reasoning?.v1NextAction ?? null;
   const v1Directions = reasoning?.v1CandidateDirections ?? [];
   const v1SelectedDirection = reasoning?.v1SelectedDirection ?? null;
   /** 规划智能体重构 V1(P2):需要**在对话框回答**的问题(橙色),不是画布上的紫色问题节点。 */
@@ -659,7 +664,7 @@ export function ConversationPanel() {
               <p>{v1Thesis}</p>
             </div>
           )}
-          {v1Directions.length > 0 && (
+          {v1Directions.length > 0 && v1CanReselect && (
             <div className="v1-directions" data-testid="v1-directions">
               <span className="eyebrow">你可以选一个起点，也可以直接否定我</span>
               {v1Directions.map(direction => (
@@ -683,22 +688,46 @@ export function ConversationPanel() {
               )}
             </div>
           )}
+          {/* P2.3:候选起点一旦随目标确认收起,只显示“已采用的起点”,改方向需显式动作。 */}
+          {!v1CanReselect && v1SelectedDirection && (
+            <div className="v1-direction-adopted" data-testid="v1-direction-adopted">
+              <span className="eyebrow">已采用的起点</span>
+              <p>{v1Directions.find(item => item.key === v1SelectedDirection)?.title ?? v1SelectedDirection}</p>
+              <button type="button" className="text-button" disabled={sending} onClick={() => void reopenV1Direction()}>
+                重新选择起点
+              </button>
+            </div>
+          )}
           {v1GoalConfirmable && (
             <div className="v1-goal-confirm">
               <button
                 type="button"
-                disabled={sending || v1Selecting}
-                onClick={() => void confirmV1Goal()}
+                disabled={sending || v1Selecting || v1GoalPending}
+                onClick={() => {
+                  setV1GoalPending(true);
+                  void confirmV1Goal().finally(() => setV1GoalPending(false));
+                }}
               >
                 确认这个目标定义
               </button>
               <button
                 type="button"
                 className="text-button"
-                disabled={sending || v1Selecting}
+                disabled={sending || v1Selecting || v1GoalPending}
                 onClick={requestChat}
               >
                 继续修改理解
+              </button>
+            </div>
+          )}
+          {v1GoalPending && (
+            <p className="v1-directions-status" role="status">正在形成战略路径…</p>
+          )}
+          {/* P2.3:responseMode=none 时的显式下一步 CTA,避免 problem_structure 空转。 */}
+          {v1NextAction === 'continue_strategy' && (
+            <div className="v1-goal-confirm">
+              <button type="button" disabled={sending} onClick={() => void continueV1Strategy()}>
+                继续形成战略路径
               </button>
             </div>
           )}

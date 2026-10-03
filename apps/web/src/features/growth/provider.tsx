@@ -1163,6 +1163,32 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     [refreshPlan, refreshProposals, space.id],
   );
 
+  /** 规划智能体重构 V1(P2.3):继续形成战略路径 / 重新选择起点。 */
+  const continueV1Strategy = useCallback(async () => {
+    try {
+      const response = await backend.continueV1Strategy(space.id);
+      setReasoning(response.reasoning);
+      if (response.message) {
+        setMessages(old => [...old, toMessage(response.message as backend.MessageView)]);
+      }
+      return response;
+    } catch (cause) {
+      setSendError(cause instanceof ApiError ? cause.message : '继续形成战略失败,请重试。');
+      return null;
+    }
+  }, [space.id]);
+
+  const reopenV1Direction = useCallback(async () => {
+    try {
+      const response = await backend.reopenV1Direction(space.id);
+      setReasoning(response.reasoning);
+      return response;
+    } catch (cause) {
+      setSendError(cause instanceof ApiError ? cause.message : '重新选择起点失败,请重试。');
+      return null;
+    }
+  }, [space.id]);
+
   /** 规划智能体重构 V1(P2.2):确认目标定义,进入问题结构。 */
   const confirmV1Goal = useCallback(async () => {
     try {
@@ -2369,7 +2395,8 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     // `ensureStrategicIntake` 是显式目标空间的入口(阶段 12 P0);`ensureReasoningMap`
     // 保留给既有调用点,内部委托前者。
     reasoning, reasoningLoading, ensureStrategicIntake, ensureReasoningMap, refreshReasoning, agentTurn, editReasoningNode,
-    confirmV1Strategy, confirmV1Goal, runV1PlanStep, selectV1Direction,
+    confirmV1Strategy, confirmV1Goal, continueV1Strategy, reopenV1Direction,
+    runV1PlanStep, selectV1Direction,
     refineStrategy, refining, requestChat, chatRequestNonce,
     replan, replanState,
     // 上一轮是不是基于已经变过的输入(见 `inputChanged` 的注释),以及"重新分析"

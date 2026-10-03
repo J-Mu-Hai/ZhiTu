@@ -83,4 +83,42 @@ test.describe('V1 Stage 1 右侧面板', () => {
     await composer.fill('我继续补充一点');
     await expect(composer).toHaveValue('我继续补充一点');
   });
+
+  test('确认目标定义后自动形成战略路径或给出显式 CTA', async ({ page }) => {
+    const account = await registerAccount(page, 'v1-advance');
+    const workspaceId = await createWorkspace(
+      page,
+      account.token,
+      'V1 自动推进验收',
+      '我想学 Python，但不确定用来做什么，担心学不了',
+    );
+    await openSpacePage(page, '/workbench', workspaceId);
+
+    const composer = page.getByLabel('给 AI 的消息');
+    await expect(composer).toBeVisible({ timeout: 30_000 });
+    await composer.fill('我想学 Python，但不确定用来做什么，担心学不了');
+    await page.getByLabel('发送消息').click();
+    await expect(page.getByTestId('v1-thesis')).toBeVisible({ timeout: 120_000 });
+
+    // 若有候选方向,先选一个(形成目标定义)。
+    const directions = page.locator('[data-testid="v1-directions"] button');
+    if ((await directions.count()) > 0) await directions.first().click();
+
+    const confirmBtn = page.getByRole('button', { name: '确认这个目标定义' });
+    await expect(confirmBtn).toBeVisible({ timeout: 120_000 });
+    await confirmBtn.click();
+
+    // 请求中显示“正在形成战略路径”。
+    await expect(page.getByText('正在形成战略路径…')).toBeVisible({ timeout: 8_000 });
+
+    // 关键:不会停在空白的 problem_structure —— 要么出战略草案,要么有显式 CTA。
+    await expect(
+      page.getByTestId('v1-strategy').or(page.getByRole('button', { name: '继续形成战略路径' })),
+    ).toBeVisible({ timeout: 180_000 });
+
+    // 输入框仍然可用。
+    await expect(composer).toBeVisible();
+    await composer.fill('继续补充');
+    await expect(composer).toHaveValue('继续补充');
+  });
 });
