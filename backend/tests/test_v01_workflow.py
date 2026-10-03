@@ -15,6 +15,9 @@
 
 from __future__ import annotations
 
+import itertools
+from datetime import date
+
 import httpx
 import pytest
 from sqlalchemy import select
@@ -85,6 +88,31 @@ def _root(nodes: list[dict]) -> dict:
     return next(node for node in nodes if node.get("parentId") in (None, ""))
 
 
+# ---------------------------------------------------------------------------------
+# 日期轴验收:有截止日期时,时间线项带真实 startDate/endDate,且区间连续。
+# ---------------------------------------------------------------------------------
+def test_v01_timeline_uses_real_dates_when_deadline_known() -> None:
+    today = date(2026, 10, 1)
+    phases = v01_service.build_timeline(
+        "learning",
+        "我想学习 Python 做数据分析",
+        "30 天内做出一个能展示的作品",
+        "2026-12-31",
+        today,
+        goal_title="30 天学习 Python",
+    )
+    assert phases, "没有阶段"
+    assert all(phase.start_date and phase.end_date for phase in phases), phases
+    assert phases[0].start_date == today
+    # 相邻阶段首尾相接,不出现空档或重叠。
+    for previous, following in itertools.pairwise(phases):
+        assert following.start_date == previous.end_date
+
+    payload = v01_service._timeline_payload(phases)
+    assert all(item["startDate"] and item["endDate"] for item in payload)
+    assert all(item["kind"] == "phase" for item in payload)
+
+
 @pytest.mark.asyncio
 async def test_v01_thirty_day_python_end_to_end(
     app_client: httpx.AsyncClient, make_account, db: AsyncSession, monkeypatch
@@ -149,7 +177,12 @@ async def test_v01_thirty_day_python_end_to_end(
         phase = by_id[week["parentId"]]
         assert by_id[phase["parentId"]]["id"] == root_id
 
-    # ---- 6. 反馈:完成率 < 60% → REPLANNING ----
+    # ---- 6. 反馈:本周只完成 40% → REPLANNING ----
+    current_week = next(node for node in weeks if str(node["title"]).startswith("本周计划"))
+    current_tasks = [task for task in tasks if task["parentId"] == current_week["id"]]
+    assert len(current_tasks) == 5
+    before_view = await _reasoning(app_client, account)
+    before_max_week = max(item["endWeek"] for item in before_view["v01Timeline"])
     for index, task in enumerate(tasks):
         response = await app_client.post(
             f"/api/workspaces/{account.workspace_id}/v01/feedback",
@@ -167,11 +200,26 @@ async def test_v01_thirty_day_python_end_to_end(
     assert after_view["workflowStage"] == "weekly_execution"
     after = after_view["v01Timeline"]
     assert after and all(item["status"] == "planned" for item in after), [item["status"] for item in after]
+    assert max(item["endWeek"] for item in after) > before_max_week, "重规划后未来区间没有后移"
     # 重规划提案说的确实是“调整未来阶段”,而不是重写历史。
     assert any(
         "重规划" in str(item.get("payload", {}).get("description", ""))
         for item in replan["items"]
     ), replan["items"]
+
+    # ---- 8. 重规划后重新生成周计划:就地更新,**不重复** ----
+    await _turn(app_client, account, "v01-5")
+    next_weekly = await _open_proposal(app_client, account)
+    await _confirm(app_client, account, next_weekly["id"], "v01-confirm-weekly-2")
+    final_reasoning = await _reasoning(app_client, account)
+    assert final_reasoning["workflowStage"] == "weekly_execution"
+    final_plan = await _plan(app_client, account)
+    final_weeks = [n for n in final_plan["nodes"] if str(n.get("title", "")).startswith(("本周计划", "下周预览"))]
+    final_tasks = [n for n in final_plan["nodes"] if n.get("nodeType") == "task"]
+    assert len(final_weeks) == len(weeks), "重新生成周计划产生了重复的周节点"
+    assert len(final_tasks) == len(tasks), "重新生成周计划产生了重复的任务节点"
+    # 就地更新:内容反映重规划后的阶段说明。
+    assert any("重规划" in str(n.get("description", "")) for n in final_tasks + final_weeks)
 
     await db.rollback()
     sessions = list((await db.execute(select(GoalReasoningSession))).scalars())

@@ -37,6 +37,7 @@ from datetime import date, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from backend.agent.runtime.base import (
     ReasoningMapDraft,
@@ -313,12 +314,14 @@ def _timeline_payload(
 
 
 def build_weekly_tasks(phase_title: str, phase_description: str) -> tuple[str, ...]:
-    """从阶段派生本周可执行的小任务(确定性)。"""
+    """从阶段派生本周可执行的小任务(确定性,5 条)。"""
     base = phase_description.rstrip("。")
     return (
-        f"{phase_title}:先完成最小的一步 —— {base}",
+        f"{phase_title}:确认本周要交出的最小成果",
+        f"{phase_title}:完成关键的一步 —— {base}",
         f"{phase_title}:做出一个可检查的产出",
-        f"{phase_title}:复盘并记录卡点",
+        f"{phase_title}:记录卡点与下一步",
+        f"{phase_title}:复盘并按需要更新下周计划",
     )
 
 
@@ -666,6 +669,7 @@ async def mark_timeline_confirmed(
         linked = by_title.get(str(item.get("title") or ""))
         item["planNodeId"] = str(linked) if linked else None
     session.v01_timeline = timeline
+    flag_modified(session, "v01_timeline")
     await db.commit()
 
 
@@ -711,15 +715,18 @@ async def generate_weekly_plan(
     *,
     trace,
 ) -> AgentTurnResponse:
-    """从已确认的第一个 timeline phase 派生本周计划 + 下周预览(待确认提案)。"""
+    """从已确认的第一个 timeline phase 派生“本周计划 + 下周预览”。
+
+    **不重复**:已经存在的周/任务节点用 `update_node` 就地更新,只有确实还没有的才
+    `create_node`。所以重规划之后再次生成,周计划不会翻倍 —— 同一个锚点的计划永远
+    只有一份。
+    """
     phases = await _phase_nodes(db, ctx, root)
     if not phases:
         from backend.services.errors import InvalidInput
 
         raise InvalidInput("还没有已确认的时间线阶段。")
 
-    _, handles = await _root_handle(db, ctx, root)
-    # 找到第一个阶段的记号
     conversation = await conversation_service.find_primary_conversation(db, ctx)
     turn = await turn_context.build_turn_context(
         db,
@@ -729,46 +736,90 @@ async def generate_weekly_plan(
         context_node_id=root.id,
         scope_root_id=root.id,
     )
-    phase_handles = {node_id: h for h, node_id in turn.node_handles}
+    handle_of = {node_id: handle for handle, node_id in turn.node_handles}
+    _, handles = await _root_handle(db, ctx, root)
+
+    # 现有周计划:按 (phase, 标题) 找到周节点,再取它的任务(按创建顺序)。
+    existing_weeks = await _week_nodes(db, phases)
+    existing_tasks: dict[uuid.UUID, list[PlanNode]] = {}
+    if existing_weeks:
+        rows = await db.execute(
+            select(PlanNode)
+            .where(
+                PlanNode.parent_id.in_([week.id for week in existing_weeks]),
+                PlanNode.deleted_at.is_(None),
+            )
+            .order_by(PlanNode.created_at.asc())
+        )
+        for row in rows.scalars():
+            existing_tasks.setdefault(row.parent_id, []).append(row)
 
     actions: list[dict] = []
     this_week = phases[0]
     next_week = phases[1] if len(phases) > 1 else phases[0]
     counter = 0
     for label, phase in (("本周计划", this_week), ("下周预览", next_week)):
-        phase_handle = phase_handles.get(str(phase.id))
+        phase_handle = handle_of.get(str(phase.id))
         if phase_handle is None:
             continue
-        counter += 1
-        week_id = f"n{9100 + counter}"
-        actions.append(
-            {
-                "op": "create_node",
-                "localId": week_id,
-                "parentRef": phase_handle,
-                "title": f"{label}:{phase.title}",
-                "nodeType": "stage",
-                "purpose": "planning",
-                "description": f"来源阶段:{phase.title}\n" + (phase.description or "")[:400],
-            }
+        week_title = f"{label}:{phase.title}"
+        week_desc = f"来源阶段:{phase.title}\n" + (phase.description or "")[:400]
+        week = next(
+            (
+                candidate
+                for candidate in existing_weeks
+                if candidate.parent_id == phase.id and candidate.title == week_title
+            ),
+            None,
         )
-        for task in build_weekly_tasks(phase.title, phase.description or phase.title):
-            counter += 1
+        counter += 1
+        if week is not None and str(week.id) in handle_of:
+            week_ref = handle_of[str(week.id)]
+            actions.append(
+                {"op": "update_node", "target_ref": week_ref, "title": week_title, "description": week_desc}
+            )
+        else:
+            week_ref = f"n{9100 + counter}"
             actions.append(
                 {
                     "op": "create_node",
-                    "localId": f"n{9100 + counter}",
-                    "parentRef": week_id,
-                    "title": task,
-                    "nodeType": "task",
+                    "localId": week_ref,
+                    "parentRef": phase_handle,
+                    "title": week_title,
+                    "nodeType": "stage",
                     "purpose": "planning",
-                    "description": (
-                        f"所属:{label} · {phase.title}\n"
-                        f"来源阶段:{phase.title}\n"
-                        f"完成标准:{phase.acceptance_criteria or '见阶段说明'}"
-                    ),
+                    "description": week_desc,
                 }
             )
+        existing = existing_tasks.get(week.id, []) if week is not None else []
+        for index, task in enumerate(build_weekly_tasks(phase.title, phase.description or phase.title)):
+            task_desc = (
+                f"所属:{label} · {phase.title}\n"
+                f"来源阶段:{phase.title}\n"
+                f"完成标准:{phase.acceptance_criteria or '见阶段说明'}"
+            )
+            if index < len(existing) and str(existing[index].id) in handle_of:
+                actions.append(
+                    {
+                        "op": "update_node",
+                        "target_ref": handle_of[str(existing[index].id)],
+                        "title": task,
+                        "description": task_desc,
+                    }
+                )
+            else:
+                counter += 1
+                actions.append(
+                    {
+                        "op": "create_node",
+                        "localId": f"n{9100 + counter}",
+                        "parentRef": week_ref,
+                        "title": task,
+                        "nodeType": "task",
+                        "purpose": "planning",
+                        "description": task_desc,
+                    }
+                )
 
     if not actions:
         from backend.services.errors import InvalidInput
@@ -781,7 +832,7 @@ async def generate_weekly_plan(
         conversation_id=conversation.id if conversation else None,
         actions=tuple(actions),
         handles=handles,
-        reasoning="由已确认时间线的第一个阶段派生的本周计划与下周预览。",
+        reasoning="由已确认时间线的第一个阶段派生的本周计划与下周预览(就地更新,不重复)。",
         assistant_message=None,
         trigger_type=RevisionTrigger.INITIAL_PLAN,
     )
@@ -805,10 +856,11 @@ async def generate_weekly_plan(
 async def weekly_completion(
     db: AsyncSession, ctx: WorkspaceContext, root: PlanNode
 ) -> tuple[int, int]:
-    """本周任务完成率(完成数, 总数)。任务 = 周节点下面的子节点。"""
+    """**本周计划**的完成率(完成数, 总数)。下周预览不计入。"""
     phases = await _phase_nodes(db, ctx, root)
     weeks = await _week_nodes(db, phases)
-    week_ids = [week.id for week in weeks]
+    current = [week for week in weeks if week.title.startswith("本周计划")]
+    week_ids = [week.id for week in current]
     if not week_ids:
         return (0, 0)
     tasks = await db.execute(
@@ -916,6 +968,8 @@ async def generate_replan(
             item["endWeek"] += 1
         item["status"] = "draft"
     session.v01_timeline = timeline
+    # JSON 列的就地改动不会被 ORM 自动当成 dirty,显式打标。
+    flag_modified(session, "v01_timeline")
 
     actions: list[dict] = []
     for phase in phases:
@@ -973,6 +1027,7 @@ async def mark_replan_confirmed(
         if isinstance(item, dict):
             item["status"] = "planned"
     session.v01_timeline = timeline
+    flag_modified(session, "v01_timeline")
     if session.workflow_stage is PlanningWorkflowStage.REPLANNING:
         transition(session, PlanningWorkflowStage.WEEKLY_EXECUTION)
     await db.commit()
