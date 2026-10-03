@@ -149,21 +149,29 @@ async def test_v01_thirty_day_python_end_to_end(
         phase = by_id[week["parentId"]]
         assert by_id[phase["parentId"]]["id"] == root_id
 
-    # ---- 6. 反馈:全部未完成 → 完成率 0% < 60% → REPLANNING ----
-    for task in tasks:
+    # ---- 6. 反馈:完成率 < 60% → REPLANNING ----
+    for index, task in enumerate(tasks):
         response = await app_client.post(
             f"/api/workspaces/{account.workspace_id}/v01/feedback",
-            json={"nodeId": task["id"], "outcome": "missed"},
+            json={"nodeId": task["id"], "outcome": "done" if index < 2 else "missed"},
             headers=account.headers,
         )
         assert response.status_code == 200, response.text
     assert (await _reasoning(app_client, account))["workflowStage"] == "replanning"
 
-    # ---- 7. 重规划 → 确认 → 回到 WEEKLY_EXECUTION ----
+    # ---- 7. 重规划 → 确认 → 回到 WEEKLY_EXECUTION,未来区间后移 ----
     await _turn(app_client, account, "v01-4")
     replan = await _open_proposal(app_client, account)
     await _confirm(app_client, account, replan["id"], "v01-confirm-replan")
-    assert (await _reasoning(app_client, account))["workflowStage"] == "weekly_execution"
+    after_view = await _reasoning(app_client, account)
+    assert after_view["workflowStage"] == "weekly_execution"
+    after = after_view["v01Timeline"]
+    assert after and all(item["status"] == "planned" for item in after), [item["status"] for item in after]
+    # 重规划提案说的确实是“调整未来阶段”,而不是重写历史。
+    assert any(
+        "重规划" in str(item.get("payload", {}).get("description", ""))
+        for item in replan["items"]
+    ), replan["items"]
 
     await db.rollback()
     sessions = list((await db.execute(select(GoalReasoningSession))).scalars())

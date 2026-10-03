@@ -36,6 +36,9 @@ from backend.db.models import (
     ReasoningNodeLink,
 )
 from backend.db.models.enums import BriefStatus, ModelSource, ReasoningSessionPhase
+from backend.tests.conftest import (
+    seed_known_conditions,
+)
 
 
 # ---------------------------------------------------------------------------------
@@ -163,6 +166,7 @@ async def test_first_turn_asks_intake_question_instead_of_roadmap(
     app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
 ) -> None:
     account = await make_account()
+    await seed_known_conditions(account)
     use_reasoner(IntakeReasoner(decisions=(_ask("你希望最终获得什么成果?", quick=("一个作品",)),)))
 
     body = await _enter(app_client, account, "intake-1")
@@ -234,6 +238,7 @@ async def test_intake_blocks_trivial_questions(
     app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
 ) -> None:
     account = await make_account()
+    await seed_known_conditions(account)
     use_reasoner(
         IntakeReasoner(
             decisions=(_ask("你想用哪个 IDE?"), READY),
@@ -252,6 +257,7 @@ async def test_rejected_intake_question_is_never_shown(
     app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
 ) -> None:
     account = await make_account()
+    await seed_known_conditions(account)
     # 两轮都只给执行细节 -> 拒绝该输出,写失败终态。
     use_reasoner(IntakeReasoner(decisions=(_ask("你想用哪个 IDE?"),)))
 
@@ -339,6 +345,9 @@ async def test_intake_max_questions_then_architecture(
     )
     assert session is not None
     session.intake_questions_asked = 5
+    # 到 5 问上限 = 5 个问题都已经答完,不能再挂着一条待回答问题。
+    session.pending_intake_message_id = None
+    session.pending_intake_decision = None
     await db.commit()
 
     body = await _enter(app_client, account, "intake-max-2")
@@ -352,6 +361,7 @@ async def test_architecture_uses_relative_weeks_when_no_dates(
     app_client: httpx.AsyncClient, make_account, use_reasoner
 ) -> None:
     account = await make_account()
+    await seed_known_conditions(account)
     use_reasoner(IntakeReasoner(decisions=(READY,), drafts=(_roadmap_draft(kind="relative"),)))
 
     body = await _enter(app_client, account, "arch-relative")
@@ -369,6 +379,7 @@ async def test_architecture_writes_no_plan_nodes_before_confirmation(
     app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
 ) -> None:
     account = await make_account()
+    await seed_known_conditions(account)
     use_reasoner(IntakeReasoner(decisions=(READY,), drafts=(_roadmap_draft(kind="relative"),)))
     await _enter(app_client, account, "arch-no-plan")
 
@@ -383,6 +394,7 @@ async def test_intake_defers_architecture_until_answers_are_done(
     app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
 ) -> None:
     account = await make_account()
+    await seed_known_conditions(account)
     use_reasoner(
         IntakeReasoner(
             decisions=(_ask("你希望最终获得什么成果?"), READY),

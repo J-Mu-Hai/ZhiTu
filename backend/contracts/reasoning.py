@@ -114,6 +114,29 @@ class PendingIntakeView(ApiModel):
     quick_replies: list[str] = Field(default_factory=list)
 
 
+class V01TimelineItemView(ApiModel):
+    """V0.1 时间轴上的一个投影项(阶段 / 里程碑 / 截止 / 成果)。
+
+    它来自会话上的 `v01_timeline` JSON,是**唯一权威来源**;前端不解析自然语言
+    描述去猜日期。`status=draft` 表示还没被用户确认。
+    """
+
+    id: str
+    title: str
+    #: phase / milestone / deadline / deliverable
+    kind: str
+    start_week: int | None = None
+    end_week: int | None = None
+    start_date: date | None = None
+    end_date: date | None = None
+    goal: str = ""
+    deliverable: str = ""
+    completion_criteria: str = ""
+    #: draft / planned
+    status: str = "draft"
+    plan_node_id: uuid.UUID | None = None
+
+
 class GoalReasoningView(ApiModel):
     """当前目标推理地图。**读接口与 agent turn 都返回这一份。**"""
 
@@ -137,6 +160,10 @@ class GoalReasoningView(ApiModel):
     workflow_stage: str | None = None
     #: V0.1:阶段一当前等回答的核心问题(2–4 个),放在会话面上、不建问题实体。
     discovery_questions: list[str] = Field(default_factory=list)
+    #: V0.1:时间线投影。非 V0.1 一律为空。
+    v01_timeline: list[V01TimelineItemView] = Field(default_factory=list)
+    #: V0.1:待确认的时间线提案 id。None = 没有待确认草案。
+    v01_timeline_proposal_id: uuid.UUID | None = None
     #: 阶段 11:时间架构里的日期是否已校准。False = 只有相对周,不伪造日历日期。
     dates_calibrated: bool = False
     input_version: str | None = None
@@ -196,4 +223,5 @@ __all__ = [
     "ReasoningNodeView",
     "UpdateReasoningNodeRequest",
     "V01FeedbackRequest",
+    "V01TimelineItemView",
 ]

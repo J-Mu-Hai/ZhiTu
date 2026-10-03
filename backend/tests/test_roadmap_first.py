@@ -136,6 +136,7 @@ async def test_roadmap_draft_is_accepted_with_stage_fields(
     app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
 ) -> None:
     account = await make_account()
+    await seed_known_conditions(account)
     use_reasoner(MapReasoner(drafts=(_roadmap_draft(stages=4),)))
 
     body = await _enter(app_client, account)
@@ -166,6 +167,7 @@ async def test_roadmap_with_too_few_stages_is_rejected_whole(
     app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
 ) -> None:
     account = await make_account()
+    await seed_known_conditions(account)
     use_reasoner(MapReasoner(drafts=(_roadmap_draft(stages=2),)))
 
     body = await _enter(app_client, account)
@@ -179,6 +181,7 @@ async def test_roadmap_without_top_level_route_is_rejected_whole(
     app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
 ) -> None:
     account = await make_account()
+    await seed_known_conditions(account)
     use_reasoner(MapReasoner(drafts=(_roadmap_draft(stages=4, with_route=False),)))
 
     body = await _enter(app_client, account)
@@ -191,6 +194,7 @@ async def test_roadmap_phase_blocks_execution_questions(
     app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
 ) -> None:
     account = await make_account()
+    await seed_known_conditions(account)
     execution_question = QuestionDraft(
         question="你每周能投入几小时?",
         why_now="排期需要",
@@ -215,6 +219,7 @@ async def test_python_data_analysis_first_turn_is_roadmap_not_dimensions(
     """用户说“Python 数据分析 + 每周 150 分钟”时,首轮必须是**路线 + 阶段**,
     不能是旧的散乱一级维度图,也不能再问每周投入。"""
     account = await make_account()
+    await seed_known_conditions(account)
     await app_client.patch(
         f"/api/workspaces/{account.workspace_id}",
         json={"intent": "我想学习 Python 做数据分析，每周 150 分钟。"},
@@ -286,6 +291,7 @@ async def test_first_turn_legacy_dimension_map_is_rejected_then_retries(
 ) -> None:
     """新首轮给旧形状 -> 整份拒绝、不写半成品;换成路线图后重试成功。"""
     account = await make_account()
+    await seed_known_conditions(account)
     legacy = ReasoningMapDraft(
         nodes=tuple(
             ReasoningMapNodeDraft(handle=f"r{i}", title=f"决策维度 {i}")
@@ -327,6 +333,7 @@ async def test_plain_text_first_turn_is_rejected_without_question(
 ) -> None:
     """真实模型只回一段文字(带一个问题)时:两轮都不合格 -> 失败,**不写问题节点**。"""
     account = await make_account()
+    await seed_known_conditions(account)
     use_reasoner(
         MapReasoner(
             drafts=(None, None),
@@ -346,6 +353,7 @@ async def test_question_only_first_turn_is_rejected(
     app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
 ) -> None:
     account = await make_account()
+    await seed_known_conditions(account)
     use_reasoner(
         MapReasoner(
             drafts=(None, None),
@@ -364,6 +372,7 @@ async def test_old_dimension_map_first_turn_is_rejected(
     app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
 ) -> None:
     account = await make_account()
+    await seed_known_conditions(account)
     legacy = ReasoningMapDraft(
         nodes=tuple(
             ReasoningMapNodeDraft(handle=f"r{i}", title=f"维度 {i}") for i in range(1, 6)
@@ -383,6 +392,7 @@ async def test_first_turn_retries_once_with_correction_then_succeeds(
 ) -> None:
     """第一轮只回文字 -> 服务端用结构化纠错提示重试一次 -> 第二轮路线图成功。"""
     account = await make_account()
+    await seed_known_conditions(account)
     reasoner = MapReasoner(drafts=(None, _roadmap_draft(stages=4)))
     use_reasoner(reasoner)
 
@@ -401,6 +411,7 @@ async def test_regenerate_roadmap_keeps_legacy_nodes_in_history(
 ) -> None:
     """旧地图重生成:新 route+stage 写进去,旧的 dimension **不删**。"""
     account = await make_account()
+    await seed_known_conditions(account)
     root = await db.scalar(
         select(PlanNode).where(PlanNode.workspace_id == uuid.UUID(account.workspace_id), PlanNode.depth == 0)
     )
@@ -549,6 +560,7 @@ async def test_adapter_old_dimension_map_never_becomes_successful_first_turn(
     app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
 ) -> None:
     account = await make_account()
+    await seed_known_conditions(account)
     use_reasoner(PayloadReasoner(contents=(OLD_DIMENSION_JSON, OLD_DIMENSION_JSON)))
     body = await _enter(app_client, account)
     assert body["changed"] is False
@@ -561,6 +573,7 @@ async def test_adapter_plain_text_never_becomes_successful_first_turn(
     app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
 ) -> None:
     account = await make_account()
+    await seed_known_conditions(account)
     use_reasoner(PayloadReasoner(contents=("你好,我想先了解你的目标。", "先问一个问题:你为什么学?")))
     body = await _enter(app_client, account)
     assert body["changed"] is False
@@ -572,6 +585,7 @@ async def test_adapter_valid_roadmap_json_succeeds(
     app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
 ) -> None:
     account = await make_account()
+    await seed_known_conditions(account)
     use_reasoner(PayloadReasoner(contents=(ROADMAP_JSON,)))
     body = await _enter(app_client, account)
     assert body["changed"] is True
@@ -591,6 +605,9 @@ async def test_adapter_valid_roadmap_json_succeeds(
 import backend.agent.runtime.direct_llm as direct_llm  # noqa: E402
 from backend.agent.runtime.direct_llm import DirectLLMReasoner  # noqa: E402
 from backend.core.config import Settings  # noqa: E402
+from backend.tests.conftest import (  # noqa: E402
+    seed_known_conditions,
+)
 
 
 def _mock_llm(monkeypatch: pytest.MonkeyPatch, content: str) -> DirectLLMReasoner:

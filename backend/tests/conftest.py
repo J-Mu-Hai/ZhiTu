@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -472,3 +473,32 @@ def make_account(app_client: httpx.AsyncClient):
         )
 
     return _make
+
+
+async def seed_known_conditions(account) -> None:
+    """给测试空间写入一份**完整的**规划简报。
+
+    阶段 12 起,非 V0.1 的首个 intake 回合默认必须**先问一个问题**;只有当用户初始
+    目标已经明确给出「可验证成果 / 时间窗口 / 当前基础 / 稳定可投入的时间 / 关键约束」
+    时,才允许首轮直接进入时间架构。旧的“首轮即路线图”fixture 因此要先补齐这五项 ——
+    这不是放宽产品规则,而是把 fixture 写成**满足那条例外**的形状。
+    """
+    from datetime import date
+
+    from backend.db.models import PlanningBrief
+    from backend.db.models.enums import BriefStatus
+
+    async with SessionLocal() as session:
+        session.add(
+            PlanningBrief(
+                workspace_id=uuid.UUID(account.workspace_id),
+                version=1,
+                status=BriefStatus.DRAFT,
+                goal="完成一个可展示的项目",
+                deadline=date(2027, 12, 31),
+                weekly_available_minutes=600,
+                current_level="零基础",
+                success_criteria="能交出并讲清一个成果",
+            )
+        )
+        await session.commit()

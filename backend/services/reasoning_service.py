@@ -338,6 +338,28 @@ async def build_view(
         discovery_questions=[
             str(item) for item in ((session.discovery or {}).get("questions") or [])
         ],
+        #: V0.1 时间线投影(唯一权威来源;非 V0.1 为空)。
+        #:
+        #: `status` 是**读的时候算的**:还在 TIMELINE_REVIEW / REPLANNING 就是草案,
+        #: 其余(已确认)就是正式计划 —— 落一列状态就得在每次确认时记得改写,
+        #: 漏一次就会出现“已确认却仍标着待确认”。
+        v01_timeline=[
+            {
+                **item,
+                "status": (
+                    "draft"
+                    if session.workflow_stage
+                    in (
+                        PlanningWorkflowStage.TIMELINE_REVIEW,
+                        PlanningWorkflowStage.REPLANNING,
+                    )
+                    else "planned"
+                ),
+            }
+            for item in (session.v01_timeline or [])
+            if isinstance(item, dict)
+        ],
+        v01_timeline_proposal_id=session.timeline_proposal_id,
         dates_calibrated=session.dates_calibrated,
         input_version=session.input_version,
         strategy_proposal_id=session.strategy_proposal_id,

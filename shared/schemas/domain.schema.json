@@ -2163,6 +2163,26 @@
           "title": "Turnaction",
           "type": "string"
         },
+        "v01Timeline": {
+          "items": {
+            "$ref": "#/$defs/V01TimelineItemView"
+          },
+          "title": "V01Timeline",
+          "type": "array"
+        },
+        "v01TimelineProposalId": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "V01Timelineproposalid"
+        },
         "workflowStage": {
           "anyOf": [
             {
@@ -6119,6 +6139,114 @@
         "outcome"
       ],
       "title": "V01FeedbackRequest",
+      "type": "object"
+    },
+    "V01TimelineItemView": {
+      "additionalProperties": false,
+      "description": "V0.1 时间轴上的一个投影项(阶段 / 里程碑 / 截止 / 成果)。\n\n它来自会话上的 `v01_timeline` JSON,是**唯一权威来源**;前端不解析自然语言\n描述去猜日期。`status=draft` 表示还没被用户确认。",
+      "properties": {
+        "completionCriteria": {
+          "default": "",
+          "title": "Completioncriteria",
+          "type": "string"
+        },
+        "deliverable": {
+          "default": "",
+          "title": "Deliverable",
+          "type": "string"
+        },
+        "endDate": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Enddate"
+        },
+        "endWeek": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Endweek"
+        },
+        "goal": {
+          "default": "",
+          "title": "Goal",
+          "type": "string"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "planNodeId": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Plannodeid"
+        },
+        "startDate": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Startdate"
+        },
+        "startWeek": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Startweek"
+        },
+        "status": {
+          "default": "draft",
+          "title": "Status",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "kind"
+      ],
+      "title": "V01TimelineItemView",
       "type": "object"
     },
     "WorkspaceCounts": {

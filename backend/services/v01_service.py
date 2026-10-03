@@ -211,6 +211,8 @@ class TimelinePhase:
     start_week: int
     end_week: int
     deadline: date | None
+    start_date: date | None = None
+    end_date: date | None = None
 
 
 def _detect_total_weeks(text: str, default: int) -> int:
@@ -261,8 +263,11 @@ def build_timeline(
         if end_week < cursor:
             end_week = cursor
         phase_deadline = None
+        start_date = end_date = None
         if deadline_date is not None:
             phase_deadline = today + timedelta(weeks=end_week)
+            start_date = today + timedelta(weeks=cursor - 1)
+            end_date = phase_deadline
         phases.append(
             TimelinePhase(
                 title=title,
@@ -274,10 +279,37 @@ def build_timeline(
                 start_week=cursor,
                 end_week=end_week,
                 deadline=phase_deadline,
+                start_date=start_date,
+                end_date=end_date,
             )
         )
         cursor = end_week + 1
     return tuple(phases)
+
+
+def _timeline_payload(
+    phases: tuple[TimelinePhase, ...], *, status: str = "draft"
+) -> list[dict]:
+    """把阶段派生结果变成前端的结构化时间线投影。**日期与周次二选一,都是真值。**"""
+    payload: list[dict] = []
+    for index, phase in enumerate(phases, start=1):
+        payload.append(
+            {
+                "id": f"phase-{index}",
+                "title": phase.title,
+                "kind": "phase",
+                "startWeek": phase.start_week,
+                "endWeek": phase.end_week,
+                "startDate": phase.start_date.isoformat() if phase.start_date else None,
+                "endDate": phase.end_date.isoformat() if phase.end_date else None,
+                "goal": phase.goal,
+                "deliverable": phase.deliverable,
+                "completionCriteria": phase.criteria,
+                "status": status,
+                "planNodeId": None,
+            }
+        )
+    return payload
 
 
 def build_weekly_tasks(phase_title: str, phase_description: str) -> tuple[str, ...]:
@@ -552,6 +584,8 @@ async def generate_timeline(
         template, ctx.workspace.intent or "", answer, known_deadline, today,
         goal_title=root.title or "",
     )
+    # 时间线的**唯一权威投影**:结构化周次/日期,前端不猜日期。
+    session.v01_timeline = _timeline_payload(phases)
 
     root_handle, handles = await _root_handle(db, ctx, root)
     actions: list[dict] = []
@@ -615,11 +649,24 @@ async def generate_timeline(
 async def mark_timeline_confirmed(
     db: AsyncSession, ctx: WorkspaceContext, session: GoalReasoningSession
 ) -> None:
-    """提案确认后由路由调用:进入 WEEKLY_EXECUTION。"""
-    if session.workflow_stage is PlanningWorkflowStage.TIMELINE_REVIEW:
-        transition(session, PlanningWorkflowStage.WEEKLY_EXECUTION)
-        session.phase = ReasoningSessionPhase.STRATEGY_CONFIRMED
-        await db.commit()
+    """提案确认后由路由调用:进入 WEEKLY_EXECUTION,并把草案项标记为已计划。"""
+    if session.workflow_stage is not PlanningWorkflowStage.TIMELINE_REVIEW:
+        return
+    transition(session, PlanningWorkflowStage.WEEKLY_EXECUTION)
+    session.phase = ReasoningSessionPhase.STRATEGY_CONFIRMED
+    # 回填真实 PlanNode id(按标题匹配),状态 draft → planned。
+    root = await reasoning_service.root_plan_node(db, ctx)
+    phases = await _phase_nodes(db, ctx, root) if root is not None else []
+    by_title = {phase.title: phase.id for phase in phases}
+    timeline = list(session.v01_timeline or [])
+    for item in timeline:
+        if not isinstance(item, dict):
+            continue
+        item["status"] = "planned"
+        linked = by_title.get(str(item.get("title") or ""))
+        item["planNodeId"] = str(linked) if linked else None
+    session.v01_timeline = timeline
+    await db.commit()
 
 
 # =================================================================================
@@ -855,6 +902,21 @@ async def generate_replan(
     )
     phase_handles = {node_id: h for h, node_id in turn.node_handles}
 
+    # 未来(未完成)阶段整体后移一档;已完成历史不动,并保留其已计划状态。
+    completed_ids = {
+        str(phase.id) for phase in phases if phase.status is NodeStatus.COMPLETED
+    }
+    timeline = list(session.v01_timeline or [])
+    for item in timeline:
+        if not isinstance(item, dict) or item.get("planNodeId") in completed_ids:
+            continue
+        if isinstance(item.get("startWeek"), int):
+            item["startWeek"] += 1
+        if isinstance(item.get("endWeek"), int):
+            item["endWeek"] += 1
+        item["status"] = "draft"
+    session.v01_timeline = timeline
+
     actions: list[dict] = []
     for phase in phases:
         handle = phase_handles.get(str(phase.id))
@@ -905,9 +967,15 @@ async def generate_replan(
 async def mark_replan_confirmed(
     db: AsyncSession, ctx: WorkspaceContext, session: GoalReasoningSession
 ) -> None:
+    # 时间线项确认后一律转正式样式;阶段只在确实处于 REPLANNING 时推进。
+    timeline = list(session.v01_timeline or [])
+    for item in timeline:
+        if isinstance(item, dict):
+            item["status"] = "planned"
+    session.v01_timeline = timeline
     if session.workflow_stage is PlanningWorkflowStage.REPLANNING:
         transition(session, PlanningWorkflowStage.WEEKLY_EXECUTION)
-        await db.commit()
+    await db.commit()
 
 
 async def on_proposal_confirmed(
@@ -922,7 +990,11 @@ async def on_proposal_confirmed(
         and session.timeline_proposal_id == proposal_id
     ):
         await mark_timeline_confirmed(db, ctx, session)
-    elif session.workflow_stage is PlanningWorkflowStage.REPLANNING:
+    elif any(
+        isinstance(item, dict) and item.get("status") == "draft"
+        for item in (session.v01_timeline or [])
+    ):
+        # 还有未确认的时间线项 —— 刚确认的只可能是重规划(或时间线)提案。
         await mark_replan_confirmed(db, ctx, session)
 
 

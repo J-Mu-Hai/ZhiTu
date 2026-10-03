@@ -127,6 +127,10 @@ class GoalReasoningSession(UuidPk, TimestampMixin, Base):
     #: 阶段一的发现状态:`{questions[], answer, followups, template, insight}`。
     #: 最小状态,不是问卷表;用户回答只存一次。
     discovery: Mapped[dict | None] = mapped_column(JsonDict)
+    #: V0.1 时间线的**唯一权威投影**:结构化阶段草案/已确认项。
+    #: `[{id,title,kind,startWeek,endWeek,startDate,endDate,goal,deliverable,
+    #:   completionCriteria,status,planNodeId}]`。前端只读它,不从自然语言猜日期。
+    v01_timeline: Mapped[list | None] = mapped_column(JsonDict)
     #: 时间线确认提案 id。复用现有 proposal → 确认 → 版本校验 → 事务写入。
     #: 刻意不设外键 —— 与 `focus_reasoning_node_id` 同一取舍:避免 batch 迁移与
     #: 建表顺序上的循环,由服务层保证它指向本空间的提案。

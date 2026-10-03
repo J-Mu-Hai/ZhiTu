@@ -32,6 +32,9 @@ from backend.core.security import CurrentUser
 from backend.db.models import AgentQuestion, Workspace
 from backend.db.models.enums import ModelSource
 from backend.services.context import WorkspaceContext
+from backend.tests.conftest import (
+    seed_known_conditions,
+)
 
 
 def _roadmap_draft(stages: int = 4) -> ReasoningMapDraft:
@@ -147,6 +150,7 @@ async def test_strategic_question_carries_judgment_fields(
     app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
 ) -> None:
     account = await make_account()
+    await seed_known_conditions(account)
     question = _judged(
         "先求能跑通的最小闭环,还是先补统计基础?",
         options=(
@@ -186,6 +190,7 @@ async def test_question_without_judgment_is_rejected(
     app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
 ) -> None:
     account = await make_account()
+    await seed_known_conditions(account)
     # 只有形状,没有战略判断 —— 服务端必须拒绝。
     bare = QuestionDraft(
         question="先求能跑通的最小闭环,还是先补统计基础?",
@@ -204,6 +209,7 @@ async def test_choice_question_without_recommended_option_is_rejected(
     app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
 ) -> None:
     account = await make_account()
+    await seed_known_conditions(account)
     # 判断字段齐全,但两个选项都没标推荐 —— 前端无法明确标“推荐”,整条拒绝。
     no_recommend = _judged(
         "先求能跑通的最小闭环,还是先补统计基础?",
@@ -241,6 +247,7 @@ async def test_trivial_questions_are_dropped_in_strategy_phase(
     app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
 ) -> None:
     account = await make_account()
+    await seed_known_conditions(account)
     trivial = (
         _judged("你想用哪个 IDE?", mode="free_text", options=()),
         _judged("看哪本书比较好?", mode="free_text", options=()),
@@ -259,6 +266,7 @@ async def test_at_most_one_question_in_strategy_phase(
     app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
 ) -> None:
     account = await make_account()
+    await seed_known_conditions(account)
     first = _judged(
         "先跑通最小闭环还是先补统计基础?",
         options=(QuestionOptionDraft(id="a", label="最小闭环", recommended=True),),
@@ -277,6 +285,7 @@ async def test_zero_questions_is_allowed(
     app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
 ) -> None:
     account = await make_account()
+    await seed_known_conditions(account)
     use_reasoner(MapReasoner(drafts=(_roadmap_draft(),), questions=()))
 
     body = await _enter(app_client, account)
@@ -291,6 +300,7 @@ async def test_insufficient_judgment_is_explicit_and_not_fabricated(
     app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
 ) -> None:
     account = await make_account()
+    await seed_known_conditions(account)
     # 模型诚实地说“还不足以推荐,缺 X”,而不是编一个推荐。
     honest = _judged(
         "你更看重尽快见效,还是更看重基础扎实?",
@@ -316,6 +326,7 @@ async def test_execution_phase_does_not_require_judgment(db: AsyncSession, make_
     from backend.services import question_service
 
     account = await make_account()
+    await seed_known_conditions(account)
     workspace = await db.scalar(
         select(Workspace).where(Workspace.id == uuid.UUID(account.workspace_id))
     )
