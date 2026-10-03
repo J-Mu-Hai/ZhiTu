@@ -829,83 +829,99 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     return null;
   }, [traceAvailability, agentActivity, agentDismissed, agentOutcome]);
 
-  /** 自动梳理只飞一趟 —— 初始进入、点进子空间、计划刷新都可能触发它。 */
-  const reasoningInFlight = useRef(false);
-
   /**
-   * **进入空间时自动梳理问题地图。** 幂等由服务端的 `input_version` 保证:
-   * 同一输入重进直接返回当前地图,绝不重复建节点。前端只在“还没有会话 / 上次失败”
-   * 时才发 `space_entered` turn。
+   * 阶段 12 P0:进入某个空间时主动开启战略对话。
+   *
+   * ## 为什么必须是显式 workspaceId + rootId
+   *
+   * 旧版 `ensureReasoningMap()` 靠闭包里的 `space.id` / `reasoning` / `plan` 推断
+   * 目标,而 `enterSpace()` 在 `setSpaceId()` 之后立刻调用它 —— 那一刻闭包仍可能
+   * 捕获旧空间、旧 plan,或被跨空间的全局 `inFlight` 拦下,于是“进入新目标后 AI
+   * 不开口”。
+   *
+   * 这一版:目标空间(id 与根目标)只能由调用方**显式传入**;请求里出现的
+   * workspaceId 只可能是这个参数;响应回来时重新比对当前激活空间,旧空间的响应
+   * 一律丢弃。进行中标记按 workspaceId 分格,一个空间不会挡住另一个空间启动。
    */
-  const ensureReasoningMap = useCallback(async (options: { retry?: boolean } = {}) => {
-    if (!isReal || reasoningInFlight.current) return reasoning;
-    reasoningInFlight.current = true;
-    setReasoningLoading(true);
-    try {
-      const view = await backend.getReasoningMap(space.id);
-      setReasoning(view);
-      /**
-       * 阶段 12 修复:一个**空的、还没发出第一题的 intake 会话**不是“已完成”,
-       * 而是“必须主动发起第一轮 intake”。
-       *
-       * 这种会话是阶段 11/12 升级前留下的、或上一轮中断在第一题之前的:
-       * `phase=intake + status=ready + pendingIntake=null + nodes=[]`。旧判据
-       * (只看 sessionId / idle / failed)会把它当成可幂等重放,于是 AI 永远不开口。
-       *
-       * phase 用**一组**而不是只认 `'intake'`:`orientation` / `strategic_exploration`
-       * 是旧会话的 intake 档,服务端 `phase.is_intake` 也包含它们。不带上它们,
-       * 升级前遗留的空会话永远发不出第一题。
-       *
-       * **不看 `intakeQuestionsAsked === 0`** —— 以后可能有“问过但状态损坏”的恢复
-       * 场景,按真实的 phase / pending / nodes / status 判断更稳。
-       */
-      const intakePhases = new Set(['orientation', 'intake', 'strategic_exploration']);
-      const emptyIntake =
-        intakePhases.has(view.phase) &&
-        view.pendingIntake === null &&
-        view.nodes.length === 0 &&
-        view.status !== 'running' &&
-        view.status !== 'failed';
-      const needsExplore =
-        Boolean(options.retry) ||
-        view.sessionId === null ||
-        view.status === 'failed' ||
-        view.status === 'idle' ||
-        emptyIntake;
-      if (!needsExplore) return view;
-      const trigger = options.retry ? 'retry' : 'space_entered';
-      beginAgentActivity(trigger, AGENT_ACTIVITY_LABELS.space_entered);
+  const activeWorkspaceRef = useRef(space.id);
+  useEffect(() => { activeWorkspaceRef.current = space.id; }, [space.id]);
+  const intakeInFlight = useRef(new Map<string, boolean>());
+
+  const ensureStrategicIntake = useCallback(
+    async (workspaceId: string, rootId: string, options: { retry?: boolean } = {}) => {
+      if (!isReal || !workspaceId || !rootId || rootId === PLACEHOLDER_ROOT_ID) return null;
+      if (intakeInFlight.current.get(workspaceId)) return null;
+      intakeInFlight.current.set(workspaceId, true);
+      setReasoningLoading(true);
       try {
-        const response = await backend.runAgentTurn(space.id, {
-          trigger,
-          // 服务端还比对 `input_version`;这把钥匙只负责“同一份内容重试不重复跑”。
-          idempotencyKey: options.retry
-            ? `retry:${crypto.randomUUID()}`
-            : `enter:${space.id}:${view.inputVersion ?? 'first'}`,
-        });
-        setReasoning(response.reasoning);
-        if (response.message) setMessages((old) => [...old, toMessage(response.message as backend.MessageView)]);
-        if (response.question) await refreshQuestions().catch(() => undefined);
-        finishAgentActivity(
-          outcomeOfFailure(trigger, {
-            failed: response.degraded || response.reasoning.status === 'failed',
-            degradedReason: response.degradedReason,
-            retryable: response.retryable,
-          }),
-        );
-        return response.reasoning;
+        const view = await backend.getReasoningMap(workspaceId);
+        // 空间已经切走:这份响应属于旧空间,不许覆盖当前界面。
+        if (activeWorkspaceRef.current !== workspaceId) return view;
+        setReasoning(view);
+        /**
+         * “空的、还没发出第一题的 intake 会话”不是“已完成”,而是“必须主动发起
+         * 第一轮 intake”。phase 用一组而不是只认 `'intake'`:orientation /
+         * strategic_exploration 是旧会话的 intake 档,服务端 `phase.is_intake`
+         * 也包含它们。**不看 `intakeQuestionsAsked`**。
+         */
+        const intakePhases = new Set(['orientation', 'intake', 'strategic_exploration']);
+        const emptyIntake =
+          intakePhases.has(view.phase) &&
+          view.pendingIntake === null &&
+          view.nodes.length === 0 &&
+          view.status !== 'running' &&
+          view.status !== 'failed';
+        const needsExplore =
+          Boolean(options.retry) ||
+          view.sessionId === null ||
+          view.status === 'failed' ||
+          view.status === 'idle' ||
+          emptyIntake;
+        if (!needsExplore) return view;
+        const trigger = options.retry ? 'retry' : 'space_entered';
+        beginAgentActivity(trigger, AGENT_ACTIVITY_LABELS.space_entered);
+        try {
+          const response = await backend.runAgentTurn(workspaceId, {
+            trigger,
+            // 服务端还比对 `input_version`;这把钥匙只负责“同一份内容重试不重复跑”。
+            idempotencyKey: options.retry
+              ? `retry:${crypto.randomUUID()}`
+              : `enter:${workspaceId}:${view.inputVersion ?? 'first'}`,
+          });
+          if (activeWorkspaceRef.current !== workspaceId) return response.reasoning;
+          setReasoning(response.reasoning);
+          if (response.message) setMessages((old) => [...old, toMessage(response.message as backend.MessageView)]);
+          if (response.question) await refreshQuestions().catch(() => undefined);
+          finishAgentActivity(
+            outcomeOfFailure(trigger, {
+              failed: response.degraded || response.reasoning.status === 'failed',
+              degradedReason: response.degradedReason,
+              retryable: response.retryable,
+            }),
+          );
+          return response.reasoning;
+        } catch (cause) {
+          finishAgentActivity(outcomeOfError(trigger, cause instanceof ApiError ? cause : null));
+          throw cause;
+        }
       } catch (cause) {
-        finishAgentActivity(outcomeOfError(trigger, cause instanceof ApiError ? cause : null));
-        throw cause;
+        if (activeWorkspaceRef.current === workspaceId) {
+          setSendError(cause instanceof ApiError ? cause.message : '目标梳理没有完成,稍后可以重试。');
+        }
+        return null;
+      } finally {
+        intakeInFlight.current.set(workspaceId, false);
+        if (activeWorkspaceRef.current === workspaceId) setReasoningLoading(false);
       }
-    } catch (cause) {
-      setSendError(cause instanceof ApiError ? cause.message : '目标梳理没有完成,稍后可以重试。');
-      return reasoning;
-    } finally {
-      reasoningInFlight.current = false;
-      setReasoningLoading(false);
-    }
-  }, [beginAgentActivity, finishAgentActivity, isReal, reasoning, refreshQuestions, space.id]);
+    },
+    [beginAgentActivity, finishAgentActivity, isReal, refreshQuestions],
+  );
+
+  /** 兼容既有调用点(如路径页的“重试”):用**当前**渲染里的 workspace 委托。 */
+  const ensureReasoningMap = useCallback(
+    (options: { retry?: boolean } = {}) => ensureStrategicIntake(space.id, growth.goalId, options),
+    [ensureStrategicIntake, space.id, growth.goalId],
+  );
 
   /** 显式 Agent turn:节点讨论 / 自动分析 / 展开 / 暂缓 / 标记完成 / 战略确认。 */
   const agentTurn = useCallback(
@@ -997,7 +1013,8 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
   // `reasoning`,带上会自相触发)。
   useEffect(() => {
     if (!isReal || !plan || !growth.goalId || growth.goalId === PLACEHOLDER_ROOT_ID) return;
-    void ensureReasoningMap();
+    // 阶段 12 P0:**显式传入当前 workspaceId 与根目标** —— 不再靠闭包里的 space。
+    void ensureStrategicIntake(space.id, growth.goalId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isReal, plan?.revisionVersion, space.id, growth.goalId]);
 
@@ -1058,8 +1075,10 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     if (!growth.nodes[id]) return;
     setSpaceId(id);
     select(id);
-    // 进入空间**不再只是设置 spaceId** —— 真实调用一次幂等的目标推理 turn。
-    void ensureReasoningMap();
+    // 阶段 12 P0:**不在这里**发起 intake。旧写法 `setSpaceId(id); void
+    // ensureReasoningMap()` 会在 setState 生效前执行、并可能捕获旧空间,是不可靠的。
+    // 进入空间的自动启动交给那个只依赖“当前 workspaceId + 根目标就绪”的 effect;
+    // 子空间切换不需要重新开启 intake(它是 workspace 级的)。
   }
   /**
    * 重新拉整份计划。
@@ -2253,8 +2272,10 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     // 运行记录(本地诊断):四态可用性 + 统一 Agent 活动状态。
     traceAvailability, traceOpen, openTrace, closeTrace, refreshTrace, retryTraceTurn,
     agentStatus, dismissAgentStatus, retryAgentFailure,
-    // 目标推理地图。与业务计划、问题都分开;进入空间会自动梳理一次(幂等)。
-    reasoning, reasoningLoading, ensureReasoningMap, refreshReasoning, agentTurn, editReasoningNode,
+    // 目标推理地图。与业务计划、问题都分开;进入空间会自动开启战略对话(幂等)。
+    // `ensureStrategicIntake` 是显式目标空间的入口(阶段 12 P0);`ensureReasoningMap`
+    // 保留给既有调用点,内部委托前者。
+    reasoning, reasoningLoading, ensureStrategicIntake, ensureReasoningMap, refreshReasoning, agentTurn, editReasoningNode,
     refineStrategy, refining, requestChat, chatRequestNonce,
     replan, replanState,
     // 上一轮是不是基于已经变过的输入(见 `inputChanged` 的注释),以及"重新分析"

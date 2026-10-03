@@ -790,6 +790,34 @@ async def _build_reasoning_context(
     )
 
 
+def should_start_strategic_intake(
+    session: GoalReasoningSession, existing_nodes: list[ReasoningNode]
+) -> bool:
+    """这个会话现在是否**应该由 AI 主动发起第一轮战略 intake**。
+
+    它是“要不要主动开口”的**唯一判据**。前端与后端都围绕这个语义工作,但后端是
+    最终裁决者:前端只是提前决定要不要发 `space_entered`,真正说了算的是这里。
+
+    只有以下条件**全部**成立才返回 True:
+    - phase 是 intake(含旧的 orientation / strategic_exploration);
+    - 还没有待回答的 intake 问题(`pending_intake_message_id is None`);
+    - 还没有任何 reasoning node(尤其没有 route/stage);
+    - status 不是 running(交给并发锁);
+    - status 不是 failed(交给用户显式重试,不偷偷无限请求)。
+
+    “还没有一条本轮主动 intake assistant message”由
+    `pending_intake_message_id` 这一个标记表达:它就是“上一轮主动问出的那条消息”。
+    非空即说明已经开过口,重进必须继续等回答,不能重复提问。
+    """
+    return bool(
+        session.phase.is_intake
+        and session.pending_intake_message_id is None
+        and not existing_nodes
+        and session.status is not ReasoningSessionStatus.RUNNING
+        and session.status is not ReasoningSessionStatus.FAILED
+    )
+
+
 async def run_space_entered(
     db: AsyncSession,
     ctx: WorkspaceContext,
@@ -830,30 +858,17 @@ async def run_space_entered(
     # ============================================================================
     # 阶段 12 修复:一个**空的、还没发出第一题的 intake 会话**不是“已完成”。
     #
-    # 旧逻辑只看 `READY + input_version 未变` 就把它当成可幂等重放,于是 AI 永远
-    # 不开口。阶段 11/12 升级前留下的会话、或上一轮中断在第一题之前的会话,都会
-    # 落在这种形状里。它必须被当成“还需要真正发起第一轮 strategic_intake”。
+    # 唯一判据是 `should_start_strategic_intake`。阶段 11/12 升级前留下的会话、
+    # 或上一轮中断在第一题之前的会话,都会落在这种形状里,必须真正发起第一轮。
     #
     # **查真实 session 的 reasoning nodes**,不信前端传值:
     #   - 有 route/stage/任何节点 -> 旧战略会话,绝不能重新变回 intake;
-    #   - 有 pending 问题         -> 正在等回答,不能重复提问;
+    #   - 有 pending 问题         -> 正在等回答,已在上面 replayed;
     #   - RUNNING / FAILED        -> 交给并发锁或既有重试语义,不在这里抢跑。
     # ============================================================================
-    has_reasoning_nodes = (
-        await db.scalar(
-            select(ReasoningNode.id)
-            .where(ReasoningNode.session_id == session.id)
-            .limit(1)
-        )
-        is not None
-    )
-    needs_initial_intake = (
-        not force
-        and session.phase.is_intake
-        and session.pending_intake_message_id is None
-        and not has_reasoning_nodes
-        and session.status
-        not in (ReasoningSessionStatus.RUNNING, ReasoningSessionStatus.FAILED)
+    existing_nodes = await _load_nodes(db, session.id)
+    needs_initial_intake = not force and should_start_strategic_intake(
+        session, existing_nodes
     )
 
     current_iv = await input_version(db, ctx, root)
@@ -906,18 +921,41 @@ def _known_dimensions(known) -> frozenset[str]:
     return frozenset(dims)
 
 
-def _intake_decision_error(decision, *, known_dimensions) -> str | None:
+def _first_turn_may_skip_intake(known) -> bool:
+    """首个 intake 回合是否已经掌握足够的战略信息,可以直接进入时间架构。
+
+    只有当用户**初始目标**里已经明确给出:可验证成果、时间窗口、当前基础、
+    稳定可投入的时间、以及关键约束/取舍时,才允许首轮跳过提问。普通简短目标
+    (“学习 Python”“准备考研”“做一个副业项目”)缺其中任何一项,都必须先问一个
+    决定整体路线的核心问题。
+    """
+    return bool(
+        known is not None
+        and known.goal
+        and known.deadline
+        and known.current_level
+        and known.weekly_available_minutes is not None
+        and (known.success_criteria or known.constraints)
+    )
+
+
+def _intake_decision_error(
+    decision, *, known_dimensions, first_turn: bool = False, known=None
+) -> str | None:
     """服务端对一条 intake 决策的**硬闸**。返回可读原因或 `None`。
 
     规则(阶段 12 §4.1):
     - 必须有决策,动作必须在闭集里;
     - `ask` 必须带一个问题、且说明 `decisionScope`(会改变整体战略的哪一件大事);
-    - `ready_for_architecture` 允许没有 scope;
+    - **首个 intake 回合默认不能直接 `ready_for_architecture`** —— 除非初始目标
+      已经明确给出成果/时间/基础/稳定投入/取舍,否则必须先问一个关键问题;
     - 问题不得重复用户已经说过的信息、不得问执行细节。
     """
     if decision is None:
         return "intake 回合没有给出 intakeDecision"
     if decision.action == "ready_for_architecture":
+        if first_turn and not _first_turn_may_skip_intake(known):
+            return "首个 intake 回合必须先给出整体判断并问一个决定战略的关键问题"
         return None
     if decision.action != "ask":
         return "intakeDecision.action 不合法"
@@ -1010,7 +1048,10 @@ async def _run_intake(
             await db.commit()
             return await _response(db, ctx, session, message=message, result=result)
         error = _intake_decision_error(
-            result.intake_decision, known_dimensions=known_dimensions
+            result.intake_decision,
+            known_dimensions=known_dimensions,
+            first_turn=session.intake_questions_asked == 0,
+            known=turn.known,
         )
         if error is None:
             break
