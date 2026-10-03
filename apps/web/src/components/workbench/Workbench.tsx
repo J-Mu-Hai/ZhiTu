@@ -3,11 +3,13 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { GitBranch, ChartNoAxesGantt, ListTodo, CalendarRange, PanelRightOpen, ArrowLeft } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { PathView } from '@/components/growth/PathView';
+import { V1Canvas } from '@/components/growth/V1Canvas';
 import { TimelineView } from './TimelineView';
 import { TaskView } from './TaskView';
 import { ScheduleView } from './ScheduleView';
 import { FloatingConversation } from '@/components/conversation/FloatingConversation';
 import { DiscoveryPrompt } from './DiscoveryPrompt';
+import { V1InitialThinking } from './V1InitialThinking';
 import { AgentTraceInspector } from '@/components/conversation/AgentTraceInspector';
 import { useDemo } from '@/features/growth/provider';
 import { useMobileLayout } from '@/lib/media';
@@ -57,6 +59,10 @@ export function Workbench() {
   const switchedArchitectureRef = useRef(0);
   // 规划智能体 V0.1:阶段一(DISCOVERY)用中央大输入框,画布保持干净。
   const discovery = reasoning?.workflowStage === 'discovery';
+  // 规划智能体重构 V1(P1):阶段一初始状态用「初步思考」输入区;提交后进入层级画布。
+  // P1 不实现时间线/任务/排期,所以 V1 空间不展示那三个页签,避免把用户带进尚未实现的入口。
+  const v1Active = Boolean(reasoning?.v1Stage);
+  const v1Initial = reasoning?.v1Stage === 'initial_thinking';
   // 阶段 11:“调整战略”把对话 Dock 展开 —— 只是把注意力带回对话,不替用户发言。
   useEffect(() => {
     if (chatRequestNonce > 0) setChatChoice(true);
@@ -74,7 +80,7 @@ export function Workbench() {
     }
   }, [architectureVersion, view, router, workspaceParam, urlWorkspace, workspaceId]);
   return <div className="workbench open-workbench"><div className={`workbench-body ${chatOpen ? '' : 'chat-hidden'}`}><section className="workspace">
-    <div className="space-topbar">{!isRootSpace && <button className="icon-button space-back" aria-label="返回上级空间" onClick={() => enterSpace(growth.nodes[spaceId]?.parentId ?? growth.goalId)}><ArrowLeft size={15}/></button>}{discovery ? null : <div className="view-tabs" role="tablist" aria-label="工作台视图">{tabs.map(({id,label,Icon}) => <button key={id} role="tab" aria-selected={view === id} aria-label={label} className={view === id ? 'selected' : ''} onClick={() => router.replace(`/workbench?${workspaceParam}&view=${id}`, { scroll: false })}><Icon size={15}/><span>{label}</span></button>)}</div>}{!chatOpen && <button className="icon-button reopen-chat" aria-label="展开对话" onClick={() => setChatChoice(true)}><PanelRightOpen size={18}/></button>}</div>
+    <div className="space-topbar">{!isRootSpace && <button className="icon-button space-back" aria-label="返回上级空间" onClick={() => enterSpace(growth.nodes[spaceId]?.parentId ?? growth.goalId)}><ArrowLeft size={15}/></button>}{discovery || v1Active ? null : <div className="view-tabs" role="tablist" aria-label="工作台视图">{tabs.map(({id,label,Icon}) => <button key={id} role="tab" aria-selected={view === id} aria-label={label} className={view === id ? 'selected' : ''} onClick={() => router.replace(`/workbench?${workspaceParam}&view=${id}`, { scroll: false })}><Icon size={15}/><span>{label}</span></button>)}</div>}{!chatOpen && <button className="icon-button reopen-chat" aria-label="展开对话" onClick={() => setChatChoice(true)}><PanelRightOpen size={18}/></button>}</div>
     {/* 视图是一个三元表达式,所以**切一下页签,整棵画布子树就被卸载了** —— 这是有意的:
         画布和列表不该抢同一个位置,而隐藏着不卸载会让 ReactFlow 拿到一个尺寸为 0 的容器。
         代价是画布内部的东西(平移缩放、弹窗里没提交的输入)会跟着没,所以那两样都
@@ -82,5 +88,7 @@ export function Workbench() {
         `key` 用的是 `canvasKey` 而不是 `spaceId`,理由见 Provider 里 `canvasKey` 那段。 */}
     {discovery
       ? <DiscoveryPrompt questions={reasoning?.discoveryQuestions ?? []} busy={sending} onSend={text => { void send(text); }} />
+      : v1Active
+      ? <div className="view-content"><V1Canvas key={canvasKey}/>{v1Initial && <V1InitialThinking busy={sending} onSend={text => { void send(text); }} />}</div>
       : <div className="view-content">{view === 'path' ? <PathView key={canvasKey}/> : view === 'timeline' ? <TimelineView/> : view === 'schedule' ? <ScheduleView/> : <TaskView/>}</div>}</section><FloatingConversation open={chatOpen} onClose={() => setChatChoice(false)}/><AgentTraceInspector/></div></div>;
 }
