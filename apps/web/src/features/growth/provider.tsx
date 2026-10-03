@@ -844,8 +844,34 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     try {
       const view = await backend.getReasoningMap(space.id);
       setReasoning(view);
+      /**
+       * 阶段 12 修复:一个**空的、还没发出第一题的 intake 会话**不是“已完成”,
+       * 而是“必须主动发起第一轮 intake”。
+       *
+       * 这种会话是阶段 11/12 升级前留下的、或上一轮中断在第一题之前的:
+       * `phase=intake + status=ready + pendingIntake=null + nodes=[]`。旧判据
+       * (只看 sessionId / idle / failed)会把它当成可幂等重放,于是 AI 永远不开口。
+       *
+       * phase 用**一组**而不是只认 `'intake'`:`orientation` / `strategic_exploration`
+       * 是旧会话的 intake 档,服务端 `phase.is_intake` 也包含它们。不带上它们,
+       * 升级前遗留的空会话永远发不出第一题。
+       *
+       * **不看 `intakeQuestionsAsked === 0`** —— 以后可能有“问过但状态损坏”的恢复
+       * 场景,按真实的 phase / pending / nodes / status 判断更稳。
+       */
+      const intakePhases = new Set(['orientation', 'intake', 'strategic_exploration']);
+      const emptyIntake =
+        intakePhases.has(view.phase) &&
+        view.pendingIntake === null &&
+        view.nodes.length === 0 &&
+        view.status !== 'running' &&
+        view.status !== 'failed';
       const needsExplore =
-        Boolean(options.retry) || view.sessionId === null || view.status === 'failed' || view.status === 'idle';
+        Boolean(options.retry) ||
+        view.sessionId === null ||
+        view.status === 'failed' ||
+        view.status === 'idle' ||
+        emptyIntake;
       if (!needsExplore) return view;
       const trigger = options.retry ? 'retry' : 'space_entered';
       beginAgentActivity(trigger, AGENT_ACTIVITY_LABELS.space_entered);

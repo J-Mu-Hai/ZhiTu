@@ -813,14 +813,60 @@ async def run_space_entered(
 
     if session.status == ReasoningSessionStatus.RUNNING and not _running_is_stale(session, now):
         return await _response(db, ctx, session, replayed=True)
+
+    # 阶段 12:**已经有 pending intake 问题的会话必须继续等回答。**
+    #
+    # intake 提问那一轮**不写 `input_version`**(它是“输入变化才重新探索”的摘要,
+    # 与“正在等用户回答”不是一回事),所以下面的 `READY + input_version 未变` 这条
+    # 通用重放判据抓不住它。没有这一段的话,重进一个正在等回答的空间会**再跑一次
+    # strategic_intake**,把用户还没回答的那道题直接推过去 —— 这是实测过的。
     if (
         not force
+        and session.phase.is_intake
+        and session.pending_intake_message_id is not None
+    ):
+        return await _response(db, ctx, session, replayed=True)
+
+    # ============================================================================
+    # 阶段 12 修复:一个**空的、还没发出第一题的 intake 会话**不是“已完成”。
+    #
+    # 旧逻辑只看 `READY + input_version 未变` 就把它当成可幂等重放,于是 AI 永远
+    # 不开口。阶段 11/12 升级前留下的会话、或上一轮中断在第一题之前的会话,都会
+    # 落在这种形状里。它必须被当成“还需要真正发起第一轮 strategic_intake”。
+    #
+    # **查真实 session 的 reasoning nodes**,不信前端传值:
+    #   - 有 route/stage/任何节点 -> 旧战略会话,绝不能重新变回 intake;
+    #   - 有 pending 问题         -> 正在等回答,不能重复提问;
+    #   - RUNNING / FAILED        -> 交给并发锁或既有重试语义,不在这里抢跑。
+    # ============================================================================
+    has_reasoning_nodes = (
+        await db.scalar(
+            select(ReasoningNode.id)
+            .where(ReasoningNode.session_id == session.id)
+            .limit(1)
+        )
+        is not None
+    )
+    needs_initial_intake = (
+        not force
+        and session.phase.is_intake
+        and session.pending_intake_message_id is None
+        and not has_reasoning_nodes
+        and session.status
+        not in (ReasoningSessionStatus.RUNNING, ReasoningSessionStatus.FAILED)
+    )
+
+    current_iv = await input_version(db, ctx, root)
+    if (
+        not force
+        and not needs_initial_intake
         and session.status == ReasoningSessionStatus.READY
-        and session.input_version == await input_version(db, ctx, root)
+        and session.input_version == current_iv
     ):
         return await _response(db, ctx, session, replayed=True)
     if (
         not force
+        and not needs_initial_intake
         and payload.idempotency_key
         and session.last_idempotency_key == payload.idempotency_key
     ):
@@ -840,7 +886,7 @@ async def run_space_entered(
         db, ctx, root, session, reasoner,
         trigger_message=SPACE_ENTERED_PROMPT,
         trace=trace,
-        current_iv=await input_version(db, ctx, root),
+        current_iv=current_iv,
         idempotency_key=payload.idempotency_key,
     )
 
