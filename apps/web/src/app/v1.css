@@ -1,0 +1,87 @@
+/* ------------------------------------------------------------------ */
+/* 规划智能体重构 V1（P1）：初步思考的放大输入区                         */
+/*                                                                     */
+/* 它**不是**一套独立画布：只是右侧既有 ConversationPanel 里的一档       */
+/* 输入形态。配色 / 边框 / 圆角全部沿用现有 composer 与主题令牌。        */
+/* ------------------------------------------------------------------ */
+
+.v1-initial-guide {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.v1-initial-guide > p {
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--muted, #6f8293);
+}
+.v1-initial-guide ul {
+  margin: 0;
+  padding-left: 16px;
+  display: grid;
+  gap: 4px;
+}
+.v1-initial-guide li {
+  font-size: 11px;
+  line-height: 1.65;
+  color: var(--muted, #6f8293);
+}
+.v1-initial-guide li strong {
+  color: var(--text, #304b62);
+  font-weight: 600;
+}
+.v1-initial-guide .eyebrow {
+  font-size: 9px;
+}
+
+/* 放大:更高的输入区、更大的字号。仍旧是同一个 `.composer`。 */
+.floating-conversation .composer.is-v1-initial {
+  padding: 14px;
+  border-radius: 12px;
+}
+.floating-conversation .composer.is-v1-initial textarea {
+  min-height: 104px;
+  font-size: 12.5px;
+  line-height: 1.8;
+}
+.floating-conversation .composer.is-v1-initial .composer-footnote,
+.floating-conversation .composer.is-v1-initial + .composer-footnote {
+  color: var(--muted, #718598);
+}
+
+/* ---- 画布节点上的 V1 轻量层级提示(仍是既有 reasoning-node) ---- */
+.rn-v1-hint {
+  margin-top: 6px;
+  font-size: 10px;
+  color: var(--muted, #6f8293);
+}
+
+/* ---- 节点局部讨论:在既有 reasoning-detail 里分区展示 V1 内容 ---- */
+.reasoning-detail .rd-v1 {
+  display: grid;
+  gap: 4px;
+  margin: 8px 0;
+}
+.reasoning-detail .rd-v1 ul {
+  margin: 0;
+  padding-left: 16px;
+  display: grid;
+  gap: 3px;
+}
+.reasoning-detail .rd-v1 li {
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text, #304b62);
+}
+.reasoning-detail .rd-v1-empty {
+  font-size: 11px;
+  color: var(--muted, #8798ad);
+}
+.reasoning-detail .rd-v1-question {
+  margin-top: 4px;
+  padding-left: 8px;
+  border-left: 2px solid var(--blue-ink, #2f6da3);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text, #304b62);
+}

@@ -94,6 +94,8 @@ async def test_v1_canvas_and_node_discussion(
     assert view["v1Stage"] == "goal_reframe"
     assert view["v1Question"] == v1_service.GLOBAL_QUESTION
     assert view["v1Judgment"]
+    # 不交代内部实现(几个分组 / 几个容器 / 不写什么)。
+    assert "容器" not in reply and "三组" not in reply, reply
 
     nodes = _by_key(view)
     # 三个一级分组,均连接根目标(parent_handle 为空)。
@@ -181,9 +183,10 @@ async def test_v1_canvas_and_node_discussion(
     assert _by_key(after)["current_state"]["handle"] == before_current["handle"]
     assert len(after["nodes"]) == len(before["nodes"])
 
-    # 讨论回复必须说明“没有生成计划”。
+    # 讨论回复是简洁的确认,**不交代内部实现**(不出现“几个容器/不生成任务”这类说明)。
     discuss_reply = answer["message"]["content"]
-    assert "没有生成" in discuss_reply or "不生成" in discuss_reply
+    assert "已记下" in discuss_reply
+    assert "容器" not in discuss_reply and "三组框架" not in discuss_reply
 
     # 讨论之后的计划里仍然只有根目标。
     plan = await _plan_nodes(db, account)

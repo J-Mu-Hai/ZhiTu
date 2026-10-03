@@ -269,6 +269,13 @@ export function ConversationPanel() {
    * - 它**挂在产生它的那条助手消息下面** —— 判断在上、问题与快捷回复紧随其后。
    */
   const intakeActive = reasoning?.phase === 'intake';
+  /**
+   * 规划智能体重构 V1(P1):阶段一「初步思考」。
+   *
+   * 放大输入框**在右侧面板内**,不覆盖画布;提交后 `v1Stage` 变化,这一档自动退出,
+   * 面板回到普通尺寸与普通对话布局(节点局部讨论就用普通面板 + 画布详情卡)。
+   */
+  const v1Initial = reasoning?.v1Stage === 'initial_thinking';
   // 阶段 12:待回答问题只来自会话状态(`reasoning.pendingIntake`),**不是问题实体**。
   const primaryIntake = reasoning?.pendingIntake ?? null;
   const intakeAsked = reasoning?.intakeQuestionsAsked ?? 0;
@@ -626,12 +633,24 @@ export function ConversationPanel() {
           </div>
         )}
 
-        <form className="composer" onSubmit={e => { e.preventDefault(); submit(); }}>
+        {v1Initial && (
+          <div className="v1-initial-guide" data-testid="v1-initial-guide">
+            <span className="eyebrow">先想清楚，再排出来</span>
+            <p>不用写成正式目标，把下面三点里你最清楚的先说给我：</p>
+            <ul>
+              <li><strong>为什么是现在</strong>——是什么让你此刻想开始？</li>
+              <li><strong>你真正希望得到什么</strong>——最后能拿出什么，才算解决了问题？</li>
+              <li><strong>你担心什么</strong>——最怕哪一步做不下去？</li>
+            </ul>
+          </div>
+        )}
+
+        <form className={v1Initial ? 'composer is-v1-initial' : 'composer'} onSubmit={e => { e.preventDefault(); submit(); }}>
           <textarea
             ref={composer}
             rows={1}
             aria-label="给 AI 的消息"
-            placeholder={selected ? `关于「${selected.title}」，告诉 AI 你的想法……` : '我想在……之内完成……'}
+            placeholder={v1Initial ? '比如：我想学 Python，因为想自己做数据分析，但担心坚持不下来……' : selected ? `关于「${selected.title}」，告诉 AI 你的想法……` : '我想在……之内完成……'}
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); submit(); } }}

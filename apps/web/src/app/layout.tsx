@@ -20,9 +20,9 @@ import './auth.css';
 import './today-live.css';
 import './canvas-polish.css';
 import './ui-refresh.css';
-// 规划智能体重构 V1(P1)的画布 / 初步思考 / 局部讨论。排在 ui-refresh 之后,
-// 保证新组件样式不被旧规则按顺序盖掉。
-import './v1-canvas.css';
+// 规划智能体重构 V1(P1):右侧对话面板里“初步思考”的放大输入形态。
+// 画布与节点**复用既有 PathView / ReasoningNode / ConversationPanel**,这里不定义独立 UI。
+import './v1.css';
 // 排在**最后**:统一 Motion Tokens 与 reduced-motion 总开关要盖掉前面那些文件里
 // 散落的临时时长(`.18s` / `.2s` / `.15s`)。见 `motion.css` 顶部。
 import './motion.css';

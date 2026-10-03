@@ -378,7 +378,7 @@ async def answer_v1_in_conversation(
     root = await reasoning_service.root_plan_node(db, ctx)
     goal_text = (root.title if root is not None else "") or ""
     judgment = build_judgment(goal_text)
-    canvas = await _ensure_canvas(db, session, goal_text)
+    await _ensure_canvas(db, session, goal_text)
     session.v1_judgment = judgment
     session.v1_question = GLOBAL_QUESTION
     if session.v1_stage == V1_INITIAL_THINKING:
@@ -395,13 +395,8 @@ async def answer_v1_in_conversation(
         if focus is not None:
             session.focus_reasoning_node_id = focus.id
             session.focus_reason = FOCUS_REASON
+    #: 只给判断 + 一个问题。**不向用户交代内部实现**(几个分组、几个容器、不写什么)。
     reply = f"{judgment}\n\n{GLOBAL_QUESTION}"
-    if canvas.created:
-        reply += (
-            f"\n\n（我已经在画布上放好三组思考框架:{canvas.group_count} 个分组、"
-            f"{canvas.analysis_count} 个待讨论的分析容器。它们现在都是待讨论状态,"
-            "点开任意一个就能补充信息。这里不生成任务或时间线。）"
-        )
     message = await _append_assistant(db, ctx, reply=reply, conversation=conversation)
     await db.commit()
     return conversation_service.turn_outcome_for_reply(
@@ -470,11 +465,7 @@ async def handle_node_turn(
     node.version += 1
 
     conversation = await conversation_service.get_or_create_primary_conversation(db, ctx)
-    reply = (
-        f"已记下你对「{node.title}」的补充,并只更新了这一个节点。"
-        "它现在标记为已澄清;画布上的其它分组与节点没有变,也没有生成任何任务、"
-        "时间线或周计划。你可以继续点开别的节点,或回到全局对话。"
-    )
+    reply = f"已记下你对「{node.title}」的补充,这条节点现在标记为已澄清。"
     message = await _append_assistant(db, ctx, reply=reply, conversation=conversation)
     return await _response(db, ctx, session, message=message, changed=True)
 

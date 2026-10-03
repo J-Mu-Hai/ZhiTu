@@ -25,6 +25,10 @@ import type { ReasoningNodeView } from '@/lib/backend';
 export type ReasoningFlowData = {
   node: ReasoningNodeView;
   isFocus: boolean;
+  /** 规划智能体重构 V1:该分组是否展开(非 V1 为 undefined)。 */
+  v1Expanded?: boolean;
+  /** 规划智能体重构 V1:该分组下的分析节点数(非 V1 为 undefined)。 */
+  v1ChildCount?: number;
 };
 
 export type ReasoningFlowNode = Node<ReasoningFlowData, 'reasoning'>;
@@ -54,9 +58,13 @@ export function ReasoningNodeComponent({ data }: NodeProps<ReasoningFlowNode>) {
     'reasoning-node',
     `reasoning-${status}`,
     data.isFocus ? 'is-focus' : '',
+    // V1 的分组节点只多一层轻量标记,不换成一整套“白色大卡”。
+    node.v1Kind === 'group' || node.v1Kind === 'strategy' ? 'reasoning-v1-group' : '',
   ]
     .filter(Boolean)
     .join(' ');
+  const v1TypeLabel =
+    node.v1Kind === 'group' ? '分组' : node.v1Kind === 'strategy' ? '战略' : node.v1Kind === 'analysis' ? '分析' : null;
 
   return (
     <div
@@ -67,11 +75,17 @@ export function ReasoningNodeComponent({ data }: NodeProps<ReasoningFlowNode>) {
       <Handle type="target" position={Position.Top} isConnectable={false} />
       <div className="rn-head">
         <span className="rn-badge">{STATUS_LABEL[status] ?? status}</span>
-        <span className="rn-type">{TYPE_LABEL[node.nodeType] ?? node.nodeType}</span>
+        <span className="rn-type">{v1TypeLabel ?? TYPE_LABEL[node.nodeType] ?? node.nodeType}</span>
         {data.isFocus && <span className="rn-focus">当前焦点</span>}
       </div>
       <strong className="rn-title">{node.title}</strong>
       {node.summary && <p className="rn-summary">{node.summary}</p>}
+      {node.v1Kind === 'group' && (
+        <p className="rn-v1-hint">
+          {data.v1Expanded ? '收起' : '展开'} · 含 {data.v1ChildCount ?? 0} 个待讨论的分析节点
+        </p>
+      )}
+      {node.v1Kind === 'strategy' && <p className="rn-v1-hint">暂不展开</p>}
       {/* 阶段 8:路线 / 阶段的粗粒度时间、成果物与通过标准。不是排期。 */}
       {node.timeframe && <p className="rn-timeframe">约 {node.timeframe.replace(/^约\s*/, '')}</p>}
       {node.deliverable && <p className="rn-deliverable">成果：{node.deliverable}</p>}
