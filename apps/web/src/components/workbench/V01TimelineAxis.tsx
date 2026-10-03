@@ -96,6 +96,10 @@ export function V01TimelineAxis({
                 type="button"
                 data-testid="v01-phase-bar"
                 data-draft={itemDraft}
+                data-kind={item.kind}
+                data-status={item.status}
+                data-start={item.startDate ?? `W${item.startWeek ?? ''}`}
+                data-end={item.endDate ?? `W${item.endWeek ?? ''}`}
                 aria-label={`${item.title}，${dated ? `${item.startDate} 至 ${item.endDate}` : `第 ${item.startWeek}–${item.endWeek} 周`}`}
                 className={`${styles.bar} ${itemDraft ? styles.draftBar : styles.plannedBar} ${selected === item.id ? styles.selected : ''}`}
                 style={{ left: `${left(item)}%`, width: `${Math.max(2, right(item) - left(item))}%` }}
@@ -109,6 +113,8 @@ export function V01TimelineAxis({
                 className={`${styles.milestone} ${itemDraft ? styles.draftDot : styles.plannedDot}`}
                 style={{ left: `${right(item)}%` }}
                 title={item.deliverable || item.title}
+                data-testid="v01-milestone"
+                data-phase={item.id}
                 aria-hidden="true"
               />
             </div>
