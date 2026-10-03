@@ -74,6 +74,7 @@ AUDIT_EVENT_TYPES = frozenset(
         "candidate_direction_selected",
         "provisional_synthesis_created",
         "conversation_feedback_received",
+        "goal_definition_confirmed",
     }
 )
 
@@ -209,10 +210,30 @@ async def _snapshot(db: AsyncSession, ctx: WorkspaceContext, session) -> dict:
         )
         if str(node.title).startswith(("本周计划", "下周预览"))
     ]
+    #: 可见分析维度 / 隐藏维度数 / 真实待回答问题数。**内部十维 ≠ 十个待回答问题。**
+    visible_keys: list[str] = []
+    hidden_count = 0
+    pending_questions = 0
+    if session is not None:
+        # 延迟 import,避免 services 之间的循环。
+        from backend.services import v1_service
+
+        visible_keys = sorted(v1_service.visible_dimension_keys(session))
+        hidden_count = sum(
+            1 for item in v1_service.dimension_projection(session) if not item["visible"]
+        )
+        pending_questions = v1_service.actual_pending_question_count(session)
     return {
         "v1Stage": session.v1_stage if session is not None else None,
         "v1Status": session.v1_status if session is not None else None,
         "v1Error": session.v1_error if session is not None else None,
+        "strategicThesis": session.v1_strategic_thesis if session is not None else None,
+        "focusKey": session.v1_focus_key if session is not None else None,
+        "selectedDirection": session.v1_selected_direction if session is not None else None,
+        "candidateDirections": session.v1_candidate_directions if session is not None else None,
+        "visibleAnalysisDimensionKeys": visible_keys,
+        "hiddenAnalysisDimensionCount": hidden_count,
+        "actualPendingQuestionCount": pending_questions,
         "focus": (
             {"key": session.v1_focus_key, "reason": session.v1_focus_reason}
             if session is not None and session.v1_focus_key
@@ -320,6 +341,23 @@ async def export_markdown(db: AsyncSession, ctx: WorkspaceContext, session) -> s
     lines.append(f"- 当前状态：{snapshot['v1Status'] or '（无）'}")
     lines.append("")
     lines.append("## 当前结论")
+    if snapshot.get("strategicThesis"):
+        lines.append(f"- 当前战略判断：{snapshot['strategicThesis']}")
+    if snapshot.get("selectedDirection"):
+        lines.append(f"- 用户选择的候选方向：{snapshot['selectedDirection']}")
+    lines.append(
+        f"- 用户真正需要回答的问题：{snapshot.get('actualPendingQuestionCount', 0)} 个"
+    )
+    lines.append(
+        f"- 内部分析维度：可见 {len(snapshot.get('visibleAnalysisDimensionKeys') or [])} 个，"
+        f"隐藏 {snapshot.get('hiddenAnalysisDimensionCount', 0)} 个"
+        "（其余只是 AI 的内部思考框架，不需要你逐条回答）"
+    )
+    if snapshot.get("visibleAnalysisDimensionKeys"):
+        lines.append(
+            "- 当前展示的分析维度："
+            + "、".join(snapshot["visibleAnalysisDimensionKeys"])
+        )
     focus = snapshot.get("focus")
     lines.append(f"- 当前焦点：{focus['key'] if focus else '（无）'}")
     if focus and focus.get("reason"):

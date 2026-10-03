@@ -80,6 +80,8 @@ V1_INITIAL_THINKING = "initial_thinking"
 V1_GOAL_REFRAME = "goal_reframe"
 V1_FACTOR_ANALYSIS = "factor_analysis"
 V1_STRATEGY_DRAFT = "strategy_draft"
+#: P2.2:目标定义经用户确认后,进入“问题结构”分析层(五个因素维度)。
+V1_PROBLEM_STRUCTURE = "problem_structure"
 #: 用户已确认战略逻辑;P3 可以据此生成粗时间架构。
 V1_STRATEGY_CONFIRMED = "strategy_confirmed_for_timeline"
 #: P3:已生成 3–6 个阶段的粗时间架构草案,等用户确认。
@@ -196,6 +198,25 @@ def classify_user_message(content: str) -> str:
 def _counts_as_low_info(classification: str) -> bool:
     return classification in (INPUT_AMBIGUOUS, INPUT_CONVERSATION_FEEDBACK)
 
+#: 内部十维 + 战略四子的**展示标题**。画布只显示标题 + 一句判断。
+_DIMENSION_TITLES: dict[str, str] = {
+    **{key: title for _group, key, title, _q in _ANALYSIS},
+    **{key: title for key, title, _q in _STRATEGY_KEYS},
+}
+#: **内部十维**的键(不含战略子项)—— 可见性/隐藏数只针对这十个。
+ANALYSIS_DIMENSION_KEYS = frozenset(key for _group, key, _title, _q in _ANALYSIS)
+#: goal_reframe 阶段默认可见的三个**核心分析维度**。
+_CORE_GOAL_KEYS: tuple[str, ...] = ("true_intent", "key_conflict", "goal_definition")
+#: 进入 problem_structure 后默认可见的五个因素维度。
+_PROBLEM_KEYS: tuple[str, ...] = (
+    "hard_constraints",
+    "controllable_factors",
+    "key_levers",
+    "major_risks",
+    "external_conditions",
+)
+
+
 #: 模型可以指涉的全部键(10 个固定问题 + 4 个战略问题)。**分组键不可被模型更新。**
 ALLOWED_V1_KEYS = frozenset(
     {key for _group, key, _q, _why in _ANALYSIS} | {key for key, _t, _q in _STRATEGY_KEYS}
@@ -215,6 +236,53 @@ _STRATEGY_FIELD = {
 def is_v1(session: GoalReasoningSession | None) -> bool:
     """这个会话是不是重构 V1。`v1_stage is None` = 非 V1。"""
     return session is not None and session.v1_stage is not None
+
+
+def dimension_title(key: str | None) -> str | None:
+    """分析维度键 -> 展示标题。"""
+    return _DIMENSION_TITLES.get(key or "")
+
+
+def visible_dimension_keys(session: GoalReasoningSession) -> set[str]:
+    """当前**画布默认可见**的分析维度键。内部复杂,外部简单。
+
+    - goal_reframe / initial_thinking:只显示三个核心分析维度;
+    - problem_structure 及之后:显示五个因素维度(+ 焦点);
+    - 战略子项一旦形成就显示;
+    - 焦点始终可见。
+    """
+    stage = session.v1_stage
+    if stage in (None, V1_INITIAL_THINKING, V1_GOAL_REFRAME):
+        keys: set[str] = set(_CORE_GOAL_KEYS)
+    else:
+        keys = set(_PROBLEM_KEYS)
+    if session.v1_focus_key:
+        keys.add(session.v1_focus_key)
+    return keys
+
+
+def dimension_projection(session: GoalReasoningSession) -> list[dict]:
+    """十维 + 四战略的分析维度投影(可见性、阶段、焦点、是否真需回答)。"""
+    visible = visible_dimension_keys(session)
+    projection: list[dict] = []
+    for key in (k for _group, k, _title, _q in _ANALYSIS):
+        title = _DIMENSION_TITLES[key]
+        projection.append(
+            {
+                "key": key,
+                "title": title,
+                "visible": key in visible,
+                "isFocus": key == session.v1_focus_key,
+                #: 分析维度**从不**是“待回答问题”;真正的问题只来自对话区那一个。
+                "requiresResponse": False,
+            }
+        )
+    return projection
+
+
+def actual_pending_question_count(session: GoalReasoningSession) -> int:
+    """真正需要用户回答的问题数:只数会话上那个全局关键问题(0 或 1)。"""
+    return 1 if (session.v1_question or "").strip() else 0
 
 
 async def _audit(db, ctx: WorkspaceContext, session, event_type: str, **kwargs):
@@ -586,6 +654,8 @@ async def _run_assessment(
     reasoner,
     classification: str,
     is_local_discussion: bool = False,
+    force_no_question: bool = False,
+    trigger: str = "user_message",
     exclude_message_id=None,
 ) -> ReasoningResult:
     root = await reasoning_service.root_plan_node(db, ctx)
@@ -695,7 +765,7 @@ async def _run_assessment(
     budget_exhausted = budget_used >= MAX_V1_QUESTIONS
     force_options = low_streak >= 2
     question_accepted = bool(proposed_question) and not (
-        same_focus_repeat or budget_exhausted or force_options
+        same_focus_repeat or budget_exhausted or force_options or force_no_question
     )
 
     if force_options:
@@ -732,7 +802,7 @@ async def _run_assessment(
         ctx,
         session,
         "strategic_thesis_generated",
-        trigger="user_message",
+        trigger=trigger,
         stage_before=stage_before,
         stage_after=session.v1_stage,
         focus_key=session.v1_focus_key,
@@ -757,7 +827,7 @@ async def _run_assessment(
         ctx,
         session,
         "global_assessment_generated",
-        trigger="user_message",
+        trigger=trigger,
         stage_before=stage_before,
         stage_after=session.v1_stage,
         focus_key=session.v1_focus_key,
@@ -772,7 +842,7 @@ async def _run_assessment(
             ctx,
             session,
             "global_question_asked",
-            trigger="user_message",
+            trigger=trigger,
             stage_before=stage_before,
             stage_after=session.v1_stage,
             focus_key=assessment.focus_key,
@@ -943,6 +1013,7 @@ async def answer_v1_in_conversation(
         reasoner=reasoner,
         classification=classification,
         is_local_discussion=is_local_discussion,
+        trigger=trigger,
         exclude_message_id=user_message.id,
     )
     message = await _append_assistant(
@@ -1646,9 +1717,18 @@ async def weekend_review(
 
 
 async def select_candidate_direction(
-    db: AsyncSession, ctx: WorkspaceContext, session: GoalReasoningSession, key: str
+    db: AsyncSession,
+    ctx: WorkspaceContext,
+    session: GoalReasoningSession,
+    key: str,
+    reasoner=None,
 ) -> AgentTurnResponse:
-    """用户选择一个候选方向(纠正/选择/否定 AI 给出的解释)。"""
+    """用户选择一个候选方向:幂等记录 + **立即发起一次 V1 推理回合**更新判断。
+
+    - 同一方向重复选择**幂等**:不再审计、不再调模型;
+    - 选中后强制**不再提问**,并更新目标定义;
+    - 不进入时间线、不生成任务。
+    """
     from backend.services.errors import InvalidInput
 
     directions = [d for d in (session.v1_candidate_directions or []) if isinstance(d, dict)]
@@ -1656,6 +1736,11 @@ async def select_candidate_direction(
     if key not in valid:
         await _guard_reject(db, ctx, session, reason="没有这个候选方向。")
         raise InvalidInput("没有这个候选方向。")
+    # 幂等:同一方向重复点击不再写审计、不再跑模型。
+    if session.v1_selected_direction == key:
+        return await reasoning_service._response(db, ctx, session, changed=False)
+
+    direction = next(d for d in directions if str(d.get("key")) == key)
     session.v1_selected_direction = key
     await _audit(
         db,
@@ -1663,8 +1748,57 @@ async def select_candidate_direction(
         session,
         "candidate_direction_selected",
         focus_key=session.v1_focus_key,
+        focus_reason=session.v1_focus_reason,
         summary=f"用户选择了候选方向:{key}。",
-        payload={"directionKey": key},
+        payload={
+            "focusKey": session.v1_focus_key,
+            "focusReason": session.v1_focus_reason,
+            "selectedDirection": key,
+        },
+    )
+    await db.commit()
+    if reasoner is None:
+        return await reasoning_service._response(db, ctx, session, changed=True)
+
+    message = (
+        f"用户选择了候选方向「{direction.get('title') or key}」。"
+        f"理由:{direction.get('reason') or ''}。路径:{direction.get('path') or ''}。"
+        "请据此更新战略判断,并更新目标定义;不要再问新问题。"
+    )
+    result = await _run_assessment(
+        db,
+        ctx,
+        session,
+        user_message=message,
+        reasoner=reasoner,
+        classification=INPUT_USER_PREFERENCE,
+        force_no_question=True,
+        trigger="direction_selected",
+    )
+    conversation = await conversation_service.get_or_create_primary_conversation(db, ctx)
+    await _append_assistant(db, ctx, reply=result.reply, conversation=conversation, result=result)
+    await db.commit()
+    return await reasoning_service._response(db, ctx, session, changed=True)
+
+
+async def confirm_goal_definition(
+    db: AsyncSession, ctx: WorkspaceContext, session: GoalReasoningSession
+) -> AgentTurnResponse:
+    """用户确认目标定义:才从 goal_reframe 转入 problem_structure。"""
+    from backend.services.errors import InvalidInput
+
+    if session.v1_stage != V1_GOAL_REFRAME:
+        await _guard_reject(db, ctx, session, reason="当前不在目标重构阶段。")
+        raise InvalidInput("当前不在目标重构阶段。")
+    session.v1_stage = V1_PROBLEM_STRUCTURE
+    await _audit(
+        db,
+        ctx,
+        session,
+        "goal_definition_confirmed",
+        stage_before=V1_GOAL_REFRAME,
+        stage_after=V1_PROBLEM_STRUCTURE,
+        summary="用户确认了目标定义,进入问题结构。",
     )
     await db.commit()
     return await reasoning_service._response(db, ctx, session, changed=True)
@@ -1756,6 +1890,7 @@ async def confirm_strategy(
 
 __all__ = [
     "ALLOWED_V1_KEYS",
+    "ANALYSIS_DIMENSION_KEYS",
     "V1_COARSE_TIMELINE_REVIEW",
     "V1_FACTOR_ANALYSIS",
     "V1_GOAL_REFRAME",
@@ -1767,10 +1902,14 @@ __all__ = [
     "V1_STRATEGY_CONFIRMED",
     "V1_STRATEGY_DRAFT",
     "V1_WEEKLY_EXECUTION",
+    "actual_pending_question_count",
     "advance",
     "answer_v1_in_conversation",
     "classify_user_message",
+    "confirm_goal_definition",
     "confirm_strategy",
+    "dimension_projection",
+    "dimension_title",
     "generate_coarse_timeline",
     "generate_daily_plan",
     "generate_replan",
@@ -1779,5 +1918,6 @@ __all__ = [
     "on_proposal_confirmed",
     "record_feedback",
     "select_candidate_direction",
+    "visible_dimension_keys",
     "weekend_review",
 ]

@@ -50,6 +50,28 @@ async def list_questions(
     `includeDecided=true` 时把 resolved / archived 也带上 —— 审计与历史用。
     """
     rows = await question_service.list_questions(db, ctx, include_decided=include_decided)
+    # P2.2:V1 空间的固定分析维度要带上可见性投影 —— 内部十维≠十个待回答问题。
+    from backend.services import reasoning_service, v1_service  # 延迟 import,避免循环
+
+    session = await reasoning_service.get_session(db, ctx)
+    if session is not None and v1_service.is_v1(session):
+        visible = v1_service.visible_dimension_keys(session)
+        return QuestionListResponse(
+            questions=[
+                question_service.to_view(
+                    row,
+                    v1_title=v1_service.dimension_title(row.v1_key),
+                    # 只有“内部十维”受可见性控制;战略子项一旦建立就显示。
+                    v1_visible=(
+                        (row.v1_key in visible)
+                        if row.v1_key in v1_service.ANALYSIS_DIMENSION_KEYS
+                        else True
+                    ),
+                    v1_requires_response=False,
+                )
+                for row in rows
+            ]
+        )
     return QuestionListResponse(questions=[question_service.to_view(row) for row in rows])
 
 

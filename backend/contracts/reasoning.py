@@ -197,6 +197,14 @@ class GoalReasoningView(ApiModel):
     v1_candidate_directions: list[dict] | None = None
     #: P2.1:用户选择的候选方向键。
     v1_selected_direction: str | None = None
+    #: P2.2:当前**画布默认可见**的分析维度键(内部十维 ≠ 十个待回答问题)。
+    v1_visible_analysis_keys: list[str] = Field(default_factory=list)
+    #: P2.2:当前隐藏的分析维度数(通过“其余维度(N)”展开)。
+    v1_hidden_analysis_count: int = 0
+    #: P2.2:真正需要用户回答的问题数(0 或 1),**不**统计内部分析维度。
+    v1_actual_pending_question_count: int = 0
+    #: P2.2:十维 + 四战略的分析维度投影(key / title / visible / isFocus / requiresResponse)。
+    v1_dimensions: list[dict] = Field(default_factory=list)
     #: P5:该空间是否允许导出决策审计记录(`AGENT_AUDIT_EXPORT`)。前端据此显示/隐藏入口。
     v1_audit_export_enabled: bool = False
     #: 阶段 11:时间架构里的日期是否已校准。False = 只有相对周,不伪造日历日期。

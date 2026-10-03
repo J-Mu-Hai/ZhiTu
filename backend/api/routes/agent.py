@@ -282,11 +282,27 @@ async def v1_select_direction(
     key: str = Query(min_length=1, max_length=48),
     ctx: WorkspaceContext = Depends(get_workspace_context),
     db: AsyncSession = Depends(get_db),
+    reasoner: Reasoner = Depends(get_reasoner),
 ) -> AgentTurnResponse:
     from backend.services import v1_service
 
     session = await _v1_session(ctx, db)
-    return await v1_service.select_candidate_direction(db, ctx, session, key)
+    return await v1_service.select_candidate_direction(db, ctx, session, key, reasoner)
+
+
+@router.post(
+    "/{workspace_id}/agent/v1/goal/confirm",
+    response_model=AgentTurnResponse,
+    summary="规划智能体 V1:确认目标定义,进入问题结构",
+)
+async def v1_confirm_goal_definition(
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+) -> AgentTurnResponse:
+    from backend.services import v1_service
+
+    session = await _v1_session(ctx, db)
+    return await v1_service.confirm_goal_definition(db, ctx, session)
 
 
 @router.get(

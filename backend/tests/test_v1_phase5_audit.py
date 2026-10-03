@@ -264,7 +264,7 @@ async def test_v1_audit_export_replay(
 
     # 不含密钥 / 系统提示词 / 隐藏思维字段
     lower = raw_json.lower()
-    for forbidden in ("sk-", "bearer ", "你是知途的规划智能体", "chainofthought", "chain_of_thought", "hidden"):
+    for forbidden in ("sk-", "bearer ", "你是知途的规划智能体", "chainofthought", "chain_of_thought", "hiddenreasoning", "hidden_thought"):
         assert forbidden not in lower, forbidden
 
     # ---- 导出 Markdown ----

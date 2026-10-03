@@ -316,6 +316,19 @@ async def build_view(
     links = await _load_links(db, session.id)
     handle_of = {node.id: node.handle for node in nodes}
     focus = next((node for node in nodes if node.id == session.focus_reasoning_node_id), None)
+    # P2.2:内部十维的分析投影 + 可见性 + 真实待回答问题数。
+    v1_dimensions: list[dict] = []
+    v1_visible_keys: list[str] = []
+    v1_hidden_count = 0
+    v1_pending_questions = 0
+    if session.v1_stage is not None:
+        from backend.services import v1_service  # 延迟 import,避免循环
+
+        v1_dimensions = v1_service.dimension_projection(session)
+        v1_visible_keys = sorted(v1_service.visible_dimension_keys(session))
+        v1_hidden_count = sum(1 for item in v1_dimensions if not item["visible"])
+        v1_pending_questions = v1_service.actual_pending_question_count(session)
+
     return GoalReasoningView(
         workspace_id=ctx.id,
         session_id=session.id,
@@ -390,6 +403,11 @@ async def build_view(
         v1_strategic_thesis=session.v1_strategic_thesis,
         v1_candidate_directions=session.v1_candidate_directions,
         v1_selected_direction=session.v1_selected_direction,
+        #: P2.2:可见性投影与真实待回答问题数。
+        v1_visible_analysis_keys=v1_visible_keys,
+        v1_hidden_analysis_count=v1_hidden_count,
+        v1_actual_pending_question_count=v1_pending_questions,
+        v1_dimensions=v1_dimensions,
         #: P5:只有 V1 空间且开关打开时才允许导出审计记录。
         v1_audit_export_enabled=bool(settings.agent_audit_export and session.v1_stage is not None),
         dates_calibrated=session.dates_calibrated,

@@ -620,8 +620,17 @@ def _as_list(value: object) -> list:
     return list(value) if isinstance(value, list) else []
 
 
-def to_view(question: AgentQuestion) -> QuestionView:
-    """问题 -> 接口视图。与 `proposal_service.to_view` 同一层,前端不自己拼。"""
+def to_view(
+    question: AgentQuestion,
+    *,
+    v1_title: str | None = None,
+    v1_visible: bool = True,
+    v1_requires_response: bool = False,
+) -> QuestionView:
+    """问题 -> 接口视图。与 `proposal_service.to_view` 同一层,前端不自己拼。
+
+    P2.2:调用方可传入 V1 分析维度的可见性投影;缺省时保持旧行为(可见、非必答)。
+    """
     answer = None
     if isinstance(question.answer, dict):
         answer = QuestionAnswer(
@@ -660,6 +669,9 @@ def to_view(question: AgentQuestion) -> QuestionView:
         answer=answer,
         v1_key=question.v1_key,
         v1_analysis=question.v1_analysis,
+        v1_title=v1_title,
+        v1_visible=v1_visible,
+        v1_requires_response=v1_requires_response,
         created_at=question.created_at,
         updated_at=question.updated_at,
         answered_at=question.answered_at,

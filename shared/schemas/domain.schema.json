@@ -2183,6 +2183,11 @@
           "default": null,
           "title": "V01Timelineproposalid"
         },
+        "v1ActualPendingQuestionCount": {
+          "default": 0,
+          "title": "V1Actualpendingquestioncount",
+          "type": "integer"
+        },
         "v1AuditExportEnabled": {
           "default": false,
           "title": "V1Auditexportenabled",
@@ -2203,6 +2208,14 @@
           ],
           "default": null,
           "title": "V1Candidatedirections"
+        },
+        "v1Dimensions": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "V1Dimensions",
+          "type": "array"
         },
         "v1Error": {
           "anyOf": [
@@ -2239,6 +2252,11 @@
           ],
           "default": null,
           "title": "V1Focusreason"
+        },
+        "v1HiddenAnalysisCount": {
+          "default": 0,
+          "title": "V1Hiddenanalysiscount",
+          "type": "integer"
         },
         "v1Judgment": {
           "anyOf": [
@@ -2324,6 +2342,13 @@
           ],
           "default": null,
           "title": "V1Strategy"
+        },
+        "v1VisibleAnalysisKeys": {
+          "items": {
+            "type": "string"
+          },
+          "title": "V1Visibleanalysiskeys",
+          "type": "array"
         },
         "workflowStage": {
           "anyOf": [
@@ -3626,6 +3651,28 @@
           ],
           "default": null,
           "title": "V1Key"
+        },
+        "v1RequiresResponse": {
+          "default": false,
+          "title": "V1Requiresresponse",
+          "type": "boolean"
+        },
+        "v1Title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "V1Title"
+        },
+        "v1Visible": {
+          "default": true,
+          "title": "V1Visible",
+          "type": "boolean"
         },
         "whyNow": {
           "title": "Whynow",

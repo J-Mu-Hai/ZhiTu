@@ -84,6 +84,12 @@ class QuestionView(ApiModel):
     v1_key: str | None = None
     #: 模型对该问题的可审阅判断。null = 还没有判断。
     v1_analysis: dict | None = None
+    #: P2.2:固定分析维度的展示标题(真实意图 / 核心矛盾 / …)。
+    v1_title: str | None = None
+    #: P2.2:当前是否在画布默认可见。
+    v1_visible: bool = True
+    #: P2.2:是否真的是需要用户回答的问题(分析维度恒为 false)。
+    v1_requires_response: bool = False
     created_at: datetime
     updated_at: datetime
     answered_at: datetime | None = None
