@@ -113,6 +113,10 @@ class ReasoningState(UuidPk, TimestampMixin, Base):
     #: 这一轮开始/最后一次心跳的时刻。耗时由服务端时间相减得到,前端不自己算。
     started_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
     last_progress_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
+    #: **真实的状态转移序列**(`[{"step": ..., "at": ...}]`)。
+    #: 由 `agent_trace_service.mark_step` 在每次跨过边界时追加;用于复制诊断摘要里
+    #: 的"状态序列"。它只含步骤名与时刻,不含任何原始文本。
+    trace_steps: Mapped[list] = mapped_column(JsonDict, default=list, nullable=False)
 
     workspace: Mapped[Workspace] = relationship()  # noqa: F821
     tool_calls: Mapped[list[ToolCallRecord]] = relationship(

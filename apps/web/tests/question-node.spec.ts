@@ -86,11 +86,14 @@ test('问题投影为画布节点,在画布上回答,刷新后消失', async ({ 
   const rel = await getPlan(page, token, workspaceId);
   expect(rel.relations).toHaveLength(0);
 
-  // ---- 右侧对话区降级:只有状态提示 + 定位,没有第二份可提交控件 ----
-  const hint = page.locator('.question-hint');
+  // ---- 右侧对话区收口:只有一条紧凑状态 + 定位,没有第二份可提交控件 ----
+  const hint = page.locator('.question-status-bar');
   await expect(hint).toBeVisible();
+  await expect(hint).toContainText('待回答问题');
   await expect(hint.getByRole('button', { name: '提交回答' })).toHaveCount(0);
   await expect(hint.locator('.cq-option')).toHaveCount(0);
+  // **旧的正文大卡片已经移除**:对话正文里不再重复问题全文。
+  await expect(page.locator('.question-hint')).toHaveCount(0);
 
   // ---- 定位:点右侧提示,画布节点被选中/聚焦 ----
   await hint.getByRole('button', { name: '定位到画布' }).click();

@@ -240,6 +240,11 @@ def build_turn_view(state: ReasoningState, *, now: datetime) -> AgentTraceTurnVi
         attempt=state.attempt,
         terminal_code=state.terminal_code,
         safe_summary=state.safe_summary,
+        steps=[
+            str(item.get("step"))
+            for item in (state.trace_steps or [])
+            if isinstance(item, dict) and item.get("step")
+        ],
         tools=[_tool_view(record) for record in state.tool_calls],
         retryable=_is_retryable(state),
     )
@@ -287,12 +292,22 @@ def mark_step(
     *,
     now: datetime | None = None,
 ) -> None:
-    """把 state 推进到某一步并打一次心跳。**调用方负责提交。**"""
+    """把 state 推进到某一步并打一次心跳。**调用方负责提交。**
+
+    同一步骤连续出现只记一次(重试心跳不刷屏);跨到新步骤时向 `trace_steps` 追加
+    一条**只含步骤名与时刻**的记录。
+    """
     stamp = now or utcnow()
+    previous = state.current_step
     state.current_step = step
     state.last_progress_at = stamp
     if state.started_at is None:
         state.started_at = stamp
+    if previous != step:
+        state.trace_steps = [
+            *(state.trace_steps or []),
+            {"step": step.value, "at": stamp.isoformat()},
+        ]
 
 
 def mark_terminal(
@@ -308,12 +323,18 @@ def mark_terminal(
     step, code = _terminal_from_result(
         degraded=degraded, degraded_reason=degraded_reason, stopped_reason=stopped_reason
     )
+    previous = state.current_step
     state.current_step = step
     state.terminal_code = code
     state.safe_summary = safe_terminal_summary(code)
     state.last_progress_at = stamp
     if state.started_at is None:
         state.started_at = stamp
+    if previous != step:
+        state.trace_steps = [
+            *(state.trace_steps or []),
+            {"step": step.value, "at": stamp.isoformat()},
+        ]
     if state.status is ReasoningStatus.EXPLORING:
         # 轨迹终态与业务状态互不覆盖:这里只在业务层没有给结论时补一个诚实状态。
         state.status = (

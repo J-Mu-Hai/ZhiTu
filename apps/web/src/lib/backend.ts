@@ -1850,3 +1850,85 @@ export function refineStrategy(workspaceId: string): Promise<SendMessageResponse
     body: {},
   });
 }
+
+// ---------------------------------------------------------------------------------
+// Agent 运行轨迹(本地诊断,阶段 9)
+//
+// **这不是思维链。** 返回的每一步都来自服务端真实执行边界;`summary` 只含工具名、
+// 状态与条数,`safeSummary` 来自服务端闭集。契约里没有任何字段能承载 prompt、
+// 用户原文或密钥。见后端 `contracts/trace.py`。
+// ---------------------------------------------------------------------------------
+
+/** 一步真实执行。`unavailable` 只用于加轨迹字段之前的历史行。 */
+export type AgentTraceStep =
+  | 'queued'
+  | 'resolving_context'
+  | 'waiting_model'
+  | 'running_tool'
+  | 'validating_output'
+  | 'persisting'
+  | 'completed'
+  | 'failed'
+  | 'timed_out'
+  | 'cancelled'
+  | 'unavailable';
+
+export type AgentTraceStatus =
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'timed_out'
+  | 'cancelled'
+  | 'unavailable';
+
+/** 一次只读工具调用的**脱敏**摘要。 */
+export interface AgentTraceToolView {
+  toolName: string;
+  status: 'ok' | 'error' | 'rejected';
+  durationMs: number | null;
+  summary: string;
+}
+
+/** 最近一次 Agent turn 的运行轨迹。按时间倒序返回。 */
+export interface AgentTraceTurnView {
+  id: string;
+  shortId: string;
+  trigger: string;
+  triggerLabel: string;
+  currentStep: AgentTraceStep;
+  stepLabel: string;
+  status: AgentTraceStatus;
+  terminal: boolean;
+  startedAt: string | null;
+  finishedAt: string | null;
+  durationMs: number | null;
+  /** 真实的状态转移序列(步骤名)。复制诊断摘要用它。 */
+  steps: AgentTraceStep[];
+  lastProgressAt: string | null;
+  waitingSeconds: number | null;
+  waitingTooLong: boolean;
+  attempt: number;
+  terminalCode: string | null;
+  safeSummary: string | null;
+  tools: AgentTraceToolView[];
+  retryable: boolean;
+}
+
+export interface AgentTraceView {
+  workspaceId: string;
+  workspaceShortId: string;
+  enabled: boolean;
+  generatedAt: string;
+  limit: number;
+  turns: AgentTraceTurnView[];
+}
+
+/**
+ * 取最近若干次 Agent turn 的脱敏轨迹。
+ *
+ * 开关关闭时服务端返回 404 `TRACE_DISABLED` —— 调用方据此把入口整块藏起来,
+ * 而不是显示一个坏掉的诊断面板。
+ */
+export function getAgentTrace(workspaceId: string, limit = 20): Promise<AgentTraceView> {
+  return apiFetch<AgentTraceView>(`/api/workspaces/${workspaceId}/agent/trace?limit=${limit}`);
+}

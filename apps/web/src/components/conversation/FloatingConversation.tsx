@@ -1,6 +1,6 @@
 'use client';
 import { useRef, useState } from 'react';
-import { Grip, X } from 'lucide-react';
+import { Grip, X, ScrollText } from 'lucide-react';
 import { ConversationPanel } from './ConversationPanel';
 import { useDemo } from '@/features/growth/provider';
 
@@ -29,7 +29,11 @@ import { useDemo } from '@/features/growth/provider';
  */
 export function FloatingConversation({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [offset, setOffset] = useState({x:0,y:0});
-  const { sending } = useDemo();
+  const { sending, openTrace, traceProbed, traceDisabled, trace } = useDemo();
+  const traceRunning = Boolean(trace?.turns.some(turn => turn.status === 'running'));
+  const traceFailed = Boolean(trace?.turns.some(turn => turn.status === 'failed' || turn.status === 'timed_out'));
+  // 服务端开关关闭时**整块不渲染** —— 一个永远打不开的按钮比没有更坏。
+  const showTrace = traceProbed && !traceDisabled;
   const drag = useRef<{x:number;y:number;left:number;top:number}|null>(null);
   return <div className="conversation-overlay" hidden={!open}>
     <section className="floating-conversation" aria-label="浮动对话卡片群" style={{transform:`translate(${offset.x}px, ${offset.y}px)`}}>
@@ -39,6 +43,20 @@ export function FloatingConversation({ open, onClose }: { open: boolean; onClose
             <i aria-hidden="true" />
             正在思考…
           </span>
+        )}
+        {showTrace && (
+          <button
+            type="button"
+            className="icon-button trace-entry"
+            aria-label="运行记录"
+            title="运行记录"
+            data-testid="trace-entry"
+            onClick={openTrace}
+          >
+            <ScrollText size={15} />
+            {traceRunning && <span className="trace-dot trace-dot-running" aria-hidden="true" />}
+            {!traceRunning && traceFailed && <span className="trace-dot trace-dot-error" aria-hidden="true" />}
+          </button>
         )}
         <button className="icon-button" aria-label="让对话内容消失" onClick={onClose}><X size={15}/></button></div>
       <ConversationPanel/>

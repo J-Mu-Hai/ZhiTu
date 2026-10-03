@@ -110,6 +110,9 @@ async def test_waiting_model_is_persisted_before_the_model_returns(
     assert turn["trigger"] == "user_message"
     assert turn["durationMs"] is not None
     assert turn["safeSummary"]
+    # **真实的状态转移序列**:等待模型与完成都必须在里面。
+    assert "waiting_model" in turn["steps"]
+    assert "completed" in turn["steps"]
 
 
 # ---------------------------------------------------------------------------------

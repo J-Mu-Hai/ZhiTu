@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ArrowUp, Plus, X, CornerDownLeft, AlertCircle, RotateCcw, RefreshCw } from 'lucide-react';
 import { useDemo } from '@/features/growth/provider';
 import { degradedHint, sourceLabel } from '@/lib/backend';
-import type { QuestionView, ResearchView } from '@/lib/backend';
+import type { ResearchView } from '@/lib/backend';
 
 /**
  * 提案落下之后,卡片上显示的状态。
@@ -78,42 +78,31 @@ function ResearchCitations({ research }: { research: ResearchView }) {
 }
 
 /**
- * 一个待回答的问题卡片。
+ * 一个待回答的问题的**紧凑**状态。
  *
- * ## 为什么是“卡片”而不是一条普通消息
+ * ## 为什么不再是正文里的大卡片
  *
- * 问题不是计划,也不是助手的一句闲聊。它要能被回答、跳过、稍后 —— 这些是消息
- * 气泡上长不出来的动作。所以它渲染成一张卡,并且在**同一时刻只突出一个**:
- * 一次抛一张问卷只在模型那侧被禁止是不够的,界面上也要只给一个主问题。
+ * 旧版把整个问题正文、来源标题与一个定位按钮铺在对话正文/输入区上方 —— 它和画布
+ * 上的 Question Node 是同一件事说两遍,而且占掉了正文空间。这一版只在标题栏下方留
+ * 一行:`待回答问题 N · 定位到画布`。
  *
- * ## 提交后的“处理中”
- *
- * 后端要先存答案,再跑一轮模型。这中间可能有几秒,而“点了没反应”会被读成
- * “没存上”。所以父级(provider)会先把状态置为处理中,这里据此显示
- * “正在处理你的回答…” —— 它对应的是后端真实的 `answered` / `investigating` 状态,
- * 不是一段假的动画。
+ * **完整回答只发生在画布的 Question Node 里** —— 这里不提供第二份可提交控件,
+ * 只负责定位。它高度不到 32px,不展示正文/理由/来源/选项。
  */
-function QuestionStatusHint({
-  question,
-  sourceTitle,
+function QuestionStatusBar({
+  count,
+  processing,
   onLocate,
 }: {
-  question: QuestionView;
-  sourceTitle: string | null;
-  onLocate: (questionId: string) => void;
+  count: number;
+  processing: boolean;
+  onLocate: () => void;
 }) {
-  const processing = question.status === 'answered' || question.status === 'investigating';
   return (
-    <div
-      className={`question-hint${processing ? ' is-processing' : ''}`}
-      role="status"
-      aria-label={`画布上有一个${processing ? '正在处理' : '待澄清'}的问题`}
-    >
-      <span className="eyebrow">{processing ? '正在处理' : '画布上有待澄清问题'}</span>
-      <strong>{question.question}</strong>
-      {sourceTitle && <p className="question-why">关于「{sourceTitle}」</p>}
-      {/* 回答在**画布节点**上完成;这里只负责定位,不提供第二份可提交控件。 */}
-      <button type="button" className="question-locate" onClick={() => onLocate(question.id)}>
+    <div className="question-status-bar" role="status" aria-label={`画布上有 ${count} 个待回答问题`}>
+      <span className="tiny-dot" aria-hidden="true" />
+      <span className="question-status-text">{processing ? '正在处理你的回答' : `待回答问题 ${count}`}</span>
+      <button type="button" className="question-locate" onClick={onLocate}>
         定位到画布
       </button>
     </div>
@@ -188,7 +177,7 @@ function ProposalErrorNotice({ errors }: { errors: { code: string; message: stri
  * 被"截止时间/每周投入"干扰。`replan` 入口只在**已确认战略 + 存在执行计划**时才出现。
  */
 export function ConversationPanel() {
-  const { growth, selectedId, select, messages, remoteProposals, proposalErrors, inputChanged, deciding, confirmRemote, rejectRemote, replan, replanState, send, retry, sending, sendError, retryable, historyLoading, messagesTruncated, spaceId, questions, focusQuestion } = useDemo();
+  const { growth, selectedId, select, messages, remoteProposals, proposalErrors, inputChanged, deciding, confirmRemote, rejectRemote, replan, replanState, send, retry, sending, sendError, retryable, historyLoading, messagesTruncated, spaceId, questions, focusQuestion, openTrace, traceProbed, traceDisabled } = useDemo();
   const [input, setInput] = useState('');
   const [showContexts, setShowContexts] = useState(false);
   /** 输入框的 DOM 元素。高度按内容算(见下面那个 effect)。 */
@@ -289,6 +278,20 @@ export function ConversationPanel() {
           `FloatingConversation`)。这里只留一句说明,免得下一个人又把它加回来。
         */}
       </header>
+
+      {/*
+       * **待回答问题:标题栏下方一条紧凑状态。**
+       *
+       * 它取代了正文里那张大卡片 —— 同一件事只在一处说,而且不占正文空间。
+       * 只在存在活动问题时出现;回答仍然只在画布的 Question Node 里完成。
+       */}
+      {primaryQuestion && (
+        <QuestionStatusBar
+          count={questions.length}
+          processing={primaryQuestion.status === 'answered' || primaryQuestion.status === 'investigating'}
+          onLocate={() => focusQuestion(primaryQuestion.id)}
+        />
+      )}
 
       <div className="conversation-history">
         {historyLoading && <p className="turn-loading">正在读取对话…</p>}
@@ -400,16 +403,18 @@ export function ConversationPanel() {
             `INPUT_CHANGED` 拦下来的那一轮通常什么都不提,于是界面上"这次没有提案"
             与"模型什么都没想出来"长得一模一样 —— 用户会以为自己白问了,而真正该做
             的是改完之后让 AI 重看一遍。
-            **不给按钮。** 入口在那些内容的旁边(节点详情的「AI 分析」块里),
-            在对话末尾再放一个的话,用户看不出它要重新分析的是哪个节点。 */}
+
+            **它只是一行结论,不再是大块长文。** 想看真实执行边界发生了什么,走
+            「运行记录」;诊断入口关闭时退回一句可执行的建议。 */}
         {inputChanged && (
-          <div className="turn-error" role="status">
+          <div className="turn-error turn-error-compact" role="status">
             <AlertCircle size={14} />
-            <span>
-              它回答的时候，你说的情况已经变了（正文、条件或计划被改过），所以这一轮
-              没有给出可应用的变更。要看基于最新内容的判断，请到那个节点的「AI 分析」里
-              点「根据最新内容重新分析」。
-            </span>
+            <span>本轮未应用：信息已更新</span>
+            {traceProbed && !traceDisabled ? (
+              <button type="button" className="turn-error-toggle" onClick={openTrace}>查看运行记录</button>
+            ) : (
+              <span>，请到节点的「AI 分析」里重新分析</span>
+            )}
           </div>
         )}
 
@@ -478,25 +483,8 @@ export function ConversationPanel() {
       </div>
 
       <div className="composer-area">
-        {/* 待回答的问题。**只显示一个主要问题** —— 一次抛多张卡片就是问卷墙,
-            那是产品明确不要的东西(产品规则:一轮默认最多 1 个问题)。
-            与 source node 的关联在这里看得见:有标题就写“关于「…」”,节点归档后
-            找不到标题就不写 —— 不去渲染一个指向失效节点的引用。 */}
-        {primaryQuestion && (
-          <QuestionStatusHint
-            key={primaryQuestion.id}
-            question={primaryQuestion}
-            sourceTitle={
-              primaryQuestion.sourceNodeId
-                ? growth.nodes[primaryQuestion.sourceNodeId]?.title ?? null
-                : null
-            }
-            onLocate={questionId => focusQuestion(questionId)}
-          />
-        )}
-        {questions.length > 1 && (
-          <p className="question-more">另外还有 {questions.length - 1} 个问题，可以先不管。</p>
-        )}
+        {/* 问题入口已经移到标题栏下方那条紧凑状态条(见 `QuestionStatusBar`)。
+            这里不再重复渲染问题正文 —— 完整回答只在画布的 Question Node 里完成。 */}
         {/* 「按执行情况调整」的入口。
             放在对话里而不是排期页,是因为它的产出是一份**要用户确认的提案**,
             而确认的界面就在这里 —— 换个地方发起、再让用户回来确认,中间那一步

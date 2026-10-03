@@ -308,3 +308,171 @@
   /* 抽屉里那一段历史的内边距:桌面上是给悬浮卡留的透明边,铺满之后不需要。 */
   .open-workbench .floating-conversation .conversation-history { padding:8px 4px 20px; }
 }
+
+/* ------------------------------------------------------------------ */
+/* 阶段 9:紧凑问题状态条 + 本地运行记录                                 */
+/*                                                                     */
+/* 全都是暖白 token。诊断抽屉是**浮层**,不挤压画布与对话正文。          */
+/* ------------------------------------------------------------------ */
+
+/*
+ * 待回答问题:标题栏下方一条 30px 的状态。见 `ConversationPanel`。
+ *
+ * 它取代了正文里那张大卡片 —— 同一件事只在一处说,完整回答只在画布的
+ * Question Node 里完成。这里不展示问题正文,只给数量与"定位到画布"。
+ */
+.question-status-bar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 4px 16px;
+  border-bottom: 1px solid var(--line-soft, #dfe9ee);
+  background: color-mix(in srgb, var(--experience, #c7a06e) 7%, var(--surface-panel, #fffefa));
+  color: var(--text, #304b62);
+  font-size: 12px;
+}
+.question-status-text { color: #526f89; }
+.question-status-bar .question-locate {
+  margin-left: auto;
+  padding: 3px 10px;
+  border: 1px solid #cadde7;
+  border-radius: var(--radius-pill, 999px);
+  background: #fff;
+  color: var(--blue-ink, #2f6da3);
+  font-size: 11px;
+}
+.question-status-bar .question-locate:hover { border-color: #6c9ec4; }
+
+/* 版本冲突结论:一行,不再是大块长文。 */
+.turn-error.turn-error-compact { margin-top: 8px; padding: 7px 11px; font-size: 12px; }
+.turn-error.turn-error-compact > span { flex: 0 1 auto; }
+.turn-error.turn-error-compact .turn-error-toggle {
+  margin-left: auto;
+  padding: 3px 9px;
+  border: 0;
+  background: transparent;
+  color: var(--blue-ink, #2f6da3);
+  text-decoration: underline;
+}
+
+/* 标题栏上的"运行记录"入口。低干扰,状态点只是提示,不抢眼。 */
+.trace-entry { position: relative; }
+.trace-entry .trace-dot {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  border: 1px solid #fffefa;
+}
+.trace-entry .trace-dot-running { background: #6d9bd8; }
+.trace-entry .trace-dot-error { background: #c2603f; }
+
+/* 抽屉浮层。不挤压画布/对话 —— 它是盖在上面的一层。 */
+.trace-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  justify-content: flex-end;
+  background: rgba(48, 75, 98, 0.18);
+}
+.trace-inspector {
+  width: min(400px, 94vw);
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-raised, #fff);
+  border-left: 1px solid var(--line-card, rgba(87, 119, 143, 0.2));
+  box-shadow: var(--shadow-popover);
+}
+.trace-header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 16px 16px 12px;
+  border-bottom: 1px solid var(--line-soft, #dfe9ee);
+}
+.trace-header h2 { font-size: 15px; color: #254a68; }
+.trace-header p { margin-top: 5px; font-size: 11px; line-height: 1.6; color: #6f8293; }
+.trace-body { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 16px 24px; }
+.trace-empty { padding: 14px 2px; color: #6f8293; font-size: 12px; }
+
+.trace-turn {
+  padding: 11px 12px;
+  margin-bottom: 10px;
+  border: 1px solid var(--line-soft, #e1e9ee);
+  border-radius: var(--radius-card, 14px);
+  background: var(--surface-panel, #fffefa);
+}
+.trace-turn-running { border-color: #c9e2f4; background: #f4faff; }
+.trace-turn-failed, .trace-turn-timed_out { border-color: #f0d8c5; background: #fdf6f0; }
+.trace-turn-head { display: flex; align-items: center; gap: 8px; }
+.trace-trigger { font-size: 12px; font-weight: 600; color: #315b7a; }
+.trace-status {
+  padding: 1px 8px;
+  border-radius: var(--radius-pill, 999px);
+  font-size: 10px;
+  border: 1px solid #d4e2e8;
+  color: #526f89;
+  background: #fff;
+}
+.trace-status-running { color: var(--blue-ink, #2f6da3); border-color: #bad5e7; background: #e1eff9; }
+.trace-status-failed, .trace-status-timed_out { color: #9c5334; border-color: #f0d8c5; background: #fdf2ea; }
+.trace-status-completed { color: #477a6e; border-color: #cbe3db; background: #eef7f3; }
+.trace-duration { margin-left: auto; font-size: 11px; color: #6f8293; }
+.trace-step { margin-top: 7px; font-size: 12px; color: #405c7d; }
+.trace-attempt, .trace-waiting { color: #8a6a3c; }
+.trace-summary { margin-top: 5px; font-size: 12px; line-height: 1.7; color: #526f89; }
+.trace-tools { list-style: none; margin: 7px 0 0; padding: 0; display: grid; gap: 4px; }
+.trace-tools li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: #f2f7fa;
+  font-size: 11px;
+  color: #4d6b84;
+}
+.trace-tools li[data-status="error"], .trace-tools li[data-status="rejected"] { background: #fbf0e9; color: #8a5a3c; }
+.trace-tools time { color: #7a8b99; }
+.trace-actions { display: flex; align-items: center; gap: 8px; margin-top: 9px; }
+.trace-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border: 1px solid #d4e2e8;
+  border-radius: 8px;
+  background: #fff;
+  color: #35678d;
+  font-size: 11px;
+}
+.trace-action:hover { border-color: #9cc0d8; }
+.trace-retry { color: #8a5a3c; border-color: #e6c9b2; }
+.trace-steps { margin-top: 8px; font-size: 11px; color: #6f8293; }
+.trace-steps summary { cursor: pointer; color: #526f89; }
+.trace-steps ol { margin: 6px 0 0; padding-left: 18px; line-height: 1.8; }
+.trace-code {
+  display: inline-block;
+  margin-top: 7px;
+  padding: 1px 7px;
+  border-radius: 5px;
+  background: #f3ece7;
+  color: #8a5a3c;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+}
+
+@media (max-width: 720px) {
+  .trace-inspector { width: 100%; }
+  .trace-overlay { align-items: flex-end; }
+  .trace-inspector { height: min(78dvh, 640px); border-left: 0; border-top: 1px solid var(--line-card); border-radius: var(--radius-panel) var(--radius-panel) 0 0; }
+}

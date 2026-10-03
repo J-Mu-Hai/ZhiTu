@@ -7,6 +7,7 @@ import { TimelineView } from './TimelineView';
 import { TaskView } from './TaskView';
 import { ScheduleView } from './ScheduleView';
 import { FloatingConversation } from '@/components/conversation/FloatingConversation';
+import { AgentTraceInspector } from '@/components/conversation/AgentTraceInspector';
 import { useDemo } from '@/features/growth/provider';
 import { useMobileLayout } from '@/lib/media';
 export function Workbench() {
@@ -47,5 +48,5 @@ export function Workbench() {
         代价是画布内部的东西(平移缩放、弹窗里没提交的输入)会跟着没,所以那两样都
         存在组件外面:视口在 Provider(`viewports`),输入在 `features/growth/drafts.ts`。
         `key` 用的是 `canvasKey` 而不是 `spaceId`,理由见 Provider 里 `canvasKey` 那段。 */}
-    <div className="view-content">{view === 'path' ? <PathView key={canvasKey}/> : view === 'timeline' ? <TimelineView/> : view === 'schedule' ? <ScheduleView/> : <TaskView/>}</div></section><FloatingConversation open={chatOpen} onClose={() => setChatChoice(false)}/></div></div>;
+    <div className="view-content">{view === 'path' ? <PathView key={canvasKey}/> : view === 'timeline' ? <TimelineView/> : view === 'schedule' ? <ScheduleView/> : <TaskView/>}</div></section><FloatingConversation open={chatOpen} onClose={() => setChatChoice(false)}/><AgentTraceInspector/></div></div>;
 }

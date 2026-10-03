@@ -160,6 +160,13 @@
           "title": "Steplabel",
           "type": "string"
         },
+        "steps": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Steps",
+          "type": "array"
+        },
         "terminal": {
           "title": "Terminal",
           "type": "boolean"

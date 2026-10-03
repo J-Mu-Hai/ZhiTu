@@ -395,6 +395,23 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     { busy: false, message: null, degraded: false },
   );
 
+  /**
+   * 运行记录(本地诊断)。
+   *
+   * - `trace`: 服务端脱敏投影。**不是思维链** —— 只有步骤、耗时、工具摘要与
+   *   可读终态原因。见 `backend/contracts/trace.py`。
+   * - `traceOpen`: 抽屉是否打开。
+   * - `traceDisabled`: 服务端没有开启这个入口(生产默认关)。为真时按钮整块不渲染。
+   * - `traceProbed`: 已经问过一次服务端"这里能不能用";问之前不显示入口,避免
+   *   在生产环境闪一下再消失。
+   */
+  const [trace, setTrace] = useState<backend.AgentTraceView | null>(null);
+  const [traceOpen, setTraceOpen] = useState(false);
+  const [traceLoading, setTraceLoading] = useState(false);
+  const [traceDisabled, setTraceDisabled] = useState(false);
+  const [traceProbed, setTraceProbed] = useState(false);
+  const [traceError, setTraceError] = useState<string | null>(null);
+
   // 只存属于浏览器的三样(见 `LocalPrefs`)。计划与消息都在后端,不在这里。
   useEffect(() => {
     if (!user || !isReal) return;
@@ -462,6 +479,76 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     return view;
   }, [space.id]);
 
+  /**
+   * 只读地重拉运行轨迹。
+   *
+   * **开关关闭时把它当成"这个入口不存在"** —— 设 `traceDisabled` 而不是报错。
+   * 生产环境默认关闭,普通用户不该看到一个坏掉的诊断面板。
+   */
+  const refreshTrace = useCallback(async () => {
+    if (!isReal) return null;
+    setTraceLoading(true);
+    try {
+      const view = await backend.getAgentTrace(space.id);
+      setTrace(view);
+      setTraceDisabled(false);
+      setTraceError(null);
+      return view;
+    } catch (cause) {
+      setTrace(null);
+      if (cause instanceof ApiError && cause.code === 'TRACE_DISABLED') {
+        setTraceDisabled(true);
+        setTraceError(null);
+      } else {
+        setTraceError(cause instanceof ApiError ? cause.message : '读取运行记录失败。');
+      }
+      return null;
+    } finally {
+      setTraceLoading(false);
+      setTraceProbed(true);
+    }
+  }, [isReal, space.id]);
+
+  const openTrace = useCallback(() => {
+    setTraceOpen(true);
+    void refreshTrace();
+  }, [refreshTrace]);
+  const closeTrace = useCallback(() => setTraceOpen(false), []);
+
+  /**
+   * 进入真实空间时探一次服务端开关。
+   *
+   * 只问一次,而且**在显示入口之前**问 —— 生产环境默认关闭时不会先闪一个按钮。
+   */
+  useEffect(() => {
+    if (!isReal) return;
+    let cancelled = false;
+    backend.getAgentTrace(space.id)
+      .then(view => {
+        if (cancelled) return;
+        setTrace(view);
+        setTraceDisabled(false);
+      })
+      .catch(cause => {
+        if (cancelled) return;
+        if (cause instanceof ApiError && cause.code === 'TRACE_DISABLED') setTraceDisabled(true);
+      })
+      .finally(() => { if (!cancelled) setTraceProbed(true); });
+    return () => { cancelled = true; };
+  }, [isReal, space.id]);
+
+  /**
+   * 有一个 turn 在跑时才轮询,终态一到就停。
+   *
+   * **不靠动画制造"还在工作"的错觉** —— 每 3 秒读一次服务端真实状态,停了就是停了。
+   */
+  const traceHasRunningTurn = Boolean(trace?.turns.some(turn => turn.status === 'running'));
+  useEffect(() => {
+    if (!traceOpen || !traceHasRunningTurn || !isReal) return;
+    const timer = setInterval(() => { void refreshTrace(); }, 3000);
+    return () => clearInterval(timer);
+  }, [traceOpen, traceHasRunningTurn, isReal, refreshTrace]);
+
   /** 自动梳理只飞一趟 —— 初始进入、点进子空间、计划刷新都可能触发它。 */
   const reasoningInFlight = useRef(false);
 
@@ -513,13 +600,14 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
         if (response.proposalErrors.length) setProposalErrors(response.proposalErrors);
         await refreshQuestions().catch(() => undefined);
         await refreshProposals().catch(() => undefined);
+        if (traceOpen) void refreshTrace();
         return response;
       } catch (cause) {
         setSendError(cause instanceof ApiError ? cause.message : '这一步没有完成,请重试。');
         return null;
       }
     },
-    [refreshProposals, refreshQuestions, space.id],
+    [refreshProposals, refreshQuestions, refreshTrace, space.id, traceOpen],
   );
 
   /** 用户编辑地图节点的标题 / 原文。**只改这两列**,Agent 之后不再覆盖标题。 */
@@ -1570,6 +1658,7 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
       setLastFailed({ clientMessageId, text });
     } finally {
       setSending(false);
+      if (traceOpen) void refreshTrace();
     }
   }
 
@@ -1657,6 +1746,7 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
       }
       // 后续模型可能又提了新问题;列表以服务端为准。
       await refreshQuestions();
+      if (traceOpen) void refreshTrace();
       // 如果问题挂在地图节点上,让推理地图也跟着增量重评(状态、摘要、焦点)。
       const reasoningNodeId = result.question.reasoningNodeId;
       const handle = reasoningNodeId
@@ -1724,6 +1814,23 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     await sendReal(lastFailed.text, lastFailed.clientMessageId);
   }
 
+  /**
+   * **受控重试**一条失败的运行记录。
+   *
+   * 沿用既有幂等路径:对话轮用同一个 `clientMessageId` 重发;地图轮走 `trigger: retry`。
+   * 它只重新生成,不写任何业务数据 —— 已确认的提案永远不走这条路。
+   * `turn.retryable` 由服务端判定(失败且本轮未写入业务更改),前端不自己放宽。
+   */
+  async function retryTraceTurn(turn: backend.AgentTraceTurnView) {
+    if (!turn.retryable || sending) return;
+    if (lastFailed) {
+      await retry();
+      return;
+    }
+    await agentTurn({ trigger: 'retry' });
+    if (traceOpen) void refreshTrace();
+  }
+
   return { growth, workspaceId: space.id, isRealSpace: space.kind === 'real', apply, selectedId, select, messages, send, retry, sending, sendError, retryable, brief, historyLoading, messagesTruncated, positions,
     // 计划。`revisionVersion` 是"你眼前这份是第几版" —— 界面上比对提案的
     // `baseRevisionVersion` 用它,能在发请求**之前**发现"你看的那份已经旧了"。
@@ -1736,6 +1843,9 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     // 问题节点。与提案分开:问题落库即成卡片,不需要确认;回答后模型提的变更
     // 仍然进 `remoteProposals`,仍然要用户点确认。
     questions, submitAnswer, dismissQuestion, postponeQuestion, questionFocus, focusQuestion,
+    // 运行记录(本地诊断)。`traceProbed` 为真且 `traceDisabled` 为假时才显示入口。
+    trace, traceOpen, traceProbed, traceDisabled, traceError, traceLoading,
+    openTrace, closeTrace, refreshTrace, retryTraceTurn,
     // 目标推理地图。与业务计划、问题都分开;进入空间会自动梳理一次(幂等)。
     reasoning, reasoningLoading, ensureReasoningMap, refreshReasoning, agentTurn, editReasoningNode,
     refineStrategy, refining,

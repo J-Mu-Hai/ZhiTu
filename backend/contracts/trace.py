@@ -52,6 +52,8 @@ class AgentTraceTurnView(ApiModel):
     finished_at: datetime | None = None
     #: 服务端时间算出的耗时(毫秒)。前端不自己算。
     duration_ms: int | None = None
+    #: **真实的状态转移序列**(步骤名,按发生顺序)。复制诊断摘要用它。
+    steps: list[str] = Field(default_factory=list)
     last_progress_at: datetime | None = None
     #: 只在 `waiting_model` 时有值:距上次心跳多少秒。
     waiting_seconds: int | None = None
