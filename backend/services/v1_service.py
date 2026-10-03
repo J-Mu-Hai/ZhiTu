@@ -1896,6 +1896,9 @@ async def record_feedback(
         payload={"nodeId": str(node_id), "outcome": outcome, "done": done, "total": total},
     )
     message = await _append_assistant(db, ctx, reply=reply)
+    # R4:完成率过低时进入 `replanning`;真正的未来重规划草案由编排器在
+    # **下一次进入空间 / 主动周回顾**时自动生成 —— 不在这里生成,是因为后续的
+    # 任务反馈还会写库,过早生成的提案会被版本校验(`STALE_BASE_REVISION`)作废。
     return await _response(db, ctx, session, message=message, changed=True)
 
 
@@ -1948,6 +1951,27 @@ async def generate_replan(
                 "target_ref": handle,
                 "description": (phase.description or "")
                 + "\n【重规划】按当前完成情况,后续阶段整体后移一档。",
+            }
+        )
+    # R4:未来阶段下**未完成**的周计划归档为可恢复历史;已完成的一律不动。
+    future_phase_ids = {
+        str(phase.id) for phase in phases if phase.status is not NodeStatus.COMPLETED
+    }
+    for week in await v01_service._week_nodes(db, phases):
+        if str(week.parent_id) not in future_phase_ids:
+            continue
+        if week.status not in (NodeStatus.PENDING, NodeStatus.DOING):
+            continue
+        handle = phase_handles.get(str(week.id))
+        if handle is None:
+            continue
+        actions.append(
+            {
+                "op": "update_node",
+                "target_ref": handle,
+                "status": "archived",
+                "description": (week.description or "")
+                + "\n【历史版本 · 已被重规划替代】",
             }
         )
     if not actions:
@@ -2011,13 +2035,15 @@ async def weekend_review(
         raise InvalidInput("当前不在周执行阶段。")
     root = await reasoning_service.root_plan_node(db, ctx)
     done, total = await v01_service.weekly_completion(db, ctx, root) if root else (0, 0)
+    # 标记“这一周已经回顾过”:同一个周末重进空间不再重复发起。
+    session.v1_last_review_week = _iso_week(today_in(ctx.timezone))
     await _audit(
         db,
         ctx,
         session,
         "weekly_review_started",
         summary=f"发起周末回顾:本周完成 {done}/{total}。",
-        payload={"done": done, "total": total},
+        payload={"done": done, "total": total, "week": session.v1_last_review_week},
     )
     await _append_assistant(
         db,
@@ -2240,6 +2266,12 @@ async def reopen_direction_selection(
 #: **保留为默认值**;真实窗口取 `V1_AGENT_TURN_TIMEOUT_SECONDS`。
 V1_STALE_SECONDS = 45
 
+def _iso_week(day) -> str:
+    """`YYYY-Www` 形式的自然周标记(用于“同一个周末只回顾一次”)。"""
+    year, week, _ = day.isocalendar()
+    return f"{year}-W{week:02d}"
+
+
 #: V1 事件闭集(见规格 4.1)。所有入口都必须能归到其中一个。
 V1_EVENTS = frozenset(
     {
@@ -2399,6 +2431,17 @@ async def advance_v1_workflow(
     if entry_event == "weekly_review_due":
         return await weekend_review(db, ctx, session, trace=trace)
 
+    # 2.5)R4:周末首次进入空间**自动发起周回顾**,同一个周末只触发一次。
+    today = today_in(ctx.timezone)
+    if (
+        entry_event in ("space_entered", "recovery_after_restart")
+        and session.v1_stage == V1_WEEKLY_EXECUTION
+        and today.weekday() >= 5
+        and session.v1_last_review_week != _iso_week(today)
+        and not await v01_service._has_open_proposal(db, ctx)
+    ):
+        return await weekend_review(db, ctx, session, trace=trace)
+
     # 3) 没有模型运行时就只能停在“等输入”,不假装在思考。
     if reasoner is None:
         await _audit(
@@ -2468,6 +2511,10 @@ async def advance_v1_workflow(
         return await continue_strategy(db, ctx, session, reasoner)
     elif stage == V1_STRATEGY_CONFIRMED and not session.v01_timeline:
         await generate_coarse_timeline(db, ctx, session, reasoner, trace=None)
+        advanced = True
+    elif stage == V1_REPLANNING and not await v01_service._has_open_proposal(db, ctx):
+        # R4:进入重规划阶段后**自动**准备未来重规划提案(确定性,不需要再点一次)。
+        await generate_replan(db, ctx, session, trace=trace)
         advanced = True
 
     # 模型回合失败 / 来源不合规时不算“推进”。

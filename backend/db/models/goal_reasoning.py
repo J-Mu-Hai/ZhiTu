@@ -187,6 +187,10 @@ class GoalReasoningSession(UuidPk, TimestampMixin, Base):
     v1_turn_source: Mapped[str | None] = mapped_column(String(16))
     #: 本回合幂等键(同一入口重放不重复调用模型)。
     v1_turn_idempotency_key: Mapped[str | None] = mapped_column(String(64))
+    # ---- R4:周回顾 / 未来重规划 ----
+    #: 最近一次自动周回顾所在的自然周(ISO `YYYY-Www`)。同一个周末只自动发起一次,
+    #: 避免每次重进空间都重复生成回顾。
+    v1_last_review_week: Mapped[str | None] = mapped_column(String(16))
 
     nodes: Mapped[list[ReasoningNode]] = relationship(
         back_populates="session", cascade="all, delete-orphan"
