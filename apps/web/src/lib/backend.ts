@@ -673,6 +673,14 @@ export interface V1NodeAnalysis {
   discussionCount: number;
 }
 
+/** 规划智能体重构 V1(P2.1):一个候选方向(可被用户选择/修正/否定)。 */
+export interface V1CandidateDirection {
+  key: string;
+  title: string;
+  reason: string;
+  path: string;
+}
+
 /** 规划智能体重构 V1(P2):战略路径草案。 */
 export interface V1StrategyView {
   mainLine?: string;
@@ -1907,6 +1915,12 @@ export interface GoalReasoningView {
   v1Status: string | null;
   /** 上一次 V1 模型回合失败的可读原因。 */
   v1Error: string | null;
+  /** P2.1:当前战略判断(优先展示的 AI 暂定理解,可被用户纠正)。 */
+  v1StrategicThesis: string | null;
+  /** P2.1:用户无法回答时 AI 给出的候选方向(最多 3 个)。 */
+  v1CandidateDirections: V1CandidateDirection[] | null;
+  /** P2.1:用户选择的候选方向键。 */
+  v1SelectedDirection: string | null;
   /** P5:是否允许导出决策审计记录(后端 `AGENT_AUDIT_EXPORT`)。 */
   v1AuditExportEnabled: boolean;
   /** 阶段 11:时间架构里的日期是否已校准。false = 只有相对周,不伪造日历日期。 */
@@ -2024,6 +2038,17 @@ export async function downloadV1Audit(
   anchor.click();
   anchor.remove();
   URL.revokeObjectURL(url);
+}
+
+/** 规划智能体重构 V1(P2.1):选择一个候选方向(用户纠正/选择 AI 的解释)。 */
+export function selectV1Direction(
+  workspaceId: string,
+  key: string,
+): Promise<AgentTurnResponse> {
+  return apiFetch<AgentTurnResponse>(
+    `/api/workspaces/${workspaceId}/agent/v1/direction/select?key=${encodeURIComponent(key)}`,
+    { method: 'POST', body: {} },
+  );
 }
 
 /** 规划智能体重构 V1(P4):周末回顾入口 —— 汇总完成度并准备未来重规划草案。 */

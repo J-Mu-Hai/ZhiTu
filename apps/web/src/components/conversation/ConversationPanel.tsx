@@ -216,7 +216,7 @@ function IntakeChips({
  * 被"截止时间/每周投入"干扰。`replan` 入口只在**已确认战略 + 存在执行计划**时才出现。
  */
 export function ConversationPanel() {
-  const { growth, selectedId, select, messages, remoteProposals, proposalErrors, inputChanged, deciding, confirmRemote, rejectRemote, replan, replanState, send, retry, sending, sendError, retryable, historyLoading, messagesTruncated, spaceId, questions, focusQuestion, openTrace, traceAvailability, reasoning, agentStatus, confirmV1Strategy, runV1PlanStep, requestChat } = useDemo();
+  const { growth, selectedId, select, messages, remoteProposals, proposalErrors, inputChanged, deciding, confirmRemote, rejectRemote, replan, replanState, send, retry, sending, sendError, retryable, historyLoading, messagesTruncated, spaceId, questions, focusQuestion, openTrace, traceAvailability, reasoning, agentStatus, confirmV1Strategy, runV1PlanStep, selectV1Direction, requestChat } = useDemo();
   const [input, setInput] = useState('');
   const [showContexts, setShowContexts] = useState(false);
   /** 输入框的 DOM 元素。高度按内容算(见下面那个 effect)。 */
@@ -276,6 +276,10 @@ export function ConversationPanel() {
    * 面板回到普通尺寸与普通对话布局(节点局部讨论就用普通面板 + 画布详情卡)。
    */
   const v1Initial = reasoning?.v1Stage === 'initial_thinking';
+  /** 规划智能体重构 V1(P2.1):当前战略判断 + 候选方向。**判断优先,不默认提问。** */
+  const v1Thesis = reasoning?.v1StrategicThesis ?? null;
+  const v1Directions = reasoning?.v1CandidateDirections ?? [];
+  const v1SelectedDirection = reasoning?.v1SelectedDirection ?? null;
   /** 规划智能体重构 V1(P2):需要**在对话框回答**的问题(橙色),不是画布上的紫色问题节点。 */
   const v1ConversationQuestion =
     reasoning?.v1Stage && reasoning.v1Stage !== 'initial_thinking' && reasoning.v1Question
@@ -679,6 +683,31 @@ export function ConversationPanel() {
           : primaryQuestion
             ? <div className="context-hint"><span className="tiny-dot" />选择画布中的节点，让讨论更聚焦</div>
             : null}
+
+        {/* 规划智能体重构 V1(P2.1):**先给战略判断**,默认不提问。 */}
+        {v1Thesis && (
+          <div className="v1-thesis" data-testid="v1-thesis">
+            <span className="eyebrow">当前战略判断</span>
+            <p>{v1Thesis}</p>
+          </div>
+        )}
+        {v1Directions.length > 0 && (
+          <div className="v1-directions" data-testid="v1-directions">
+            <span className="eyebrow">你可以选一个起点，也可以直接否定我</span>
+            {v1Directions.map(direction => (
+              <button
+                key={direction.key}
+                type="button"
+                className={direction.key === v1SelectedDirection ? 'is-selected' : ''}
+                onClick={() => void selectV1Direction(direction.key)}
+              >
+                <strong>{direction.title}</strong>
+                {direction.reason && <span>{direction.reason}</span>}
+                {direction.path && <em>{direction.path}</em>}
+              </button>
+            ))}
+          </div>
+        )}
 
         {/* 规划智能体重构 V1(P4):周/日计划与回顾入口。产出是**待确认提案**。 */}
         {(reasoning?.v1Stage === 'weekly_execution' || reasoning?.v1Stage === 'replanning') && (

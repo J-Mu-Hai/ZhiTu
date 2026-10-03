@@ -95,7 +95,9 @@ export function CanvasQuestionNodeComponent({ data }: NodeProps<QuestionFlowNode
   const status = question.status;
   const processing = status === 'answered' || status === 'investigating';
   const resolved = status === 'resolved';
-  const interactive = !processing && !resolved;
+  // P2.1:固定节点是**分析节点**,不是必答卡。**未被聚焦时不显示答题控件**;
+  // 点开它才出现“补充 / 纠正”的输入。
+  const interactive = !processing && !resolved && data.isFocused;
   const showOptions = question.responseMode !== 'free_text' && question.options.length > 0;
   const multiple = question.responseMode === 'multi_select';
   const showCustom = question.allowCustomInput || question.responseMode === 'free_text';
@@ -219,6 +221,8 @@ export function CanvasQuestionNodeComponent({ data }: NodeProps<QuestionFlowNode
         <p className="cq-status" role="status">
           {STATUS_TEXT[status] ?? STATUS_LABEL[status]}
         </p>
+      ) : !interactive ? (
+        <p className="cq-status cq-open-hint">点开这个节点,可以补充或纠正我的判断。</p>
       ) : (
         <>
           {showOptions && (

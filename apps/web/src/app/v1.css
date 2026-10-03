@@ -109,6 +109,60 @@
   color: var(--blue-ink, #2f6da3);
 }
 
+/* ---- V1(P2.1):未聚焦的分析节点不显示答题控件 ---- */
+.canvas-question-node .cq-open-hint {
+  font-size: 10px;
+  color: var(--muted, #8798ad);
+}
+
+/* ---- V1(P2.1):当前战略判断 + 候选方向 ---- */
+.v1-thesis {
+  display: grid;
+  gap: 5px;
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line, #d8e0e6);
+  border-radius: 10px;
+  background: var(--surface-panel, #fffefa);
+}
+.v1-thesis p {
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--text, #304b62);
+}
+.v1-directions {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.v1-directions > button {
+  display: grid;
+  gap: 3px;
+  text-align: left;
+  padding: 9px 11px;
+  border: 1px solid var(--line, #d8e0e6);
+  border-radius: 10px;
+  background: var(--surface-panel, #fffefa);
+}
+.v1-directions > button strong {
+  font-size: 12px;
+  color: var(--text, #304b62);
+}
+.v1-directions > button span {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted, #6f8293);
+}
+.v1-directions > button em {
+  font-size: 10px;
+  font-style: normal;
+  color: var(--muted, #8798ad);
+}
+.v1-directions > button.is-selected {
+  border-color: var(--blue-ink, #2f6da3);
+  box-shadow: 0 0 0 2px rgba(47, 109, 163, 0.14);
+}
+
 /* ---- V1(P2):需要**在对话框回答**的关键问题(橙色框) ---- */
 .v1-conversation-question {
   display: grid;
