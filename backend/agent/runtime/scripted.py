@@ -87,10 +87,11 @@ import time
 import uuid
 from pathlib import Path
 
-from backend.agent.runtime.base import ReasoningResult, TurnContext
+from backend.agent.runtime.base import IntakeDecision, ReasoningResult, TurnContext
 from backend.agent.runtime.response import (
     parse_analysis,
     parse_claims,
+    parse_intake_decision,
     parse_questions,
     parse_reasoning_map,
     parse_stop_reason,
@@ -166,12 +167,14 @@ def parse_script(raw: str) -> tuple[dict, ...]:
             "toolRequests",
             "stopReason",
             "reasoningMap",
+            "intakeDecision",
         }
         if unknown:
             # 静默忽略一个拼错的键(比如 `action`)会让整段脚本变成"什么都不提"。
             raise ScriptedConfigError(
                 f"{SCRIPT_ENV} 第 {index} 轮里有认不出的键:{'、'.join(sorted(unknown))}。"
-                "能写的是 reply / claims / actions / questions / toolRequests / stopReason / analysis / reasoningMap。"
+                "能写的是 reply / claims / actions / questions / toolRequests / stopReason / "
+                "analysis / reasoningMap / intakeDecision。"
             )
     return tuple(turns)
 
@@ -242,9 +245,26 @@ class ScriptedReasoner:
         key = space_key(turn)
         used = self._used.get(key, 0)
         scripted = dict(self._turns[used]) if used < len(self._turns) else {}
-        self._used[key] = used + 1
         # `{{userMessage}}` 供测试 fixture 把查询绑定到当前场景的用户原话。
         scripted = _interpolate(scripted, turn.user_message)  # type: ignore[assignment]
+
+        # 阶段 12:脚本没写 `intakeDecision` 时,intake 模式自动“信息够了”且
+        # **不吃掉这一轮** —— 时间架构模式接着念同一轮脚本。老 fixture 因此不用改写。
+        if (
+            getattr(turn, "purpose", "") == "strategic_intake"
+            and "intakeDecision" not in scripted
+        ):
+            return ReasoningResult(
+                reply="信息已经够了,我直接给你整体时间架构。",
+                source=ModelSource.SCRIPTED,
+                degraded=False,
+                intake_decision=IntakeDecision(action="ready_for_architecture"),
+                request_id=uuid.uuid4().hex,
+                prompt_version=PROMPT_VERSION,
+                latency_ms=int((time.monotonic() - started) * 1000),
+            )
+
+        self._used[key] = used + 1
 
         return ReasoningResult(
             reply=str(scripted.get("reply") or _EXHAUSTED_REPLY),
@@ -261,6 +281,7 @@ class ScriptedReasoner:
             stop_reason=parse_stop_reason(scripted.get("stopReason")),
             analysis=parse_analysis(scripted.get("analysis")),
             reasoning_map=parse_reasoning_map(scripted.get("reasoningMap")),
+            intake_decision=parse_intake_decision(scripted.get("intakeDecision")),
             request_id=uuid.uuid4().hex,
             prompt_version=PROMPT_VERSION,
             model_name=None,

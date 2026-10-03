@@ -299,7 +299,7 @@ class FakeReasoner:
     calls: list = field(default_factory=list)
 
     async def reason(self, turn):
-        from backend.agent.runtime.base import ReasoningResult
+        from backend.agent.runtime.base import IntakeDecision, ReasoningResult
         from backend.agent.runtime.response import (
             parse_questions,
             parse_stop_reason,
@@ -308,6 +308,14 @@ class FakeReasoner:
         from backend.db.models.enums import ModelSource
 
         self.calls.append(turn)
+        if getattr(turn, "purpose", "") == "strategic_intake":
+            # 阶段 12:战略 intake 是独立回合契约。默认让测试直接“信息够了”,
+            # 于是首次进入就走到时间架构,不改变原有“首轮给路线图”的用例。
+            return ReasoningResult(
+                reply="信息已经够了,我直接给你整体时间架构。",
+                source=ModelSource.DIRECT_LLM,
+                intake_decision=IntakeDecision(action="ready_for_architecture"),
+            )
         return ReasoningResult(
             reply=self.reply,
             source=self.source or ModelSource.DIRECT_LLM,

@@ -99,6 +99,21 @@ class ReasoningLinkView(ApiModel):
     note: str | None = None
 
 
+class PendingIntakeView(ApiModel):
+    """阶段 12:对话式战略 intake 当前等回答的那一条。**不是问题实体。**
+
+    它只来自会话上的最小状态 `(pending_intake_message_id, pending_intake_decision)`;
+    问题原文同时已经写在那条助手消息正文里。前端据此在消息下渲染快捷回复。
+    """
+
+    #: 正在等回答的那条助手消息 id。刷新后前端靠它把提问挂在对应气泡下。
+    message_id: uuid.UUID | None = None
+    question: str
+    decision_scope: str = ""
+    why_this_matters: str = ""
+    quick_replies: list[str] = Field(default_factory=list)
+
+
 class GoalReasoningView(ApiModel):
     """当前目标推理地图。**读接口与 agent turn 都返回这一份。**"""
 
@@ -113,6 +128,11 @@ class GoalReasoningView(ApiModel):
     focus_reasoning_node_id: uuid.UUID | None = None
     #: 面向用户的一句话:为什么现在先处理它。
     focus_reason: str | None = None
+    #: 阶段 11:intake 进度(已问几个关键问题 / 上限)。对话区用它显示极轻量进度。
+    intake_questions_asked: int = 0
+    intake_question_limit: int = 0
+    #: 阶段 12:当前正在等回答的 intake 关键问题。None = 不在等回答。
+    pending_intake: PendingIntakeView | None = None
     #: 阶段 11:时间架构里的日期是否已校准。False = 只有相对周,不伪造日历日期。
     dates_calibrated: bool = False
     input_version: str | None = None

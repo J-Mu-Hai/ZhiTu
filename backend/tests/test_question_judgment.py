@@ -21,6 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.agent.runtime.base import (
+    IntakeDecision,
     QuestionDraft,
     QuestionOptionDraft,
     ReasoningMapDraft,
@@ -97,6 +98,13 @@ class MapReasoner:
 
     async def reason(self, turn):
         self.calls.append(turn)
+        if getattr(turn, "purpose", "") == "strategic_intake":
+            # 阶段 12:intake 直接“信息够了”,后面用 `questions` 验画布问题判断。
+            return ReasoningResult(
+                reply="信息已经够了,我直接给你整体时间架构。",
+                source=ModelSource.DIRECT_LLM,
+                intake_decision=IntakeDecision(action="ready_for_architecture"),
+            )
         draft = self.drafts[self._index] if self._index < len(self.drafts) else None
         self._index += 1
         return ReasoningResult(
@@ -150,8 +158,11 @@ async def test_strategic_question_carries_judgment_fields(
     use_reasoner(MapReasoner(drafts=(_roadmap_draft(),), questions=(question,)))
 
     body = await _enter(app_client, account)
-    assert body["changed"] is True, "路线仍然要先成立"
-    assert body["reasoning"]["nodes"], "首轮必须先给路线与阶段"
+    # 阶段 12:intake 直接“信息够了”,先给路线与阶段,再落一个**画布**战略问题。
+    assert body["changed"] is True, "先给路线与阶段"
+    assert body["reasoning"]["nodes"]
+    assert body["question"] is not None
+    assert body["question"]["presentation"] == "canvas_question"
 
     items = await _questions_api(app_client, account)
     assert len(items) == 1

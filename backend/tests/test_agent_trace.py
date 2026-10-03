@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.agent.runtime.base import (
+    IntakeDecision,
     ReasoningMapDraft,
     ReasoningMapNodeDraft,
     ReasoningResult,
@@ -419,6 +420,12 @@ class MapInspectingReasoner:
                 self.observed["step"] = state.current_step
                 self.observed["trigger"] = state.trigger
                 self.observed["started_at"] = state.started_at
+        if getattr(turn, "purpose", "") == "strategic_intake":
+            return ReasoningResult(
+                reply="信息已经够了,我直接给你整体时间架构。",
+                source=ModelSource.DIRECT_LLM,
+                intake_decision=IntakeDecision(action="ready_for_architecture"),
+            )
         return _map_result(self.draft, degraded=self.degraded)
 
 
@@ -432,6 +439,12 @@ class MapSequenceReasoner:
 
     async def reason(self, turn):
         self.calls.append(turn)
+        if getattr(turn, "purpose", "") == "strategic_intake":
+            return ReasoningResult(
+                reply="信息已经够了,我直接给你整体时间架构。",
+                source=ModelSource.DIRECT_LLM,
+                intake_decision=IntakeDecision(action="ready_for_architecture"),
+            )
         result = self.results[min(self._index, len(self.results) - 1)]
         self._index += 1
         return result
@@ -550,7 +563,9 @@ async def test_roadmap_correction_retry_is_traced_then_succeeds(
     assert turn["status"] == "completed"
     assert turn["attempt"] == 2, "纠错重试必须体现为第二次尝试"
     assert "retrying" in turn["steps"]
-    assert turn["steps"].count("waiting_model") == 2, "两次模型调用都要有等待边界"
+    # 阶段 12:space_entered 先走一次 intake(直接 ready),再是架构调用 + 架构纠错,
+    # 共三次模型边界。
+    assert turn["steps"].count("waiting_model") == 3, "三次模型调用都要有等待边界"
     assert turn["steps"][-1] == "completed"
 
 

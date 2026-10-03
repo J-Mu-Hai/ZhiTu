@@ -599,6 +599,33 @@ class ReasoningMapDraft:
 
 
 @dataclass(frozen=True, slots=True)
+class IntakeDecision:
+    """战略澄清 intake 的一轮决策(阶段 12)。
+
+    ## 它**不是** `QuestionDraft`
+
+    `QuestionDraft` 会落成 `agent_questions` / `conversation_intake`,成为一张待回答的
+    问题实体 —— 那是画布 Question Node / 问卷体系的一部分。intake 阶段**不创建任何
+    问题实体**:这一轮该不该问、问什么、为什么值得问,只保留在会话的 `intakeDecision`
+    里,画布与问题表都不新增一行。
+
+    `decision_scope` 是**闭集**,它回答“这一问会改变整体战略的哪一件大事”。只有它能
+    改变路线/总时长/阶段顺序/阶段成果/重大约束时,这一问才被接受。
+    """
+
+    #: `ask` = 还要再问一个关键问题;`ready_for_architecture` = 信息够了,可以生成时间架构。
+    action: str
+    #: 要问用户的**一个**问题(action=ask 时非空)。
+    question: str = ""
+    #: 这一问的影响面:route / duration / sequence / deliverable / constraint。
+    decision_scope: str = ""
+    #: 一句人话:这一问决定整体战略里的什么。
+    why_this_matters: str = ""
+    #: 可选的 0–3 个轻量快捷回复。它们只是界面上的按钮,**不是问题选项实体**。
+    quick_replies: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class ReasoningResult:
     """一次模型调用的结果。**永远是可用的**,即使内容为空。"""
 
@@ -626,6 +653,9 @@ class ReasoningResult:
     #: 目标推理回合产出的地图操作。None = 这一轮没有(或解析失败)。
     #: **只有 `purpose == goal_reasoning` 的回合会读它。**
     reasoning_map: ReasoningMapDraft | None = None
+    #: 阶段 12:战略 intake 回合的决策。**只有 `purpose == strategic_intake` 的回合会读它。**
+    #: None = 这一轮不是 intake 回合(或解析失败)。它**不会**变成 `agent_questions`。
+    intake_decision: IntakeDecision | None = None
     request_id: str = ""
     prompt_version: str = ""
     model_name: str | None = None

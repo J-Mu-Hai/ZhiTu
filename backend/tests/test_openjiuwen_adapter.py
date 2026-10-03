@@ -245,6 +245,13 @@ def test_the_output_declaration_matches_what_the_parser_reads() -> None:
             "nodes": [{"handle": "r1", "title": "目标用途", "nodeType": "dimension"}],
             "links": [],
         },
+        "intakeDecision": {
+            "action": "ask",
+            "question": "你最希望先得到什么可验证成果?",
+            "decisionScope": "deliverable",
+            "whyThisMatters": "它决定阶段 1 交什么",
+            "quickReplies": ["一个能展示的作品"],
+        },
     }
     assert set(payload) == set(OUTPUT_CONFIG), (
         "载荷的键与给 SDK 的输出声明对不上了 —— 有一边多写或少写了"

@@ -61,6 +61,8 @@ from typing import Any
 from backend.agent.prompts.goal_reasoning import (
     GOAL_REASONING_PROMPT_VERSION,
     GOAL_REASONING_SYSTEM_PROMPT,
+    STRATEGIC_INTAKE_PROMPT_VERSION,
+    STRATEGIC_INTAKE_SYSTEM_PROMPT,
 )
 from backend.agent.prompts.planning import PROMPT_VERSION, SYSTEM_PROMPT
 from backend.agent.runtime.base import ReasoningResult, TurnContext
@@ -225,6 +227,20 @@ OUTPUT_CONFIG: dict[str, Any] = {
             "focusReason": {"type": "string"},
             "nodes": {"type": "array"},
             "links": {"type": "array"},
+        },
+    },
+    # 阶段 12:战略 intake 决策。**必须声明** —— 同 reasoningMap:openJiuwen 那条路
+    # 是照这份声明重建对象的,不在声明里的键会到不了解析器。
+    "intakeDecision": {
+        "type": "object",
+        "required": False,
+        "description": "战略 intake 决策(仅 strategic_intake 回合使用)",
+        "properties": {
+            "action": {"type": "string"},
+            "question": {"type": "string"},
+            "decisionScope": {"type": "string"},
+            "whyThisMatters": {"type": "string"},
+            "quickReplies": {"type": "array"},
         },
     },
 }
@@ -523,12 +539,16 @@ class OpenJiuwenReasoner:
 
 
 def _system_prompt(turn: TurnContext) -> str:
+    if turn.purpose == "strategic_intake":
+        return STRATEGIC_INTAKE_SYSTEM_PROMPT
     if turn.purpose == "goal_reasoning":
         return GOAL_REASONING_SYSTEM_PROMPT
     return SYSTEM_PROMPT
 
 
 def _prompt_version(turn: TurnContext) -> str:
+    if turn.purpose == "strategic_intake":
+        return STRATEGIC_INTAKE_PROMPT_VERSION
     if turn.purpose == "goal_reasoning":
         return GOAL_REASONING_PROMPT_VERSION
     return PROMPT_VERSION

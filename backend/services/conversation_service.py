@@ -288,6 +288,9 @@ async def submit_turn(
     current_view: str | None = None,
     scope_root_id: uuid.UUID | None = None,
     trigger: str = "user_message",
+    #: 阶段 11:这一轮是在回答 **intake 关键问题**。它只用来更新简报,不生成画布问题、
+    #: 也不提具体计划变更 —— 战略还没收敛。
+    intake_mode: bool = False,
 ) -> TurnOutcome:
     text = (content or "").strip()
     if not text:
@@ -331,6 +334,21 @@ async def submit_turn(
     # 非法请求在这里停住,四件事一件都不会发生。
     if context_node_id is not None:
         await node_service.load_node(db, ctx, context_node_id)
+
+    # 阶段 12:战略 intake 正在等回答时,用户这条消息**就是那轮回答**。
+    # 交给推理服务在 `strategic_intake` 模式下处理 —— 它只问下一个关键问题,
+    # 不创建任何 `agent_questions` / 画布问题节点,也不走普通规划回合。
+    from backend.services import reasoning_service  # 延迟 import,避免循环依赖
+
+    if await reasoning_service.is_awaiting_intake_answer(db, ctx):
+        return await reasoning_service.answer_intake_in_conversation(
+            db,
+            ctx,
+            reasoner,
+            content=text,
+            client_message_id=client_message_id,
+            context_node_id=context_node_id,
+        )
 
     conversation = await get_or_create_primary_conversation(db, ctx)
 
@@ -440,16 +458,22 @@ async def submit_turn(
     # 而它们确实没有执行(理由见下面的 `INPUT_CHANGED`),那正是这个模块开头说的
     # "把'AI 提了但我没执行'吞掉,用户会以为他说的调整已经生效了"。所以每条动作
     # 配一条错误,原样交给界面。
-    outcome = (
-        proposal_service.ProposalOutcome(proposal=None, errors=_input_changed_errors(result.actions))
-        if input_changed
-        else await proposal_service.build_from_actions(
+    if input_changed:
+        outcome = proposal_service.ProposalOutcome(
+            proposal=None, errors=_input_changed_errors(result.actions)
+        )
+    elif intake_mode:
+        # 阶段 11:intake 期间**不提具体计划变更**。模型可能把答案当成“可以拆任务了”,
+        # 但战略还没收敛;静默掉这些动作,只保留简报更新。
+        outcome = proposal_service.ProposalOutcome(proposal=None)
+    else:
+        outcome = await proposal_service.build_from_actions(
             db,
             ctx,
             conversation_id=conversation.id,
             actions=result.actions,
             # **这一轮送给模型的那份记号表**,不是重新按当前库状态生成的。
-            # 重新生成的话,模型说的 n3 可能已经指向了另一个节点(见 turn_context 里的注释)。
+            # 重新生成的话,模型说的 n3 可能已经指向了另一个节点 (见 turn_context 里的注释)。
             handles=turn.node_handles,
             # 提示词里说过的范围,在这里变成一条真的检查:范围外的动作逐条被拒,
             # 落在 `proposal_errors` 里如实告诉用户。
@@ -459,13 +483,14 @@ async def submit_turn(
             reasoning=result.reply,
             assistant_message=assistant_message,
         )
-    )
     # 问题节点与提案在**同一个事务**里落地。它们分开:问题落库即成卡片,
     # 不需要任何确认;提案仍然是待用户确认的。
     #
     # **输入变过时不建问题。** 问题也是模型基于当时上下文提出的,旧轮次的它同样
     # 可能问错东西;与提案保持同一条判断。
-    if not input_changed:
+    # **intake 期间也不在这里建问题** —— intake 的关键问题由 `reasoning_service`
+    # 落成 `conversation_intake`,不允许这里再造出画布 Question Node。
+    if not input_changed and not intake_mode:
         # 战略阶段 = 还没有已确认的战略。这一阶段的问题**不先问排期条件**。
         has_strategy = await strategy_review.has_strategy(db, ctx)
         await question_service.create_from_drafts(
@@ -680,6 +705,47 @@ def _result_from_stored(message: Message) -> ReasoningResult:
         model_name=message.model_name,
         latency_ms=message.latency_ms,
         usage=message.usage,
+    )
+
+
+async def record_user_message(
+    db,
+    ctx: WorkspaceContext,
+    *,
+    conversation: Conversation,
+    text: str,
+    client_message_id: str | None,
+    context_node_id: uuid.UUID | None,
+) -> Message:
+    """把一条用户消息落库。**与 `submit_turn` 内部走的是同一条路径。**
+
+    阶段 12 的 intake 回答要自己先落库(它绕过普通规划回合),所以把这一条
+    公开出来,而不是让别的模块去调私有函数。
+    """
+    return await _insert_user_message(
+        db, ctx, conversation, text, client_message_id, context_node_id
+    )
+
+
+def turn_outcome_for_reply(
+    *,
+    user_message: Message,
+    assistant_message: Message,
+    brief: PlanningBrief | None,
+) -> TurnOutcome:
+    """构造一个“已经有一条落库的助手回复”的回合结果。
+
+    战略 intake 回答路径用它把推理服务的产物包装成与发消息一致的形状。
+    模型降级/失败标记从助手消息上读回(`_result_from_stored`),所以界面
+    仍然能显示可重试的错误。
+    """
+    return TurnOutcome(
+        user_message=user_message,
+        assistant_message=assistant_message,
+        result=_result_from_stored(assistant_message),
+        brief=brief,
+        changed_fields=(),
+        replayed=False,
     )
 
 

@@ -33,7 +33,7 @@ import re
 from datetime import date
 from typing import Any
 
-from backend.agent.prompts.goal_reasoning import render_reasoning_turn
+from backend.agent.prompts.goal_reasoning import render_intake_turn, render_reasoning_turn
 from backend.agent.prompts.planning import (
     TURN_TEMPLATE,
     render_brief_section,
@@ -47,6 +47,7 @@ from backend.agent.prompts.planning import (
 from backend.agent.runtime.base import (
     AnalysisDraft,
     BriefClaim,
+    IntakeDecision,
     QuestionDraft,
     QuestionOptionDraft,
     ReasoningMapDraft,
@@ -86,6 +87,16 @@ MAX_OPTION_LABEL_CHARS = 120
 
 #: `response_mode` 的闭集。不在里面的整个问题丢掉 —— 与 brief 的闭集同一条纪律。
 QUESTION_RESPONSE_MODES = frozenset({"single_select", "multi_select", "free_text", "mixed"})
+
+#: 阶段 12:战略 intake 决策的动作与影响面。**闭集。**
+INTAKE_ACTIONS = frozenset({"ask", "ready_for_architecture"})
+INTAKE_DECISION_SCOPES = frozenset(
+    {"route", "duration", "sequence", "deliverable", "constraint"}
+)
+MAX_INTAKE_QUESTION_CHARS = 500
+MAX_INTAKE_WHY_CHARS = 300
+MAX_INTAKE_QUICK_REPLIES = 3
+MAX_INTAKE_QUICK_REPLY_CHARS = 40
 
 #: 一次模型调用最多请求几个工具。服务端还会用全局预算卡总量。
 MAX_TOOL_REQUESTS = 2
@@ -147,6 +158,9 @@ def render_turn(turn: TurnContext) -> str:
     拒绝。反过来,`node_handles` 里那份记号到真实 id 的映射**绝不能**出现在这里,
     见 `base.TurnContext` 的注释。
     """
+    if turn.purpose == "strategic_intake":
+        # 阶段 12:intake 是另一种回合契约 —— 只说一句判断 + 一个高杠杆关键问题。
+        return render_intake_turn(turn)
     if turn.purpose == "goal_reasoning":
         # 目标推理回合走另一份模板:它关心的是决策维度与取舍,不是任务拆解。
         return render_reasoning_turn(turn)
@@ -251,6 +265,7 @@ PARSED_PAYLOAD_FIELDS = frozenset(
         "stopReason",
         "analysis",
         "reasoningMap",
+        "intakeDecision",
     }
 )
 
@@ -293,6 +308,7 @@ def payload_to_result(
         stop_reason=parse_stop_reason(payload.get("stopReason")),
         analysis=parse_analysis(payload.get("analysis")),
         reasoning_map=parse_reasoning_map(payload.get("reasoningMap")),
+        intake_decision=parse_intake_decision(payload.get("intakeDecision")),
         request_id=request_id,
         prompt_version=prompt_version,
         model_name=model_name,
@@ -649,6 +665,48 @@ def _clean_timeframe_kind(entry: dict) -> str | None:
     if raw is None:
         raw = entry.get("timeframe_kind")
     return raw if raw in ("dated", "relative") else None
+
+
+def parse_intake_decision(raw: Any) -> IntakeDecision | None:
+    """把模型的 `intakeDecision` 变成一条**形状合法**的 intake 决策。
+
+    **只做形状判断**:这一问是否真的会改变战略、是否重复已知信息、是否在问执行细节,
+    都需要用户上下文,在 `reasoning_service` 的服务端守卫里做。这里丢掉的是“连形状都
+    不对”的输出(缺动作、动作不在闭集、ask 却没给问题),留着只会让服务层多一堆特例。
+    """
+    if not isinstance(raw, dict):
+        return None
+    action = raw.get("action")
+    if action not in INTAKE_ACTIONS:
+        return None
+    question = raw.get("question")
+    scope = raw.get("decisionScope")
+    why = raw.get("whyThisMatters")
+    quick = raw.get("quickReplies")
+    replies: tuple[str, ...] = ()
+    if isinstance(quick, list):
+        replies = tuple(
+            item.strip()[:MAX_INTAKE_QUICK_REPLY_CHARS]
+            for item in quick[:MAX_INTAKE_QUICK_REPLIES]
+            if isinstance(item, str) and item.strip()
+        )
+    return IntakeDecision(
+        action=action,
+        question=(
+            question.strip()[:MAX_INTAKE_QUESTION_CHARS]
+            if isinstance(question, str) and question.strip()
+            else ""
+        ),
+        decision_scope=(
+            scope if scope in INTAKE_DECISION_SCOPES else ""
+        ),
+        why_this_matters=(
+            why.strip()[:MAX_INTAKE_WHY_CHARS]
+            if isinstance(why, str) and why.strip()
+            else ""
+        ),
+        quick_replies=replies,
+    )
 
 
 def parse_reasoning_map(raw: Any) -> ReasoningMapDraft | None:

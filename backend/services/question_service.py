@@ -128,6 +128,10 @@ def strategy_phase_question_conflict(question: str) -> str | None:
     """战略阶段问了一个属于阶段/排期层或执行细节的问题时,返回原因;否则 `None`。
 
     纯函数,便于测试。服务端用它过滤模型输出的问题 —— **不依赖提示词自觉**。
+
+    注意:这一条是**已生成路线之后**的战略阶段语义(先算总时长,再问排期条件)。
+    战略澄清 intake 用下面那条更宽的 `intake_question_conflict` —— 它**允许**问时间
+    窗口、截止与稳定可投入的时间,因为那正是 intake 要收集的战略维度。
     """
     text = question.strip().lower()
     for token in _STRATEGY_PHASE_FORBIDDEN:
@@ -136,6 +140,96 @@ def strategy_phase_question_conflict(question: str) -> str | None:
     for token in _STRATEGY_PHASE_TRIVIAL:
         if token in text:
             return f"战略阶段不问「{token}」这类执行细节"
+    return None
+
+
+#: 阶段 11:intake 阶段**只禁执行细节**,不禁战略信息。
+#:
+#: 与上面那条的关键区别:intake 允许问「最终成果 / 目标时间窗口 / 当前基础 /
+#: 稳定可投入的时间 / 关键取舍」这五类战略维度(本阶段的收集目标);只拦真正的
+#: 执行层琐碎题 —— 工具、IDE、课程、教材、资料站、具体练习、代码细节、每天几点。
+_INTAKE_FORBIDDEN: tuple[str, ...] = (
+    "哪个工具",
+    "什么工具",
+    "工具",
+    "ide",
+    "编辑器",
+    "软件",
+    "课程",
+    "网课",
+    "教材",
+    "哪本书",
+    "什么书",
+    "视频",
+    "教程",
+    "资料",
+    "资源站",
+    "练习",
+    "作业",
+    "习题",
+    "任务清单",
+    "任务列表",
+    "变量名",
+    "函数名",
+    "类名",
+    "代码细节",
+    "代码风格",
+    "怎么命名",
+    "几点",
+    "作息",
+    "每日安排",
+    "每天几",
+    "周几",
+)
+
+#: 已知维度 -> 该维度里出现时判为“重复问”的措辞。
+#:
+#: 用户目标 / 已有上下文里已经明确给出的时间、基础或目标信息**不得重复问**。
+#: 这里做的是确定性关键词判断:宁可漏过,也不误杀一个合法的战略取舍。
+_INTAKE_KNOWN_TOKENS: dict[str, tuple[str, ...]] = {
+    "weekly_available_minutes": (
+        "每周",
+        "可投入",
+        "投入时间",
+        "多少小时",
+        "几小时",
+        "每周投入",
+        "投入多少",
+    ),
+    "deadline": (
+        "截止",
+        "deadline",
+        "什么时候完成",
+        "时间窗口",
+        "期限",
+        "多长时间完成",
+    ),
+    "current_level": (
+        "当前水平",
+        "什么水平",
+        "基础如何",
+        "现在的基础",
+        "掌握程度",
+        "学过什么",
+    ),
+}
+
+
+def intake_question_conflict(
+    question: str, *, known_dimensions: frozenset[str] | set[str] = frozenset()
+) -> str | None:
+    """intake 阶段问了一个执行细节、或重复问了已知信息时,返回原因;否则 `None`。
+
+    纯函数,便于测试。服务端用它过滤模型在 intake 里的问题 —— **不依赖提示词自觉**。
+    允许战略维度(成果 / 时间窗口 / 基础 / 可投入时间 / 取舍),只拦执行细节和重复问。
+    """
+    text = question.strip().lower()
+    for token in _INTAKE_FORBIDDEN:
+        if token in text:
+            return f"intake 阶段不问「{token}」这类执行细节"
+    for dimension, tokens in _INTAKE_KNOWN_TOKENS.items():
+        if dimension in known_dimensions and any(token in text for token in tokens):
+            return f"用户已经说过「{dimension}」,intake 不重复问"
     return None
 
 
@@ -222,6 +316,9 @@ async def create_from_drafts(
     require_judgment: bool = False,
     max_questions: int | None = None,
     presentation: str = QuestionPresentation.CANVAS_QUESTION.value,
+    #: 阶段 11:已知的战略维度(deadline / weekly_available_minutes / current_level)。
+    #: intake 里不重复问这些维度。
+    known_dimensions: frozenset[str] | set[str] = frozenset(),
 ) -> list[AgentQuestion]:
     """把模型这一轮提的问题落库。**纯服务端校验在这里收口。**
 
@@ -267,9 +364,18 @@ async def create_from_drafts(
             QuestionResponseMode.MULTI_SELECT.value,
         } and not draft.options:
             continue
+        # 阶段 11:intake 的关键问题允许战略维度,只禁执行细节 + 已知信息的重复问。
+        # **服务端拦,不靠提示词自觉** —— 与去重、形状校验同一条纪律。
+        if presentation == QuestionPresentation.CONVERSATION_INTAKE.value:
+            intake_conflict = intake_question_conflict(
+                draft.question, known_dimensions=known_dimensions
+            )
+            if intake_conflict is not None:
+                logger.info("intake 丢弃一个问题(%s):%r", intake_conflict, draft.question[:40])
+                continue
         # 战略阶段不先问排期条件（每周投入 / 当前水平 / 截止日 / 日程）。
         # **服务端拦，不靠提示词自觉** —— 与去重、形状校验同一条纪律。
-        if strategy_phase:
+        elif strategy_phase:
             phase_conflict = strategy_phase_question_conflict(draft.question)
             if phase_conflict is not None:
                 logger.info("战略阶段丢弃一个排期类问题(%s):%r", phase_conflict, draft.question[:40])
@@ -411,6 +517,8 @@ async def answer_question(
         client_message_id=f"question-answer:{question.id}",
         context_node_id=source_node_id,
         trigger="question_answered",
+        # 阶段 11:回答 intake 关键问题时,这一轮只更新简报,不生成画布问题/具体计划提案。
+        intake_mode=question.presentation is QuestionPresentation.CONVERSATION_INTAKE,
     )
 
     # 成功则 resolved;降级/失败则停在 investigating,等用户刷新或重试。
@@ -617,6 +725,9 @@ def _answer_content(question: AgentQuestion, answer: dict) -> str:
 
     带上问题原文:模型的最近历史里有那条提问回复,但把问题与答案放在同一条里
     最稳 —— 用户可能隔了几轮才回答,那几次往返不该让模型猜"他说的是哪道题"。
+
+    **对话式 intake 例外:只留答案本身。** 那条问题已经作为上一条助手消息显示在
+    对话流里,再套一层「回答你问的…」会变成机械的问卷腔,而不是正常对话。
     """
     selected = list(answer.get("selectedOptionIds") or [])
     labels = _option_labels(question, selected)
@@ -627,6 +738,8 @@ def _answer_content(question: AgentQuestion, answer: dict) -> str:
     if custom:
         parts.append(str(custom))
     joined = ";".join(parts) if parts else "(没有内容)"
+    if question.presentation is QuestionPresentation.CONVERSATION_INTAKE:
+        return joined
     return f"回答你问的「{question.question}」:{joined}"
 
 
@@ -657,6 +770,7 @@ __all__ = [
     "answer_question",
     "create_from_drafts",
     "defer_question",
+    "intake_question_conflict",
     "list_questions",
     "load_question",
     "skip_question",

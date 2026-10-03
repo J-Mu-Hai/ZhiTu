@@ -109,6 +109,13 @@ class GoalReasoningSession(UuidPk, TimestampMixin, Base):
     # ---- 阶段 11:战略澄清 intake 与时间架构 ----
     #: intake 已经问过几个关键问题。**最多 5 个**;到顶必须继续生成架构,不能无限追问。
     intake_questions_asked: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # ---- 阶段 12:对话式 intake 的待回答问题(不再落 agent_questions) ----
+    #: 正在等用户回答的那条 intake 助手消息。非空 = “这个空间正在等 intake 回答”,
+    #: 用户下一条消息就是它的答案。问题询问的实体不在 `agent_questions` 里。
+    pending_intake_message_id: Mapped[uuid.UUID | None] = mapped_column()
+    #: 待回答问题的结构化决策(question / decisionScope / whyThisMatters / quickReplies)。
+    #: **不存选项实体、不存分析 JSON 卡片** —— 只是最小的一句话与 0–3 个快捷回复。
+    pending_intake_decision: Mapped[dict | None] = mapped_column(JsonDict)
     #: 时间架构里的日期是否已校准。False = 只有相对周(第 1–2 周…),不伪造日历日期。
     dates_calibrated: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 

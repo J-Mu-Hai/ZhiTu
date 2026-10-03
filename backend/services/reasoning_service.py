@@ -37,6 +37,7 @@ from backend.contracts.reasoning import (
     AgentTurnRequest,
     AgentTurnResponse,
     GoalReasoningView,
+    PendingIntakeView,
     ReasoningLinkView,
     ReasoningNodeView,
 )
@@ -44,6 +45,7 @@ from backend.db.base import utcnow
 from backend.db.models import (
     AgentQuestion,
     GoalReasoningSession,
+    Message,
     PlanningBrief,
     PlanNode,
     Proposal,
@@ -54,6 +56,7 @@ from backend.db.models import (
 from backend.db.models.enums import (
     ACTIVE_QUESTION_STATUSES,
     AgentTraceStep,
+    ModelSource,
     ProposalStatus,
     QuestionPresentation,
     ReasoningLinkType,
@@ -67,6 +70,7 @@ from backend.db.models.enums import (
 )
 from backend.services import (
     agent_trace_service,
+    brief_service,
     conversation_service,
     proposal_service,
     question_service,
@@ -89,6 +93,21 @@ MAX_QUESTIONS_PER_TURN = 3
 MAX_STRATEGIC_QUESTIONS = 1
 #: 阶段 11:战略澄清 intake 最多问几个关键问题。到顶必须继续生成时间架构,不能无限追问。
 MAX_INTAKE_QUESTIONS = 5
+
+#: 阶段 12:intake 模式的回合用途。它决定用哪份系统提示词与哪条解析路径。
+PURPOSE_INTAKE = "strategic_intake"
+#: 时间架构模式的回合用途(与阶段 7–11 的 goal_reasoning 一致)。
+PURPOSE_ARCHITECTURE = "goal_reasoning"
+
+#: intake 决策 `decisionScope` 的闭集。**服务端硬闸,不只是解析层。**
+INTAKE_SCOPES = frozenset({"route", "duration", "sequence", "deliverable", "constraint"})
+
+#: intake 完成、进入时间架构时喂给模型的那句触发。前面的问答都在对话历史里。
+ARCHITECTURE_TRIGGER = (
+    "战略澄清已经结束。请基于上面的目标与对话,一次性给出整体时间架构:"
+    "恰好一条 route + 3–5 个挂在它下面的 stage,每个 stage 带 timeframe / deliverable / "
+    "passCriteria 与结构化时间范围。**不要再提问。**"
+)
 #: 评分维度范围。
 SCORE_MIN = 0
 SCORE_MAX = 5
@@ -267,6 +286,7 @@ async def build_view(
             phase="orientation",
             turn_action="analyze",
             status=ReasoningSessionStatus.IDLE.value,
+            intake_question_limit=MAX_INTAKE_QUESTIONS,
         )
 
     nodes = await _load_nodes(db, session.id)
@@ -284,6 +304,25 @@ async def build_view(
         focus_handle=focus.handle if focus else None,
         focus_reasoning_node_id=session.focus_reasoning_node_id,
         focus_reason=session.focus_reason,
+        #: 阶段 11:intake 进度,给对话区那行极轻量文字用。
+        intake_questions_asked=session.intake_questions_asked,
+        intake_question_limit=MAX_INTAKE_QUESTIONS,
+        #: 阶段 12:正在等回答的 intake 关键问题(只来自会话状态,不是问题实体)。
+        pending_intake=(
+            PendingIntakeView(
+                message_id=session.pending_intake_message_id,
+                question=str(session.pending_intake_decision.get("question") or ""),
+                decision_scope=str(session.pending_intake_decision.get("decisionScope") or ""),
+                why_this_matters=str(session.pending_intake_decision.get("whyThisMatters") or ""),
+                quick_replies=[
+                    str(item)
+                    for item in (session.pending_intake_decision.get("quickReplies") or [])
+                    if str(item).strip()
+                ],
+            )
+            if isinstance(session.pending_intake_decision, dict)
+            else None
+        ),
         dates_calibrated=session.dates_calibrated,
         input_version=session.input_version,
         strategy_proposal_id=session.strategy_proposal_id,
@@ -345,6 +384,16 @@ REGENERATE_ROADMAP_MESSAGE = (
     "用户要求基于当前目标与已有信息重新生成一条**战略路线图**。"
     "请给出:恰好一条顶层 route + 3–5 个挂在它下面的 stage,每个 stage 带 "
     "timeframe / deliverable / passCriteria。旧的一级维度不用再展开。"
+)
+
+#: 阶段 11:intake 纠错。模型在 intake 期间**必须先问一个高杠杆关键问题**,不能直接给路线。
+INTAKE_CORRECTION_MESSAGE = (
+    "现在是战略澄清 intake。请只输出 `reply`(1–3 句当前判断)与 `intakeDecision`。"
+    "`intakeDecision.action` 只能是 `ask` 或 `ready_for_architecture`;若还要问,"
+    "`question` 只能是**一个**能改变整体路线/总时长/阶段顺序/阶段成果/重大约束的关键问题,"
+    "并带上 `decisionScope`(route/duration/sequence/deliverable/constraint)与 `whyThisMatters`。"
+    "**不要输出 reasoningMap / route / stage / questions / options / actions**,不要问工具、"
+    "课程、教材、IDE、练习、每天几点、具体任务或代码细节这类执行细节。"
 )
 
 
@@ -664,11 +713,18 @@ def _running_is_stale(session: GoalReasoningSession, now: datetime) -> bool:
 async def _primary_pending_question(
     db: AsyncSession, ctx: WorkspaceContext
 ) -> AgentQuestion | None:
+    """当前唯一一个**画布**待回答问题。
+
+    阶段 12 起,战略 intake 的关键问题**不再落成 `agent_questions`**;老数据里可能
+    留下 `conversation_intake` 行。它们必须被排除,否则一个早已被取代的旧问题会
+    重新变成响应里的 `question`、让前端弹回“定位到画布”。
+    """
     return await db.scalar(
         select(AgentQuestion)
         .where(
             AgentQuestion.workspace_id == ctx.id,
             AgentQuestion.status.in_(tuple(ACTIVE_QUESTION_STATUSES)),
+            AgentQuestion.presentation == QuestionPresentation.CANVAS_QUESTION,
         )
         .order_by(AgentQuestion.created_at.desc())
         .limit(1)
@@ -713,6 +769,7 @@ async def _build_reasoning_context(
     session: GoalReasoningSession,
     *,
     trigger_message: str,
+    purpose: str = PURPOSE_ARCHITECTURE,
 ) -> TurnContext:
     conversation = await conversation_service.find_primary_conversation(db, ctx)
     conversation_id = conversation.id if conversation is not None else uuid.uuid4()
@@ -728,7 +785,7 @@ async def _build_reasoning_context(
     links = await _load_links(db, session.id)
     return replace(
         turn,
-        purpose="goal_reasoning",
+        purpose=purpose,
         reasoning_section=render_map_section(nodes, links),
     )
 
@@ -788,64 +845,188 @@ async def run_space_entered(
     )
 
 
-def _has_architecture_draft(result: ReasoningResult) -> bool:
-    """这一轮的结果里有没有**带阶段的战略架构**。"""
-    draft = result.reasoning_map
-    return draft is not None and any(node.node_type == "stage" for node in draft.nodes)
+def _known_dimensions(known) -> frozenset[str]:
+    """已知的战略维度集合。intake 守卫用它跳过“已经说过”的信息。
+
+    只看**用户亲口说过**的条件(简报里 `user_stated` 的那些),`None` 一律不算已知。
+    """
+    dims: set[str] = set()
+    if known.weekly_available_minutes is not None:
+        dims.add("weekly_available_minutes")
+    if known.deadline:
+        dims.add("deadline")
+    if known.current_level:
+        dims.add("current_level")
+    return frozenset(dims)
 
 
-async def _apply_intake_questions(
+def _intake_decision_error(decision, *, known_dimensions) -> str | None:
+    """服务端对一条 intake 决策的**硬闸**。返回可读原因或 `None`。
+
+    规则(阶段 12 §4.1):
+    - 必须有决策,动作必须在闭集里;
+    - `ask` 必须带一个问题、且说明 `decisionScope`(会改变整体战略的哪一件大事);
+    - `ready_for_architecture` 允许没有 scope;
+    - 问题不得重复用户已经说过的信息、不得问执行细节。
+    """
+    if decision is None:
+        return "intake 回合没有给出 intakeDecision"
+    if decision.action == "ready_for_architecture":
+        return None
+    if decision.action != "ask":
+        return "intakeDecision.action 不合法"
+    question = (decision.question or "").strip()
+    if not question:
+        return "intakeDecision.action=ask 却没有给问题"
+    if decision.decision_scope not in INTAKE_SCOPES:
+        return "问题没有说明会改变整体战略的哪一件大事(decisionScope)"
+    return question_service.intake_question_conflict(
+        question, known_dimensions=known_dimensions
+    )
+
+
+def _compose_intake_reply(reply: str, question: str) -> str:
+    """把“当前判断 + 一个关键问题”合成一条助手消息。
+
+    对话式 intake 里问题必须**留在消息正文**里(而不是只挂在一条活动问题上):
+    问题回答后活动问题会被归档,但那句话仍然是这段对话的一部分。
+    """
+    clean = (reply or "").strip()
+    asked = (question or "").strip()
+    if not asked or asked in clean:
+        return clean
+    if not clean:
+        return asked
+    return f"{clean}\n\n{asked}"
+
+
+async def _persist_failure_notice(db, ctx, *, reply: str):
+    """把一条**可重试的失败提示**落成助手消息。
+
+    它是一条真正的助手消息(不是编造的模型回复):`degraded=True`,
+    界面上会如实显示为“这次没有完成”,而不是普通回答。
+    """
+    conversation = await conversation_service.get_or_create_primary_conversation(db, ctx)
+    synthetic = ReasoningResult(
+        reply=reply,
+        source=ModelSource.UNAVAILABLE,
+        degraded=True,
+        retryable=True,
+    )
+    return await conversation_service.append_reply(
+        db, ctx, conversation=conversation, result=synthetic
+    )
+
+
+async def _run_intake(
     db: AsyncSession,
     ctx: WorkspaceContext,
     root: PlanNode,
     session: GoalReasoningSession,
-    result: ReasoningResult,
+    reasoner,
     *,
     trace: ReasoningState,
-) -> AgentTurnResponse | None:
-    """intake 回合:把模型提的关键问题落成 `conversation_intake` 问题。
+    trigger_message: str,
+) -> AgentTurnResponse | str:
+    """战略 intake 模式的一轮。**它绝不写 reasoning node / agent_question / plan node。**
 
-    **只在还能问(未到 5 个上限)且模型确实给了一个可用问题时返回。** 否则返回 None,
-    由调用方走结构化纠错、要求给出时间架构 —— 不能无限追问。
+    返回 `AgentTurnResponse` = 已经问出一个问题(或失败终态);返回 `str` = intake 结束,
+    调用方应转到时间架构模式(返回的是架构触发文本)。
 
-    这些问题是**唯一**能用橙色标记的提问:只在对话区显示,不生成画布 Question Node。
+    模型输出不合格(缺决策、动作不合法、问执行细节、重复已知信息)时,在本轮预算内
+    用结构化纠正**再试一次**;两次都不合格就拒绝该输出、写终态 `failed`,
+    **不写半张地图、不写半个问题卡、不假装成功**。
     """
-    if session.intake_questions_asked >= MAX_INTAKE_QUESTIONS:
-        return None
-    # **不要先切片**:第一道题可能被战略/重复守卫拦掉,后面那道才是可用的。
-    # 由 `create_from_drafts(max_questions=1)` 在**过滤之后**再限 1 个。
-    drafts = result.questions
-    if not drafts:
-        return None
-    conversation = await conversation_service.get_or_create_primary_conversation(db, ctx)
-    message = await conversation_service.append_reply(
-        db, ctx, conversation=conversation, result=result
-    )
-    created = await question_service.create_from_drafts(
-        db,
-        ctx,
-        drafts,
-        source_message_id=message.id,
-        source_node_id=root.id,
-        reasoning_node_id=None,
-        strategy_phase=True,
-        require_judgment=True,
-        max_questions=MAX_STRATEGIC_QUESTIONS,
-        presentation=QuestionPresentation.CONVERSATION_INTAKE.value,
-    )
-    if not created:
-        return None
-    session.intake_questions_asked += 1
-    session.phase = ReasoningSessionPhase.INTAKE
-    session.status = ReasoningSessionStatus.READY
-    session.last_evaluated_at = utcnow()
-    agent_trace_service.mark_terminal(
-        trace, degraded=False, degraded_reason=None, stopped_reason="ready_to_propose"
-    )
+    result: ReasoningResult | None = None
+    known_dimensions: frozenset[str] = frozenset()
+    prompt = trigger_message
+    for attempt in range(2):
+        turn = await _build_reasoning_context(
+            db, ctx, root, session, trigger_message=prompt, purpose=PURPOSE_INTAKE
+        )
+        known_dimensions = _known_dimensions(turn.known)
+        agent_trace_service.mark_step(trace, AgentTraceStep.WAITING_MODEL)
+        await db.commit()
+        result = await reasoner.reason(turn)
+        agent_trace_service.mark_step(trace, AgentTraceStep.VALIDATING_OUTPUT)
+        if result.degraded:
+            session.status = ReasoningSessionStatus.FAILED
+            session.last_error = "模型这次没有给出可用的战略判断。"
+            agent_trace_service.mark_terminal(
+                trace,
+                degraded=True,
+                degraded_reason=result.degraded_reason,
+                stopped_reason="failed",
+            )
+            message = await _persist_failure_notice(
+                db, ctx, reply="这次没有形成可用的战略判断,你可以再试一次。"
+            )
+            await db.commit()
+            return await _response(db, ctx, session, message=message, result=result)
+        error = _intake_decision_error(
+            result.intake_decision, known_dimensions=known_dimensions
+        )
+        if error is None:
+            break
+        if attempt == 0:
+            agent_trace_service.mark_retry(trace)
+            prompt = f"{trigger_message}\n\n{INTAKE_CORRECTION_MESSAGE}"
+            continue
+        # 两次都不合格:拒绝该输出,不写半张地图、不写半个问题卡。
+        session.status = ReasoningSessionStatus.FAILED
+        session.last_error = error
+        agent_trace_service.mark_terminal(
+            trace,
+            degraded=False,
+            degraded_reason=None,
+            stopped_reason="failed",
+            code="INTAKE_INVALID",
+        )
+        message = await _persist_failure_notice(
+            db, ctx, reply="这次没有形成可用的战略判断,你可以再试一次。"
+        )
+        await db.commit()
+        return await _response(db, ctx, session, message=message, result=result)
+
+    assert result is not None and result.intake_decision is not None
+    # 用户答案里的可验证事实(例如“每周 8 小时”)在这一轮落进简报,
+    # 下一问才不会重复问同一件事。
+    await brief_service.apply_claims(db, ctx.id, result.brief_claims)
+    decision = result.intake_decision
+    cap_reached = session.intake_questions_asked >= MAX_INTAKE_QUESTIONS
+    if decision.action == "ask" and not cap_reached:
+        conversation = await conversation_service.get_or_create_primary_conversation(db, ctx)
+        message = await conversation_service.append_reply(
+            db, ctx, conversation=conversation, result=result
+        )
+        message.content = _compose_intake_reply(message.content, decision.question)
+        # 待回答问题**只存在会话状态里**,不创建 agent_question / 画布问题节点。
+        session.pending_intake_message_id = message.id
+        session.pending_intake_decision = {
+            "question": decision.question,
+            "decisionScope": decision.decision_scope,
+            "whyThisMatters": decision.why_this_matters,
+            "quickReplies": list(decision.quick_replies),
+        }
+        session.intake_questions_asked += 1
+        session.phase = ReasoningSessionPhase.INTAKE
+        session.status = ReasoningSessionStatus.READY
+        session.last_evaluated_at = utcnow()
+        agent_trace_service.mark_terminal(
+            trace, degraded=False, degraded_reason=None, stopped_reason="ready_to_propose"
+        )
+        await db.commit()
+        return await _response(
+            db, ctx, session, message=message, result=result, changed=False
+        )
+    # ready_for_architecture 或到 5 问上限:清掉待回答状态,交给时间架构模式。
+    session.pending_intake_message_id = None
+    session.pending_intake_decision = None
+    session.status = ReasoningSessionStatus.RUNNING
     await db.commit()
-    return await _response(
-        db, ctx, session, message=message, question=created[0], result=result, changed=False
-    )
+    return ARCHITECTURE_TRIGGER
+
+
 
 
 async def _explore_and_apply(
@@ -878,8 +1059,25 @@ async def _explore_and_apply(
     handle_of_id = {row.id: row.handle for row in existing_rows}
     force_roadmap = not _has_roadmap(existing_rows)
 
+    # ============================================================================
+    # 阶段 12:战略澄清 intake 是**另一种回合契约**,不是架构回合的例外分支。
+    # 它在 intake 模式下只问一个问题、绝不写任何节点/问题实体;只有它结束后
+    # 才进入下面的时间架构模式。
+    # ============================================================================
+    architecture_trigger = trigger_message
+    # **只有空地图才走 intake。** 旧会话(顶层已有 dimension 节点)不能被当成一次
+    # 全新 intake —— 那是“旧地图污染新体验”的入口。旧地图直接进时间架构重生成。
+    if session.phase.is_intake and not existing_rows:
+        intake = await _run_intake(
+            db, ctx, root, session, reasoner, trace=trace, trigger_message=trigger_message
+        )
+        if isinstance(intake, AgentTurnResponse):
+            return intake
+        architecture_trigger = intake
+
     turn = await _build_reasoning_context(
-        db, ctx, root, session, trigger_message=trigger_message
+        db, ctx, root, session, trigger_message=architecture_trigger,
+        purpose=PURPOSE_ARCHITECTURE,
     )
     # **发模型请求前就写 waiting_model 并提交。** 模型卡住时诊断入口能读到
     # “正在等模型”和最后一次心跳,而不是一片空白。
@@ -887,23 +1085,10 @@ async def _explore_and_apply(
     await db.commit()
     result = await reasoner.reason(turn)
     agent_trace_service.mark_step(trace, AgentTraceStep.VALIDATING_OUTPUT)
+
     error = _roadmap_error(
         result, existing=existing, handle_of_id=handle_of_id, force_roadmap=force_roadmap
     )
-    # 阶段 11:战略澄清 intake。**先只问关键问题,不生路线图。** 这一轮只要模型给了
-    # 一个可用的关键问题,就落成 conversation_intake 并停在 intake;到 5 个上限或模型
-    # 说够了,再走下面的结构化纠错,要求给出时间架构。
-    if (
-        error is not None
-        and not result.degraded
-        and session.phase.is_intake
-        and not _has_architecture_draft(result)
-    ):
-        applied = await _apply_intake_questions(
-            db, ctx, root, session, result, trace=trace
-        )
-        if applied is not None:
-            return applied
     # 模型**可用**但输出不合格 -> 结构化纠错,再试一次(有限预算内一次)。
     if error is not None and not result.degraded:
         # 第一次模型输出不合法这一事实**必须留在轨迹里**;`retrying` 只在这里出现。
@@ -915,7 +1100,8 @@ async def _explore_and_apply(
             ctx,
             root,
             session,
-            trigger_message=f"{trigger_message}\n\n{ROADMAP_CORRECTION_MESSAGE}",
+            trigger_message=f"{architecture_trigger}\n\n{ROADMAP_CORRECTION_MESSAGE}",
+            purpose=PURPOSE_ARCHITECTURE,
         )
         retry = await reasoner.reason(retry_turn)
         result = retry
@@ -1382,6 +1568,85 @@ async def _confirm_strategy(
         )
     await db.commit()
     return await _response(db, ctx, session, changed=True, proposal_errors=outcome.errors)
+
+
+async def is_awaiting_intake_answer(db: AsyncSession, ctx: WorkspaceContext) -> bool:
+    """这个空间是不是正在等用户回答一个战略 intake 问题。
+
+    判据只有会话状态一处:`phase.is_intake` 且 `pending_intake_message_id` 非空。
+    **不看 `agent_questions`** —— intake 早就不落问题实体了。
+    """
+    session = await get_session(db, ctx)
+    return bool(
+        session is not None
+        and session.phase.is_intake
+        and session.pending_intake_message_id is not None
+    )
+
+
+async def answer_intake_in_conversation(
+    db: AsyncSession,
+    ctx: WorkspaceContext,
+    reasoner,
+    *,
+    content: str,
+    client_message_id: str | None,
+    context_node_id: uuid.UUID | None,
+):
+    """把一条用户消息当作 **战略 intake 的回答**。
+
+    它由 `conversation_service.submit_turn` 在“正在等 intake 回答”时委托进来。
+    用户消息先落库(与普通对话同一条纪律),然后跑一轮 intake 模式:更新简报、
+    只问下一个关键问题(或直接转入时间架构)。**不创建任何问题实体。**
+
+    返回 `conversation_service.TurnOutcome`,好让发消息那条路由的响应形状不变。
+    """
+    root = await root_plan_node(db, ctx)
+    session = await get_session(db, ctx)
+    if root is None or session is None:
+        raise InvalidInput("这个空间还没有开始目标推理。")
+
+    conversation = await conversation_service.get_or_create_primary_conversation(db, ctx)
+    user_message = await conversation_service.record_user_message(
+        db,
+        ctx,
+        conversation=conversation,
+        text=content,
+        client_message_id=client_message_id,
+        context_node_id=context_node_id,
+    )
+    trace = agent_trace_service.start_map_trace(
+        ctx, trigger="user_message", context_node_id=root.id
+    )
+    db.add(trace)
+    session.status = ReasoningSessionStatus.RUNNING
+    session.last_error = None
+    await db.commit()
+
+    response = await _explore_and_apply(
+        db,
+        ctx,
+        root,
+        session,
+        reasoner,
+        trigger_message=content,
+        trace=trace,
+    )
+    assistant = None
+    if response.message is not None:
+        assistant = await db.get(Message, response.message.id)
+    if assistant is None:
+        # 时间架构最终失败时也必须给用户一条可重试的提示,而不是一个空回合。
+        assistant = await _persist_failure_notice(
+            db, ctx, reply="这次没有生成可用的时间架构,你可以再试一次。"
+        )
+        await db.commit()
+    brief = await brief_service.load_brief(db, ctx.id)
+    return conversation_service.turn_outcome_for_reply(
+        user_message=user_message,
+        assistant_message=assistant,
+        brief=brief,
+    )
 
 
 async def run_turn(

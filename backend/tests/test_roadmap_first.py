@@ -20,6 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.agent.runtime.base import (
+    IntakeDecision,
     QuestionDraft,
     QuestionOptionDraft,
     ReasoningMapDraft,
@@ -87,6 +88,13 @@ class MapReasoner:
 
     async def reason(self, turn):
         self.calls.append(turn)
+        if getattr(turn, "purpose", "") == "strategic_intake":
+            # 阶段 12:测试默认让 intake 直接“信息够了”,不消耗脚本/草稿序号。
+            return ReasoningResult(
+                reply="信息已经够了,我直接给你整体时间架构。",
+                source=ModelSource.DIRECT_LLM,
+                intake_decision=IntakeDecision(action="ready_for_architecture"),
+            )
         draft = self.drafts[self._index] if self._index < len(self.drafts) else None
         self._index += 1
         return ReasoningResult(
@@ -227,12 +235,17 @@ async def test_python_data_analysis_first_turn_is_roadmap_not_dimensions(
         decision_impact="不同选择会改变阶段 2 的项目素材与总时长。",
     )
     use_reasoner(
-        MapReasoner(drafts=(_roadmap_draft(stages=4),), questions=(scheduling, strategic))
+        MapReasoner(
+            drafts=(_roadmap_draft(stages=4), _roadmap_draft(stages=4)),
+            questions=(scheduling, strategic),
+        )
     )
 
     body = await _enter(app_client, account)
-    view = body["reasoning"]
+    # 阶段 12:intake 模式默认“信息够了”,首轮仍先给路线与阶段;
+    # 执行层问题(每周几小时)由服务端战略守卫拦掉。
     assert body["changed"] is True
+    view = body["reasoning"]
     assert view["phase"] == "temporal_architecture_draft"
 
     routes = [node for node in view["nodes"] if node["nodeType"] == "route"]
@@ -378,8 +391,9 @@ async def test_first_turn_retries_once_with_correction_then_succeeds(
     assert body["reasoning"]["phase"] == "temporal_architecture_draft"
     assert len([n for n in body["reasoning"]["nodes"] if n["nodeType"] == "stage"]) == 4
     # 纠错提示确实进了模型看到的输入。
-    assert len(reasoner.calls) >= 2
-    assert "reasoningMap" in reasoner.calls[1].user_message or "路线图" in reasoner.calls[1].user_message
+    # 阶段 12:首轮先是一次 intake(直接 ready),然后是架构调用 + 架构纠错重试。
+    assert len(reasoner.calls) >= 3
+    assert "reasoningMap" in reasoner.calls[-1].user_message or "路线图" in reasoner.calls[-1].user_message
 
 
 async def test_regenerate_roadmap_keeps_legacy_nodes_in_history(
@@ -473,6 +487,12 @@ class PayloadReasoner:
 
     async def reason(self, turn):
         self.calls.append(turn)
+        if getattr(turn, "purpose", "") == "strategic_intake":
+            return ReasoningResult(
+                reply="信息已经够了,我直接给你整体时间架构。",
+                source=ModelSource.DIRECT_LLM,
+                intake_decision=IntakeDecision(action="ready_for_architecture"),
+            )
         if self._index >= len(self.contents):
             return ReasoningResult(
                 reply="模型没有给出结构化结果。",

@@ -26,6 +26,8 @@ import httpx
 from backend.agent.prompts.goal_reasoning import (
     GOAL_REASONING_PROMPT_VERSION,
     GOAL_REASONING_SYSTEM_PROMPT,
+    STRATEGIC_INTAKE_PROMPT_VERSION,
+    STRATEGIC_INTAKE_SYSTEM_PROMPT,
 )
 from backend.agent.prompts.planning import PROMPT_VERSION, SYSTEM_PROMPT
 from backend.agent.runtime.base import ReasoningResult, TurnContext
@@ -207,6 +209,8 @@ class DirectLLMReasoner:
 
 def _prompt_for(turn: TurnContext) -> tuple[str, str]:
     """按回合用途选系统提示词与版本号。**目标推理与正常规划是两份提示词。**"""
+    if turn.purpose == "strategic_intake":
+        return STRATEGIC_INTAKE_SYSTEM_PROMPT, STRATEGIC_INTAKE_PROMPT_VERSION
     if turn.purpose == "goal_reasoning":
         return GOAL_REASONING_SYSTEM_PROMPT, GOAL_REASONING_PROMPT_VERSION
     return SYSTEM_PROMPT, PROMPT_VERSION

@@ -18,6 +18,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.agent.runtime.base import (
+    IntakeDecision,
     QuestionDraft,
     QuestionOptionDraft,
     ReasoningMapDraft,
@@ -133,6 +134,14 @@ class MapReasoner:
                 degraded_reason=DegradedReason.MODEL_UNAVAILABLE,
                 retryable=True,
             )
+        if getattr(turn, "purpose", "") == "strategic_intake":
+            # 阶段 12:测试默认让模型在 intake 模式直接“信息够了”,于是第一次进入就
+            # 走到时间架构,不额外吃一份 `drafts`(序号在这里不前进)。
+            return ReasoningResult(
+                reply="信息已经够了,我直接给你整体时间架构。",
+                source=ModelSource.DIRECT_LLM,
+                intake_decision=IntakeDecision(action="ready_for_architecture"),
+            )
         draft = self.drafts[self._index] if self._index < len(self.drafts) else None
         self._index += 1
         return ReasoningResult(
@@ -140,6 +149,32 @@ class MapReasoner:
             source=ModelSource.DIRECT_LLM,
             reasoning_map=draft,
             questions=self.questions,
+        )
+
+
+@dataclass
+class SequenceMapReasoner:
+    """按调用次数返回不同的 `(draft, questions)`。用来验“第一轮给架构、下一轮给问题”。"""
+
+    steps: tuple[tuple[ReasoningMapDraft | None, tuple[QuestionDraft, ...]], ...]
+    calls: list = field(default_factory=list)
+    _index: int = 0
+
+    async def reason(self, turn):
+        self.calls.append(turn)
+        if getattr(turn, "purpose", "") == "strategic_intake":
+            return ReasoningResult(
+                reply="信息已经够了,我直接给你整体时间架构。",
+                source=ModelSource.DIRECT_LLM,
+                intake_decision=IntakeDecision(action="ready_for_architecture"),
+            )
+        draft, questions = self.steps[min(self._index, len(self.steps) - 1)]
+        self._index += 1
+        return ReasoningResult(
+            reply="这是推荐路线与阶段。",
+            source=ModelSource.DIRECT_LLM,
+            reasoning_map=draft,
+            questions=questions,
         )
 
 
@@ -168,10 +203,11 @@ async def test_space_entered_creates_roadmap_and_is_idempotent(
     assert body["reasoning"]["focusHandle"] == "r2"
 
     # 第二次进入(同一输入):不重复建节点、不再跑模型。
+    after_first = len(reasoner.calls)
     again = await _enter(app_client, account, key="enter-2")
     assert again["replayed"] is True
     assert len(again["reasoning"]["nodes"]) == 5
-    assert len(reasoner.calls) == 1, "同一输入重复进入不该再跑模型"
+    assert len(reasoner.calls) == after_first, "同一输入重复进入不该再跑模型"
 
     await db.rollback()
     session = await db.scalar(select(GoalReasoningSession))
@@ -284,7 +320,8 @@ async def test_strategy_phase_drops_scheduling_questions(
     await db.rollback()
     rows = list((await db.execute(select(AgentQuestion))).scalars())
     assert [row.question for row in rows] == ["你更愿意把主要精力放在保研还是就业?"]
-    # 问题挂到了焦点地图节点上。
+    # 战略阶段(时间架构之后)的问题挂在焦点地图节点上,仍是画布 Question Node。
+    assert rows[0].presentation.value == "canvas_question"
     assert rows[0].reasoning_node_id is not None
 
 
@@ -309,7 +346,8 @@ async def test_root_change_triggers_a_new_exploration(
     second = await _enter(app_client, account, key="enter-b")
     assert second["changed"] is True, "根目标内容变了之后应该重新探索"
     assert len(second["reasoning"]["nodes"]) == 6
-    assert len(reasoner.calls) == 2
+    # 首轮包含 intake 与时间架构两次模型调用;根目标变化后至少还要再跑一次。
+    assert len(reasoner.calls) >= 3
 
 
 async def test_user_edit_is_preserved_across_agent_turns(
@@ -360,27 +398,45 @@ async def _plan(client: httpx.AsyncClient, account) -> dict:
 async def test_answering_a_question_advances_the_map(
     app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
 ) -> None:
+    """时间架构生成之后的**画布问题**回答,仍会真实推进地图节点。
+
+    阶段 11:新目标首轮是 intake(intake 问题不挂地图节点)。这里先让模型直接给出时间
+    架构(0 问),再在增量轮里拿到一个挂在焦点节点上的画布 Question Node,回答它。
+    """
     account = await make_account()
-    reasoner = MapReasoner(
-        drafts=(_roadmap_draft(stages=3),),
-        questions=(
-            QuestionDraft(
-                question="你主要用它做什么?",
-                why_now="它决定路线",
-                response_mode="free_text",
-                allow_custom_input=True,
-                analysis_summary="用途不同会改变第一条路线的形状。",
-                recommendation="先按通用最小闭环走,再按用途收窄。",
-                decision_impact="不同用途会改变阶段 2 的项目素材。",
-            ),
-        ),
+    canvas_question = QuestionDraft(
+        question="你主要用它做什么?",
+        why_now="它决定路线",
+        response_mode="free_text",
+        allow_custom_input=True,
+        analysis_summary="用途不同会改变第一条路线的形状。",
+        recommendation="先按通用最小闭环走,再按用途收窄。",
+        decision_impact="不同用途会改变阶段 2 的项目素材。",
+    )
+    reasoner = SequenceMapReasoner(
+        steps=(
+            (_roadmap_draft(stages=3), ()),  # 第一轮:intake 直接给架构
+            (_roadmap_draft(stages=3), (canvas_question,)),  # 下一轮:画布问题
+        )
     )
     use_reasoner(reasoner)
+
     body = await _enter(app_client, account)
-    question = body["question"]
+    assert body["reasoning"]["nodes"], "先有时间架构"
+
+    selected = await app_client.post(
+        f"/api/workspaces/{account.workspace_id}/agent/turn",
+        json={"trigger": "node_selected", "reasoningHandle": "r2", "idempotencyKey": "sel-1"},
+        headers=account.headers,
+    )
+    assert selected.status_code == 200, selected.text
+    selected_body = selected.json()
+    question = selected_body["question"]
     assert question is not None and question["reasoningNodeId"]
     handle = next(
-        node["handle"] for node in body["reasoning"]["nodes"] if node["id"] == question["reasoningNodeId"]
+        node["handle"]
+        for node in selected_body["reasoning"]["nodes"]
+        if node["id"] == question["reasoningNodeId"]
     )
 
     answered = await app_client.post(

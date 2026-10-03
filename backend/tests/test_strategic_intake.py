@@ -1,14 +1,14 @@
-"""阶段 11:Strategic Intake — 先问关键问题,再给时间架构。
+"""阶段 12:Conversation-first Strategic Intake。
 
-这一组钉的是**首次节奏**:
+这一组钉的是**新的状态机与数据边界**:
 
-1. 进入目标后先进入 intake,只在对话区逐步提关键问题,**不直接生路线图、不生成
-   散乱画布讨论节点**;
-2. 已知信息(例如每周可投入)跳过、不重复问;
-3. 工具 / 教材 / 每天几点这类琐碎问题不得进入 intake;
-4. intake 最多 5 个问题,到顶必须继续生成时间架构,不能无限追问;
-5. 时间架构带**结构化时间范围**:有日期用年月日,没有用相对第 N–M 周并标“待校准”;
-6. 确认之前不写任何 PlanNode / 任务 / 日程。
+1. intake 首先是一次**对话**:助手消息 = 一段判断 + 一个关键问题;
+2. intake 期间**不落任何问题实体**(`agent_questions` 一行都不新增),
+   也不写 `reasoning_nodes` / `reasoning_node_links` / PlanNode;
+3. 待回答问题只存在会话状态里(`pending_intake_*`),刷新/重试可靠;
+4. 用户下一条消息就是这轮回答(自由输入与快捷回复等价);
+5. 服务端守卫拒绝执行细节与重复已知信息;不合格输出重试后仍不合格则拒绝,不写半成品;
+6. 信息足够或到 5 问上限后,一次生成时间架构(route + 3–5 stage),再才写节点。
 """
 
 from __future__ import annotations
@@ -21,16 +21,26 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.agent.runtime.base import (
-    QuestionDraft,
-    QuestionOptionDraft,
+    IntakeDecision,
     ReasoningMapDraft,
     ReasoningMapNodeDraft,
     ReasoningResult,
 )
-from backend.db.models import GoalReasoningSession, PlanNode
-from backend.db.models.enums import ModelSource, ReasoningSessionPhase
+from backend.db.models import (
+    AgentQuestion,
+    GoalReasoningSession,
+    Message,
+    PlanningBrief,
+    PlanNode,
+    ReasoningNode,
+    ReasoningNodeLink,
+)
+from backend.db.models.enums import BriefStatus, ModelSource, ReasoningSessionPhase
 
 
+# ---------------------------------------------------------------------------------
+# 草稿与假模型
+# ---------------------------------------------------------------------------------
 def _roadmap_draft(*, kind: str = "relative", stages: int = 4) -> ReasoningMapDraft:
     nodes: list[ReasoningMapNodeDraft] = [
         ReasoningMapNodeDraft(
@@ -71,44 +81,49 @@ def _roadmap_draft(*, kind: str = "relative", stages: int = 4) -> ReasoningMapDr
     )
 
 
-def _intake_question(question: str = "你希望最终获得什么成果?") -> QuestionDraft:
-    return QuestionDraft(
+def _ask(
+    question: str,
+    *,
+    scope: str = "deliverable",
+    why: str = "它会改变整体路线",
+    quick: tuple[str, ...] = (),
+) -> IntakeDecision:
+    return IntakeDecision(
+        action="ask",
         question=question,
-        why_now="它会改变总时长与阶段成果",
-        response_mode="single_select",
-        options=(
-            QuestionOptionDraft(id="portfolio", label="一个能展示的作品", recommended=True),
-            QuestionOptionDraft(id="automation", label="自动化脚本"),
-        ),
-        allow_custom_input=True,
-        analysis_summary="你已给出目标方向;不同成果会改变阶段顺序。",
-        recommendation="先明确要交出的东西,再定阶段。",
-        decision_impact="不同成果会改变阶段 2 的素材与阶段 3 的形式。",
-        confidence_note="“尽快见效”是推断,若不对请纠正。",
+        decision_scope=scope,
+        why_this_matters=why,
+        quick_replies=quick,
     )
 
 
-@dataclass
-class SeqReasoner:
-    """按顺序返回 (draft, questions)。"""
+READY = IntakeDecision(action="ready_for_architecture")
 
-    results: tuple[tuple[ReasoningMapDraft | None, tuple[QuestionDraft, ...]], ...]
+
+@dataclass
+class IntakeReasoner:
+    """intake 模式按 `decisions` 念稿;架构模式按 `drafts` 念稿。**互不消耗。**"""
+
+    decisions: tuple[IntakeDecision | None, ...] = (READY,)
+    drafts: tuple[ReasoningMapDraft | None, ...] = ()
     calls: list = field(default_factory=list)
-    _index: int = 0
+    _decision_index: int = 0
+    _draft_index: int = 0
 
     async def reason(self, turn):
         self.calls.append(turn)
-        draft, questions = self.results[min(self._index, len(self.results) - 1)]
-        self._index += 1
-        return ReasoningResult(
-            reply="我先把最该确认的一点问清楚。",
-            source=ModelSource.DIRECT_LLM,
-            reasoning_map=draft,
-            questions=questions,
-        )
+        if getattr(turn, "purpose", "") == "strategic_intake":
+            index = min(self._decision_index, len(self.decisions) - 1)
+            decision = self.decisions[index]
+            self._decision_index += 1
+            reply = "先问一个最关键的问题。" if decision and decision.action == "ask" else "信息够了,给你整体时间架构。"
+            return ReasoningResult(reply=reply, source=ModelSource.DIRECT_LLM, intake_decision=decision)
+        draft = self.drafts[self._draft_index] if self._draft_index < len(self.drafts) else None
+        self._draft_index += 1
+        return ReasoningResult(reply="这是推荐路线与阶段。", source=ModelSource.DIRECT_LLM, reasoning_map=draft)
 
 
-async def _enter(client: httpx.AsyncClient, account, key: str) -> dict:
+async def _enter(client: httpx.AsyncClient, account, key: str = "intake-1") -> dict:
     response = await client.post(
         f"/api/workspaces/{account.workspace_id}/agent/turn",
         json={"trigger": "space_entered", "idempotencyKey": key},
@@ -116,6 +131,21 @@ async def _enter(client: httpx.AsyncClient, account, key: str) -> dict:
     )
     assert response.status_code == 200, response.text
     return response.json()
+
+
+async def _answer(client: httpx.AsyncClient, account, text: str, key: str) -> dict:
+    response = await client.post(
+        f"/api/workspaces/{account.workspace_id}/messages",
+        json={"content": text, "clientMessageId": key},
+        headers=account.headers,
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+async def _db_rows(db: AsyncSession, model):
+    await db.rollback()
+    return list((await db.execute(select(model))).scalars())
 
 
 async def _questions(client: httpx.AsyncClient, account) -> list[dict]:
@@ -127,85 +157,177 @@ async def _questions(client: httpx.AsyncClient, account) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------------
-# 1. 首轮只问一个关键问题,不直接生路线图
+# 1. 首轮是对话提问,不落任何问题实体
 # ---------------------------------------------------------------------------------
 async def test_first_turn_asks_intake_question_instead_of_roadmap(
     app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
 ) -> None:
     account = await make_account()
-    use_reasoner(SeqReasoner(results=((None, (_intake_question(),)),)))
+    use_reasoner(IntakeReasoner(decisions=(_ask("你希望最终获得什么成果?", quick=("一个作品",)),)))
 
     body = await _enter(app_client, account, "intake-1")
     view = body["reasoning"]
-    # 没有路线 / 阶段 —— 首轮不生成整张地图。
-    assert view["nodes"] == []
+    assert view["nodes"] == [], "intake 期间画布只有根目标"
     assert view["phase"] == ReasoningSessionPhase.INTAKE.value
-    assert view["datesCalibrated"] is False
-    assert body["question"] is not None
+    assert view["intakeQuestionsAsked"] == 1
+    assert view["pendingIntake"] is not None
+    assert view["pendingIntake"]["question"] == "你希望最终获得什么成果?"
+    assert view["pendingIntake"]["quickReplies"] == ["一个作品"]
 
-    questions = await _questions(app_client, account)
-    assert len(questions) == 1
-    # **只在对话区**:presentation 是 conversation_intake,不是画布节点。
-    assert questions[0]["presentation"] == "conversation_intake"
-    assert questions[0]["analysisSummary"]
+    # 问题原文写进了助手消息正文(回答归档后仍然留在对话里)。
+    assert body["message"] is not None
+    assert "你希望最终获得什么成果?" in body["message"]["content"]
+    # **没有 agent_question,也没有画布问题。**
+    assert body["question"] is None
+    assert await _questions(app_client, account) == []
+    assert await _db_rows(db, AgentQuestion) == []
+    assert await _db_rows(db, ReasoningNode) == []
+    assert await _db_rows(db, ReasoningNodeLink) == []
 
 
 # ---------------------------------------------------------------------------------
-# 2. 已知信息跳过:intake 不再重复问每周投入
+# 2. 已知信息不重复问;没说过的时间维度允许问
 # ---------------------------------------------------------------------------------
 async def test_intake_skips_known_weekly_time(
+    app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
+) -> None:
+    account = await make_account()
+    db.add(
+        PlanningBrief(
+            workspace_id=uuid.UUID(account.workspace_id),
+            version=1,
+            status=BriefStatus.DRAFT,
+            weekly_available_minutes=150,
+        )
+    )
+    await db.commit()
+    use_reasoner(
+        IntakeReasoner(
+            decisions=(
+                _ask("你每周能投入多少小时?", scope="duration"),
+                _ask("你希望最终获得什么成果?"),
+            )
+        )
+    )
+
+    body = await _enter(app_client, account, "intake-known")
+    pending = body["reasoning"]["pendingIntake"]
+    assert pending is not None
+    assert pending["question"] == "你希望最终获得什么成果?"
+    assert "每周" not in pending["question"]
+
+
+async def test_intake_allows_weekly_time_when_unknown(
     app_client: httpx.AsyncClient, make_account, use_reasoner
 ) -> None:
     account = await make_account()
-    # 空间意图里已经写了每周可投入。
-    await app_client.patch(
-        f"/api/workspaces/{account.workspace_id}",
-        json={"intent": "我想学习 Python,每周 150 分钟。"},
-        headers=account.headers,
-    )
-    duplicate = _intake_question("你每周能投入多少小时?")
-    good = _intake_question("你希望最终获得什么成果?")
-    use_reasoner(SeqReasoner(results=((None, (duplicate, good)),)))
+    use_reasoner(IntakeReasoner(decisions=(_ask("你每周能稳定投入多少时间?", scope="duration"),)))
 
-    await _enter(app_client, account, "intake-known")
-    questions = await _questions(app_client, account)
-    assert len(questions) == 1
-    assert "每周" not in questions[0]["question"]
+    body = await _enter(app_client, account, "intake-weekly")
+    assert body["reasoning"]["pendingIntake"]["question"] == "你每周能稳定投入多少时间?"
 
 
 # ---------------------------------------------------------------------------------
-# 3. 琐碎问题不得进入 intake
+# 3. 执行细节被服务端拒绝;拒绝后不写半成品,可继续
 # ---------------------------------------------------------------------------------
 async def test_intake_blocks_trivial_questions(
-    app_client: httpx.AsyncClient, make_account, use_reasoner
+    app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
 ) -> None:
     account = await make_account()
-    trivia = _intake_question("你想用哪个 IDE?")
-    roadmap = _roadmap_draft()
-    use_reasoner(SeqReasoner(results=((None, (trivia,)), (roadmap, ()))))
+    use_reasoner(
+        IntakeReasoner(
+            decisions=(_ask("你想用哪个 IDE?"), READY),
+            drafts=(_roadmap_draft(),),
+        )
+    )
 
     body = await _enter(app_client, account, "intake-trivial")
-    # 琐碎问题被拦掉,于是这一轮不再产生问题,继续要求架构 -> 第二轮给出架构。
-    assert body["reasoning"]["phase"] != ReasoningSessionPhase.INTAKE.value or body["question"] is None
-    if body["question"] is None:
-        second = await _enter(app_client, account, "intake-trivial-2")
-        assert second["reasoning"]["nodes"], "拦掉琐碎问题后必须继续生成架构"
+    # 细节问题被拒 -> 本轮重试拿到 ready -> 直接生成时间架构。
+    assert body["changed"] is True
+    assert body["reasoning"]["nodes"], "拒绝细节问题后必须继续生成架构"
+    assert await _db_rows(db, AgentQuestion) == []
+
+
+async def test_rejected_intake_question_is_never_shown(
+    app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
+) -> None:
+    account = await make_account()
+    # 两轮都只给执行细节 -> 拒绝该输出,写失败终态。
+    use_reasoner(IntakeReasoner(decisions=(_ask("你想用哪个 IDE?"),)))
+
+    body = await _enter(app_client, account, "intake-reject")
+    assert body["reasoning"]["status"] == "failed"
+    assert body["reasoning"]["nodes"] == []
+    assert await _db_rows(db, AgentQuestion) == []
+    contents = [row.content for row in await _db_rows(db, Message)]
+    assert all("IDE" not in content for content in contents), "被拒的问题不得显示在对话里"
+
+
+def test_intake_guard_rejects_execution_details() -> None:
+    from backend.services.question_service import intake_question_conflict
+
+    for text in (
+        "你想用哪个 IDE?",
+        "你打算买哪门课程?",
+        "你每天几点学?",
+        "变量名想怎么起?",
+        "先把任务清单列出来吗?",
+    ):
+        assert intake_question_conflict(text) is not None, text
+
+    for text in (
+        "你希望最终获得什么成果?",
+        "你希望什么时候完成?",
+        "你每周能稳定投入多少时间?",
+        "你现在的基础如何?",
+        "你更看重先跑通还是先打基础?",
+    ):
+        assert intake_question_conflict(text) is None, text
+
+    assert intake_question_conflict(
+        "你每周能投入多少小时?", known_dimensions=frozenset({"weekly_available_minutes"})
+    ) is not None
 
 
 # ---------------------------------------------------------------------------------
-# 4. intake 有上限:到 5 个后必须生成架构
+# 4. 用户下一条消息就是回答;自由输入与快捷回复等价
+# ---------------------------------------------------------------------------------
+async def test_answering_free_text_advances_intake_without_question_rows(
+    app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
+) -> None:
+    account = await make_account()
+    use_reasoner(
+        IntakeReasoner(
+            decisions=(_ask("你希望最终获得什么成果?"), _ask("你希望什么时候完成?", scope="duration")),
+        )
+    )
+
+    first = await _enter(app_client, account, "intake-answer-1")
+    assert first["reasoning"]["pendingIntake"] is not None
+
+    # 用户自由输入 -> 下一轮 intake(只改会话状态,不建问题实体)。
+    answered = await _answer(app_client, account, "我想做一个能展示的数据分析作品。", "ans-1")
+    assert answered["userMessage"]["content"] == "我想做一个能展示的数据分析作品。"
+    assert answered["assistantMessage"]["content"].strip()
+    assert await _db_rows(db, AgentQuestion) == []
+
+    view = (await _enter(app_client, account, "intake-answer-state"))["reasoning"]
+    # 第二次进入是幂等重放:当前待回答的是第二问。
+    assert view["pendingIntake"] is not None
+    assert view["pendingIntake"]["question"] == "你希望什么时候完成?"
+
+
+# ---------------------------------------------------------------------------------
+# 5. intake 上限:到顶必须生成架构,不能无限追问
 # ---------------------------------------------------------------------------------
 async def test_intake_max_questions_then_architecture(
     app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
 ) -> None:
     account = await make_account()
     use_reasoner(
-        SeqReasoner(
-            results=(
-                (None, (_intake_question("问题 1?"),)),
-                (None, (_intake_question("问题 2?"),)),
-                (_roadmap_draft(), ()),
-            )
+        IntakeReasoner(
+            decisions=(_ask("问题 1?"),),
+            drafts=(_roadmap_draft(),),
         )
     )
     await _enter(app_client, account, "intake-max-1")
@@ -216,7 +338,6 @@ async def test_intake_max_questions_then_architecture(
         )
     )
     assert session is not None
-    # 人为把计数推到上限:下一次必须**不再问**,而是给出时间架构。
     session.intake_questions_asked = 5
     await db.commit()
 
@@ -225,13 +346,13 @@ async def test_intake_max_questions_then_architecture(
 
 
 # ---------------------------------------------------------------------------------
-# 5. 时间架构:相对周 + 日期待校准
+# 6. 时间架构:相对周 / 有日期;确认之前不写 PlanNode
 # ---------------------------------------------------------------------------------
 async def test_architecture_uses_relative_weeks_when_no_dates(
     app_client: httpx.AsyncClient, make_account, use_reasoner
 ) -> None:
     account = await make_account()
-    use_reasoner(SeqReasoner(results=((_roadmap_draft(kind="relative"), ()),)))
+    use_reasoner(IntakeReasoner(decisions=(READY,), drafts=(_roadmap_draft(kind="relative"),)))
 
     body = await _enter(app_client, account, "arch-relative")
     view = body["reasoning"]
@@ -241,35 +362,43 @@ async def test_architecture_uses_relative_weeks_when_no_dates(
     assert 3 <= len(stages) <= 5
     assert all(stage["timeframeKind"] == "relative" for stage in stages)
     assert all(stage["startWeek"] and stage["endWeek"] for stage in stages)
-    # **不伪造日历日期。**
     assert all(stage["startDate"] is None and stage["endDate"] is None for stage in stages)
 
 
-async def test_architecture_marks_dates_calibrated_when_given(
-    app_client: httpx.AsyncClient, make_account, use_reasoner
-) -> None:
-    account = await make_account()
-    use_reasoner(SeqReasoner(results=((_roadmap_draft(kind="dated"), ()),)))
-
-    body = await _enter(app_client, account, "arch-dated")
-    view = body["reasoning"]
-    assert view["datesCalibrated"] is True
-    stages = [node for node in view["nodes"] if node["nodeType"] == "stage"]
-    assert all(stage["timeframeKind"] == "dated" for stage in stages)
-    assert all(stage["startDate"] and stage["endDate"] for stage in stages)
-
-
-# ---------------------------------------------------------------------------------
-# 6. 确认之前不写任何 PlanNode
-# ---------------------------------------------------------------------------------
 async def test_architecture_writes_no_plan_nodes_before_confirmation(
     app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
 ) -> None:
     account = await make_account()
-    use_reasoner(SeqReasoner(results=((_roadmap_draft(kind="relative"), ()),)))
+    use_reasoner(IntakeReasoner(decisions=(READY,), drafts=(_roadmap_draft(kind="relative"),)))
     await _enter(app_client, account, "arch-no-plan")
 
-    await db.rollback()
-    rows = list((await db.execute(select(PlanNode))).scalars())
-    # 新空间只有根目标一行;架构本身不是 PlanNode。
+    rows = await _db_rows(db, PlanNode)
     assert len(rows) == 1, "确认前不得把战略架构写成计划节点"
+
+
+# ---------------------------------------------------------------------------------
+# 7. 问完才一次性生成时间架构:首轮 ask,回答后 ready + 架构
+# ---------------------------------------------------------------------------------
+async def test_intake_defers_architecture_until_answers_are_done(
+    app_client: httpx.AsyncClient, make_account, use_reasoner, db: AsyncSession
+) -> None:
+    account = await make_account()
+    use_reasoner(
+        IntakeReasoner(
+            decisions=(_ask("你希望最终获得什么成果?"), READY),
+            drafts=(_roadmap_draft(kind="relative"),),
+        )
+    )
+
+    first = await _enter(app_client, account, "defer-1")
+    assert first["reasoning"]["nodes"] == [], "intake 期间画布只有根目标"
+    assert first["reasoning"]["pendingIntake"] is not None
+
+    answered = await _answer(app_client, account, "一个能展示的数据分析作品", "defer-ans")
+    assert answered["assistantMessage"]["content"].strip()
+
+    view = (await _enter(app_client, account, "defer-state"))["reasoning"]
+    assert view["nodes"], "问完之后一次性生成时间架构"
+    assert view["phase"] == ReasoningSessionPhase.TEMPORAL_ARCHITECTURE_DRAFT.value
+    assert view["pendingIntake"] is None
+    assert await _db_rows(db, AgentQuestion) == []

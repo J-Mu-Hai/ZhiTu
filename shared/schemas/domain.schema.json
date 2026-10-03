@@ -2052,6 +2052,16 @@
           "default": null,
           "title": "Inputversion"
         },
+        "intakeQuestionLimit": {
+          "default": 0,
+          "title": "Intakequestionlimit",
+          "type": "integer"
+        },
+        "intakeQuestionsAsked": {
+          "default": 0,
+          "title": "Intakequestionsasked",
+          "type": "integer"
+        },
         "lastEvaluatedAt": {
           "anyOf": [
             {
@@ -2083,6 +2093,17 @@
           },
           "title": "Nodes",
           "type": "array"
+        },
+        "pendingIntake": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PendingIntakeView"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "phase": {
           "title": "Phase",
@@ -2513,6 +2534,51 @@
         "overBy"
       ],
       "title": "OverbookedDayPayload",
+      "type": "object"
+    },
+    "PendingIntakeView": {
+      "additionalProperties": false,
+      "description": "阶段 12:对话式战略 intake 当前等回答的那一条。**不是问题实体。**\n\n它只来自会话上的最小状态 `(pending_intake_message_id, pending_intake_decision)`;\n问题原文同时已经写在那条助手消息正文里。前端据此在消息下渲染快捷回复。",
+      "properties": {
+        "decisionScope": {
+          "default": "",
+          "title": "Decisionscope",
+          "type": "string"
+        },
+        "messageId": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Messageid"
+        },
+        "question": {
+          "title": "Question",
+          "type": "string"
+        },
+        "quickReplies": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Quickreplies",
+          "type": "array"
+        },
+        "whyThisMatters": {
+          "default": "",
+          "title": "Whythismatters",
+          "type": "string"
+        }
+      },
+      "required": [
+        "question"
+      ],
+      "title": "PendingIntakeView",
       "type": "object"
     },
     "PlanNodePayload": {
