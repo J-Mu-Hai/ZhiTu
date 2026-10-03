@@ -327,6 +327,20 @@ class QuestionResponseMode(StrEnum):
     MIXED = "mixed"
 
 
+class QuestionPresentation(StrEnum):
+    """一个问题在界面上怎么呈现。**闭集。**
+
+    - `conversation_intake`:阶段 11 的战略澄清问题 —— **只在对话区**以橙色小标记
+      显示,不生成画布 Question Node。橙色只表达“战略校准中”,不滥用。
+    - `canvas_question`:路线形成后的阶段细化问题 —— 在画布上作为 Question Node。
+
+    旧行没有这一列,回填为 `canvas_question`,行为与加列之前完全一样。
+    """
+
+    CONVERSATION_INTAKE = "conversation_intake"
+    CANVAS_QUESTION = "canvas_question"
+
+
 class QuestionStatus(StrEnum):
     """问题节点的生命周期。
 
@@ -474,14 +488,24 @@ class ReasoningSessionPhase(StrEnum):
 
     #: 理解目标与已有上下文。**这一步不产出执行问题。**
     ORIENTATION = "orientation"
+    #: 阶段 11:战略澄清 intake。**先只问关键问题,不生路线图。**
+    INTAKE = "intake"
     #: 已产出推荐路线与阶段草案(roadmap-first 的主产物)。
     ROADMAP_DRAFT = "roadmap_draft"
+    #: 阶段 11:已产出带时间范围的战略时间架构草案。
+    TEMPORAL_ARCHITECTURE_DRAFT = "temporal_architecture_draft"
+    #: 阶段 11:时间线预览。架构已生成、等用户确认。
+    TIMELINE_PREVIEW = "timeline_preview"
     #: 等用户确认 / 调整路线。
     ROADMAP_REVIEW = "roadmap_review"
     #: 路线已确认。沿用 proposal → 用户确认 → 校验 → 写入。
     STRATEGY_CONFIRMED = "strategy_confirmed"
     #: 用户明确选择细化某个阶段,才允许生成月/周/日。
     EXECUTION_REFINEMENT = "execution_refinement"
+    #: 阶段 11:周计划阶段(已确认战略、正在拆周任务)。
+    WEEKLY_PLANNING = "weekly_planning"
+    #: 阶段 11:根据执行偏差重规划。
+    REPLANNING = "replanning"
 
     # --- 阶段 7 的旧值。存量数据仍会读到,不迁移、不重写。 ---
     STRATEGIC_EXPLORATION = "strategic_exploration"
@@ -495,11 +519,23 @@ class ReasoningSessionPhase(StrEnum):
         """还在做战略判断(不能问执行问题)的档位。"""
         return self in {
             ReasoningSessionPhase.ORIENTATION,
+            ReasoningSessionPhase.INTAKE,
             ReasoningSessionPhase.ROADMAP_DRAFT,
+            ReasoningSessionPhase.TEMPORAL_ARCHITECTURE_DRAFT,
+            ReasoningSessionPhase.TIMELINE_PREVIEW,
             ReasoningSessionPhase.ROADMAP_REVIEW,
             ReasoningSessionPhase.STRATEGIC_EXPLORATION,
             ReasoningSessionPhase.STRATEGIC_CONVERGENCE,
             ReasoningSessionPhase.AWAITING_STRATEGY_CONFIRMATION,
+        }
+
+    @property
+    def is_intake(self) -> bool:
+        """还在战略澄清 intake:只问关键问题,不画路线。"""
+        return self in {
+            ReasoningSessionPhase.ORIENTATION,
+            ReasoningSessionPhase.INTAKE,
+            ReasoningSessionPhase.STRATEGIC_EXPLORATION,
         }
 
     @property

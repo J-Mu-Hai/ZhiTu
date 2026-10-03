@@ -38,6 +38,7 @@ from backend.db.locking import lock_workspace
 from backend.db.models import AgentQuestion, PlanNode
 from backend.db.models.enums import (
     ACTIVE_QUESTION_STATUSES,
+    QuestionPresentation,
     QuestionResponseMode,
     QuestionStatus,
     QuestionUserAction,
@@ -220,6 +221,7 @@ async def create_from_drafts(
     strategy_phase: bool = False,
     require_judgment: bool = False,
     max_questions: int | None = None,
+    presentation: str = QuestionPresentation.CANVAS_QUESTION.value,
 ) -> list[AgentQuestion]:
     """把模型这一轮提的问题落库。**纯服务端校验在这里收口。**
 
@@ -292,6 +294,7 @@ async def create_from_drafts(
             source_message_id=source_message_id,
             # 有推理地图时,把问题挂到它的地图节点上 —— 回答后靠它定位要重评的节点。
             reasoning_node_id=reasoning_node_id,
+            presentation=QuestionPresentation(presentation),
             question=draft.question.strip(),
             why_now=draft.why_now.strip(),
             analysis_summary=draft.analysis_summary.strip(),
@@ -528,6 +531,7 @@ def to_view(question: AgentQuestion) -> QuestionView:
         source_message_id=question.source_message_id,
         reasoning_node_id=question.reasoning_node_id,
         question=question.question,
+        presentation=question.presentation.value,
         why_now=question.why_now,
         analysis_summary=question.analysis_summary,
         recommendation=question.recommendation,

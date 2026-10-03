@@ -30,7 +30,7 @@ from sqlalchemy import Boolean, ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.db.base import Base, JsonDict, TimestampMixin, UtcDateTime, UuidPk, enum_type
-from backend.db.models.enums import QuestionResponseMode, QuestionStatus
+from backend.db.models.enums import QuestionPresentation, QuestionResponseMode, QuestionStatus
 
 
 class AgentQuestion(UuidPk, TimestampMixin, Base):
@@ -54,6 +54,13 @@ class AgentQuestion(UuidPk, TimestampMixin, Base):
     )
 
     question: Mapped[str] = mapped_column(Text, nullable=False)
+    #: 阶段 11:问题怎么呈现。`conversation_intake` 只在对话区显示(不生成画布节点),
+    #: `canvas_question` 是路线形成后的阶段细化问题。旧行回填 `canvas_question`。
+    presentation: Mapped[QuestionPresentation] = mapped_column(
+        enum_type(QuestionPresentation, "question_presentation"),
+        default=QuestionPresentation.CANVAS_QUESTION,
+        nullable=False,
+    )
     #: "为什么现在问这个"。与 question 分开:一个是问什么,一个是问的理由。
     why_now: Mapped[str] = mapped_column(Text, default="", nullable=False)
     # ---- 阶段 10:提问前的**战略判断**。**闭集、可审阅,不是思维链。** ----

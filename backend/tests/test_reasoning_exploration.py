@@ -162,7 +162,7 @@ async def test_space_entered_creates_roadmap_and_is_idempotent(
 
     body = await _enter(app_client, account)
     assert body["changed"] is True
-    assert body["reasoning"]["phase"] == "roadmap_draft"
+    assert body["reasoning"]["phase"] == "temporal_architecture_draft"
     # 1 条路线 + 4 个阶段。
     assert len(body["reasoning"]["nodes"]) == 5
     assert body["reasoning"]["focusHandle"] == "r2"

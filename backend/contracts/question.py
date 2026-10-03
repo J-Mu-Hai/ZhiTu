@@ -64,6 +64,9 @@ class QuestionView(ApiModel):
     #: 回答之后服务端靠它定位要重评的推理节点。
     reasoning_node_id: uuid.UUID | None = None
     question: str
+    #: 阶段 11:问题怎么呈现。`conversation_intake` 只在对话区(橙色),不生成画布节点;
+    #: `canvas_question` 在画布上。旧行为默认为 `canvas_question`。
+    presentation: str = "canvas_question"
     why_now: str
     #: 阶段 10:提问前的战略判断。**可审阅的结论,不是隐藏思维链。**
     #: 旧行 / 没有可信依据时为空字符串 —— 前端会显示“当前还不足以给出推荐”。

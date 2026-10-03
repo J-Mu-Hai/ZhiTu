@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 
 from pydantic import Field
@@ -79,6 +79,13 @@ class ReasoningNodeView(ApiModel):
     timeframe: str | None = None
     deliverable: str | None = None
     pass_criteria: str | None = None
+    #: 阶段 11:结构化时间架构。`dated` 用 start_date/end_date;`relative` 用 start_week/end_week。
+    #: `dates_calibrated=False` 时只有相对周,不伪造日历日期。
+    timeframe_kind: str | None = None
+    start_week: int | None = None
+    end_week: int | None = None
+    start_date: date | None = None
+    end_date: date | None = None
     source: str
     version: int
     updated_at: datetime
@@ -106,6 +113,8 @@ class GoalReasoningView(ApiModel):
     focus_reasoning_node_id: uuid.UUID | None = None
     #: 面向用户的一句话:为什么现在先处理它。
     focus_reason: str | None = None
+    #: 阶段 11:时间架构里的日期是否已校准。False = 只有相对周,不伪造日历日期。
+    dates_calibrated: bool = False
     input_version: str | None = None
     strategy_proposal_id: uuid.UUID | None = None
     explored_at: datetime | None = None

@@ -1973,6 +1973,11 @@
       "additionalProperties": false,
       "description": "当前目标推理地图。**读接口与 agent turn 都返回这一份。**",
       "properties": {
+        "datesCalibrated": {
+          "default": false,
+          "title": "Datescalibrated",
+          "type": "boolean"
+        },
         "error": {
           "anyOf": [
             {
@@ -3259,6 +3264,11 @@
           "title": "Options",
           "type": "array"
         },
+        "presentation": {
+          "default": "canvas_question",
+          "title": "Presentation",
+          "type": "string"
+        },
         "question": {
           "title": "Question",
           "type": "string"
@@ -3444,6 +3454,31 @@
           "default": null,
           "title": "Deliverable"
         },
+        "endDate": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Enddate"
+        },
+        "endWeek": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Endweek"
+        },
         "evidence": {
           "items": {
             "type": "string"
@@ -3533,6 +3568,31 @@
           "title": "Source",
           "type": "string"
         },
+        "startDate": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Startdate"
+        },
+        "startWeek": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Startweek"
+        },
         "status": {
           "title": "Status",
           "type": "string"
@@ -3560,6 +3620,18 @@
           ],
           "default": null,
           "title": "Timeframe"
+        },
+        "timeframeKind": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeframekind"
         },
         "title": {
           "title": "Title",

@@ -621,6 +621,36 @@ def _clean_reasoning_text(raw: Any) -> str | None:
     return text[:MAX_REASONING_TEXT_CHARS] if text else None
 
 
+def _clean_iso_date(raw: Any) -> str | None:
+    """阶段 11:接受 `YYYY-MM-DD` 字符串。**不合法就当没有**,不猜日期。"""
+    if not isinstance(raw, str):
+        return None
+    text = raw.strip()
+    if not text:
+        return None
+    try:
+        date.fromisoformat(text)
+    except ValueError:
+        return None
+    return text
+
+
+def _clean_week(raw: Any) -> int | None:
+    """相对周号(从 1 开始)。超出合理范围或非法就当没有。"""
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    week = int(raw)
+    return week if 1 <= week <= 520 else None
+
+
+def _clean_timeframe_kind(entry: dict) -> str | None:
+    """`dated` / `relative`。其它值当没有。"""
+    raw = entry.get("timeframeKind")
+    if raw is None:
+        raw = entry.get("timeframe_kind")
+    return raw if raw in ("dated", "relative") else None
+
+
 def parse_reasoning_map(raw: Any) -> ReasoningMapDraft | None:
     """把模型的 `reasoningMap` 变成一份**形状合法**的草稿。
 
@@ -675,6 +705,19 @@ def parse_reasoning_map(raw: Any) -> ReasoningMapDraft | None:
                 deliverable=_clean_reasoning_text(entry.get("deliverable")),
                 pass_criteria=_clean_reasoning_text(
                     entry.get("passCriteria") if entry.get("passCriteria") is not None else entry.get("pass_criteria")
+                ),
+                timeframe_kind=_clean_timeframe_kind(entry),
+                start_week=_clean_week(
+                    entry.get("startWeek") if entry.get("startWeek") is not None else entry.get("start_week")
+                ),
+                end_week=_clean_week(
+                    entry.get("endWeek") if entry.get("endWeek") is not None else entry.get("end_week")
+                ),
+                start_date=_clean_iso_date(
+                    entry.get("startDate") if entry.get("startDate") is not None else entry.get("start_date")
+                ),
+                end_date=_clean_iso_date(
+                    entry.get("endDate") if entry.get("endDate") is not None else entry.get("end_date")
                 ),
             )
         )

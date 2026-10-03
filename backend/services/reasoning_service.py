@@ -26,7 +26,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import replace
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from hashlib import blake2b
 
 from sqlalchemy import select
@@ -55,6 +55,7 @@ from backend.db.models.enums import (
     ACTIVE_QUESTION_STATUSES,
     AgentTraceStep,
     ProposalStatus,
+    QuestionPresentation,
     ReasoningLinkType,
     ReasoningNodeStatus,
     ReasoningNodeType,
@@ -86,6 +87,8 @@ MAX_QUESTIONS_PER_TURN = 3
 #: 阶段 10:战略阶段**每轮最多 1 个活动问题** —— 先给路线判断,再问一个真正会
 #: 改变方向的问题。
 MAX_STRATEGIC_QUESTIONS = 1
+#: 阶段 11:战略澄清 intake 最多问几个关键问题。到顶必须继续生成时间架构,不能无限追问。
+MAX_INTAKE_QUESTIONS = 5
 #: 评分维度范围。
 SCORE_MIN = 0
 SCORE_MAX = 5
@@ -136,7 +139,8 @@ async def get_or_create_session(
     session = GoalReasoningSession(
         workspace_id=ctx.id,
         root_plan_node_id=root.id,
-        phase=ReasoningSessionPhase.ORIENTATION,
+        # 阶段 11:新会话从**战略澄清 intake**开始 —— 先问关键问题,再给时间架构。
+        phase=ReasoningSessionPhase.INTAKE,
         turn_action=ReasoningTurnAction.ANALYZE,
         status=ReasoningSessionStatus.IDLE,
     )
@@ -238,6 +242,11 @@ def _node_view(node: ReasoningNode, parent_handle: str | None) -> ReasoningNodeV
         timeframe=node.timeframe,
         deliverable=node.deliverable,
         pass_criteria=node.pass_criteria,
+        timeframe_kind=node.timeframe_kind,
+        start_week=node.start_week,
+        end_week=node.end_week,
+        start_date=node.start_date,
+        end_date=node.end_date,
         source=node.source.value,
         version=node.version,
         updated_at=node.updated_at,
@@ -275,6 +284,7 @@ async def build_view(
         focus_handle=focus.handle if focus else None,
         focus_reasoning_node_id=session.focus_reasoning_node_id,
         focus_reason=session.focus_reason,
+        dates_calibrated=session.dates_calibrated,
         input_version=session.input_version,
         strategy_proposal_id=session.strategy_proposal_id,
         explored_at=session.explored_at,
@@ -561,6 +571,12 @@ def _apply_draft(
         node.timeframe = item.timeframe
         node.deliverable = item.deliverable
         node.pass_criteria = item.pass_criteria
+        # 阶段 11:结构化时间架构。**没有日期就不写**,不伪造。
+        node.timeframe_kind = item.timeframe_kind
+        node.start_week = item.start_week
+        node.end_week = item.end_week
+        node.start_date = date.fromisoformat(item.start_date) if item.start_date else None
+        node.end_date = date.fromisoformat(item.end_date) if item.end_date else None
         # 父节点引用在 flush 之后才能解析 —— 先把 handle 暂存着。
         node._pending_parent_handle = item.parent_handle  # type: ignore[attr-defined]
 
@@ -772,6 +788,66 @@ async def run_space_entered(
     )
 
 
+def _has_architecture_draft(result: ReasoningResult) -> bool:
+    """这一轮的结果里有没有**带阶段的战略架构**。"""
+    draft = result.reasoning_map
+    return draft is not None and any(node.node_type == "stage" for node in draft.nodes)
+
+
+async def _apply_intake_questions(
+    db: AsyncSession,
+    ctx: WorkspaceContext,
+    root: PlanNode,
+    session: GoalReasoningSession,
+    result: ReasoningResult,
+    *,
+    trace: ReasoningState,
+) -> AgentTurnResponse | None:
+    """intake 回合:把模型提的关键问题落成 `conversation_intake` 问题。
+
+    **只在还能问(未到 5 个上限)且模型确实给了一个可用问题时返回。** 否则返回 None,
+    由调用方走结构化纠错、要求给出时间架构 —— 不能无限追问。
+
+    这些问题是**唯一**能用橙色标记的提问:只在对话区显示,不生成画布 Question Node。
+    """
+    if session.intake_questions_asked >= MAX_INTAKE_QUESTIONS:
+        return None
+    # **不要先切片**:第一道题可能被战略/重复守卫拦掉,后面那道才是可用的。
+    # 由 `create_from_drafts(max_questions=1)` 在**过滤之后**再限 1 个。
+    drafts = result.questions
+    if not drafts:
+        return None
+    conversation = await conversation_service.get_or_create_primary_conversation(db, ctx)
+    message = await conversation_service.append_reply(
+        db, ctx, conversation=conversation, result=result
+    )
+    created = await question_service.create_from_drafts(
+        db,
+        ctx,
+        drafts,
+        source_message_id=message.id,
+        source_node_id=root.id,
+        reasoning_node_id=None,
+        strategy_phase=True,
+        require_judgment=True,
+        max_questions=MAX_STRATEGIC_QUESTIONS,
+        presentation=QuestionPresentation.CONVERSATION_INTAKE.value,
+    )
+    if not created:
+        return None
+    session.intake_questions_asked += 1
+    session.phase = ReasoningSessionPhase.INTAKE
+    session.status = ReasoningSessionStatus.READY
+    session.last_evaluated_at = utcnow()
+    agent_trace_service.mark_terminal(
+        trace, degraded=False, degraded_reason=None, stopped_reason="ready_to_propose"
+    )
+    await db.commit()
+    return await _response(
+        db, ctx, session, message=message, question=created[0], result=result, changed=False
+    )
+
+
 async def _explore_and_apply(
     db: AsyncSession,
     ctx: WorkspaceContext,
@@ -814,6 +890,20 @@ async def _explore_and_apply(
     error = _roadmap_error(
         result, existing=existing, handle_of_id=handle_of_id, force_roadmap=force_roadmap
     )
+    # 阶段 11:战略澄清 intake。**先只问关键问题,不生路线图。** 这一轮只要模型给了
+    # 一个可用的关键问题,就落成 conversation_intake 并停在 intake;到 5 个上限或模型
+    # 说够了,再走下面的结构化纠错,要求给出时间架构。
+    if (
+        error is not None
+        and not result.degraded
+        and session.phase.is_intake
+        and not _has_architecture_draft(result)
+    ):
+        applied = await _apply_intake_questions(
+            db, ctx, root, session, result, trace=trace
+        )
+        if applied is not None:
+            return applied
     # 模型**可用**但输出不合格 -> 结构化纠错,再试一次(有限预算内一次)。
     if error is not None and not result.degraded:
         # 第一次模型输出不合法这一事实**必须留在轨迹里**;`retrying` 只在这里出现。
@@ -867,10 +957,22 @@ async def _explore_and_apply(
     if focus is not None:
         session.focus_reasoning_node_id = focus.id
         session.focus_reason = draft.focus_reason or "它当前最影响下一步该怎么做。"
-    if draft.phase:
+    stage_items = [node for node in draft.nodes if node.node_type == "stage"]
+    if stage_items:
+        # 阶段 11:产出了带阶段的战略时间架构。日期没校准也**继续** —— 用相对周,
+        # 标“日期待校准”,不阻塞、不伪造日历日期。
+        session.phase = ReasoningSessionPhase.TEMPORAL_ARCHITECTURE_DRAFT
+        session.dates_calibrated = all(
+            node.timeframe_kind == "dated" and node.start_date and node.end_date
+            for node in stage_items
+        )
+    elif draft.phase:
         session.phase = ReasoningSessionPhase(draft.phase)
-    elif session.phase is ReasoningSessionPhase.ORIENTATION:
-        session.phase = ReasoningSessionPhase.ROADMAP_DRAFT
+    elif session.phase in (
+        ReasoningSessionPhase.ORIENTATION,
+        ReasoningSessionPhase.INTAKE,
+    ):
+        session.phase = ReasoningSessionPhase.TEMPORAL_ARCHITECTURE_DRAFT
     if draft.turn_action:
         session.turn_action = ReasoningTurnAction(draft.turn_action)
 
@@ -1032,6 +1134,16 @@ async def _run_incremental(
     # **旧地图优先补路线。** 阶段 8 前留下的地图顶层是一堆一级 dimension;用户
     # 下一条消息(包括回答问题)不应该继续把它们展开,而应该先把宏观路线补上。
     existing_rows = await _load_nodes(db, session.id)
+    if session.phase.is_intake:
+        # 阶段 11:回答之后**继续 intake** —— 可能问下一个关键问题,或直接给出时间架构。
+        session.status = ReasoningSessionStatus.RUNNING
+        session.last_error = None
+        await db.commit()
+        return await _explore_and_apply(
+            db, ctx, root, session, reasoner,
+            trigger_message=trigger_message,
+            trace=trace,
+        )
     if session.phase.is_strategic and not _has_roadmap(existing_rows):
         session.status = ReasoningSessionStatus.RUNNING
         session.last_error = None

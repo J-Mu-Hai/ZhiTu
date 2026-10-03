@@ -29,10 +29,11 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import (
     Boolean,
+    Date,
     ForeignKey,
     Index,
     Integer,
@@ -105,6 +106,11 @@ class GoalReasoningSession(UuidPk, TimestampMixin, Base):
     strategy_proposal_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("proposals.id", ondelete="SET NULL")
     )
+    # ---- 阶段 11:战略澄清 intake 与时间架构 ----
+    #: intake 已经问过几个关键问题。**最多 5 个**;到顶必须继续生成架构,不能无限追问。
+    intake_questions_asked: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    #: 时间架构里的日期是否已校准。False = 只有相对周(第 1–2 周…),不伪造日历日期。
+    dates_calibrated: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     nodes: Mapped[list[ReasoningNode]] = relationship(
         back_populates="session", cascade="all, delete-orphan"
@@ -174,6 +180,15 @@ class ReasoningNode(UuidPk, TimestampMixin, Base):
     deliverable: Mapped[str | None] = mapped_column(Text)
     #: 怎么算通过 —— 决定阶段能不能进入下一阶段的判据。
     pass_criteria: Mapped[str | None] = mapped_column(Text)
+    # ---- 阶段 11:结构化时间架构(只对 route / stage 有意义) ----
+    #: `dated`(有年月日/自然周)或 `relative`(第 N–M 周)。空 = 还没有结构化时间。
+    timeframe_kind: Mapped[str | None] = mapped_column(String(16))
+    #: 相对周轴(从 1 开始,含端点)。与 `timeframe_kind="relative"` 搭配。
+    start_week: Mapped[int | None] = mapped_column(Integer)
+    end_week: Mapped[int | None] = mapped_column(Integer)
+    #: 明确日期。与 `timeframe_kind="dated"` 搭配。**不伪造**:没有日期就留空。
+    start_date: Mapped[date | None] = mapped_column(Date)
+    end_date: Mapped[date | None] = mapped_column(Date)
     source: Mapped[ReasoningSource] = mapped_column(
         enum_type(ReasoningSource, "reasoning_source"),
         default=ReasoningSource.AGENT,

@@ -568,6 +568,14 @@ class ReasoningMapNodeDraft:
     timeframe: str | None = None
     deliverable: str | None = None
     pass_criteria: str | None = None
+    # ---- 阶段 11:结构化时间架构(只对 stage 有意义) ----
+    #: `dated`(有明确日期)或 `relative`(相对第 N–M 周)。
+    timeframe_kind: str | None = None
+    start_week: int | None = None
+    end_week: int | None = None
+    #: ISO 日期字符串(YYYY-MM-DD)。**没有就留空**,不伪造。
+    start_date: str | None = None
+    end_date: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

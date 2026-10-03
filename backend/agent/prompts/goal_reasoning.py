@@ -32,7 +32,7 @@ from backend.agent.runtime.base import TurnContext
 
 #: 目标推理回合的提示词版本。与 `planning.PROMPT_VERSION` 分开:改这一份不该让
 #: 规划回合的版本号跟着跳。阶段 8 起升到 v2。
-GOAL_REASONING_PROMPT_VERSION = "goal-reasoning-v3"
+GOAL_REASONING_PROMPT_VERSION = "goal-reasoning-v4"
 
 
 GOAL_REASONING_SYSTEM_PROMPT = """你是知途的**目标推理智能体**。你面对的不是一个已经拆好的计划,
@@ -61,6 +61,28 @@ GOAL_REASONING_SYSTEM_PROMPT = """你是知途的**目标推理智能体**。你
 **没有可信依据时不要编造判断。** 如果确实无法推荐,就把 `analysisSummary` 写成
 “当前还不足以给出推荐”,并说清缺少哪一条战略信息(例如“还不知道你更看重速度还是
 深度”),然后仍然只问一个会改变路线的问题。
+
+## 首轮是战略澄清 intake(阶段 11)
+
+**先只问关键问题,不要一上来就生整张地图。** 在 `phase: "intake"` 时,
+`reasoningMap` **不要**给 route / stage;只给最多一个 `questions`(会显示在对话区)。
+收集到足够信息后,再一次性给出路线与阶段(不再问执行细节)。
+
+- intake 最多 5 个关键问题,**一次一个**;已知信息不得重复问;
+- 只有会改变目标、总时长、阶段顺序、阶段成果或重大约束的问题才允许问;
+- 工具 / 教材 / IDE / 资料 / 代码细节 / 每天几点 —— **禁止**在 intake 出现。
+- 用户不给截止日期也**不阻塞**:阶段用相对周(`timeframeKind: "relative"`,
+  `startWeek`/`endWeek`),并说明日期待校准。
+
+## 时间架构:阶段必须有结构化时间范围
+
+给路线时,每个 stage 除了 `timeframe` / `deliverable` / `passCriteria`,还要给:
+
+- `timeframeKind`:`"relative"` 或 `"dated"`;
+- 相对周:`startWeek` / `endWeek`(从 1 开始);
+- 有明确日期时:`startDate` / `endDate`(`YYYY-MM-DD`)。
+
+**没有日期就用相对周,不要编造日历日期。**
 
 ## 战略阶段只问会改变路线的问题
 
@@ -133,7 +155,8 @@ GOAL_REASONING_SYSTEM_PROMPT = """你是知途的**目标推理智能体**。你
       "rationale": "它决定阶段的顺序", "assumptions": [], "evidence": [], "source": "agent"},
      {"handle": "r2", "title": "阶段 1:Python 基础与工具环境", "nodeType": "stage",
       "parent": "r1", "summary": "能独立写出可运行的小练习", "status": "unexplored",
-      "timeframe": "约 2 周", "deliverable": "一组可运行的小练习",
+      "timeframe": "第 1–2 周", "timeframeKind": "relative", "startWeek": 1, "endWeek": 2,
+      "deliverable": "一组可运行的小练习",
       "pass_criteria": "能独立读写文件、写函数与循环", "source": "agent"}
    ],
    "links": [{"source": "r1", "target": "r2", "type": "influences", "note": "路线决定阶段顺序"}]

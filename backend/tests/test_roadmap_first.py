@@ -133,7 +133,7 @@ async def test_roadmap_draft_is_accepted_with_stage_fields(
     body = await _enter(app_client, account)
     assert body["changed"] is True
     view = body["reasoning"]
-    assert view["phase"] == "roadmap_draft"
+    assert view["phase"] == "temporal_architecture_draft"
     assert len(view["nodes"]) == 5
 
     route = next(node for node in view["nodes"] if node["nodeType"] == "route")
@@ -233,7 +233,7 @@ async def test_python_data_analysis_first_turn_is_roadmap_not_dimensions(
     body = await _enter(app_client, account)
     view = body["reasoning"]
     assert body["changed"] is True
-    assert view["phase"] == "roadmap_draft"
+    assert view["phase"] == "temporal_architecture_draft"
 
     routes = [node for node in view["nodes"] if node["nodeType"] == "route"]
     stages = [node for node in view["nodes"] if node["nodeType"] == "stage"]
@@ -375,7 +375,7 @@ async def test_first_turn_retries_once_with_correction_then_succeeds(
 
     body = await _enter(app_client, account)
     assert body["changed"] is True
-    assert body["reasoning"]["phase"] == "roadmap_draft"
+    assert body["reasoning"]["phase"] == "temporal_architecture_draft"
     assert len([n for n in body["reasoning"]["nodes"] if n["nodeType"] == "stage"]) == 4
     # 纠错提示确实进了模型看到的输入。
     assert len(reasoner.calls) >= 2
@@ -555,7 +555,7 @@ async def test_adapter_valid_roadmap_json_succeeds(
     use_reasoner(PayloadReasoner(contents=(ROADMAP_JSON,)))
     body = await _enter(app_client, account)
     assert body["changed"] is True
-    assert body["reasoning"]["phase"] == "roadmap_draft"
+    assert body["reasoning"]["phase"] == "temporal_architecture_draft"
     assert len([n for n in body["reasoning"]["nodes"] if n["nodeType"] == "stage"]) == 3
     assert all(
         n["timeframe"] and n["deliverable"] and n["passCriteria"]
