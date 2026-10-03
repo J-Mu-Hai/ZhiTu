@@ -86,6 +86,21 @@ export function Workbench() {
       router.replace(`/workbench?${workspaceParam}&view=timeline`, { scroll: false });
     }
   }, [architectureVersion, view, router, workspaceParam, urlWorkspace, workspaceId]);
+  /*
+   * P2.4:确认战略后服务端**自动**生成粗时间线提案;前端自动切到时间线页一次。
+   * “一次”的边界是提案 id:同一个提案不再抢页面,新的提案(重新生成)才再切。
+   */
+  const v1TimelineProposalId = reasoning?.v01TimelineProposalId ?? null;
+  const switchedV1TimelineRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!v1TimelineProposalId) return;
+    if (switchedV1TimelineRef.current === v1TimelineProposalId) return;
+    if (urlWorkspace !== workspaceId) return;
+    switchedV1TimelineRef.current = v1TimelineProposalId;
+    if (view !== 'timeline') {
+      router.replace(`/workbench?${workspaceParam}&view=timeline`, { scroll: false });
+    }
+  }, [v1TimelineProposalId, view, router, workspaceParam, urlWorkspace, workspaceId]);
   return <div className="workbench open-workbench"><div className={`workbench-body ${chatOpen ? '' : 'chat-hidden'} ${v1Thinking ? 'v1-thinking' : ''}`}><section className="workspace">
     <div className="space-topbar">{!isRootSpace && <button className="icon-button space-back" aria-label="返回上级空间" onClick={() => enterSpace(growth.nodes[spaceId]?.parentId ?? growth.goalId)}><ArrowLeft size={15}/></button>}{discovery ? null : <div className="view-tabs" role="tablist" aria-label="工作台视图">{tabs.map(({id,label,Icon}) => <button key={id} role="tab" aria-selected={view === id} aria-label={label} className={view === id ? 'selected' : ''} onClick={() => router.replace(`/workbench?${workspaceParam}&view=${id}`, { scroll: false })}><Icon size={15}/><span>{label}</span></button>)}</div>}{!chatOpen && <button className="icon-button reopen-chat" aria-label="展开对话" onClick={() => setChatChoice(true)}><PanelRightOpen size={18}/></button>}</div>
     {/* 视图是一个三元表达式,所以**切一下页签,整棵画布子树就被卸载了** —— 这是有意的:
