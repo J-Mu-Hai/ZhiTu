@@ -35,7 +35,12 @@ from backend.db.base import (
     UuidPk,
     enum_type,
 )
-from backend.db.models.enums import ReasoningAction, ReasoningStatus, ToolCallStatus
+from backend.db.models.enums import (
+    AgentTraceStep,
+    ReasoningAction,
+    ReasoningStatus,
+    ToolCallStatus,
+)
 
 
 class ReasoningState(UuidPk, TimestampMixin, Base):
@@ -86,6 +91,28 @@ class ReasoningState(UuidPk, TimestampMixin, Base):
     #: 这一条 state 已经用掉的预算。恢复时接着算,不重新给满额。
     tool_calls_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     model_calls_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    # ---- 运行轨迹(阶段 9)。**全部由服务端真实执行边界写入。** ----
+    #: 触发来源。取值来自 `contracts.reasoning.AgentTurnTrigger` 或对话路径的
+    #: `user_message` / `question_answered` / `reanalyze` / `refine`。
+    #: 历史行可能为空(加这一列之前的数据),读取时按 `unavailable` 处理。
+    trigger: Mapped[str | None] = mapped_column(String(32))
+    #: 当前真实执行到哪一步。见 `AgentTraceStep`。
+    current_step: Mapped[AgentTraceStep] = mapped_column(
+        enum_type(AgentTraceStep, "agent_trace_step"),
+        default=AgentTraceStep.QUEUED,
+        nullable=False,
+    )
+    #: 第几次尝试。重试的 turn 会 +1,用于区分"同一件事又跑了一次"。
+    attempt: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    #: 终态错误码(闭集,见 `agent_trace_service`)。运行中为空。
+    terminal_code: Mapped[str | None] = mapped_column(String(48))
+    #: **给用户看的脱敏摘要。** 只允许来自有限映射,不允许写入模型原文、用户原文、
+    #: 密钥或隐藏思维链(见 `agent_trace_service.safe_terminal_summary`)。
+    safe_summary: Mapped[str | None] = mapped_column(Text)
+    #: 这一轮开始/最后一次心跳的时刻。耗时由服务端时间相减得到,前端不自己算。
+    started_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
+    last_progress_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
 
     workspace: Mapped[Workspace] = relationship()  # noqa: F821
     tool_calls: Mapped[list[ToolCallRecord]] = relationship(

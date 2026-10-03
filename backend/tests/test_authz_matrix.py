@@ -71,6 +71,7 @@ AUTHENTICATED_ROUTES = {
     ("GET", "/api/workspaces/{workspace_id}/proposals"),
     ("GET", "/api/workspaces/{workspace_id}/questions"),
     ("GET", "/api/workspaces/{workspace_id}/reasoning"),
+    ("GET", "/api/workspaces/{workspace_id}/agent/trace"),
     ("POST", "/api/workspaces/{workspace_id}/agent/turn"),
     ("PATCH", "/api/workspaces/{workspace_id}/reasoning/nodes/{node_id}"),
     ("POST", "/api/workspaces/{workspace_id}/agent/strategy/refine"),
@@ -109,6 +110,9 @@ CROSS_ACCOUNT_ROUTES = {
     # 目标推理地图只读,新空间返回空地图(200) —— 反向断言成立;归属仍必须写进
     # WHERE,否则 B 拿 A 的 id 会读到一份空地图而不是 404。
     ("GET", "/api/workspaces/{workspace_id}/reasoning"): "workspace_id",
+    # 轨迹读取只读,新空间返回空列表(200) —— 反向断言成立。归属由 `ctx` 写进 SQL 的
+    # WHERE,跨空间返回 404。
+    ("GET", "/api/workspaces/{workspace_id}/agent/trace"): "workspace_id",
     # `space_entered` 在未探索时会跑模型 —— 归属校验必须**在选模型之前**发生。
     # A 自己的反向断言在 rule 傅底下不会出网、也不会写地图节点。
     ("POST", "/api/workspaces/{workspace_id}/agent/turn"): "workspace_id",

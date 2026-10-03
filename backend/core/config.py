@@ -78,6 +78,13 @@ class Settings(BaseSettings):
     # auto 表示每次请求时探测 openjiuwen 是否可用,不可用则降级并在响应里如实标注。
     agent_reasoner: str = "auto"
 
+    #: Agent 运行轨迹诊断抽屉的显式开关。
+    #:
+    #: **本地开发(`APP_ENV=development`)默认可用**;其余环境(尤其生产)默认关闭,
+    #: 必须显式设成 true 才会暴露入口与读取 API。轨迹本身始终由服务端真实边界写入,
+    #: 这个开关只控制"谁能读到/看到"。
+    agent_trace_ui_enabled: bool = False
+
     cors_origins: str = (
         "http://127.0.0.1:5173,http://localhost:5173,http://localhost:3000"
     )

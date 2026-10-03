@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.agent.runtime import Reasoner
@@ -28,9 +28,11 @@ from backend.contracts.reasoning import (
     GoalReasoningView,
     UpdateReasoningNodeRequest,
 )
+from backend.contracts.trace import AgentTraceView
 from backend.db.session import get_db
-from backend.services import reasoning_service
+from backend.services import agent_trace_service, reasoning_service
 from backend.services.context import WorkspaceContext
+from backend.services.errors import TraceDisabled
 
 router = APIRouter()
 
@@ -73,6 +75,30 @@ async def run_agent_turn(
       增量重评与战略收敛(步骤 4)。
     """
     return await reasoning_service.run_turn(db, ctx, reasoner, payload=payload)
+
+
+@router.get(
+    "/{workspace_id}/agent/trace",
+    response_model=AgentTraceView,
+    summary="取最近 Agent turn 的脱敏运行轨迹(本地诊断)",
+)
+async def read_agent_trace(
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+    limit: int = Query(default=agent_trace_service.DEFAULT_TRACE_LIMIT, ge=1, le=agent_trace_service.MAX_TRACE_LIMIT),
+) -> AgentTraceView:
+    """最近若干次 Agent turn 的运行轨迹。
+
+    **按 workspace 授权** —— `get_workspace_context` 已经保证"不属于你的空间"
+    返回 404,跨空间读取在这里没有入口。返回的是脱敏投影(见 `contracts/trace.py`),
+    不是 ORM 原始 JSON。
+
+    开关关闭时返回 404,与"这个空间不存在"同一个形状 —— 不暴露诊断入口的存在。
+    轨迹本身始终由服务端真实边界写入,这里只控制**能不能读到**。
+    """
+    if not agent_trace_service.trace_ui_enabled():
+        raise TraceDisabled("本地诊断入口没有开启。")
+    return await agent_trace_service.load_trace(db, ctx, limit=limit)
 
 
 @router.patch(

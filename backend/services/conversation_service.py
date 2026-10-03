@@ -287,6 +287,7 @@ async def submit_turn(
     context_node_id: uuid.UUID | None = None,
     current_view: str | None = None,
     scope_root_id: uuid.UUID | None = None,
+    trigger: str = "user_message",
 ) -> TurnOutcome:
     text = (content or "").strip()
     if not text:
@@ -379,6 +380,7 @@ async def submit_turn(
         turn=turn,
         source_message_id=user_message.id,
         context_node_id=context_node_id,
+        trigger=trigger,
     )
     result = loop.result
 

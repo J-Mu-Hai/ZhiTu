@@ -322,6 +322,7 @@ async def answer_question(
         content=_answer_content(question, normalized),
         client_message_id=f"question-answer:{question.id}",
         context_node_id=source_node_id,
+        trigger="question_answered",
     )
 
     # 成功则 resolved;降级/失败则停在 investigating,等用户刷新或重试。

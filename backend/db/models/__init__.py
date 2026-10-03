@@ -12,6 +12,7 @@ from backend.db.models.enums import (
     PLANNING_LEVEL_ORDER,
     PLANNING_LEVEL_RANK,
     PROVENANCE_SOURCES,
+    AgentTraceStep,
     AnalysisFreshness,
     AvailabilitySource,
     BriefStatus,
@@ -79,6 +80,7 @@ __all__ = [
     "PROVENANCE_SOURCES",
     # 表
     "AgentQuestion",
+    "AgentTraceStep",
     "AnalysisFreshness",
     "AuthSession",
     "AvailabilityException",

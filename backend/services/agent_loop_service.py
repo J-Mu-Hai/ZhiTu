@@ -42,13 +42,14 @@ from backend.core.config import settings
 from backend.db.base import utcnow
 from backend.db.models import ReasoningState, ToolCallRecord
 from backend.db.models.enums import (
+    AgentTraceStep,
     DegradedReason,
     ModelSource,
     ReasoningAction,
     ReasoningStatus,
     ToolCallStatus,
 )
-from backend.services import agent_tools, research_service
+from backend.services import agent_tools, agent_trace_service, research_service
 from backend.services.context import WorkspaceContext
 
 logger = logging.getLogger(__name__)
@@ -190,18 +191,34 @@ async def run_turn(
     turn: TurnContext,
     source_message_id: uuid.UUID | None,
     context_node_id: uuid.UUID | None,
+    trigger: str = "user_message",
+    attempt: int = 1,
 ) -> LoopOutcome:
-    """跑一次有界循环。**不 commit** —— 调用方在同一个事务里提交。"""
+    """跑一次有界循环。
+
+    ## 事务口径(阶段 9 起)
+
+    此前这里是"**不 commit** —— 调用方在同一个事务里提交"。为了满足运行轨迹"模型请求
+    仍在等待时就能读到 waiting_model",现在把**轨迹行本身**在发模型请求之前单独提交。
+    这样做同时解决了一个旧约束:第一次模型调用发生在一个**没有写锁**的事务里,用户
+    在另一个标签页改计划不会撞 `database is locked`。业务写入(助手消息、提案、问题)
+    仍由调用方在最后统一提交。
+    """
     state = _seed_state(
         ctx,
         source_message_id=source_message_id,
         context_node_id=context_node_id,
         user_message=turn.user_message,
     )
-    # **不在这里 add/flush。** 第一次模型调用必须在一个**没有写锁**的事务里发生:
-    # 用户可能在模型思考期间从另一个标签页改计划(见 `test_analysis_staleness` 的
-    # `_EditingReasoner`),而 SQLite 下外层一旦有未提交的写,那次并发写就会
-    # `database is locked`。state 在第一次模型返回之后再落库。
+    state.trigger = trigger
+    state.attempt = attempt
+    # 上下文在调用方进入本函数**之前**就已经建好(见 `conversation_service`),
+    # 所以这里从 queued 直接推到 resolving_context,再推到 waiting_model。
+    started = utcnow()
+    agent_trace_service.mark_step(state, AgentTraceStep.RESOLVING_CONTEXT, now=started)
+    state.started_at = started
+    db.add(state)
+
     exchanges: list[ToolExchange] = []
     model_calls = 0
     tool_calls = 0
@@ -211,126 +228,157 @@ async def run_turn(
     research_signal: dict | None = None
     final: ReasoningResult | None = None
 
-    for iteration in range(MAX_MODEL_CALLS):
-        current_turn = replace(turn, tool_exchanges=tuple(exchanges))
-        model_calls += 1
-        # `Reasoner.reason` 对上游失败永不抛异常(见 base 模块契约)。
-        result = await reasoner.reason(current_turn)
-        if state.id not in [obj.id for obj in db.new]:
-            # 第一次模型返回之后才 add(不 flush):**不要在这里落写锁** —— 工具要用
-            # 自己的短事务提交租约/额度,主事务一旦有未提交的写,SQLite 下会互相锁死
-            # (PostgreSQL 行锁不同,但延迟 flush 对两端都更安全)。最后统一 flush。
-            db.add(state)
-        state.model_calls_used = model_calls
+    try:
+        for iteration in range(MAX_MODEL_CALLS):
+            current_turn = replace(turn, tool_exchanges=tuple(exchanges))
+            model_calls += 1
+            # **发请求前就写 waiting_model 并提交。** 这样模型卡住时,诊断入口能读到
+            # "正在等模型"和最后一次心跳,而不是一片空白。
+            agent_trace_service.mark_step(state, AgentTraceStep.WAITING_MODEL)
+            state.model_calls_used = model_calls
+            await db.commit()
+            # `Reasoner.reason` 对上游失败永不抛异常(见 base 模块契约)。
+            result = await reasoner.reason(current_turn)
 
-        if result.degraded:
-            # 模型不可用:保留 state=blocked,不伪造结论/工具结果。
+            if result.degraded:
+                # 模型不可用:保留 state=blocked,不伪造结论/工具结果。
+                state.status = ReasoningStatus.BLOCKED
+                state.next_action = ReasoningAction.STOP
+                _absorb_result(state, result)
+                agent_trace_service.mark_terminal(
+                    state,
+                    degraded=True,
+                    degraded_reason=result.degraded_reason,
+                    stopped_reason="failed",
+                )
+                await db.commit()
+                return LoopOutcome(
+                    result=result,
+                    state=state,
+                    model_calls=model_calls,
+                    tool_calls=tool_calls,
+                    stopped_reason="failed",
+                    research=research_signal,
+                )
+
+            tool_budget_left = tool_calls < MAX_TOOL_CALLS
+            can_continue = iteration < MAX_MODEL_CALLS - 1
+            if result.tool_requests and tool_budget_left and can_continue:
+                state.next_action = ReasoningAction.READ_TOOL
+                for request in result.tool_requests:
+                    if tool_calls >= MAX_TOOL_CALLS:
+                        break
+                    if request.name == "research_public" and research_calls >= settings.research_max_calls_per_turn:
+                        # 每轮默认最多一次真实公网检索:超出的直接拒,不发请求。
+                        exchange = ToolExchange(
+                            tool_name="research_public",
+                            status="rejected",
+                            summary={"error": "每一轮最多允许一次真实公网检索。"},
+                        )
+                        sanitized = {}
+                        ok = False
+                        research_signal = _prefer_research(
+                            research_signal, research_service.uncited_record("limited")
+                        )
+                    else:
+                        agent_trace_service.mark_step(state, AgentTraceStep.RUNNING_TOOL)
+                        await db.commit()
+                        execution = await agent_tools.execute_tool(
+                            db, ctx, current_turn, name=request.name, arguments=request.arguments
+                        )
+                        exchange = execution.exchange
+                        sanitized = execution.sanitized_arguments
+                        ok = execution.ok
+                        if request.name == "research_public":
+                            research_calls += 1
+                            # 成功/缓存带 citations;隐私拦截与工具错误没有 provider 结果,
+                            # 按 blocked / failed 如实记录。
+                            record = execution.research or research_service.uncited_record(
+                                "blocked" if exchange.status == "rejected" else "failed"
+                            )
+                            research_signal = _prefer_research(research_signal, record)
+                    tool_calls += 1
+                    exchanges.append(exchange)
+                    db.add(
+                        _tool_record(
+                            state, exchange, sanitized, sequence=tool_calls, ok=ok
+                        )
+                    )
+                    # 工具事实以 `tool` 来源进入 state。
+                    if ok:
+                        state.facts_summary = [
+                            *state.facts_summary,
+                            {
+                                "text": f"{exchange.tool_name}: {request.reason or '读取事实'}",
+                                "source": "tool",
+                                "at": utcnow().isoformat(),
+                            },
+                        ]
+                state.tool_calls_used = tool_calls
+                _absorb_result(state, result)
+                continue
+
+            # ---- 终止轮 ----
+            if result.tool_requests:
+                # 想调工具但预算/轮次不允许:剥掉 actions,标成预算耗尽。
+                result = replace(result, actions=(), stop_reason="budget_exhausted")
+            reason = result.stop_reason or (
+                "need_user_answer" if result.questions else "ready_to_propose"
+            )
+            agent_trace_service.mark_step(state, AgentTraceStep.VALIDATING_OUTPUT)
+            state.status = _TERMINAL_STATUS.get(reason, ReasoningStatus.RESOLVED)
+            state.next_action = (
+                ReasoningAction.ASK_USER
+                if reason == "need_user_answer"
+                else ReasoningAction.SYNTHESIZE
+            )
+            if state.status is ReasoningStatus.RESOLVED:
+                state.conclusion = (result.reply or "").strip()[:1000]
+            _absorb_result(state, result)
+            final = result
+            break
+
+        if final is None:  # pragma: no cover - 循环结构上保证不会走到
+            final = ReasoningResult(
+                reply="这一轮没有得出结论。",
+                source=ModelSource.UNAVAILABLE,
+                degraded=True,
+                degraded_reason=DegradedReason.MODEL_UNAVAILABLE,
+            )
             state.status = ReasoningStatus.BLOCKED
             state.next_action = ReasoningAction.STOP
-            _absorb_result(state, result)
-            await db.flush()
-            return LoopOutcome(
-                result=result,
-                state=state,
-                model_calls=model_calls,
-                tool_calls=tool_calls,
+
+        agent_trace_service.mark_terminal(
+            state,
+            degraded=bool(final.degraded),
+            degraded_reason=final.degraded_reason,
+            stopped_reason=final.stop_reason or "ready_to_propose",
+        )
+        await db.commit()
+        return LoopOutcome(
+            result=final,
+            state=state,
+            model_calls=model_calls,
+            tool_calls=tool_calls,
+            stopped_reason=final.stop_reason or "ready_to_propose",
+            research=research_signal,
+        )
+    except Exception:
+        # 真实 Reasoner 按契约不抛;这里只兜"契约被违反"的结构性 bug。**必须重新抛**
+        # 让调用方看到失败,同时把轨迹停在可解释的 failed,而不是永远停在 waiting_model。
+        try:
+            agent_trace_service.mark_terminal(
+                state,
+                degraded=True,
+                degraded_reason=None,
                 stopped_reason="failed",
-                research=research_signal,
             )
-
-        tool_budget_left = tool_calls < MAX_TOOL_CALLS
-        can_continue = iteration < MAX_MODEL_CALLS - 1
-        if result.tool_requests and tool_budget_left and can_continue:
-            state.next_action = ReasoningAction.READ_TOOL
-            for request in result.tool_requests:
-                if tool_calls >= MAX_TOOL_CALLS:
-                    break
-                if request.name == "research_public" and research_calls >= settings.research_max_calls_per_turn:
-                    # 每轮默认最多一次真实公网检索:超出的直接拒,不发请求。
-                    exchange = ToolExchange(
-                        tool_name="research_public",
-                        status="rejected",
-                        summary={"error": "每一轮最多允许一次真实公网检索。"},
-                    )
-                    sanitized = {}
-                    ok = False
-                    research_signal = _prefer_research(
-                        research_signal, research_service.uncited_record("limited")
-                    )
-                else:
-                    execution = await agent_tools.execute_tool(
-                        db, ctx, current_turn, name=request.name, arguments=request.arguments
-                    )
-                    exchange = execution.exchange
-                    sanitized = execution.sanitized_arguments
-                    ok = execution.ok
-                    if request.name == "research_public":
-                        research_calls += 1
-                        # 成功/缓存带 citations;隐私拦截与工具错误没有 provider 结果,
-                        # 按 blocked / failed 如实记录。
-                        record = execution.research or research_service.uncited_record(
-                            "blocked" if exchange.status == "rejected" else "failed"
-                        )
-                        research_signal = _prefer_research(research_signal, record)
-                tool_calls += 1
-                exchanges.append(exchange)
-                db.add(
-                    _tool_record(
-                        state, exchange, sanitized, sequence=tool_calls, ok=ok
-                    )
-                )
-                # 工具事实以 `tool` 来源进入 state。
-                if ok:
-                    state.facts_summary = [
-                        *state.facts_summary,
-                        {
-                            "text": f"{exchange.tool_name}: {request.reason or '读取事实'}",
-                            "source": "tool",
-                            "at": utcnow().isoformat(),
-                        },
-                    ]
-            state.tool_calls_used = tool_calls
-            _absorb_result(state, result)
-            continue
-
-        # ---- 终止轮 ----
-        if result.tool_requests:
-            # 想调工具但预算/轮次不允许:剥掉 actions,标成预算耗尽。
-            result = replace(result, actions=(), stop_reason="budget_exhausted")
-        reason = result.stop_reason or (
-            "need_user_answer" if result.questions else "ready_to_propose"
-        )
-        state.status = _TERMINAL_STATUS.get(reason, ReasoningStatus.RESOLVED)
-        state.next_action = (
-            ReasoningAction.ASK_USER
-            if reason == "need_user_answer"
-            else ReasoningAction.SYNTHESIZE
-        )
-        if state.status is ReasoningStatus.RESOLVED:
-            state.conclusion = (result.reply or "").strip()[:1000]
-        _absorb_result(state, result)
-        final = result
-        break
-
-    if final is None:  # pragma: no cover - 循环结构上保证不会走到
-        final = ReasoningResult(
-            reply="这一轮没有得出结论。",
-            source=ModelSource.UNAVAILABLE,
-            degraded=True,
-            degraded_reason=DegradedReason.MODEL_UNAVAILABLE,
-        )
-        state.status = ReasoningStatus.BLOCKED
-        state.next_action = ReasoningAction.STOP
-
-    await db.flush()
-    return LoopOutcome(
-        result=final,
-        state=state,
-        model_calls=model_calls,
-        tool_calls=tool_calls,
-        stopped_reason=final.stop_reason or "ready_to_propose",
-        research=research_signal,
-    )
+            state.terminal_code = "INTERNAL"
+            state.safe_summary = agent_trace_service.safe_terminal_summary("INTERNAL")
+            await db.commit()
+        except Exception:  # pragma: no cover - 兜底提交失败不该遮住原始异常
+            logger.exception("写入 Agent 轨迹失败")
+        raise
 
 
 __all__ = [

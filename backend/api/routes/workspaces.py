@@ -242,6 +242,7 @@ async def refresh_analysis(
         reasoner,
         content=analysis_service.REANALYZE_MESSAGE,
         context_node_id=node_id,
+        trigger="reanalyze",
     )
     return await _turn_response(db, ctx, outcome)
 

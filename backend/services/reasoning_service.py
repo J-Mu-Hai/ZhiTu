@@ -1258,6 +1258,7 @@ async def refine_strategy(
         reasoner,
         content=REFINE_PHASE_MESSAGE,
         context_node_id=strategy.id,
+        trigger="refine",
     )
 
 

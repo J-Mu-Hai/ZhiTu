@@ -406,6 +406,43 @@ class ResearchCacheStatus(StrEnum):
 PROVENANCE_SOURCES = ("user", "system", "tool", "model_inference", "assumption")
 
 
+class AgentTraceStep(StrEnum):
+    """一次 Agent turn 的真实执行步骤。**闭集。**
+
+    只描述"服务端此刻在做哪件事",不描述模型想了什么。写入点必须落在
+    `agent_loop_service` 的真实执行边界上(发模型请求前、工具执行前/后、终态),而不是
+    由前端"猜"或按时间假推进 —— 那样 trace 就会变成脱离真实执行的进度条。
+
+    终态是 `completed | failed | timed_out | cancelled`;其余都是可运行的中间态。中间态
+    的 `current_step` 可以停住(等待模型可以很久),但 `last_progress_at` 由心跳更新。
+    """
+
+    QUEUED = "queued"
+    #: 正在准备上下文(读节点、简报、时间底盘)。这一步很短。
+    RESOLVING_CONTEXT = "resolving_context"
+    #: 已经发出模型请求、正在等响应。**发请求前就写它**,所以"卡在模型"看得见。
+    WAITING_MODEL = "waiting_model"
+    #: 正在执行只读工具。
+    RUNNING_TOOL = "running_tool"
+    #: 正在校验模型输出结构。
+    VALIDATING_OUTPUT = "validating_output"
+    #: 校验通过、正在把结果落库(调用方在同一事务里)。
+    PERSISTING = "persisting"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    TIMED_OUT = "timed_out"
+    CANCELLED = "cancelled"
+
+    @property
+    def is_terminal(self) -> bool:
+        return self in {
+            AgentTraceStep.COMPLETED,
+            AgentTraceStep.FAILED,
+            AgentTraceStep.TIMED_OUT,
+            AgentTraceStep.CANCELLED,
+        }
+
+
 # ---------------------------------------------------------------------------------
 # 目标推理地图(阶段 7)。
 #

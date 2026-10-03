@@ -364,6 +364,20 @@ class InvalidQuestionAnswer(DomainError):
     http_status = 400
 
 
+# ---------------------------------------------------------------------------------
+# 运行轨迹诊断(阶段 9)
+# ---------------------------------------------------------------------------------
+class TraceDisabled(DomainError):
+    """诊断入口没有打开。
+
+    用 404 而不是 403:关闭时连"系统里有这个东西"都不该暴露。本地开发默认可用;
+    其余环境要显式设 `AGENT_TRACE_UI_ENABLED`。
+    """
+
+    code = "TRACE_DISABLED"
+    http_status = 404
+
+
 class IdempotencyKeyReused(DomainError):
     """同一个幂等键配了不同的请求体。
 

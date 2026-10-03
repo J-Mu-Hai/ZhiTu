@@ -25,6 +25,247 @@
       "title": "ActionError",
       "type": "object"
     },
+    "AgentTraceToolView": {
+      "additionalProperties": false,
+      "description": "一次只读工具调用的**脱敏**摘要。",
+      "properties": {
+        "durationMs": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Durationms"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "summary": {
+          "title": "Summary",
+          "type": "string"
+        },
+        "toolName": {
+          "title": "Toolname",
+          "type": "string"
+        }
+      },
+      "required": [
+        "toolName",
+        "status",
+        "summary"
+      ],
+      "title": "AgentTraceToolView",
+      "type": "object"
+    },
+    "AgentTraceTurnView": {
+      "additionalProperties": false,
+      "description": "最近一次 Agent turn 的运行轨迹。**按时间倒序返回。**",
+      "properties": {
+        "attempt": {
+          "default": 1,
+          "title": "Attempt",
+          "type": "integer"
+        },
+        "currentStep": {
+          "title": "Currentstep",
+          "type": "string"
+        },
+        "durationMs": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Durationms"
+        },
+        "finishedAt": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Finishedat"
+        },
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "lastProgressAt": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Lastprogressat"
+        },
+        "retryable": {
+          "default": false,
+          "title": "Retryable",
+          "type": "boolean"
+        },
+        "safeSummary": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Safesummary"
+        },
+        "shortId": {
+          "title": "Shortid",
+          "type": "string"
+        },
+        "startedAt": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Startedat"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "stepLabel": {
+          "title": "Steplabel",
+          "type": "string"
+        },
+        "terminal": {
+          "title": "Terminal",
+          "type": "boolean"
+        },
+        "terminalCode": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Terminalcode"
+        },
+        "tools": {
+          "items": {
+            "$ref": "#/$defs/AgentTraceToolView"
+          },
+          "title": "Tools",
+          "type": "array"
+        },
+        "trigger": {
+          "title": "Trigger",
+          "type": "string"
+        },
+        "triggerLabel": {
+          "title": "Triggerlabel",
+          "type": "string"
+        },
+        "waitingSeconds": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Waitingseconds"
+        },
+        "waitingTooLong": {
+          "default": false,
+          "title": "Waitingtoolong",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "shortId",
+        "trigger",
+        "triggerLabel",
+        "currentStep",
+        "stepLabel",
+        "status",
+        "terminal"
+      ],
+      "title": "AgentTraceTurnView",
+      "type": "object"
+    },
+    "AgentTraceView": {
+      "additionalProperties": false,
+      "description": "诊断抽屉一次拉取的完整内容。",
+      "properties": {
+        "enabled": {
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "generatedAt": {
+          "format": "date-time",
+          "title": "Generatedat",
+          "type": "string"
+        },
+        "limit": {
+          "title": "Limit",
+          "type": "integer"
+        },
+        "turns": {
+          "items": {
+            "$ref": "#/$defs/AgentTraceTurnView"
+          },
+          "title": "Turns",
+          "type": "array"
+        },
+        "workspaceId": {
+          "format": "uuid",
+          "title": "Workspaceid",
+          "type": "string"
+        },
+        "workspaceShortId": {
+          "title": "Workspaceshortid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "workspaceId",
+        "workspaceShortId",
+        "enabled",
+        "generatedAt",
+        "limit"
+      ],
+      "title": "AgentTraceView",
+      "type": "object"
+    },
     "AgentTurnRequest": {
       "additionalProperties": false,
       "properties": {
