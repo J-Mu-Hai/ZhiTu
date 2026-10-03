@@ -59,6 +59,8 @@ from backend.agent.runtime.base import (
     ToolRequest,
     TurnContext,
     V1AssessmentDraft,
+    V1CandidateDirection,
+    V1KeyDimension,
     V1NodeUpdate,
     V1TimelineDraft,
     V1TimelinePhaseDraft,
@@ -114,6 +116,13 @@ MAX_V1_QUESTION_CHARS = 500
 #: `uncertainty` 与节点状态的闭集。不在里面的回落到默认值。
 V1_UNCERTAINTIES = frozenset({"low", "medium", "high"})
 V1_NODE_STATUSES = frozenset({"unexplored", "discussing", "resolved", "deferred"})
+#: 规划智能体重构 V1(P2.1):战略判断优先。
+MAX_V1_KEY_DIMENSIONS = 3
+MAX_V1_CANDIDATE_DIRECTIONS = 3
+V1_RESPONSE_MODES = frozenset(
+    {"none", "ask", "offer_options", "provisional_synthesis", "ready_for_strategy"}
+)
+
 #: 规划智能体重构 V1(P3):粗时间架构必须是 3–6 个阶段。
 MIN_V1_TIMELINE_PHASES = 3
 MAX_V1_TIMELINE_PHASES = 6
@@ -792,9 +801,53 @@ def parse_v1_assessment(raw: Any) -> V1AssessmentDraft | None:
     def _text(value: Any, limit: int) -> str:
         return value.strip()[:limit] if isinstance(value, str) and value.strip() else ""
 
+    dimensions: list[V1KeyDimension] = []
+    for entry in (raw.get("keyDimensions") or [])[:MAX_V1_KEY_DIMENSIONS]:
+        if not isinstance(entry, dict):
+            continue
+        key = entry.get("key")
+        if not isinstance(key, str) or not key.strip():
+            continue
+        dimensions.append(
+            V1KeyDimension(
+                key=key.strip()[:48],
+                judgment=_text(entry.get("judgment"), MAX_V1_TEXT_CHARS),
+                why_it_matters=_text(entry.get("whyItMatters"), MAX_V1_TEXT_CHARS),
+            )
+        )
+    directions: list[V1CandidateDirection] = []
+    seen_direction_keys: set[str] = set()
+    for entry in (raw.get("candidateDirections") or [])[:MAX_V1_CANDIDATE_DIRECTIONS]:
+        if not isinstance(entry, dict):
+            continue
+        key = entry.get("key")
+        title = entry.get("title")
+        if not isinstance(key, str) or not key.strip() or not isinstance(title, str) or not title.strip():
+            continue
+        clean_key = key.strip()[:48]
+        if clean_key in seen_direction_keys:
+            continue
+        seen_direction_keys.add(clean_key)
+        directions.append(
+            V1CandidateDirection(
+                key=clean_key,
+                title=title.strip()[:MAX_V1_TIMELINE_TITLE_CHARS],
+                reason=_text(entry.get("reason"), MAX_V1_TEXT_CHARS),
+                path=_text(entry.get("path"), MAX_V1_TEXT_CHARS),
+            )
+        )
+
     focus_key = raw.get("focusKey")
+    response_mode = raw.get("responseMode")
+    thesis = _text(raw.get("strategicThesis"), MAX_V1_TEXT_CHARS)
+    assessment_text = _text(raw.get("globalAssessment"), MAX_V1_TEXT_CHARS)
+    critical = _text(raw.get("criticalQuestion"), MAX_V1_QUESTION_CHARS) or _text(
+        raw.get("question"), MAX_V1_QUESTION_CHARS
+    )
     return V1AssessmentDraft(
-        global_assessment=_text(raw.get("globalAssessment"), MAX_V1_TEXT_CHARS),
+        global_assessment=assessment_text or thesis,
+        strategic_thesis=thesis or assessment_text,
+        key_dimensions=tuple(dimensions),
         node_updates=tuple(updates),
         focus_key=(
             focus_key.strip()[:48]
@@ -802,7 +855,12 @@ def parse_v1_assessment(raw: Any) -> V1AssessmentDraft | None:
             else None
         ),
         focus_reason=_text(raw.get("focusReason"), MAX_V1_TEXT_CHARS),
-        question=_text(raw.get("question"), MAX_V1_QUESTION_CHARS),
+        response_mode=(
+            response_mode if response_mode in V1_RESPONSE_MODES else "none"
+        ),
+        critical_question=critical,
+        question=critical,
+        candidate_directions=tuple(directions),
         strategy_tradeoff=_text(raw.get("strategyTradeoff"), MAX_V1_TEXT_CHARS),
         strategy_ready=bool(raw.get("strategyReady")),
     )

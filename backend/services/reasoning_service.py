@@ -386,6 +386,10 @@ async def build_view(
         v1_strategy=session.v1_strategy,
         v1_status=session.v1_status,
         v1_error=session.v1_error,
+        #: P2.1:战略判断优先 + 候选方向与用户选择。
+        v1_strategic_thesis=session.v1_strategic_thesis,
+        v1_candidate_directions=session.v1_candidate_directions,
+        v1_selected_direction=session.v1_selected_direction,
         #: P5:只有 V1 空间且开关打开时才允许导出审计记录。
         v1_audit_export_enabled=bool(settings.agent_audit_export and session.v1_stage is not None),
         dates_calibrated=session.dates_calibrated,

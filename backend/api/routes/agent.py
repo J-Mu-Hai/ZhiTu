@@ -273,6 +273,22 @@ async def v1_audit_export(
     )
 
 
+@router.post(
+    "/{workspace_id}/agent/v1/direction/select",
+    response_model=AgentTurnResponse,
+    summary="规划智能体 V1:选择一个候选方向",
+)
+async def v1_select_direction(
+    key: str = Query(min_length=1, max_length=48),
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+) -> AgentTurnResponse:
+    from backend.services import v1_service
+
+    session = await _v1_session(ctx, db)
+    return await v1_service.select_candidate_direction(db, ctx, session, key)
+
+
 @router.get(
     "/{workspace_id}/agent/trace",
     response_model=AgentTraceView,

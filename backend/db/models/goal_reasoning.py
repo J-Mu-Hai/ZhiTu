@@ -154,6 +154,19 @@ class GoalReasoningSession(UuidPk, TimestampMixin, Base):
     v1_status: Mapped[str | None] = mapped_column(String(16))
     #: 上一次模型回合失败的可读原因(成功/未跑时为空)。
     v1_error: Mapped[str | None] = mapped_column(Text)
+    # ---- 规划智能体重构 V1(P2.1):战略判断优先 + 有限追问守卫 ----
+    #: 当前战略判断(优先展示的 AI 暂定理解,可被用户纠正)。
+    v1_strategic_thesis: Mapped[str | None] = mapped_column(Text)
+    #: 用户无法回答时 AI 给出的候选方向(最多 3 个,可被选择/修正/否定)。
+    v1_candidate_directions: Mapped[list | None] = mapped_column(JsonDict)
+    #: 用户选择的候选方向键。
+    v1_selected_direction: Mapped[str | None] = mapped_column(String(48))
+    #: 阶段一已问关键问题的次数(全局预算最多 3)。
+    v1_question_budget_used: Mapped[int | None] = mapped_column(Integer)
+    #: 上一次提问的焦点键(同一焦点连续提问最多 1 次)。
+    v1_last_focus_key: Mapped[str | None] = mapped_column(String(48))
+    #: 连续“低信息/不确定/元对话”回答的轮数;>=2 时必须给候选方向或暂定综合。
+    v1_low_info_streak: Mapped[int | None] = mapped_column(Integer)
 
     nodes: Mapped[list[ReasoningNode]] = relationship(
         back_populates="session", cascade="all, delete-orphan"

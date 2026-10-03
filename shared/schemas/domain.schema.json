@@ -2188,6 +2188,22 @@
           "title": "V1Auditexportenabled",
           "type": "boolean"
         },
+        "v1CandidateDirections": {
+          "anyOf": [
+            {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "V1Candidatedirections"
+        },
         "v1Error": {
           "anyOf": [
             {
@@ -2248,6 +2264,18 @@
           "default": null,
           "title": "V1Question"
         },
+        "v1SelectedDirection": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "V1Selecteddirection"
+        },
         "v1Stage": {
           "anyOf": [
             {
@@ -2271,6 +2299,18 @@
           ],
           "default": null,
           "title": "V1Status"
+        },
+        "v1StrategicThesis": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "V1Strategicthesis"
         },
         "v1Strategy": {
           "anyOf": [

@@ -67,6 +67,13 @@ AUDIT_EVENT_TYPES = frozenset(
         "model_output_invalid",
         "guard_rejected",
         "proposal_validation_failed",
+        # P2.1:战略判断优先、有限追问。
+        "user_message_received",
+        "strategic_thesis_generated",
+        "candidate_directions_offered",
+        "candidate_direction_selected",
+        "provisional_synthesis_created",
+        "conversation_feedback_received",
     }
 )
 

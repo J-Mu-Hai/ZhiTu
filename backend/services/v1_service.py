@@ -123,6 +123,78 @@ _STRATEGY_KEYS: tuple[tuple[str, str, str], ...] = (
 )
 
 MAX_V1_UPDATES = 3
+MAX_V1_DIMENSIONS = 3
+#: 阶段一全局关键问题的总预算。超过后服务端不再接受新问题。
+MAX_V1_QUESTIONS = 3
+
+#: 用户输入的语义分类(P2.1)。**只有前三类能写节点事实。**
+INPUT_STRATEGIC_FACT = "strategic_fact"
+INPUT_USER_PREFERENCE = "user_preference"
+INPUT_USER_CORRECTION = "user_correction"
+INPUT_CONVERSATION_FEEDBACK = "conversation_feedback"
+INPUT_AMBIGUOUS = "ambiguous_or_irrelevant"
+
+#: 元对话 / 情绪 / 对 AI 的反馈 —— **不是战略事实**。
+_META_MARKERS = (
+    "走神",
+    "人工整",
+    "机器人",
+    "你在问",
+    "问点",
+    "换个问题",
+    "换一个",
+    "听不懂",
+    "答非所问",
+    "你是不是",
+    "傻",
+    "垃圾",
+    "无聊",
+    "滚",
+    "烦死",
+)
+_LOW_INFO_MARKERS = (
+    "不知道",
+    "不清楚",
+    "没想好",
+    "不确定",
+    "暂时没有",
+    "说不上",
+    "没有想法",
+    "都行",
+    "随便",
+    "你来定",
+    "无所谓",
+    "没概念",
+)
+_CORRECTION_MARKERS = ("不是", "其实", "我说的不是", "更正", "你误解")
+_PREFERENCE_MARKERS = ("我想", "我希望", "我更喜欢", "我倾向", "我比较", "我更愿意", "优先")
+
+
+def classify_user_message(content: str) -> str:
+    """把一条用户消息分类为 P2.1 的五类之一。**确定性规则**,不依赖模型。
+
+    元对话 / 情绪 / 对 AI 的反馈(“你走神了”“人工整你”)归为 `conversation_feedback`,
+    不得进入 `knownFacts`;“不知道”这类归为 `ambiguous_or_irrelevant`。
+    """
+    text = (content or "").strip()
+    lowered = text.lower()
+    if not text:
+        return INPUT_AMBIGUOUS
+    if len(text) <= 24 and any(marker in text for marker in _LOW_INFO_MARKERS):
+        return INPUT_AMBIGUOUS
+    if any(marker in lowered for marker in _META_MARKERS):
+        return INPUT_CONVERSATION_FEEDBACK
+    if any(marker in text for marker in _CORRECTION_MARKERS):
+        return INPUT_USER_CORRECTION
+    if any(marker in text for marker in _PREFERENCE_MARKERS):
+        return INPUT_USER_PREFERENCE
+    if len(text) < 4:
+        return INPUT_AMBIGUOUS
+    return INPUT_STRATEGIC_FACT
+
+
+def _counts_as_low_info(classification: str) -> bool:
+    return classification in (INPUT_AMBIGUOUS, INPUT_CONVERSATION_FEEDBACK)
 
 #: 模型可以指涉的全部键(10 个固定问题 + 4 个战略问题)。**分组键不可被模型更新。**
 ALLOWED_V1_KEYS = frozenset(
@@ -363,36 +435,75 @@ async def _build_turn_context(
 # 应用模型判断
 # =================================================================================
 def _apply_updates(
-    questions: list[AgentQuestion], draft
+    questions: list[AgentQuestion],
+    draft,
+    *,
+    classification: str,
+    is_local_discussion: bool,
+    discussion_key: str | None,
+    raw_message: str,
 ) -> tuple[list[AgentQuestion], dict[str, dict], dict[str, str]]:
+    """把形状合法的判断落到**已存在的分析节点**上。
+
+    P2.1:
+    - `knownFacts` 只接受战略事实/偏好/纠正;元对话/含混内容一律不进事实;
+    - `discussionCount` 只统计**该节点的真正局部讨论/回答**,全局对话不虚增;
+    - **只有确有新判断/新事实/新假设时才写**;内容未变则不动,也不产生审计事件。
+    """
     by_key = {question.v1_key: question for question in questions if question.v1_key}
     changed: list[AgentQuestion] = []
     analyses: dict[str, dict] = {}
     strategy_values: dict[str, str] = {}
-    for update in draft.node_updates[:MAX_V1_UPDATES]:
-        key = update.node_key
+
+    # node_updates 优先;keyDimensions 只在未被 nodeUpdates 覆盖时补充判断。
+    normalized: list[tuple] = [
+        (
+            update.node_key,
+            update.judgment,
+            update.importance_reason,
+            update.known_facts,
+            update.assumptions,
+            update.evidence,
+            update.uncertainty,
+            update.status,
+            update.impacted_node_keys,
+        )
+        for update in draft.node_updates[:MAX_V1_UPDATES]
+    ]
+    covered = {item[0] for item in normalized}
+    for dimension in draft.key_dimensions[:MAX_V1_DIMENSIONS]:
+        if dimension.key in covered or not dimension.judgment:
+            continue
+        normalized.append(
+            (dimension.key, dimension.judgment, dimension.why_it_matters, (), (), (), "medium", "discussing", ())
+        )
+
+    for key, judgment, importance, facts, assumptions, evidence, uncertainty, status, impacts_raw in normalized:
         if key not in ALLOWED_V1_KEYS:
             continue
         if key in _STRATEGY_KEY_SET:
-            if update.judgment:
-                strategy_values[key] = update.judgment
+            if judgment:
+                strategy_values[key] = judgment
             continue
         question = by_key.get(key)
         if question is None:
             continue
         existing = dict(question.v1_analysis or {})
-        impacts = [item for item in update.impacted_node_keys if item in by_key]
+        new_facts = _sanitized_facts(facts, classification=classification, raw_message=raw_message)
         analysis = {
-            "judgment": update.judgment or existing.get("judgment", ""),
-            "knownFacts": list(update.known_facts) or list(existing.get("knownFacts", [])),
-            "assumptions": list(update.assumptions) or list(existing.get("assumptions", [])),
-            "evidence": list(update.evidence) or list(existing.get("evidence", [])),
-            "importanceReason": update.importance_reason or existing.get("importanceReason", ""),
-            "uncertainty": update.uncertainty,
-            "status": update.status,
-            "impactedNodeKeys": impacts,
-            "discussionCount": int(existing.get("discussionCount", 0)) + 1,
+            "judgment": judgment or existing.get("judgment", ""),
+            "knownFacts": new_facts or list(existing.get("knownFacts", [])),
+            "assumptions": list(assumptions) or list(existing.get("assumptions", [])),
+            "evidence": list(evidence) or list(existing.get("evidence", [])),
+            "importanceReason": importance or existing.get("importanceReason", ""),
+            "uncertainty": uncertainty,
+            "status": status,
+            "impactedNodeKeys": [item for item in impacts_raw if item in by_key],
+            "discussionCount": int(existing.get("discussionCount", 0))
+            + (1 if is_local_discussion and key == discussion_key else 0),
         }
+        if _analysis_unchanged(existing, analysis):
+            continue
         question.v1_analysis = analysis
         # 卡片/问题节点上的一句话:分析摘要与依据。
         if analysis["judgment"]:
@@ -404,6 +515,49 @@ def _apply_updates(
         analyses[key] = analysis
         changed.append(question)
     return changed, analyses, strategy_values
+
+
+def _analysis_unchanged(existing: dict, analysis: dict) -> bool:
+    """判断是否与库里那一份实质相同 —— 相同就不写、不发事件。"""
+    keys = (
+        "judgment",
+        "knownFacts",
+        "assumptions",
+        "evidence",
+        "importanceReason",
+        "uncertainty",
+        "status",
+        "impactedNodeKeys",
+        "discussionCount",
+    )
+    for key in keys:
+        before = existing.get(key)
+        after = analysis.get(key)
+        if isinstance(before, list) or isinstance(after, list):
+            if list(before or []) != list(after or []):
+                return False
+        elif before != after:
+            return False
+    return True
+
+
+def _sanitized_facts(facts, *, classification: str, raw_message: str) -> list[str]:
+    """只有战略事实/偏好/纠正能写事实;元对话与含混内容一律丢弃。"""
+    if classification not in (
+        INPUT_STRATEGIC_FACT,
+        INPUT_USER_PREFERENCE,
+        INPUT_USER_CORRECTION,
+    ):
+        return []
+    clean: list[str] = []
+    for item in facts or ():
+        text = str(item).strip()
+        if not text:
+            continue
+        if any(marker in text for marker in _META_MARKERS):
+            continue
+        clean.append(text)
+    return clean
 
 
 def _strategy_ready(analyses: dict[str, dict], draft) -> bool:
@@ -430,6 +584,8 @@ async def _run_assessment(
     *,
     user_message: str,
     reasoner,
+    classification: str,
+    is_local_discussion: bool = False,
     exclude_message_id=None,
 ) -> ReasoningResult:
     root = await reasoning_service.root_plan_node(db, ctx)
@@ -438,7 +594,6 @@ async def _run_assessment(
 
         raise InvalidInput("这个空间还没有根目标。")
     stage_before = session.v1_stage
-    question_before = session.v1_question
     _existing = await _v1_questions(db, ctx)
     before_status = {
         q.v1_key: (q.v1_analysis or {}).get("status") for q in _existing if q.v1_key
@@ -469,7 +624,12 @@ async def _run_assessment(
         )
         await db.commit()
         return result
-    if assessment is None or (not assessment.global_assessment and not assessment.node_updates):
+    if assessment is None or not (
+        assessment.global_assessment
+        or assessment.strategic_thesis
+        or assessment.node_updates
+        or assessment.key_dimensions
+    ):
         session.v1_status = V1_STATUS_FAILED
         session.v1_error = "模型这次的回答没能解析成战略判断。"
         await _audit(
@@ -497,7 +657,14 @@ async def _run_assessment(
         )
 
     questions = await _v1_questions(db, ctx)
-    changed, analyses, strategy_values = _apply_updates(questions, assessment)
+    changed, analyses, strategy_values = _apply_updates(
+        questions,
+        assessment,
+        classification=classification,
+        is_local_discussion=is_local_discussion,
+        discussion_key=assessment.focus_key,
+        raw_message=user_message,
+    )
     persisted = {q.v1_key: (q.v1_analysis or {}) for q in questions if q.v1_key}
 
     if strategy_values and _strategy_ready(persisted, assessment):
@@ -511,12 +678,47 @@ async def _run_assessment(
         if session.v1_stage in (V1_GOAL_REFRAME, V1_FACTOR_ANALYSIS):
             session.v1_stage = V1_STRATEGY_DRAFT
 
-    if assessment.global_assessment:
-        session.v1_judgment = assessment.global_assessment
-    #: 需要在对话框回答的橙色问题(至多一个)。
-    session.v1_question = assessment.question or None
-    session.v1_focus_key = assessment.focus_key
-    session.v1_focus_reason = assessment.focus_reason or None
+    thesis = assessment.strategic_thesis or assessment.global_assessment
+    if thesis:
+        session.v1_strategic_thesis = thesis
+        session.v1_judgment = thesis
+
+    # ---- P2.1 服务端追问守卫:默认不问;同焦点最多 1 次;总预算 3;低信息强制给候选 ----
+    budget_used = int(session.v1_question_budget_used or 0)
+    last_focus = session.v1_last_focus_key
+    low_streak = int(session.v1_low_info_streak or 0)
+    #: 兼容旧字段:模型/测试可能只给 `question`。
+    proposed_question = (assessment.critical_question or assessment.question or "").strip()
+    same_focus_repeat = bool(
+        proposed_question and assessment.focus_key and assessment.focus_key == last_focus
+    )
+    budget_exhausted = budget_used >= MAX_V1_QUESTIONS
+    force_options = low_streak >= 2
+    question_accepted = bool(proposed_question) and not (
+        same_focus_repeat or budget_exhausted or force_options
+    )
+
+    if force_options:
+        # 用户连续两轮答不上来:不再问,强制给候选方向或退回暂定综合。
+        response_mode = "offer_options" if assessment.candidate_directions else "provisional_synthesis"
+    else:
+        response_mode = assessment.response_mode
+
+    if assessment.candidate_directions:
+        session.v1_candidate_directions = [
+            {"key": d.key, "title": d.title, "reason": d.reason, "path": d.path}
+            for d in assessment.candidate_directions
+        ]
+
+    if assessment.focus_key:
+        session.v1_focus_key = assessment.focus_key
+        session.v1_focus_reason = assessment.focus_reason or None
+    if question_accepted:
+        session.v1_question = proposed_question
+        session.v1_last_focus_key = assessment.focus_key
+        session.v1_question_budget_used = budget_used + 1
+    else:
+        session.v1_question = None
     if session.v1_stage == V1_INITIAL_THINKING:
         session.v1_stage = V1_GOAL_REFRAME
     session.phase = ReasoningSessionPhase.ROADMAP_DRAFT
@@ -524,7 +726,32 @@ async def _run_assessment(
     session.v1_status = V1_STATUS_IDLE
     session.v1_error = None
 
-    # ---- 审计:全局判断 / 关键问题 / 节点更新 / 战略草案 ----
+    # ---- 审计:战略判断 / 关键问题 / 候选方向 / 节点更新 / 战略草案 ----
+    await _audit(
+        db,
+        ctx,
+        session,
+        "strategic_thesis_generated",
+        trigger="user_message",
+        stage_before=stage_before,
+        stage_after=session.v1_stage,
+        focus_key=session.v1_focus_key,
+        focus_reason=session.v1_focus_reason,
+        source=result.source.value if result.source else None,
+        summary=thesis,
+        payload={
+            "strategicThesis": thesis,
+            "keyDimensions": [
+                {
+                    "key": dimension.key,
+                    "judgment": dimension.judgment,
+                    "whyItMatters": dimension.why_it_matters,
+                }
+                for dimension in assessment.key_dimensions
+            ],
+            "responseMode": response_mode,
+        },
+    )
     await _audit(
         db,
         ctx,
@@ -536,19 +763,53 @@ async def _run_assessment(
         focus_key=session.v1_focus_key,
         focus_reason=session.v1_focus_reason,
         source=result.source.value if result.source else None,
-        summary=assessment.global_assessment,
-        payload={"globalAssessment": assessment.global_assessment},
+        summary=thesis,
+        payload={"globalAssessment": assessment.global_assessment or thesis},
     )
-    if session.v1_question and session.v1_question != question_before:
+    if question_accepted:
         await _audit(
             db,
             ctx,
             session,
             "global_question_asked",
             trigger="user_message",
+            stage_before=stage_before,
+            stage_after=session.v1_stage,
+            focus_key=assessment.focus_key,
+            focus_reason=assessment.focus_reason or None,
+            summary=proposed_question,
+            payload={
+                "question": proposed_question,
+                "focus": assessment.focus_key,
+                "reason": assessment.focus_reason,
+                "responseMode": response_mode,
+            },
+        )
+    if assessment.candidate_directions:
+        await _audit(
+            db,
+            ctx,
+            session,
+            "candidate_directions_offered",
+            stage_before=stage_before,
+            stage_after=session.v1_stage,
             focus_key=session.v1_focus_key,
-            summary=session.v1_question,
-            payload={"question": session.v1_question, "focus": session.v1_focus_key},
+            summary="给出候选方向,由用户选择、修正或否定。",
+            payload={
+                "candidateDirections": [
+                    {"key": d.key, "title": d.title, "reason": d.reason, "path": d.path}
+                    for d in assessment.candidate_directions
+                ]
+            },
+        )
+    if response_mode == "provisional_synthesis":
+        await _audit(
+            db,
+            ctx,
+            session,
+            "provisional_synthesis_created",
+            summary=thesis,
+            payload={"strategicThesis": thesis},
         )
     node_updates = [
         {
@@ -568,7 +829,7 @@ async def _run_assessment(
             ctx,
             session,
             "node_analysis_updated",
-            trigger="user_message",
+            trigger="question_answered" if is_local_discussion else "user_message",
             focus_key=session.v1_focus_key,
             summary=f"更新了 {len(node_updates)} 个分析节点。",
             payload={"nodeUpdates": node_updates},
@@ -622,7 +883,37 @@ async def answer_v1_in_conversation(
     if root is not None:
         await _create_containers(db, ctx, root)
 
-    # ---- 审计:用户输入 / 紫色问题回答 ----
+    # ---- P2.1 输入分类:元对话 / 情绪 / 对 AI 的反馈不是战略事实 ----
+    classification = classify_user_message(content)
+    is_local_discussion = trigger == "question_answered" or context_node_id is not None
+    await _audit(
+        db,
+        ctx,
+        session,
+        "user_message_received",
+        trigger=trigger,
+        stage_before=session.v1_stage,
+        focus_key=session.v1_focus_key,
+        summary=content,
+        payload={"classification": classification, "isLocalDiscussion": is_local_discussion},
+    )
+    if classification == INPUT_CONVERSATION_FEEDBACK:
+        await _audit(
+            db,
+            ctx,
+            session,
+            "conversation_feedback_received",
+            trigger=trigger,
+            summary=content,
+            payload={"classification": classification},
+        )
+    # 连续低信息 / 元对话回答计数:>=2 时服务端强制给候选方向或暂定综合。
+    if _counts_as_low_info(classification):
+        session.v1_low_info_streak = int(session.v1_low_info_streak or 0) + 1
+    else:
+        session.v1_low_info_streak = 0
+
+    # ---- 审计:首轮提交 / 紫色问题回答 ----
     if session.v1_stage == V1_INITIAL_THINKING:
         await _audit(
             db,
@@ -633,7 +924,7 @@ async def answer_v1_in_conversation(
             stage_before=V1_INITIAL_THINKING,
             summary=content,
         )
-    elif trigger == "question_answered" or context_node_id is not None:
+    elif is_local_discussion:
         await _audit(
             db,
             ctx,
@@ -650,6 +941,8 @@ async def answer_v1_in_conversation(
         session,
         user_message=content,
         reasoner=reasoner,
+        classification=classification,
+        is_local_discussion=is_local_discussion,
         exclude_message_id=user_message.id,
     )
     message = await _append_assistant(
@@ -1352,6 +1645,31 @@ async def weekend_review(
     return await generate_replan(db, ctx, session, trace=trace)
 
 
+async def select_candidate_direction(
+    db: AsyncSession, ctx: WorkspaceContext, session: GoalReasoningSession, key: str
+) -> AgentTurnResponse:
+    """用户选择一个候选方向(纠正/选择/否定 AI 给出的解释)。"""
+    from backend.services.errors import InvalidInput
+
+    directions = [d for d in (session.v1_candidate_directions or []) if isinstance(d, dict)]
+    valid = {str(d.get("key")) for d in directions}
+    if key not in valid:
+        await _guard_reject(db, ctx, session, reason="没有这个候选方向。")
+        raise InvalidInput("没有这个候选方向。")
+    session.v1_selected_direction = key
+    await _audit(
+        db,
+        ctx,
+        session,
+        "candidate_direction_selected",
+        focus_key=session.v1_focus_key,
+        summary=f"用户选择了候选方向:{key}。",
+        payload={"directionKey": key},
+    )
+    await db.commit()
+    return await reasoning_service._response(db, ctx, session, changed=True)
+
+
 # =================================================================================
 # 自动推进与战略确认
 # =================================================================================
@@ -1451,6 +1769,7 @@ __all__ = [
     "V1_WEEKLY_EXECUTION",
     "advance",
     "answer_v1_in_conversation",
+    "classify_user_message",
     "confirm_strategy",
     "generate_coarse_timeline",
     "generate_daily_plan",
@@ -1459,5 +1778,6 @@ __all__ = [
     "is_v1",
     "on_proposal_confirmed",
     "record_feedback",
+    "select_candidate_direction",
     "weekend_review",
 ]

@@ -253,7 +253,12 @@ OUTPUT_CONFIG: dict[str, Any] = {
         "description": "V1 战略判断(仅 v1_strategy 回合使用)",
         "properties": {
             "globalAssessment": {"type": "string"},
+            "strategicThesis": {"type": "string"},
+            "keyDimensions": {"type": "array"},
             "nodeUpdates": {"type": "array"},
+            "responseMode": {"type": "string"},
+            "criticalQuestion": {"type": "string"},
+            "candidateDirections": {"type": "array"},
             "focusKey": {"type": "string"},
             "focusReason": {"type": "string"},
             "question": {"type": "string"},

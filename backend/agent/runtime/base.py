@@ -651,27 +651,58 @@ class V1NodeUpdate:
 
 
 @dataclass(frozen=True, slots=True)
+class V1KeyDimension:
+    """P2.1:AI 对某个**已有分析节点**的暂定判断 + 为什么它影响战略。最多 3 个。"""
+
+    key: str
+    judgment: str = ""
+    why_it_matters: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class V1CandidateDirection:
+    """P2.1:用户无法回答时,AI 主动给出的候选方向(最多 3 个,可被用户选/改/否)。"""
+
+    key: str
+    title: str
+    reason: str = ""
+    path: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class V1AssessmentDraft:
-    """规划智能体 V1(P2)一轮的**受限输出**。
+    """规划智能体 V1 一轮的**受限输出**(P2.1:战略判断优先)。
 
     ## 它是“建议”,不是“命令”
 
     服务端决定接受哪些、写入多少、是否创建战略子节点。这里没有任务、日期、周/日
     计划或正式排期字段 —— 那些在结构上就写不出来。
 
-    ## 一次最多一个全局问题
+    ## 先给判断,再决定要不要问
 
-    `question` 单数。模型想多问也只能给一个;要问的必须是会改变目标定义、关键杠杆、
-    战略路径或粗时间范围的问题。
+    `strategic_thesis` 是**AI 自己的暂定理解**;`critical_question` 默认可为空 ——
+    只有当两个不同答案会显著改变战略路径/阶段顺序/成果定义时才允许存在。
+    用户不能回答时,`response_mode=offer_options` + `candidate_directions` 让 AI 主动
+    给候选方向,由用户纠正/选择/否定,而不是换一种同义问法继续追问。
     """
 
     #: 当前整体判断(2–4 句,可审阅结论,不含隐藏思维链)。
     global_assessment: str = ""
+    #: P2.1:战略判断(优先展示)。为空时回落到 `global_assessment`。
+    strategic_thesis: str = ""
+    #: P2.1:最多 3 个关键分析维度的暂定判断。
+    key_dimensions: tuple[V1KeyDimension, ...] = ()
     node_updates: tuple[V1NodeUpdate, ...] = ()
     focus_key: str | None = None
     focus_reason: str = ""
-    #: 一轮最多一个。
+    #: P2.1:`none | ask | offer_options | provisional_synthesis | ready_for_strategy`。
+    response_mode: str = "none"
+    #: 一轮最多一个关键问题。
+    critical_question: str = ""
+    #: 旧字段,仍兼容:等同于 `critical_question`。
     question: str = ""
+    #: P2.1:用户无法回答时的候选方向(最多 3 个)。
+    candidate_directions: tuple[V1CandidateDirection, ...] = ()
     #: 战略取舍:为什么选择这条路线而不是另一条(战略路径成形时才有意义)。
     strategy_tradeoff: str = ""
     #: 模型自报“信息已足够形成战略路径”。服务端仍按自己的条件再判一次。
