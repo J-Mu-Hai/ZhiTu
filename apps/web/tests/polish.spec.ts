@@ -202,7 +202,7 @@ test('工作台与 AI 面板的静态画质（1440）', async ({ page }) => {
   // 时间线。它是这一页里唯一从上往下排的视图,也是"工具栏会不会被浮动组件盖住"
   // 那条几何用例盯着的画面 —— 图在这里,断言在 `timeline.spec.ts`。
   await page.getByRole('tab', { name: '时间线', exact: true }).click();
-  await expect(page.getByRole('group', { name: '时间尺度' })).toBeVisible();
+  await expect(page.getByTestId('timeline-view')).toBeVisible();
   await settle(page);
   await page.screenshot({ path: artifactPath('polish-timeline-1440.png') });
 

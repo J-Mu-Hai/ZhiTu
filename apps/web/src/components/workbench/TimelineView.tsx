@@ -1,9 +1,9 @@
 'use client';
 import { useState, useRef, useEffect, useMemo, type CSSProperties, type PointerEvent } from 'react';
-import { ChevronLeft, ChevronRight, Minus, Plus, CalendarDays, X, Flag, Circle, Target } from 'lucide-react';
+import { CalendarDays, CalendarClock, X, Flag, Circle, Target } from 'lucide-react';
 import type { GrowthNode } from '@/types/growth';
 import { useDemo } from '@/features/growth/provider';
-import { anchoredZoom, dateString, dateToX, dayNumber, getVisibleItems, layoutItems, timelineItems, timelineTicks, unscheduledNodes, zoomLabels, zoomLevelFor, zoomPresets, todayInTimeZone, type TimelineItem, type ZoomLevel } from '@/features/growth/timeline';
+import { anchoredZoom, dateString, dateToX, dayNumber, getVisibleItems, layoutItems, timelineItems, timelineTicks, unscheduledNodes, zoomLevelFor, todayInTimeZone, type TimelineItem } from '@/features/growth/timeline';
 import styles from './TimelineView.module.css';
 
 const colors = { academic: '#749ce1', research: '#61ad9e', experience: '#c7a06e', personal: '#a294ce' };
@@ -48,11 +48,8 @@ const rangeLabel = (item: TimelineItem) => {
 /**
  * 卡片下面那行小字。
  *
- * 抽出来是因为这里原来是一条七层嵌套的三元表达式,而"截止日的节点"需要多一档 ——
- * 再往那个链子里塞一层,下一个改它的人只会把顺序改错。**顺序是有意义的**:
- * 推导出来的范围 > 已完成 > 截止日 > 描述 > 兜底。
- *
- * 最前面原来还有一档"建议安排 · 等待接受",对应的是示例空间那份**本地**提案的
+ * **顺序是有意义的**:推导出来的范围 > 已完成 > 截止日 > 描述 > 兜底。
+ * 最前面原来还有一档"建议安排 · 等待接受",对应的是示例空间那份本地提案的
  * 预览态。它没有了:卡片现在画的永远是计划里真实的那一天。
  */
 function cardNote(item: TimelineItem, viewportStart: number): string {
@@ -63,38 +60,49 @@ function cardNote(item: TimelineItem, viewportStart: number): string {
   if (item.start < viewportStart) return '此前开始 · 持续进行';
   return item.node.description ?? (item.kind === 'milestone' ? '重要节点' : item.kind === 'duration' ? '持续安排' : '当日行动');
 }
+
 /** 画布上唯一还在的手势:平移。拖动卡片改日期的那一支已经删掉了(见 `beginItem`)。 */
 type Gesture = { x: number; start: number };
 
+/**
+ * 成长时间线(阶段 9:中央唯一时间轴)。
+ *
+ * ## 这一版删掉了什么、为什么
+ *
+ * 上一版有四组"第二套时间表达":左上尺度按钮、右上导航/缩放控制组、顶部独立 ruler、
+ * 底部 overview 蓝色覆盖条。它们的共同问题是**同一条时间被画了两遍**,而且与工作台
+ * 暖白主题不统一。这一版只留画布中央一条主轴,年/月/周刻度、今天标记、任务锚点
+ * 全部围绕它排布。
+ *
+ * ## 删控件 ≠ 删能力
+ *
+ * 鼠标/触控板拖动平移、Ctrl/⌘+滚轮缩放、方向键平移、`+`/`-` 缩放、`Home` 回到今天
+ * **全部保留**(见下面的 wheel 监听与 `onKeyDown`)。当前尺度由 `density` 自动推断,
+ * 日期刻度按密度自适应,不需要用户先选"月/周"。交互说明只在 `aria-describedby` 里
+ * 说一次,不再用一条常驻说明占空间。
+ */
 export function TimelineView() {
   const { growth, selectedId, select, apply, updateNode, spaceId, isRealSpace, planError, timelineViewport: viewport, setTimelineViewport: setViewport } = useDemo();
   // 每次渲染重新算一次。它只在跨过午夜时才会变,而这个组件本来就会因为别的原因
   // 重渲染很多次 —— 为它加一个定时器是没必要的复杂度。
   const today = dayNumber(todayInTimeZone());
-  /*
-   * **"看到哪一段、放多大"存在 Provider 里,不在这里。**
-   *
-   * 它以前是一个 `useState`。而工作台的四个视图是一个三元表达式:切一下页签,这个组件
-   * 连同它的 state 一起没了 —— 于是从时间线切到排期再切回来,时间线跳回今天、缩放
-   * 回到默认。这不是"重新算一次"的问题,是**用户刚才的视角被丢掉了**。
-   * 存到 Provider(它的 key 是空间 id)之后:同一个空间里怎么切都在,
-   * 换空间才重新开始 —— 那正是该有的边界。
-   */
 
   const [size, setSize] = useState({ width: 760, height: 570 });
   const [measured, setMeasured] = useState(false);
   const [hovered, setHovered] = useState<string | null>(null);
   const [clusterOpen, setClusterOpen] = useState(false);
+  const [unscheduledOpen, setUnscheduledOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editingDeadline, setEditingDeadline] = useState(false);
   const [deadlineInput, setDeadlineInput] = useState('');
   const [startInput, setStartInput] = useState(''), [endInput, setEndInput] = useState('');
   const canvas = useRef<HTMLDivElement>(null);
   const gesture = useRef<Gesture | null>(null);
-  const overviewGesture = useRef<{ x: number; start: number; daysPerPixel: number } | null>(null);
   const { start, density } = viewport;
   const level = zoomLevelFor(density), end = start + size.width / density;
-  const axisY = Math.max(215, size.height * .53), layers = size.height >= 600 ? 2 : 1;
+  // **中央唯一主轴**:卡片从中轴上下错开,引线连到轴上。
+  const axisY = Math.max(150, size.height * .5);
+  const layers = size.height >= 600 ? 2 : 1;
   const cardWidth = Math.min(164, Math.max(126, size.width * .23));
   const all = useMemo(() => timelineItems(growth, spaceId), [growth, spaceId]);
   // 这段时间线上画不出来的节点。它们没有消失,只是没日期 —— 见 `unscheduledNodes`。
@@ -109,10 +117,6 @@ export function TimelineView() {
   const years = Array.from({ length: new Date(end * 86400000).getUTCFullYear() - firstYear + 1 }, (_, i) => firstYear + i);
   const x = (day: number) => dateToX(day, start, density);
   const selected = selectedId ? growth.nodes[selectedId] : null;
-  const overviewStart = Math.min(today - 30, start, ...all.map(i => i.start - 20));
-  const overviewEnd = Math.max(today + 90, end, ...all.map(i => i.end + 20));
-  const overviewSpan = overviewEnd - overviewStart;
-  const overviewPercent = (day: number) => (day - overviewStart) / overviewSpan * 100;
 
   useEffect(() => {
     const element = canvas.current;
@@ -125,7 +129,7 @@ export function TimelineView() {
     const element = canvas.current;
     if (!element) return;
     const wheel = (event: WheelEvent) => {
-      if ((event.target as HTMLElement).closest('[data-cluster-panel]')) return;
+      if ((event.target as HTMLElement).closest('[data-cluster-panel],[data-unscheduled-panel]')) return;
       event.preventDefault();
       if (event.ctrlKey || event.metaKey) {
         const anchor = event.clientX - element.getBoundingClientRect().left;
@@ -134,12 +138,7 @@ export function TimelineView() {
     };
     element.addEventListener('wheel', wheel, { passive: false });
     return () => element.removeEventListener('wheel', wheel);
-    // `setViewport` 现在是 Provider 里那个 `useState` 的 setter,身份稳定 ——
-    // 写进依赖数组不会让监听器重挂,只是把这件事说明白。
   }, [setViewport]);
-  // 这里原本还有一个 effect:打开一份"本地提案"时把视口框到它涉及的那几天。
-  // 那份提案是示例空间在浏览器里编的,现在没有了 —— 后端的提案走的是下面
-  // 那条"确认后重拉计划"的路,不需要预览框。
 
   function zoomTo(nextDensity: number) {
     const next = Math.max(.25, Math.min(160, nextDensity));
@@ -151,17 +150,9 @@ export function TimelineView() {
    * 点在卡片上 —— **只选中,不开始拖动。**
    *
    * 这里原来还能把卡片横着拖几天,拖完把 `startDate`/`endDate` 推到别处。那条路
-   * 现在整个删了,两个原因都成立:
-   *
-   * 1. 它改的是一场真实存在的安排,而写入路径是「排期」(哪一天、多长时间),
-   *    不是把 `startDate` 往前推几天 —— 后端根本没有这个字段。真正会写下去的
-   *    只有 `deadline`,而那是**截止日**,悄悄拿它当排期用会改掉用户设的截止时间,
-   *    界面上的说辞却是"调整了安排"。
-   * 2. 它原来是配合"本地提案预览"用的(拖一下 → 出一份提案 → 用户点接受才生效),
-   *    而那份提案是示例空间在浏览器内存里编的。示例空间删掉之后没有预览可给了。
-   *
-   * 让它拖起来再报错,不如**根本不开始拖** —— 手感上"拖不动"比"拖完了才说不支持"
-   * 少一次白费的动作。改安排请走工作台的「排期」。
+   * 现在整个删了:它改的是一场真实存在的安排,而写入路径是「排期」,不是把日期推
+   * 几天 —— 后端根本没有这个字段。真正会写下去的只有 `deadline`,而那是**截止日**,
+   * 悄悄拿它当排期用会改掉用户设的截止时间,界面上的说辞却是"调整了安排"。
    */
   function beginItem(event: PointerEvent<HTMLButtonElement>, item: TimelineItem) {
     event.stopPropagation(); choose(item.node.id);
@@ -172,35 +163,23 @@ export function TimelineView() {
     if (drag) setViewport(v => ({ ...v, start: drag.start - (event.clientX - drag.x) / v.density }));
   }
   function finish() { gesture.current = null; }
-  function beginOverview(event: PointerEvent<HTMLDivElement>) {
-    if (event.button !== 0) return;
-    const rect = event.currentTarget.getBoundingClientRect(), daysPerPixel = overviewSpan / rect.width;
-    const nextStart = (event.target as HTMLElement).closest('[data-viewport]') ? start : overviewStart + (event.clientX - rect.left) * daysPerPixel - size.width / density / 2;
-    overviewGesture.current = { x: event.clientX, start: nextStart, daysPerPixel };
-    event.currentTarget.setPointerCapture(event.pointerId); setViewport(v => ({ ...v, start: nextStart }));
-  }
   function reveal(item: TimelineItem) { choose(item.node.id); setClusterOpen(false); setViewport(v => ({ ...v, start: item.start - size.width / v.density * .35 })); }
   return <div className={styles.view} data-testid="timeline-view" data-zoom={level}>
-    <div className={styles.toolbar}>
-      <div className={styles.scales} role="group" aria-label="时间尺度">{(Object.keys(zoomPresets) as ZoomLevel[]).map(z => <button key={z} aria-pressed={level === z} className={level === z ? styles.active : ''} onClick={() => zoomTo(zoomPresets[z])}>{zoomLabels[z]}</button>)}</div>
-      <div className={styles.controls}><button aria-label="上一时段" onClick={() => setViewport(v => ({ ...v, start: v.start - size.width / density * .7 }))}><ChevronLeft size={14}/></button><button aria-label="缩小时间线" onClick={() => zoomTo(density / 1.5)}><Minus size={14}/></button><input aria-label="时间线缩放" type="range" min={Math.log(.25)} max={Math.log(160)} step="0.01" value={Math.log(density)} onChange={e => zoomTo(Math.exp(Number(e.target.value)))}/><button aria-label="放大时间线" onClick={() => zoomTo(density * 1.5)}><Plus size={14}/></button><button onClick={() => setViewport(v => ({ ...v, start: today - size.width / v.density * .28 }))}>今天</button><button aria-label="下一时段" onClick={() => setViewport(v => ({ ...v, start: v.start + size.width / density * .7 }))}><ChevronRight size={14}/></button></div>
-    </div>
-    <div className={styles.hint}>
-      <span>拖动空白平移 · Ctrl / ⌘ + 滚轮缩放 · 卡片画的是已排的日期与截止时间，改安排请用「排期」</span>
-      <span>{level === 'year' ? '目标与重要节点' : level === 'quarter' ? '阶段与主要安排' : level === 'month' ? '任务与里程碑' : level === 'week' ? '本周的具体安排' : '每天的小行动'}</span>
-    </div>
-    {planError && <div className={styles.hint} role="alert"><span>{planError}</span></div>}
-    <div ref={canvas} className={styles.canvas} role="region" aria-label="成长时间线，方向键平移，加减键缩放" tabIndex={0} data-testid="timeline-canvas" data-ready={measured} data-start={start} data-density={density}
-      onPointerDown={e => { if (e.button !== 0 || (e.target as HTMLElement).closest('button,input,[data-cluster-panel]')) return; e.currentTarget.setPointerCapture(e.pointerId); gesture.current = { x: e.clientX, start }; setClusterOpen(false); }}
+    {/* 交互说明只说一次,而且是给读屏的;**不再用常驻说明条占空间**。 */}
+    <p id="timeline-help" className={styles.srOnly}>拖动空白平移，Ctrl 或 Command 加滚轮缩放，方向键平移，加号减号缩放，Home 回到今天。改具体安排请用「排期」。</p>
+    {planError && <div className={styles.error} role="alert"><span>{planError}</span></div>}
+    <div ref={canvas} className={styles.canvas} role="region" aria-label="成长时间线" aria-describedby="timeline-help" tabIndex={0} data-testid="timeline-canvas" data-ready={measured} data-start={start} data-density={density}
+      onPointerDown={e => { if (e.button !== 0 || (e.target as HTMLElement).closest('button,input,[data-cluster-panel],[data-unscheduled-panel]')) return; e.currentTarget.setPointerCapture(e.pointerId); gesture.current = { x: e.clientX, start }; setClusterOpen(false); setUnscheduledOpen(false); }}
       onPointerMove={move} onPointerUp={finish} onPointerCancel={finish}
       onKeyDown={e => { if (e.target !== e.currentTarget) return; if (['ArrowLeft', 'ArrowRight', '+', '=', '-', 'Home'].includes(e.key)) e.preventDefault(); if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') setViewport(v => ({ ...v, start: v.start + (e.key === 'ArrowLeft' ? -1 : 1) * size.width / density * .2 })); if (e.key === '+' || e.key === '=') zoomTo(density * 1.5); if (e.key === '-') zoomTo(density / 1.5); if (e.key === 'Home') setViewport(v => ({ ...v, start: today - size.width / density * .28 })); }}>
-      <div className={styles.ruler}/>{years.map(year => <span key={year} className={styles.year} style={{ left: Math.max(18, x(dayNumber(`${year}-01-01`)) + 6) }}>{year}</span>)}
-      {ticks.map(t => <div key={t.day} className={`${styles.tick} ${t.major ? styles.majorTick : ''}`} style={{ left: x(t.day) }}>{t.major && <span className={styles.tickLabel}>{t.label}</span>}</div>)}
+      {/* 唯一的时间轴。年份、刻度、今天、任务锚点都围绕它。 */}
       <div className={styles.axis} style={{ top: axisY }}/><div className={styles.past} style={{ top: axisY, width: Math.max(0, Math.min(size.width, x(today))) }}/><span className={styles.axisEnd} style={{ top: axisY }}>›</span>
-      {x(today) >= 0 && x(today) <= size.width && <div className={styles.today} style={{ left: x(today) }} data-testid="today-marker"><span className={styles.todayLabel}>{shortDate(today)}<strong>今天</strong></span><span className={styles.todayDot} style={{ top: axisY - 86 }}/></div>}
+      {years.map(year => <span key={year} className={styles.year} style={{ left: Math.max(18, x(dayNumber(`${year}-01-01`)) + 6), top: axisY - 24 }}>{year}</span>)}
+      {ticks.map(t => <div key={t.day} className={`${styles.tick} ${t.major ? styles.majorTick : ''}`} style={{ left: x(t.day), top: axisY }}>{t.major && <span className={styles.tickLabel}>{t.label}</span>}</div>)}
+      {x(today) >= 0 && x(today) <= size.width && <div className={styles.today} style={{ left: x(today), top: 6, bottom: 6 }} data-testid="today-marker"><span className={styles.todayLabel}>{shortDate(today)}<strong>今天</strong></span><span className={styles.todayDot} style={{ top: axisY - 9 }}/></div>}
       {placed.map(({ item, x: anchorX, left, lane, rangeLane }) => {
         const id = item.node.id, upper = lane % 2 === 0;
-        const cardY = upper ? axisY - 112 - Math.floor(lane / 2) * 86 : axisY + 45 + Math.floor(lane / 2) * 86;
+        const cardY = upper ? axisY - 108 - Math.floor(lane / 2) * 86 : axisY + 40 + Math.floor(lane / 2) * 86;
         const color = item.node.category ? colors[item.node.category] : '#829dc5';
         const rangeY = axisY + 7 + rangeLane * 4;
         const Icon = item.kind === 'milestone' ? Flag : item.kind === 'goal' ? Target : Circle;
@@ -212,29 +191,33 @@ export function TimelineView() {
           <button data-timeline-card className={`${styles.card} ${item.kind !== 'duration' ? styles.eventCard : ''}`} style={{ left, top: cardY, width: cardWidth }} aria-label={`${item.node.title}，${dateString(item.start)}至${dateString(item.end)}`} aria-pressed={selectedId === id} title={`${item.node.title} · ${dateString(item.start)} — ${dateString(item.end)}${item.derived ? '（根据子任务推导）' : ''}`} onClick={() => choose(id)} onPointerDown={e => beginItem(e, item)}>
             <time><Icon size={11}/>{rangeLabel(item)}</time><strong>{item.node.title}</strong><small>{cardNote(item, start)}</small>
           </button>
-          {(hovered === id || selectedId === id) && item.start >= start && <div className={styles.hoverDate} style={{ left: anchorX }}><span>{shortDate(item.start)}</span></div>}
+          {(hovered === id || selectedId === id) && item.start >= start && <div className={styles.hoverDate} style={{ left: anchorX, top: axisY - 21 }}><span>{shortDate(item.start)}</span></div>}
         </div>;
       })}
       {hidden.length > 0 && <button className={styles.cluster} style={{ left: size.width / 2, top: axisY + 19 }} aria-expanded={clusterOpen} onClick={() => setClusterOpen(!clusterOpen)}>另有 {hidden.length} 项 · 展开</button>}
       {clusterOpen && hidden.length > 0 && <div className={styles.clusterPanel} data-cluster-panel onPointerDown={e => e.stopPropagation()}><header>同一时段的其他安排<button aria-label="关闭其他安排" onClick={() => setClusterOpen(false)}><X size={14}/></button></header>{hidden.map(item => <button key={item.node.id} onClick={() => reveal(item)}>{item.node.title}<small>{dateString(item.start)} — {dateString(item.end)}</small></button>)}</div>}
-      {/* 底下那条"没有日期的节点"和这句话抢同一个位置,所以它出现时把这句话往上抬。 */}
-      {!placed.length && <p className={`${styles.empty} ${unscheduled.length ? styles.emptyWithNotice : ''}`}>这段时间暂无{level === 'day' ? '执行事项' : '安排'}，可以平移查看其他时间或切换尺度。</p>}
-      {/* 画不出来的节点。**必须出现在界面上。** 时间线上有 3 项、任务列表里有 11 项,
-          而用户没有任何别的办法知道少的那 8 项去哪了 —— 他会以为计划就是那 3 项。 */}
+      {!placed.length && <p className={`${styles.empty} ${unscheduled.length ? styles.emptyWithNotice : ''}`}>这段时间暂无{level === 'day' ? '执行事项' : '安排'}，可以平移查看其他时间。</p>}
+      {/*
+       * 画不出来的节点。**必须能发现,但不能占一整条底部横幅。**
+       *
+       * 时间线上有 3 项、任务列表里有 11 项,而用户没有任何别的办法知道少的那 8 项
+       * 去哪了 —— 他会以为计划就是那 3 项。所以留一个低干扰的小入口,点开是节点列表,
+       * 点列表里的一项会选中并把它带进视野。
+       */}
       {unscheduled.length > 0 && (
-        <div className={styles.unscheduled} data-testid="unscheduled-items" role="status">
-          <span className={styles.unscheduledLabel}>还有 {unscheduled.length} 项没有日期，暂不在时间线上</span>
-          <span className={styles.unscheduledList}>
-            {unscheduled.slice(0, 6).map(node => <button key={node.id} onClick={() => choose(node.id)}>{node.title}</button>)}
-            {unscheduled.length > 6 && <span>…等 {unscheduled.length} 项</span>}
-          </span>
-          <span className={styles.unscheduledHint}>给它们加上截止时间，或者用「排期」把它们排到具体某天，就会出现在这里。</span>
+        <div className={styles.unscheduled} data-testid="unscheduled-items">
+          <button type="button" className={styles.unscheduledToggle} aria-expanded={unscheduledOpen} onClick={() => setUnscheduledOpen(!unscheduledOpen)}>
+            <CalendarClock size={12}/>未排期 {unscheduled.length} 项
+          </button>
+          {unscheduledOpen && (
+            <div className={styles.unscheduledPanel} data-unscheduled-panel onPointerDown={e => e.stopPropagation()}>
+              <header>还没有日期的节点<button aria-label="关闭未排期列表" onClick={() => setUnscheduledOpen(false)}><X size={14}/></button></header>
+              {unscheduled.map(node => <button key={node.id} type="button" onClick={() => { choose(node.id); setUnscheduledOpen(false); }}>{node.title}</button>)}
+              <p>给它们加上截止时间，或者用「排期」把它们排到具体某天，就会出现在时间线上。</p>
+            </div>
+          )}
         </div>
       )}
-    </div>
-    <div className={styles.overview} aria-label="整个计划的时间概览" data-testid="timeline-overview" onPointerDown={beginOverview} onPointerMove={e => { const drag = overviewGesture.current; if (drag) setViewport(v => ({ ...v, start: drag.start + (e.clientX - drag.x) * drag.daysPerPixel })); }} onPointerUp={() => { overviewGesture.current = null; }} onPointerCancel={() => { overviewGesture.current = null; }}>
-      <div className={styles.overviewLine}/><span className={styles.overviewYear} style={{ left: 12 }}>{dateString(overviewStart).slice(0,4)}</span><span className={styles.overviewYear} style={{ right: 12 }}>{dateString(overviewEnd).slice(0,4)}</span>{all.filter(i => i.node.type !== 'goal').map(item => <span key={item.node.id} className={styles.overviewDot} style={{ left: `${overviewPercent(item.start)}%`, background: item.node.category ? colors[item.node.category] : undefined }}/>) }
-      <div data-viewport className={styles.viewport} style={{ left: `${overviewPercent(start)}%`, width: `${(end - start) / overviewSpan * 100}%` }} role="slider" tabIndex={0} aria-label="概览视窗位置" aria-valuemin={Math.floor(overviewStart)} aria-valuemax={Math.ceil(overviewEnd)} aria-valuenow={Math.round(start)} aria-valuetext={`${dateString(start)} 至 ${dateString(end)}`} onKeyDown={e => { if (['ArrowLeft','ArrowRight','Home','End'].includes(e.key)) { e.preventDefault(); setViewport(v => ({ ...v, start: e.key === 'Home' ? overviewStart : e.key === 'End' ? overviewEnd - size.width / density : v.start + (e.key === 'ArrowLeft' ? -1 : 1) * size.width / density * .2 })); } }}/>
     </div>
     {selectedSource && <div className={styles.inspector} data-testid="date-inspector">
       {/* 截止日说的是"截止 2026-10-23",不是一个区间。印成 `2026-10-23 → 2026-10-23`

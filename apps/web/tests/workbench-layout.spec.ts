@@ -115,7 +115,7 @@ test('一处发出的消息，收起对话、换视图之后仍然在同一份�
   await page.getByRole('button', { name: '让对话内容消失' }).click();
   await expect(field).toBeHidden();
   await page.getByRole('tab', { name: '时间线', exact: true }).click();
-  await expect(page.getByRole('group', { name: '时间尺度' })).toBeVisible();
+  await expect(page.getByTestId('timeline-view')).toBeVisible();
   await page.getByRole('button', { name: '展开对话' }).click();
   await page.getByLabel('给 AI 的消息').fill('继续讨论');
   await page.getByRole('button', { name: '发送消息', exact: true }).click();

@@ -1,16 +1,31 @@
-.view{height:100%;display:flex;flex-direction:column;min-width:0;overflow:hidden;background:#edf2f8}
-/* 顶边不是普通内边距,是**给浮动集群让位**的高度 —— 见本文件末尾那段注。 */
-.toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:var(--float-clear,68px) 24px 12px;flex-wrap:wrap}
-.scales,.controls{display:flex;align-items:center;gap:3px}.scales{border:1px solid #edf2f8;border-radius:7px;padding:3px;background:#edf2f8}.scales button{padding:7px 12px;font-size:11px;color:#405c7d;border-radius:4px}.scales .active{background:#edf2f8;color:#405c7d}.controls button{height:29px;min-width:29px;border:1px solid #edf2f8;border-radius:5px;font-size:11px;color:#405c7d}.controls input{width:64px;accent-color:#405c7d}.density{font-size:10px;color:#7b8faa;min-width:34px;text-align:center}.hint{font-size:10px;color:#71849f;padding:0 24px 12px;display:flex;justify-content:space-between;gap:12px;line-height:1.8}.hint span:last-child{color:#405c7d}
-.canvas{flex:1;min-height:340px;position:relative;overflow:hidden;touch-action:none;cursor:grab;outline-offset:-3px!important;user-select:none}.canvas:active{cursor:grabbing}.axis{position:absolute;left:0;right:0;height:1px;background:#cad7e6;opacity:.7;pointer-events:none}.past{position:absolute;left:0;height:1px;background:#cad7e6;pointer-events:none}.axisEnd{position:absolute;right:12px;color:#cad7e6;font-size:14px;transform:translateY(-50%)}.tick{position:absolute;top:62px;width:1px;height:6px;background:#edf2f8;pointer-events:none}.majorTick{height:10px;background:#cad7e6}.tickLabel{position:absolute;bottom:19px;left:0;transform:translateX(-50%);white-space:nowrap;color:#405c7d;font-size:11px}.year{position:absolute;top:8px;color:#405c7d;font-size:13px;letter-spacing:.05em}.ruler{position:absolute;top:62px;left:0;right:0;height:1px;background:#edf2f8}.today{position:absolute;top:83px;bottom:16px;width:1px;background:#527fab;pointer-events:none;z-index:2}.todayLabel{position:absolute;left:0;top:0;transform:translateX(-50%);border-radius:6px;background:#cad7e6;color:#405c7d;padding:6px 9px;font-size:10px;white-space:nowrap;line-height:1.6;text-align:center}.todayLabel strong{display:block;font-weight:500}.todayDot{position:absolute;width:7px;height:7px;border-radius:50%;background:#405c7d;left:-3px}
-.object{--color:#405c7d;transition:opacity .15s}.dim{opacity:.45}.lines{position:absolute;inset:0;pointer-events:none;overflow:visible;width:100%;height:100%}.connection{fill:none;stroke:var(--color);stroke-width:1;opacity:.32}.selected .connection,.object:hover .connection{opacity:.8;stroke-width:1.5}.range{stroke:var(--color);stroke-width:1;opacity:.6}.endpoint{fill:#edf2f8;stroke:var(--color);stroke-width:1}.point{position:absolute;width:24px;height:24px;transform:translate(-50%,-50%);display:grid;place-items:center;z-index:4;touch-action:none;padding:0;color:var(--color);cursor:pointer}.point::after{content:'';width:6px;height:6px;background:var(--color);border:1px solid var(--color);border-radius:50%}.milestone::after{width:9px;height:9px;border-radius:1px;transform:rotate(45deg)}.goal::after{width:12px;height:12px;border:3px double var(--color);background:#edf2f8}.selected .point::after,.point:hover::after{outline:3px solid color-mix(in srgb,var(--color) 20%,transparent)}.card{position:absolute;height:72px;text-align:left;background:#edf2f8;border:1px solid color-mix(in srgb,var(--color) 27%,#edf2f8);border-left:2px solid color-mix(in srgb,var(--color) 65%,#edf2f8);border-radius:9px;padding:9px 11px;z-index:3;overflow:hidden;cursor:pointer;touch-action:none}.card time{color:var(--color);font-size:10px;display:flex;align-items:center;gap:6px;white-space:nowrap}.card strong{display:block;font-size:12px;font-weight:500;margin-top:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.card small{display:block;font-size:9px;color:#72859f;margin-top:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.selected .card,.card:hover{border-color:var(--color);background:#edf2f8}.eventCard{background:#edf2f8}.hoverDate{position:absolute;top:62px;border-left:1px solid var(--color);height:13px;pointer-events:none}.hoverDate span{position:absolute;left:0;top:15px;transform:translateX(-50%);font-size:9px;color:var(--color);white-space:nowrap}.ghost{opacity:.35;stroke-dasharray:4 4}.ghostLabel{position:absolute;transform:translateX(-50%);font-size:9px;color:#405c7d;white-space:nowrap;pointer-events:none}.previewTag{color:#405c7d!important}.empty{position:absolute;left:20px;right:20px;bottom:24px;text-align:center;font-size:11px;color:#7489a3;pointer-events:none}.cluster{position:absolute;transform:translateX(-50%);z-index:5;border:1px solid #cad7e6;border-radius:14px;background:#edf2f8;color:#405c7d;font-size:10px;padding:5px 10px}.clusterPanel{position:absolute;right:18px;top:94px;width:235px;max-height:65%;overflow:auto;background:#edf2f8;border:1px solid #cad7e6;border-radius:9px;z-index:9;padding:12px;box-shadow:0 8px 24px #0003}.clusterPanel header{display:flex;justify-content:space-between;align-items:center;font-size:11px;color:#405c7d;margin-bottom:8px}.clusterPanel>button{display:block;width:100%;text-align:left;padding:10px 5px;border-top:1px solid #edf2f8;font-size:12px}.clusterPanel small{display:block;color:#7890af;font-size:10px;margin-top:5px}
-.overview{margin:8px 24px 16px;height:56px;min-height:56px;border:1px solid #edf2f8;border-radius:8px;position:relative;background:#edf2f8;touch-action:none;cursor:ew-resize}.overviewLine{position:absolute;left:12px;right:12px;top:29px;height:1px;background:#cad7e6}.overviewDot{position:absolute;top:27px;width:4px;height:4px;border-radius:50%;background:#7b92b1;pointer-events:none}.overviewYear{position:absolute;top:7px;font-size:9px;color:#7188a7;pointer-events:none}.viewport{position:absolute;top:3px;bottom:3px;border:1px solid #597eaf;border-radius:5px;background:#638bb00c;min-width:3px;cursor:ew-resize;touch-action:none}.viewport:before,.viewport:after{content:'';position:absolute;top:19px;height:10px;width:2px;background:#405c7d}.viewport:before{left:3px}.viewport:after{right:3px}.inspector{flex-shrink:0;display:flex;justify-content:space-between;align-items:center;padding:12px 24px;border-top:1px solid #edf2f8;background:#edf2f8;gap:12px;position:relative}.inspector strong{display:block;font-weight:500;font-size:12px}.inspector span{display:block;font-size:10px;color:#405c7d;margin-top:5px}.inspector button{font-size:11px;color:#405c7d;display:flex;align-items:center;gap:6px}.editor{position:absolute;bottom:68px;left:14px;right:14px;padding:16px;background:#edf2f8;border:1px solid #cad7e6;border-radius:8px;z-index:12;display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap}.editor label{flex:1;font-size:10px;color:#405c7d}.editor input{display:block;width:100%;min-width:120px;margin-top:5px;background:#edf2f8;border:1px solid #cad7e6;color:#405c7d;padding:7px;border-radius:4px}.editor button{padding:8px}.previewBanner{display:flex;align-items:center;justify-content:space-between;padding:9px 24px;background:#edf2f8;color:#405c7d;font-size:10px;border-bottom:1px solid #edf2f8}.previewBanner button{color:#405c7d}.previewBanner span{line-height:1.7}
-.continuation::after{width:7px;height:7px;transform:rotate(45deg);border:0;border-left:1px solid var(--color);border-bottom:1px solid var(--color);background:transparent;border-radius:0}
-/* 这一档只收横向内边距;顶边要避开的还是同一组浮动组件,位置没变,所以还是 `--float-clear`。 */
-@media(max-width:1000px){.toolbar{padding:var(--float-clear,68px) 14px 10px}.hint{padding-left:14px;padding-right:14px}.scales button{padding:6px 9px}.overview{margin-left:14px;margin-right:14px}.hint span:last-child{display:none}.controls input{width:45px}}
+/*
+ * 成长时间线(阶段 9)。
+ *
+ * ## 只有一条中央主轴
+ *
+ * 这个文件里**没有**工具栏、尺度按钮、导航/缩放控制组、顶部 ruler、底部 overview
+ * 或 viewport 覆盖条。上一版那些控件把同一条时间画了两遍,而且带出一套与工作台
+ * 暖白主题不一致的深蓝面板。现在:
+ *
+ * - 年份、刻度、今天、任务锚点全部围绕 `.axis` 那条中轴;
+ * - 卡片从中轴上下错开,用引线连到轴上的唯一时间点/段;
+ * - 交互能力(滚轮、Ctrl/⌘+滚轮、方向键、+/-、Home)都在组件里,不靠常驻控件。
+ *
+ * ## 主题
+ *
+ * 一律走 `tokens.css` 的暖白 surface / line / text / blue-ink。日期刻度按密度自适应,
+ * 不需要用户先选"月/周"。
+ */
 
-/* The timeline is its own CSS module, so it carries the warm-white and mist-blue surface system here. */
 .view {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  /* 让开工作台左上角的浮动视图切换条。删掉工具栏之后,交互画布从顶部开始 ——
+     不留这条,顶边那一块会被浮动的 `.view-tabs` 接走,看起来像"拖不动"。 */
+  padding-top: var(--float-clear, 68px);
   color: #304b62;
   background-color: #fbfaf6;
   background-image:
@@ -18,257 +33,319 @@
     linear-gradient(145deg, #fbfaf6, #f3f8fa);
 }
 
-.scales {
-  background: #edf4f7;
-  border-color: #d4e1e7;
+/* 只给读屏看的交互说明。占位 1px,不影响布局。 */
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
 }
 
-.scales button,
-.controls button {
-  color: #516c83;
+.error {
+  flex-shrink: 0;
+  margin: 12px 20px 0;
+  padding: 8px 12px;
+  border: 1px solid #f0d8c5;
+  border-radius: var(--radius-control, 9px);
+  background: #fdf2ea;
+  color: #9c5334;
+  font-size: 12px;
 }
 
-.scales .active {
-  color: #315f87;
-  background: #e4f0f8;
-  box-shadow: inset 0 0 0 1px #bfd6e5;
+.canvas {
+  flex: 1;
+  min-height: 340px;
+  position: relative;
+  overflow: hidden;
+  touch-action: none;
+  cursor: grab;
+  outline-offset: -3px !important;
+  user-select: none;
 }
+.canvas:active { cursor: grabbing; }
 
-.controls button {
-  background: #fffefa;
-  border-color: #d4e1e7;
-}
-
-.controls button:hover {
-  background: #eaf3f8;
-}
-
-.controls input {
-  accent-color: #6d9bd8;
-}
-
-.density,
-.hint,
-.empty {
-  color: #61768a;
-}
-
-.hint span:last-child,
-.tickLabel,
-.year,
-.ghostLabel,
-.previewTag {
-  color: #526f89 !important;
-}
-
-.axis,
-.past,
-.ruler,
-.majorTick,
-.overviewLine {
+/* --- 唯一的时间轴 --- */
+.axis {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
   background: #c8d9e1;
+  opacity: .85;
+  pointer-events: none;
 }
-
-.tick {
-  background: #dce6eb;
+.past {
+  position: absolute;
+  left: 0;
+  height: 1px;
+  background: #c8d9e1;
+  pointer-events: none;
 }
-
 .axisEnd {
+  position: absolute;
+  right: 12px;
   color: #7891a3;
+  font-size: 14px;
+  transform: translateY(-50%);
+}
+.tick {
+  position: absolute;
+  width: 1px;
+  height: 9px;
+  background: #dce6eb;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+.majorTick { height: 13px; background: #c8d9e1; }
+.tickLabel {
+  position: absolute;
+  top: 15px;
+  left: 0;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  color: #526f89;
+  font-size: 11px;
+}
+.year {
+  position: absolute;
+  color: #526f89;
+  font-size: 13px;
+  letter-spacing: .05em;
+  pointer-events: none;
 }
 
+/* --- 今天:克制而清晰的蓝色语义,靠线 + 点 + 文字三重表达 --- */
 .today {
+  position: absolute;
+  width: 1px;
   background: #5f8fcf;
   box-shadow: 0 0 16px rgba(83, 139, 211, .22);
+  pointer-events: none;
+  z-index: 2;
 }
-
 .todayLabel {
-  color: #315779;
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform: translateX(-50%);
+  border-radius: 6px;
   background: #e1eff9;
   border: 1px solid #bad5e7;
+  color: #315779;
+  padding: 5px 9px;
+  font-size: 10px;
+  white-space: nowrap;
+  line-height: 1.6;
+  text-align: center;
 }
-
+.todayLabel strong { display: block; font-weight: 500; }
 .todayDot {
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
   background: #79aaf0;
+  left: -3px;
 }
 
-.endpoint,
-.goal::after {
-  fill: #fffefa;
-  background: #fffefa;
+/* --- 任务锚点与卡片 --- */
+.object { --color: #405c7d; transition: opacity .15s; }
+.dim { opacity: .45; }
+.lines { position: absolute; inset: 0; pointer-events: none; overflow: visible; width: 100%; height: 100%; }
+.connection { fill: none; stroke: var(--color); stroke-width: 1; opacity: .32; }
+.selected .connection, .object:hover .connection { opacity: .8; stroke-width: 1.5; }
+.range { stroke: var(--color); stroke-width: 1; opacity: .6; }
+.endpoint { fill: #fffefa; stroke: var(--color); stroke-width: 1; }
+.point {
+  position: absolute;
+  width: 24px;
+  height: 24px;
+  transform: translate(-50%, -50%);
+  display: grid;
+  place-items: center;
+  z-index: 4;
+  touch-action: none;
+  padding: 0;
+  color: var(--color);
+  cursor: pointer;
 }
-
-.card,
-.eventCard {
+.point::after {
+  content: '';
+  width: 6px;
+  height: 6px;
+  background: var(--color);
+  border: 1px solid var(--color);
+  border-radius: 50%;
+}
+.milestone::after { width: 9px; height: 9px; border-radius: 1px; transform: rotate(45deg); }
+.goal::after { width: 12px; height: 12px; border: 3px double var(--color); background: #fffefa; }
+.selected .point::after, .point:hover::after { outline: 3px solid color-mix(in srgb, var(--color) 20%, transparent); }
+.card {
+  position: absolute;
+  height: 72px;
+  text-align: left;
   color: #304b62;
   background-color: #fffefa;
   background-image: linear-gradient(135deg, rgba(255, 254, 250, .98), rgba(240, 247, 249, .98));
-  border-color: color-mix(in srgb, var(--color) 42%, #d8e5ea);
-  border-left-color: color-mix(in srgb, var(--color) 78%, #d8e5ea);
+  border: 1px solid color-mix(in srgb, var(--color) 42%, #d8e5ea);
+  border-left: 2px solid color-mix(in srgb, var(--color) 78%, #d8e5ea);
+  border-radius: var(--radius-control, 9px);
+  padding: 9px 11px;
+  z-index: 3;
+  overflow: hidden;
+  cursor: pointer;
+  touch-action: none;
   box-shadow: 0 10px 24px rgba(74, 105, 126, .12);
 }
-
-.card small {
-  color: #61778b;
-}
-
-.selected .card,
-.card:hover {
+.card time { color: var(--color); font-size: 10px; display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.card strong { display: block; font-size: 12px; font-weight: 500; margin-top: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card small { display: block; font-size: 9px; color: #61778b; margin-top: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.selected .card, .card:hover {
   color: #254a68;
   background-color: #eef6fb;
   background-image: linear-gradient(135deg, rgba(230, 242, 250, .98), rgba(247, 251, 252, .98));
   border-color: var(--color);
   box-shadow: 0 14px 30px rgba(74, 105, 126, .12);
 }
+.continuation::after {
+  width: 7px;
+  height: 7px;
+  transform: rotate(45deg);
+  border: 0;
+  border-left: 1px solid var(--color);
+  border-bottom: 1px solid var(--color);
+  background: transparent;
+  border-radius: 0;
+}
+.hoverDate { position: absolute; border-left: 1px solid var(--color); height: 13px; pointer-events: none; }
+.hoverDate span { position: absolute; left: 0; top: 15px; transform: translateX(-50%); font-size: 9px; color: var(--color); white-space: nowrap; }
+.empty { position: absolute; left: 20px; right: 20px; bottom: 18px; text-align: center; font-size: 11px; color: #7489a3; pointer-events: none; }
+.emptyWithNotice { bottom: 52px; }
 
-.cluster,
-.clusterPanel {
-  color: #34516a;
+.cluster {
+  position: absolute;
+  transform: translateX(-50%);
+  z-index: 5;
+  border: 1px solid #d4e2e8;
+  border-radius: 14px;
   background: #fffefa;
-  border-color: #d4e2e8;
+  color: #34516a;
+  font-size: 10px;
+  padding: 5px 10px;
   box-shadow: 0 16px 38px rgba(74, 105, 126, .12);
 }
-
-.clusterPanel header {
-  color: #526f88;
-}
-
-.clusterPanel > button {
-  border-color: #dbe6ea;
-}
-
-.overview {
-  background: #f1f6f8;
-  border-color: #d3e1e8;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .02);
-}
-
-.viewport {
-  background: rgba(65, 113, 174, .13);
-  border-color: #4b78ad;
-}
-
-.viewport::before,
-.viewport::after {
-  background: #80a6d4;
-}
-
-.inspector {
+.clusterPanel {
+  position: absolute;
+  right: 18px;
+  top: 80px;
+  width: 235px;
+  max-height: 65%;
+  overflow: auto;
   background: #fffefa;
-  border-color: #d8e4e9;
+  border: 1px solid #d4e2e8;
+  border-radius: var(--radius-control, 9px);
+  z-index: 9;
+  padding: 12px;
+  box-shadow: 0 16px 38px rgba(74, 105, 126, .12);
 }
-
-.inspector span,
-.inspector button {
-  color: #52718b;
-}
-
-.editor {
-  background: #fffefa;
-  border-color: #c6dbe6;
-  box-shadow: 0 18px 45px rgba(74, 105, 126, .12);
-}
-
-.editor label {
-  color: #526e84;
-}
-
-.editor input {
-  color: #304b62;
-  background: #f4f8fa;
-  border-color: #cadde7;
-}
-
-.previewBanner {
-  color: #315b7a;
-  background: #e9f3f8;
-  border-color: #c7dce8;
-}
-
-.previewBanner button {
-  color: #35678d;
-}
+.clusterPanel header { display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: #526f88; margin-bottom: 8px; }
+.clusterPanel > button { display: block; width: 100%; text-align: left; padding: 10px 5px; border-top: 1px solid #dbe6ea; font-size: 12px; }
+.clusterPanel small { display: block; color: #7890af; font-size: 10px; margin-top: 5px; }
 
 /*
- * "还有 N 项没有日期"。
+ * "未排期 N 项"。
  *
- * 它贴在画布底部,不属于任何泳道 —— 它不是一个时间对象,而是对"这里为什么少了几项"
- * 的说明。不这样处理的话,用户没有别的办法知道少了什么:任务视图里 11 项、时间线上
- * 3 项,数不出来的人会以为计划就是那 3 项。
+ * 它是一个**低干扰小入口**,不是一条整宽横幅。点开是节点列表;数据仍可发现,
+ * 但不再用大面积蓝色条占用画布底部。
  */
 .unscheduled {
   position: absolute;
-  left: 20px;
-  right: 20px;
-  bottom: 10px;
+  right: 16px;
+  bottom: 12px;
   z-index: 6;
-  display: flex;
+}
+.unscheduledToggle {
+  display: inline-flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 4px 8px;
-  padding: 8px 12px;
+  gap: 5px;
+  padding: 5px 10px;
   border: 1px solid #d8e5ec;
-  border-radius: 8px;
-  background: #f4f8fa;
+  border-radius: var(--radius-pill, 999px);
+  background: #fffefa;
   color: #4d6b84;
   font-size: 10px;
-  line-height: 1.8;
+  box-shadow: 0 8px 22px rgba(74, 105, 126, .1);
 }
-
-.unscheduledLabel {
-  color: #315b7a;
-  font-weight: 500;
+.unscheduledToggle:hover { border-color: #9cc0d8; }
+.unscheduledPanel {
+  position: absolute;
+  right: 0;
+  bottom: 34px;
+  width: 240px;
+  max-height: 60%;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid #d4e2e8;
+  border-radius: var(--radius-control, 9px);
+  background: #fffefa;
+  box-shadow: 0 16px 38px rgba(74, 105, 126, .12);
 }
+.unscheduledPanel header { display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: #526f88; margin-bottom: 8px; }
+.unscheduledPanel button { display: block; width: 100%; text-align: left; padding: 9px 5px; border-top: 1px solid #dbe6ea; font-size: 12px; color: #34516a; }
+.unscheduledPanel p { margin-top: 9px; font-size: 10px; line-height: 1.7; color: #7489a3; }
 
-.unscheduledList {
+/* --- 选中节点的紧凑 inspector。它不能再带回第二条时间线或大面积栏带。 --- */
+.inspector {
+  flex-shrink: 0;
   display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 11px 20px;
+  border-top: 1px solid #d8e4e9;
+  background: #fffefa;
+  gap: 12px;
+  position: relative;
+}
+.inspector strong { display: block; font-weight: 500; font-size: 12px; }
+.inspector span { display: block; font-size: 10px; color: #52718b; margin-top: 5px; }
+.inspector button { font-size: 11px; color: #52718b; display: flex; align-items: center; gap: 6px; }
+.editor {
+  position: absolute;
+  bottom: 60px;
+  left: 14px;
+  right: 14px;
+  padding: 14px;
+  background: #fffefa;
+  border: 1px solid #c6dbe6;
+  border-radius: var(--radius-control, 9px);
+  z-index: 12;
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
   flex-wrap: wrap;
-  gap: 4px 6px;
+  box-shadow: 0 18px 45px rgba(74, 105, 126, .12);
 }
-
-.unscheduledList button {
-  padding: 2px 8px;
+.editor label { flex: 1; font-size: 10px; color: #526e84; }
+.editor input {
+  display: block;
+  width: 100%;
+  min-width: 120px;
+  margin-top: 5px;
+  color: #304b62;
+  background: #f4f8fa;
   border: 1px solid #cadde7;
-  border-radius: 10px;
-  background: #fff;
-  color: #35678d;
-  font-size: 10px;
+  padding: 7px;
+  border-radius: 4px;
 }
+.editor button { padding: 8px; }
 
-.unscheduledList button:hover {
-  border-color: #6c9ec4;
+@media (max-width: 1000px) {
+  .canvas { min-height: 300px; }
+  .clusterPanel { right: 10px; top: 64px; }
+  .unscheduled { right: 10px; }
 }
-
-.unscheduledHint {
-  margin-left: auto;
-  color: #7489a3;
-}
-
-/* 那条说明出现时,"这段时间暂无安排"要让位,否则两句叠在一起。 */
-.emptyWithNotice {
-  bottom: 100px;
-}
-
-/*
- * 工具栏顶边为什么是 68px。
- *
- * 时间线是这一页里唯一**从上往下排**的视图:路径/任务/排期都是画布或列表,内容自己
- * 会散开;时间线的工具栏却正好长在画布顶部 —— 也就是 `.view-tabs`(四个视图入口)
- * 那个浮动组件**底下**。
- *
- * 两边都不知道对方的存在:浮动组件由 `Workbench.tsx` 渲染、`ui-refresh.css` 定位,
- * 时间线不知道头顶上还有人。重叠起来之后,`<div className="space-topbar">` 的
- * `z-index:25` 稳稳压住普通流里的工具栏,而失败的样子是**点不动** ——
- * 实测「年」这个按钮整块被视图切换盖住,`elementFromPoint` 打过去命中那一排标签。
- * 它看起来像按钮坏了,其实是几何问题。
- *
- * 不用"点不动就往上抬几个像素"这种修法:那样的数字没有来源,浮动条高一点、圆角大
- * 一点就又重叠了。这里让工具栏去让**浮动组件自己报出来的高度**(`tokens.css` 里的
- * `--float-clear` = 顶距 16 + 行高 38 + 呼吸 14),哪天浮动条长高了,时间线跟着让。
- *
- * 兜底值写在 `var()` 里:变量没定义时整个 `padding` 简写会"计算期失效"而退成 0 ——
- * 那时工具栏会帖到画布顶边,比重叠更难查。
- *
- * ≤720px 不在这里:那一档浮动组件是**竖排两层**(面包屑一行、视图切换一行),
- * 要让的高度完全不同,和手机工作台一起重做(第 5 个提交)。
- */

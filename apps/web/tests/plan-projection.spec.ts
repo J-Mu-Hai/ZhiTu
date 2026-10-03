@@ -188,9 +188,12 @@ test('没有日期的节点不会从时间线上悄悄消失', async ({ page }) 
 
   const unscheduled = page.getByTestId('unscheduled-items');
   await expect(unscheduled).toBeVisible();
-  await expect(unscheduled).toContainText('还有 1 项没有日期');
-  await expect(unscheduled).toContainText('还没定日期的任务');
+  // **低干扰小入口**,不是整宽横幅;点开才是节点列表。
+  await unscheduled.getByRole('button', { name: /未排期 1 项/ }).click();
+  const panel = page.locator('[data-unscheduled-panel]');
+  await expect(panel).toBeVisible();
+  await expect(panel).toContainText('还没定日期的任务');
   // 根目标没有日期,但它**能**从有日期的子节点推出一个范围,所以它不在这份名单里。
   // 少了这条,把"没有 deadline"直接等同于"未排期"的实现也能让上面几条全绿。
-  await expect(unscheduled).not.toContainText('时间线验收空间');
+  await expect(panel).not.toContainText('时间线验收空间');
 });
