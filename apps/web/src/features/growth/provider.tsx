@@ -2296,6 +2296,11 @@ function WorkspaceRouter({ children }: { children: ReactNode }) {
       return;
     }
     let cancelled = false;
+    // **换空间时立刻清掉上一个空间。** 否则在新空间详情回来之前(或加载变慢、或用户
+    // 连着建几个空间时),界面会继续显示上一个空间的计划与推理地图 —— 用户会以为
+    // “新空间里直接出现了旧空间的内容”。这里当 id 不同就先把 space 置空,让新空间
+    // 从一个空工作台开始加载;id 相同时保持原样(切视图不会触发重挂)。
+    setSpace(prev => (prev?.id === id ? prev : null));
     backend.getWorkspace(id)
       .then(detail => {
         if (cancelled) return;
