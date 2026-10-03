@@ -45,6 +45,7 @@ from backend.agent.runtime.base import (
     TurnContext,
 )
 from backend.contracts.reasoning import AgentTurnResponse
+from backend.db.base import utcnow
 from backend.db.models import AgentQuestion, Conversation, GoalReasoningSession, Message, PlanNode
 from backend.db.models.enums import (
     DegradedReason,
@@ -665,6 +666,8 @@ async def _run_assessment(
         from backend.services.errors import InvalidInput
 
         raise InvalidInput("这个空间还没有根目标。")
+    # 任何 V1 回合都保证固定画布存在(幂等)——首轮自动判断也要建立分组。
+    await _create_containers(db, ctx, root)
     stage_before = session.v1_stage
     _existing = await _v1_questions(db, ctx)
     before_status = {
@@ -1395,6 +1398,13 @@ async def on_proposal_confirmed(
             payload={"proposal": {"id": str(proposal_id), "kind": "timeline", "status": "applied"}},
         )
         await db.commit()
+        # 时间线确认后**自动进入本周计划**(确定性,不需要模型;仍落成待确认提案)。
+        try:
+            await generate_weekly_plan(db, ctx, session)
+        except Exception:
+            session.v1_status = V1_STATUS_FAILED
+            session.v1_error = "本周计划没有自动生成,可以点「生成本周计划」重试。"
+            await db.commit()
     elif session.v1_stage == V1_REPLANNING:
         for item in timeline:
             if isinstance(item, dict):
@@ -1952,6 +1962,175 @@ async def reopen_direction_selection(
 # =================================================================================
 # 自动推进与战略确认
 # =================================================================================
+#: 运行中超过这个秒数没有推进,判定为超时:给出明确失败与重试,不无限转圈。
+V1_STALE_SECONDS = 45
+
+
+def _step_is_stale(session: GoalReasoningSession) -> bool:
+    reference = session.updated_at
+    if reference is None:
+        return False
+    return (utcnow() - reference).total_seconds() > V1_STALE_SECONDS
+
+
+def _blocked_reason(session: GoalReasoningSession) -> str:
+    """当前为何停下 —— 让审计能直接回答“下一步等谁”。"""
+    if (session.v1_question or "").strip():
+        return "等待用户回答关键问题"
+    if session.v1_stage == V1_GOAL_REFRAME and session.v1_candidate_directions:
+        return "等待用户选择候选方向"
+    if session.v1_stage == V1_COARSE_TIMELINE_REVIEW:
+        return "等待用户确认时间线"
+    if session.v1_strategy and not (session.v1_strategy or {}).get("confirmed"):
+        return "等待用户确认战略"
+    if session.v1_stage == V1_WEEKLY_EXECUTION:
+        return "已进入周执行"
+    return "等待用户输入"
+
+
+async def advance_v1_workflow(
+    db: AsyncSession,
+    ctx: WorkspaceContext,
+    session: GoalReasoningSession,
+    reasoner=None,
+    *,
+    trigger: str = "space_entered",
+    trace=None,
+) -> AgentTurnResponse:
+    """V1 工作流的**唯一编排入口**。
+
+    每次进入空间 / 切阶段都调它:能自行推进的就推进(首轮整体判断、
+    problem_structure 自动合成、确认战略后自动时间线),只在真正需要用户时停下,
+    并把“为什么停 / 下一步等谁”写进审计。非终态阶段不会停在无解释的 idle。
+    """
+    # 1) 超时恢复:运行中卡死 -> 明确失败 + 重试,不无限转圈。
+    if session.v1_status == V1_STATUS_RUNNING and _step_is_stale(session):
+        session.v1_status = V1_STATUS_FAILED
+        session.v1_error = "上一次处理超时,可以重试。"
+        await _audit(
+            db,
+            ctx,
+            session,
+            "v1_step_timed_out",
+            trigger=trigger,
+            validation_status="failed",
+            error_code="V1_STEP_TIMEOUT",
+            summary=session.v1_error,
+        )
+        await db.commit()
+    if session.v1_status in (V1_STATUS_RUNNING, V1_STATUS_FAILED):
+        return await _response(db, ctx, session, changed=False, trace=trace)
+
+    if session.v1_stage is None:
+        session.v1_stage = V1_INITIAL_THINKING
+        session.phase = ReasoningSessionPhase.INTAKE
+        await _audit(
+            db,
+            ctx,
+            session,
+            "space_entered",
+            trigger=trigger,
+            stage_after=session.v1_stage,
+            summary="进入空间,建立初步思考状态。",
+        )
+        await db.commit()
+
+    stage = session.v1_stage
+    advanced = False
+    if stage == V1_INITIAL_THINKING:
+        # **进入空间就实际启动首轮整体判断**,而不是干等用户先输入。
+        root = await reasoning_service.root_plan_node(db, ctx)
+        goal = (root.title if root else "") or ctx.workspace.title or "这个目标"
+        intent = (ctx.workspace.intent or "").strip()
+        message = (
+            f"用户刚创建目标空间「{goal}」"
+            + (f",并写下意图:{intent}" if intent else "")
+            + "。请先给出整体判断:它可能服务于什么、真正的歧义在哪;"
+            "最多只问一个会改变路线的关键问题(或给候选方向)。"
+        )
+        await _run_assessment(
+            db,
+            ctx,
+            session,
+            user_message=message,
+            reasoner=reasoner,
+            classification=INPUT_STRATEGIC_FACT,
+            trigger=trigger,
+        )
+        advanced = True
+    elif stage == V1_GOAL_REFRAME and not session.v1_strategic_thesis:
+        root = await reasoning_service.root_plan_node(db, ctx)
+        goal = (root.title if root else "") or "这个目标"
+        await _run_assessment(
+            db,
+            ctx,
+            session,
+            user_message=f"请基于「{goal}」给出整体判断。",
+            reasoner=reasoner,
+            classification=INPUT_STRATEGIC_FACT,
+            trigger=trigger,
+        )
+        advanced = True
+    elif (
+        stage == V1_PROBLEM_STRUCTURE
+        and not session.v1_strategy
+        and session.v1_next_action == NEXT_CONTINUE_STRATEGY
+    ):
+        await _audit(
+            db,
+            ctx,
+            session,
+            "v1_workflow_blocked",
+            trigger=trigger,
+            stage_after=stage,
+            summary="problem_structure 没有战略草案,自动合成。",
+            payload={"stage": stage, "nextAction": session.v1_next_action},
+        )
+        await db.commit()
+        return await continue_strategy(db, ctx, session, reasoner)
+    elif stage == V1_STRATEGY_CONFIRMED and not session.v01_timeline:
+        await generate_coarse_timeline(db, ctx, session, reasoner, trace=None)
+        advanced = True
+
+    if advanced:
+        await _audit(
+            db,
+            ctx,
+            session,
+            "v1_workflow_advanced",
+            trigger=trigger,
+            stage_after=session.v1_stage,
+            focus_key=session.v1_focus_key,
+            summary=f"自动推进到 {session.v1_stage}。",
+            payload={
+                "stage": session.v1_stage,
+                "nextAction": session.v1_next_action,
+                "pendingQuestion": bool(session.v1_question),
+                "candidates": len(session.v1_candidate_directions or []),
+                "hasStrategy": bool(session.v1_strategy),
+            },
+        )
+    else:
+        await _audit(
+            db,
+            ctx,
+            session,
+            "v1_workflow_blocked",
+            trigger=trigger,
+            stage_after=session.v1_stage,
+            focus_key=session.v1_focus_key,
+            summary=_blocked_reason(session),
+            payload={
+                "stage": session.v1_stage,
+                "nextAction": session.v1_next_action,
+                "pendingQuestion": bool(session.v1_question),
+                "candidates": len(session.v1_candidate_directions or []),
+                "hasStrategy": bool(session.v1_strategy),
+            },
+        )
+    return await _response(db, ctx, session, changed=advanced, trace=trace)
+
+
 async def advance(
     db: AsyncSession,
     ctx: WorkspaceContext,
@@ -2050,6 +2229,7 @@ __all__ = [
     "V1_WEEKLY_EXECUTION",
     "actual_pending_question_count",
     "advance",
+    "advance_v1_workflow",
     "answer_v1_in_conversation",
     "classify_user_message",
     "confirm_goal_definition",

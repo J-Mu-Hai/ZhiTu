@@ -81,6 +81,10 @@ AUDIT_EVENT_TYPES = frozenset(
         "strategy_review_ready",
         "direction_reselection_started",
         "strategy_continue_triggered",
+        # V1 工作流编排器:每次自动推进 / 阻塞 / 超时都留痕。
+        "v1_workflow_advanced",
+        "v1_workflow_blocked",
+        "v1_step_timed_out",
     }
 )
 

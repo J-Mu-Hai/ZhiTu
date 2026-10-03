@@ -121,9 +121,13 @@ async def test_v1_first_turn_is_model_judgment(
         )
     )
 
+    # P2.3:**进入空间就实际启动首轮整体判断**(不再只初始化、干等用户先输入)。
     body = await _turn(app_client, account, "v1-1")
-    assert body["reasoning"]["v1Stage"] == "initial_thinking"
-    assert reasoner.calls == [], "初始思考阶段不该调用模型"
+    assert body["reasoning"]["v1Stage"] == "goal_reframe"
+    assert reasoner.calls, "space_entered 必须实际调用模型"
+    assert body["reasoning"]["v1FocusKey"] == "true_intent"
+    assert body["reasoning"]["v1Question"] == "你希望最后拿出什么具体成果?"
+    assert await _plan_node_count(db, account) == 4, "自动判断时建立分组"
 
     send = await _send(app_client, account, "我想学 Python", "v1-ans-1")
     assert "30 天后" in send["assistantMessage"]["content"]
@@ -131,11 +135,9 @@ async def test_v1_first_turn_is_model_judgment(
     view = await _reasoning(app_client, account)
     assert view["v1Stage"] == "goal_reframe"
     assert view["v1FocusKey"] == "true_intent"
-    assert view["v1Question"] == "你希望最后拿出什么具体成果?"
     assert "手段" in (view["v1Judgment"] or "")
 
     # 3 个分组是画布节点(PlanNode);10 个固定项是紫色问题节点(AgentQuestion)。
-    assert await _plan_node_count(db, account) == 4, "根 + 3 个分组"
     questions = _by_key(await _questions(app_client, account))
     assert {
         "current_state",

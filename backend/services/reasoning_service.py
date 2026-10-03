@@ -939,7 +939,10 @@ async def run_space_entered(
         )
         db.add(trace)
         await db.commit()
-        return await v1_service.advance(db, ctx, root, session, trace=trace)
+        # V1 工作流编排器:**进入空间就实际启动首轮整体判断**,而不是只初始化。
+        return await v1_service.advance_v1_workflow(
+            db, ctx, session, reasoner, trigger=payload.trigger, trace=trace
+        )
 
     # 规划智能体 V0.1:新建目标空间由 `v01_service.advance` 按状态机推进。
     # 老会话 `workflow_stage is None`,继续走下面的 intake / 架构逻辑。

@@ -116,14 +116,16 @@ async def test_v1_fixed_groups_and_question_nodes(
         )
     )
 
-    # ---- 1. 初始:干净画布,只有根目标 ----
+    # ---- 1. 进入空间:自动启动首轮整体判断 + 一个全局问题 ----
     body = await _turn(app_client, account, "v1-1")
     view = body["reasoning"]
-    assert view["v1Stage"] == "initial_thinking"
-    assert view["nodes"] == [], "初始画布不能有任何 reasoning 节点"
-    assert await _plan_node_count(db, account) == 1, "阶段一初始不能写业务节点"
+    assert view["v1Stage"] == "goal_reframe"
+    assert view["v1Question"] == "30 天后你想拿出什么具体成果?"
+    assert view["v1Judgment"]
+    assert view["nodes"] == [], "只有 reasoning 节点为空;分析维度是 AgentQuestion"
+    assert await _plan_node_count(db, account) == 4, "根 + 3 个分组"
 
-    # ---- 2. 提交目标:模型的整体判断 + 一个全局问题,不交代内部实现 ----
+    # ---- 2. 用户补充目标:不交代内部实现 ----
     send = await _send(app_client, account, "我想学 Python", "v1-ans-1")
     reply = send["assistantMessage"]["content"]
     assert "Python" in reply
@@ -132,9 +134,7 @@ async def test_v1_fixed_groups_and_question_nodes(
 
     view = await _reasoning(app_client, account)
     assert view["v1Stage"] == "goal_reframe"
-    assert view["v1Question"] == "30 天后你想拿出什么具体成果?"
     assert view["v1Judgment"]
-    assert view["nodes"] == []
     assert view["v01Timeline"] == []
 
     # ---- 3. 三个分组是真实 PlanNode:根 + 3 组 = 4 ----

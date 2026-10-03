@@ -175,6 +175,9 @@ async def test_v1_coarse_timeline_requires_confirmation(
     assert after["v1Stage"] == "weekly_execution"
     assert all(item["status"] == "planned" for item in after["v01Timeline"])
     assert await _plan_node_count(db, account) == before + 3, "确认后才写入 3 个阶段"
+    # P2.4:时间线确认后**自动准备本周计划提案**,不需要用户再手动触发。
+    auto_weekly = await _open_proposal(app_client, account)
+    assert auto_weekly["status"] in {"validated", "pending_confirmation"}
 
 
 @pytest.mark.asyncio
