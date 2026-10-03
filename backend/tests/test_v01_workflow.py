@@ -207,19 +207,48 @@ async def test_v01_thirty_day_python_end_to_end(
         for item in replan["items"]
     ), replan["items"]
 
-    # ---- 8. 重规划后重新生成周计划:就地更新,**不重复** ----
+    # ---- 8. 重规划后重新生成周计划:版本化替换,旧版本归档可查,不覆盖历史 ----
     await _turn(app_client, account, "v01-5")
     next_weekly = await _open_proposal(app_client, account)
     await _confirm(app_client, account, next_weekly["id"], "v01-confirm-weekly-2")
     final_reasoning = await _reasoning(app_client, account)
     assert final_reasoning["workflowStage"] == "weekly_execution"
     final_plan = await _plan(app_client, account)
-    final_weeks = [n for n in final_plan["nodes"] if str(n.get("title", "")).startswith(("本周计划", "下周预览"))]
-    final_tasks = [n for n in final_plan["nodes"] if n.get("nodeType") == "task"]
-    assert len(final_weeks) == len(weeks), "重新生成周计划产生了重复的周节点"
-    assert len(final_tasks) == len(tasks), "重新生成周计划产生了重复的任务节点"
-    # 就地更新:内容反映重规划后的阶段说明。
-    assert any("重规划" in str(n.get("description", "")) for n in final_tasks + final_weeks)
+    final_by_id = {node["id"]: node for node in final_plan["nodes"]}
+
+    # 1) 旧的周计划/任务仍可查到(不是物理删除)。
+    for node in weeks + tasks:
+        assert node["id"] in final_by_id, "旧周计划/任务被物理删除"
+    # 2) 旧“活跃未完成”周计划已归档,不再是活跃计划。
+    for node in weeks:
+        assert final_by_id[node["id"]]["status"] == "archived", "旧周计划没有被归档"
+    # 已完成任务永远不修改。
+    still_done = [t for t in tasks if final_by_id[t["id"]]["status"] == "completed"]
+    assert len(still_done) == 2, "已完成任务的完成状态被改动了"
+    # 3) 存在新的活跃当前周计划 + 下周预览。
+    active_weeks = [
+        node
+        for node in final_plan["nodes"]
+        if str(node.get("title", "")).startswith(("本周计划", "下周预览"))
+        and node["status"] in ("pending", "doing")
+    ]
+    active_labels = sorted(str(node["title"]).split(":")[0] for node in active_weeks)
+    assert active_labels == ["下周预览", "本周计划"], active_labels
+    # 4) 活跃计划不存在重复:同一标题只有一个活跃版本。
+    active_titles = [node["title"] for node in active_weeks]
+    assert len(active_titles) == len(set(active_titles)), active_titles
+    # 5) 新任务可追溯到 根目标 → 阶段 → 周计划 → 任务。
+    active_ids = {node["id"] for node in active_weeks}
+    active_tasks = [
+        node
+        for node in final_plan["nodes"]
+        if node.get("nodeType") == "task" and node.get("parentId") in active_ids
+    ]
+    assert len(active_tasks) == 10, len(active_tasks)
+    for task in active_tasks:
+        week = final_by_id[task["parentId"]]
+        phase = final_by_id[week["parentId"]]
+        assert final_by_id[phase["parentId"]]["id"] == root_id
 
     await db.rollback()
     sessions = list((await db.execute(select(GoalReasoningSession))).scalars())

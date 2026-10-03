@@ -244,7 +244,7 @@ def build_timeline(
     skeletons = _TEMPLATE_NODES[template]
     total_weeks = _detect_total_weeks(
         f"{goal_title} {workspace_intent} {answer}",
-        _TEMPLATE_DEFAULT_WEEKS.get(template, 12),
+_TEMPLATE_DEFAULT_WEEKS.get(template, 12),
     )
     deadline_date: date | None = None
     if known_deadline:
@@ -318,11 +318,11 @@ def build_weekly_tasks(phase_title: str, phase_description: str) -> tuple[str, .
     base = phase_description.rstrip("。")
     return (
         f"{phase_title}:确认本周要交出的最小成果",
-        f"{phase_title}:完成关键的一步 —— {base}",
+f"{phase_title}:完成关键的一步 —— {base}",
         f"{phase_title}:做出一个可检查的产出",
-        f"{phase_title}:记录卡点与下一步",
+f"{phase_title}:记录卡点与下一步",
         f"{phase_title}:复盘并按需要更新下周计划",
-    )
+)
 
 
 # =================================================================================
@@ -715,11 +715,12 @@ async def generate_weekly_plan(
     *,
     trace,
 ) -> AgentTurnResponse:
-    """从已确认的第一个 timeline phase 派生“本周计划 + 下周预览”。
+    """从已确认时间线的第一个阶段派生“本周计划 + 下周预览”。
 
-    **不重复**:已经存在的周/任务节点用 `update_node` 就地更新,只有确实还没有的才
-    `create_node`。所以重规划之后再次生成,周计划不会翻倍 —— 同一个锚点的计划永远
-    只有一份。
+    **版本化替换,不覆盖历史。** 重规划之后,旧的“活跃未完成”周计划被**归档**
+    (可恢复的历史版本,不物理删除,保留与阶段/周次的父子关系);已完成的任务、
+    已完成的阶段、用户反馈一律不改。新版本重新创建。所以同一个阶段、同一个周次
+    任何时刻只有一个**活跃**版本,历史版本仍可查到。
     """
     phases = await _phase_nodes(db, ctx, root)
     if not phases:
@@ -738,21 +739,7 @@ async def generate_weekly_plan(
     )
     handle_of = {node_id: handle for handle, node_id in turn.node_handles}
     _, handles = await _root_handle(db, ctx, root)
-
-    # 现有周计划:按 (phase, 标题) 找到周节点,再取它的任务(按创建顺序)。
-    existing_weeks = await _week_nodes(db, phases)
-    existing_tasks: dict[uuid.UUID, list[PlanNode]] = {}
-    if existing_weeks:
-        rows = await db.execute(
-            select(PlanNode)
-            .where(
-                PlanNode.parent_id.in_([week.id for week in existing_weeks]),
-                PlanNode.deleted_at.is_(None),
-            )
-            .order_by(PlanNode.created_at.asc())
-        )
-        for row in rows.scalars():
-            existing_tasks.setdefault(row.parent_id, []).append(row)
+    all_weeks = await _week_nodes(db, phases)
 
     actions: list[dict] = []
     this_week = phases[0]
@@ -763,63 +750,57 @@ async def generate_weekly_plan(
         if phase_handle is None:
             continue
         week_title = f"{label}:{phase.title}"
-        week_desc = f"来源阶段:{phase.title}\n" + (phase.description or "")[:400]
-        week = next(
-            (
-                candidate
-                for candidate in existing_weeks
-                if candidate.parent_id == phase.id and candidate.title == week_title
-            ),
-            None,
-        )
-        counter += 1
-        if week is not None and str(week.id) in handle_of:
-            week_ref = handle_of[str(week.id)]
-            actions.append(
-                {"op": "update_node", "target_ref": week_ref, "title": week_title, "description": week_desc}
-            )
-        else:
-            week_ref = f"n{9100 + counter}"
-            actions.append(
-                {
-                    "op": "create_node",
-                    "localId": week_ref,
-                    "parentRef": phase_handle,
-                    "title": week_title,
-                    "nodeType": "stage",
-                    "purpose": "planning",
-                    "description": week_desc,
-                }
-            )
-        existing = existing_tasks.get(week.id, []) if week is not None else []
-        for index, task in enumerate(build_weekly_tasks(phase.title, phase.description or phase.title)):
-            task_desc = (
-                f"所属:{label} · {phase.title}\n"
-                f"来源阶段:{phase.title}\n"
-                f"完成标准:{phase.acceptance_criteria or '见阶段说明'}"
-            )
-            if index < len(existing) and str(existing[index].id) in handle_of:
+        same_anchor = [
+            week
+            for week in all_weeks
+            if week.parent_id == phase.id and week.title.startswith(f"{label}:")
+        ]
+        # 1) 旧“活跃未完成”版本 -> 归档(可恢复历史,不删除)。
+        #    已完成的周节点是历史,不动;完成的任务更不会被动。
+        for old in same_anchor:
+            if old.status in (NodeStatus.PENDING, NodeStatus.DOING) and str(old.id) in handle_of:
                 actions.append(
                     {
                         "op": "update_node",
-                        "target_ref": handle_of[str(existing[index].id)],
-                        "title": task,
-                        "description": task_desc,
+                        "target_ref": handle_of[str(old.id)],
+                        "status": "archived",
+                        "description": (old.description or "")
+                        + "\n【历史版本 · 已被重规划替代】",
                     }
                 )
-            else:
-                counter += 1
-                actions.append(
-                    {
-                        "op": "create_node",
-                        "localId": f"n{9100 + counter}",
-                        "parentRef": week_ref,
-                        "title": task,
-                        "nodeType": "task",
-                        "purpose": "planning",
-                        "description": task_desc,
-                    }
-                )
+        # 2) 新活跃版本。标题带版本号 —— 新旧计划在界面上也分得出来。
+        version = len(same_anchor) + 1
+        counter += 1
+        week_ref = f"n{9100 + counter}"
+        actions.append(
+            {
+                "op": "create_node",
+                "localId": week_ref,
+                "parentRef": phase_handle,
+                "title": f"{week_title} · 第 {version} 版",
+                "nodeType": "stage",
+                "purpose": "planning",
+                "description": f"第 {version} 版 · 来源阶段:{phase.title}\n"
+                + (phase.description or "")[:400],
+            }
+        )
+        for task in build_weekly_tasks(phase.title, phase.description or phase.title):
+            counter += 1
+            actions.append(
+                {
+                    "op": "create_node",
+                    "localId": f"n{9100 + counter}",
+                    "parentRef": week_ref,
+                    "title": task,
+                    "nodeType": "task",
+                    "purpose": "planning",
+                    "description": (
+                        f"第 {version} 版 · 所属:{label} · {phase.title}\n"
+                        f"来源阶段:{phase.title}\n"
+                        f"完成标准:{phase.acceptance_criteria or '见阶段说明'}"
+                    ),
+                }
+            )
 
     if not actions:
         from backend.services.errors import InvalidInput
@@ -832,7 +813,7 @@ async def generate_weekly_plan(
         conversation_id=conversation.id if conversation else None,
         actions=tuple(actions),
         handles=handles,
-        reasoning="由已确认时间线的第一个阶段派生的本周计划与下周预览(就地更新,不重复)。",
+        reasoning="由已确认时间线的第一个阶段派生的本周计划与下周预览(版本化替换,旧版本归档)。",
         assistant_message=None,
         trigger_type=RevisionTrigger.INITIAL_PLAN,
     )
@@ -846,7 +827,7 @@ async def generate_weekly_plan(
         ctx,
         reply=(
             f"根据已确认的时间线,我排了「{this_week.title}」的本周计划,"
-            f"并预览了下周的「{next_week.title}」。确认后写入计划。"
+            f"并预览了下周的「{next_week.title}」。确认后写入计划(旧版本保留为历史)。"
         ),
         conversation=await conversation_service.get_or_create_primary_conversation(db, ctx),
     )
@@ -856,10 +837,15 @@ async def generate_weekly_plan(
 async def weekly_completion(
     db: AsyncSession, ctx: WorkspaceContext, root: PlanNode
 ) -> tuple[int, int]:
-    """**本周计划**的完成率(完成数, 总数)。下周预览不计入。"""
+    """**当前活跃本周计划**的完成率(完成数, 总数)。下周预览与历史版本不计入。"""
     phases = await _phase_nodes(db, ctx, root)
     weeks = await _week_nodes(db, phases)
-    current = [week for week in weeks if week.title.startswith("本周计划")]
+    current = [
+        week
+        for week in weeks
+        if week.title.startswith("本周计划")
+        and week.status in (NodeStatus.PENDING, NodeStatus.DOING)
+    ]
     week_ids = [week.id for week in current]
     if not week_ids:
         return (0, 0)
