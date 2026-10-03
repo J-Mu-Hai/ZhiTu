@@ -1938,6 +1938,8 @@ export interface GoalReasoningView {
   v1TurnSource: string | null;
   /** R1:V1 是否强制真实 OpenJiuwen。 */
   v1RequireOpenjiuwen: boolean;
+  /** R2:编排器现算的下一步(如 `confirm_strategy` / `confirm_timeline`)。 */
+  v1WorkflowNext: string | null;
   /** P2.1:当前战略判断(优先展示的 AI 暂定理解,可被用户纠正)。 */
   v1StrategicThesis: string | null;
   /** P2.1:用户无法回答时 AI 给出的候选方向(最多 3 个)。 */

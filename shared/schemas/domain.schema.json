@@ -2409,6 +2409,18 @@
           "title": "V1Visibleanalysiskeys",
           "type": "array"
         },
+        "v1WorkflowNext": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "V1Workflownext"
+        },
         "workflowStage": {
           "anyOf": [
             {

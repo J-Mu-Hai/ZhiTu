@@ -198,6 +198,10 @@ class GoalReasoningView(ApiModel):
     v1_turn_source: str | None = None
     #: R1:V1 是否强制真实 OpenJiuwen。UI 据此显示“AI 规划 · OpenJiuwen”。
     v1_require_openjiuwen: bool = False
+    #: R2:编排器现算的“下一步是什么”(与 `v1_next_action` 的兜底 CTA 不同)。
+    #: 例如 `confirm_strategy` / `confirm_timeline` / `select_direction`。
+    #: 非空即说明当前等待可解释,不存在无解释 idle。
+    v1_workflow_next: str | None = None
     #: P2.1:当前战略判断(优先展示的 AI 暂定理解,可被用户纠正)。
     v1_strategic_thesis: str | None = None
     #: P2.1:用户无法回答时 AI 给出的候选方向(最多 3 个)。

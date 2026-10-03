@@ -321,6 +321,7 @@ async def build_view(
     v1_visible_keys: list[str] = []
     v1_hidden_count = 0
     v1_pending_questions = 0
+    v1_workflow_next: str | None = None
     if session.v1_stage is not None:
         from backend.services import v1_service  # 延迟 import,避免循环
 
@@ -328,6 +329,8 @@ async def build_view(
         v1_visible_keys = sorted(v1_service.visible_dimension_keys(session))
         v1_hidden_count = sum(1 for item in v1_dimensions if not item["visible"])
         v1_pending_questions = v1_service.actual_pending_question_count(session)
+        #: R2:下一步由编排器现算,前端不再猜。
+        v1_workflow_next = v1_service.compute_next_action(session)
 
     return GoalReasoningView(
         workspace_id=ctx.id,
@@ -404,6 +407,7 @@ async def build_view(
         v1_turn_deadline_at=session.v1_turn_deadline_at,
         v1_turn_source=session.v1_turn_source,
         v1_require_openjiuwen=bool(settings.v1_require_openjiuwen and session.v1_stage is not None),
+        v1_workflow_next=v1_workflow_next,
         #: P2.1:战略判断优先 + 候选方向与用户选择。
         v1_strategic_thesis=session.v1_strategic_thesis,
         v1_candidate_directions=session.v1_candidate_directions,

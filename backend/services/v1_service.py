@@ -141,6 +141,13 @@ MAX_V1_UPDATES = 3
 MAX_V1_DIMENSIONS = 3
 #: P2.3:problem_structure 中“继续形成战略路径”的显式下一步动作。
 NEXT_CONTINUE_STRATEGY = "continue_strategy"
+#: R2:每个非终态都能回答“现在等谁、下一步是什么”。
+#: 取值是**编排器算出的事实**,不是前端猜的;前端仍可按阶段渲染具体按钮。
+NEXT_SELECT_DIRECTION = "select_direction"
+NEXT_CONFIRM_GOAL = "confirm_goal"
+NEXT_CONFIRM_STRATEGY = "confirm_strategy"
+NEXT_CONFIRM_TIMELINE = "confirm_timeline"
+NEXT_CONFIRM_REPLAN = "confirm_replan"
 #: 阶段一全局关键问题的总预算。超过后服务端不再接受新问题。
 MAX_V1_QUESTIONS = 3
 
@@ -441,6 +448,50 @@ def dimension_projection(session: GoalReasoningSession) -> list[dict]:
 def actual_pending_question_count(session: GoalReasoningSession) -> int:
     """真正需要用户回答的问题数:只数会话上那个全局关键问题(0 或 1)。"""
     return 1 if (session.v1_question or "").strip() else 0
+
+
+def compute_next_action(session: GoalReasoningSession) -> str | None:
+    """编排器算出的显式下一步。**禁止无解释 idle 的唯一事实来源。**
+
+    返回 None 只意味着“有一个已经解释得清的待处理项”(一个待答问题或已进入执行),
+    不存在“idle 且无事可做且没理由”这种状态。
+    """
+    if (session.v1_question or "").strip():
+        # 有一个待答关键问题,它本身就是解释。
+        return None
+    if session.v1_stage == V1_COARSE_TIMELINE_REVIEW:
+        return NEXT_CONFIRM_TIMELINE
+    if session.v1_stage == V1_REPLANNING:
+        return NEXT_CONFIRM_REPLAN
+    if session.v1_strategy and not (session.v1_strategy or {}).get("confirmed"):
+        return NEXT_CONFIRM_STRATEGY
+    if session.v1_stage == V1_GOAL_REFRAME:
+        if session.v1_candidate_directions:
+            return NEXT_SELECT_DIRECTION
+        if session.v1_strategic_thesis:
+            return NEXT_CONFIRM_GOAL
+    if session.v1_stage in (V1_PROBLEM_STRUCTURE, V1_FACTOR_ANALYSIS) and not session.v1_strategy:
+        return NEXT_CONTINUE_STRATEGY
+    # 执行阶段已经有计划,不再强塞一个“下一步”;但仍不是无解释 idle。
+    return None
+
+
+def has_explained_state(session: GoalReasoningSession) -> bool:
+    """当前状态是否可解释:有进度、有等待对象,或已有明确下一步。
+
+    规格 4.1 禁止的是“不透明 idle”。这里把那条不变量变成可断言的函数。
+    """
+    if session.v1_status in (V1_STATUS_RUNNING, V1_STATUS_FAILED):
+        return True
+    if (session.v1_question or "").strip():
+        return True
+    if session.v1_next_action:
+        return True
+    if session.v1_strategy or session.v01_timeline or session.timeline_proposal_id:
+        return True
+    # 新建空间尚未跑完第一轮;编排器会立刻推进,不算不透明 idle。
+    # 执行阶段已经有计划,同样不算。
+    return session.v1_stage in (None, V1_INITIAL_THINKING, V1_WEEKLY_EXECUTION)
 
 
 async def _audit(db, ctx: WorkspaceContext, session, event_type: str, **kwargs):
@@ -896,6 +947,7 @@ async def _run_assessment(
     persisted = {q.v1_key: (q.v1_analysis or {}) for q in questions if q.v1_key}
 
     from_problem_structure = session.v1_stage == V1_PROBLEM_STRUCTURE
+    #: 本回合是否形成了战略草案(决定 problem_structure 是否还需要兜底 CTA)。
     synthesized = False
     if strategy_values and _strategy_ready(persisted, assessment):
         await _ensure_strategy_questions(db, ctx, strategy_values)
@@ -953,9 +1005,9 @@ async def _run_assessment(
     if session.v1_stage == V1_INITIAL_THINKING:
         session.v1_stage = V1_GOAL_REFRAME
     # P2.3:非终态阶段不允许“idle + 无问题 + 无 CTA + 无战略”。
+    # `v1_next_action` 是**兜底 CTA**(如 continue_strategy);一般的“下一步是什么”
+    # 由 `compute_next_action` 在读视图时现算(见 `v1_workflow_next`)。
     if session.v1_stage == V1_PROBLEM_STRUCTURE:
-        # 已形成战略、或已抛出一个关键问题等待回答 -> 无需额外 CTA;
-        # 否则必须给“继续形成战略路径”。
         session.v1_next_action = (
             None if (synthesized or question_accepted) else NEXT_CONTINUE_STRATEGY
         )
@@ -2375,6 +2427,7 @@ async def advance_v1_workflow(
             payload={
                 "stage": session.v1_stage,
                 "nextAction": session.v1_next_action,
+                "workflowNext": compute_next_action(session),
                 "pendingQuestion": bool(session.v1_question),
                 "candidates": len(session.v1_candidate_directions or []),
                 "hasStrategy": bool(session.v1_strategy),
@@ -2393,6 +2446,8 @@ async def advance_v1_workflow(
             payload={
                 "stage": session.v1_stage,
                 "nextAction": session.v1_next_action,
+                "workflowNext": compute_next_action(session),
+                "explained": has_explained_state(session),
                 "pendingQuestion": bool(session.v1_question),
                 "candidates": len(session.v1_candidate_directions or []),
                 "hasStrategy": bool(session.v1_strategy),
@@ -2458,7 +2513,12 @@ async def confirm_strategy(
 __all__ = [
     "ALLOWED_V1_KEYS",
     "ANALYSIS_DIMENSION_KEYS",
+    "NEXT_CONFIRM_GOAL",
+    "NEXT_CONFIRM_REPLAN",
+    "NEXT_CONFIRM_STRATEGY",
+    "NEXT_CONFIRM_TIMELINE",
     "NEXT_CONTINUE_STRATEGY",
+    "NEXT_SELECT_DIRECTION",
     "V1_COARSE_TIMELINE_REVIEW",
     "V1_FACTOR_ANALYSIS",
     "V1_GOAL_REFRAME",
@@ -2475,6 +2535,7 @@ __all__ = [
     "advance_v1_workflow",
     "answer_v1_in_conversation",
     "classify_user_message",
+    "compute_next_action",
     "confirm_goal_definition",
     "confirm_strategy",
     "continue_strategy",
@@ -2484,6 +2545,7 @@ __all__ = [
     "generate_daily_plan",
     "generate_replan",
     "generate_weekly_plan",
+    "has_explained_state",
     "is_v1",
     "on_proposal_confirmed",
     "record_feedback",
