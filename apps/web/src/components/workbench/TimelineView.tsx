@@ -1,9 +1,11 @@
 'use client';
 import { useState, useRef, useEffect, useMemo, type CSSProperties, type PointerEvent } from 'react';
 import { CalendarDays, CalendarClock, X, Flag, Circle, Target } from 'lucide-react';
+import { useRouter } from 'next/navigation';
 import type { GrowthNode } from '@/types/growth';
 import { useDemo } from '@/features/growth/provider';
 import { anchoredZoom, dateString, dateToX, dayNumber, getVisibleItems, layoutItems, timelineItems, timelineTicks, unscheduledNodes, zoomLevelFor, todayInTimeZone, type TimelineItem } from '@/features/growth/timeline';
+import { StrategyArchitecturePreview } from './StrategyArchitecturePreview';
 import styles from './TimelineView.module.css';
 
 const colors = { academic: '#749ce1', research: '#61ad9e', experience: '#c7a06e', personal: '#a294ce' };
@@ -82,7 +84,8 @@ type Gesture = { x: number; start: number };
  * 说一次,不再用一条常驻说明占空间。
  */
 export function TimelineView() {
-  const { growth, selectedId, select, apply, updateNode, spaceId, isRealSpace, planError, timelineViewport: viewport, setTimelineViewport: setViewport } = useDemo();
+  const { growth, selectedId, select, apply, updateNode, spaceId, workspaceId, isRealSpace, planError, timelineViewport: viewport, setTimelineViewport: setViewport } = useDemo();
+  const router = useRouter();
   // 每次渲染重新算一次。它只在跨过午夜时才会变,而这个组件本来就会因为别的原因
   // 重渲染很多次 —— 为它加一个定时器是没必要的复杂度。
   const today = dayNumber(todayInTimeZone());
@@ -167,6 +170,10 @@ export function TimelineView() {
   return <div className={styles.view} data-testid="timeline-view" data-zoom={level}>
     {/* 交互说明只说一次,而且是给读屏的;**不再用常驻说明条占空间**。 */}
     <p id="timeline-help" className={styles.srOnly}>拖动空白平移，Ctrl 或 Command 加滚轮缩放，方向键平移，加号减号缩放，Home 回到今天。改具体安排请用「排期」。</p>
+    {/* 阶段 11:战略时间架构预览(未确认前;与路径页同一份 reasoning 数据)。 */}
+    <StrategyArchitecturePreview
+      onOpenPath={() => router.replace(`/workbench?workspace=${workspaceId}&view=path`, { scroll: false })}
+    />
     {planError && <div className={styles.error} role="alert"><span>{planError}</span></div>}
     <div ref={canvas} className={styles.canvas} role="region" aria-label="成长时间线" aria-describedby="timeline-help" tabIndex={0} data-testid="timeline-canvas" data-ready={measured} data-start={start} data-density={density}
       onPointerDown={e => { if (e.button !== 0 || (e.target as HTMLElement).closest('button,input,[data-cluster-panel],[data-unscheduled-panel]')) return; e.currentTarget.setPointerCapture(e.pointerId); gesture.current = { x: e.clientX, start }; setClusterOpen(false); setUnscheduledOpen(false); }}

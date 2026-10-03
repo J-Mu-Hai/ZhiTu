@@ -378,6 +378,11 @@ export interface QuestionView {
   sourceMessageId: string | null;
   /** 回答之后服务端靠它定位要重评的推理节点。 */
   reasoningNodeId: string | null;
+  /**
+   * 阶段 11:呈现方式。`conversation_intake` 只在对话区(橙色),**不投影成画布节点**;
+   * `canvas_question` 才在画布上。
+   */
+  presentation: 'conversation_intake' | 'canvas_question';
   question: string;
   whyNow: string;
   /**
@@ -1767,6 +1772,12 @@ export interface ReasoningNodeView {
   timeframe: string | null;
   deliverable: string | null;
   passCriteria: string | null;
+  /** 阶段 11:结构化时间架构。dated 用 startDate/endDate;relative 用 startWeek/endWeek。 */
+  timeframeKind: 'dated' | 'relative' | null;
+  startWeek: number | null;
+  endWeek: number | null;
+  startDate: string | null;
+  endDate: string | null;
   source: string;
   version: number;
   updatedAt: string;
@@ -1794,6 +1805,8 @@ export interface GoalReasoningView {
   focusReason: string | null;
   inputVersion: string | null;
   strategyProposalId: string | null;
+  /** 阶段 11:时间架构里的日期是否已校准。false = 只有相对周,不伪造日历日期。 */
+  datesCalibrated: boolean;
   exploredAt: string | null;
   lastEvaluatedAt: string | null;
   nodes: ReasoningNodeView[];

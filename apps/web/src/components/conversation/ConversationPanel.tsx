@@ -6,6 +6,7 @@ import { useDemo } from '@/features/growth/provider';
 import { degradedHint, sourceLabel } from '@/lib/backend';
 import type { ResearchView } from '@/lib/backend';
 import { StrategySummaryCard } from './StrategySummaryCard';
+import { ConversationIntakeCard } from './ConversationIntakeCard';
 
 /**
  * 提案落下之后,卡片上显示的状态。
@@ -213,6 +214,9 @@ export function ConversationPanel() {
     questions.find(question => question.status === 'pending') ??
     questions.find(question => question.status === 'investigating' || question.status === 'answered') ??
     null;
+  /** 阶段 11:战略澄清 intake 问题只在对话区显示,不用画布的紧凑状态条。 */
+  const intakeQuestion = primaryQuestion?.presentation === 'conversation_intake' ? primaryQuestion : null;
+  const intakeIndex = questions.filter(item => item.presentation === 'conversation_intake').length;
 
   /** 这个空间里有没有**已确认的**战略节点。没有时,周/日安排没有依据。 */
   const hasStrategy = Object.values(growth.nodes).some(
@@ -286,7 +290,7 @@ export function ConversationPanel() {
        * 它取代了正文里那张大卡片 —— 同一件事只在一处说,而且不占正文空间。
        * 只在存在活动问题时出现;回答仍然只在画布的 Question Node 里完成。
        */}
-      {primaryQuestion && (
+      {primaryQuestion && primaryQuestion.presentation !== 'conversation_intake' && (
         <QuestionStatusBar
           count={questions.length}
           processing={primaryQuestion.status === 'answered' || primaryQuestion.status === 'investigating'}
@@ -487,6 +491,8 @@ export function ConversationPanel() {
       </div>
 
       <div className="composer-area">
+        {/* 阶段 11:战略澄清 intake 的关键问题在对话区逐步显示(橙色)。 */}
+        {intakeQuestion && <ConversationIntakeCard question={intakeQuestion} index={intakeIndex} />}
         {/* 问题入口已经移到标题栏下方那条紧凑状态条(见 `QuestionStatusBar`)。
             这里不再重复渲染问题正文 —— 完整回答只在画布的 Question Node 里完成。 */}
         {/* 「按执行情况调整」的入口。

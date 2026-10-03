@@ -2086,11 +2086,13 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
       );
       if (traceOpen) void refreshTrace();
       // 如果问题挂在地图节点上,让推理地图也跟着增量重评(状态、摘要、焦点)。
+      // **阶段 11:intake 问题没有地图节点,但答完之后要接着问下一个(或给出架构)。**
       const reasoningNodeId = result.question.reasoningNodeId;
       const handle = reasoningNodeId
         ? reasoning?.nodes.find(node => node.id === reasoningNodeId)?.handle
         : undefined;
-      if (handle) {
+      const isIntake = result.question.presentation === 'conversation_intake';
+      if (handle || isIntake) {
         const answerText = payload.customInput?.trim() || payload.selectedOptionIds.join('、');
         void agentTurn({
           trigger: 'question_answered',

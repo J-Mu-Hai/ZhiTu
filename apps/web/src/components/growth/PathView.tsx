@@ -1118,9 +1118,12 @@ function Canvas() {
       !!reasoning &&
       reasoning.nodes.some((item) => item.nodeType === 'route') &&
       reasoning.nodes.some((item) => item.nodeType === 'stage');
-    const orderedQuestions = [...questions].sort((a, b) =>
-      a.createdAt === b.createdAt ? a.id.localeCompare(b.id) : a.createdAt.localeCompare(b.createdAt),
-    );
+    // **阶段 11:intake 问题不进画布。** 它们只在对话区以橙色显示。
+    const orderedQuestions = [...questions]
+      .filter((item) => item.presentation !== 'conversation_intake')
+      .sort((a, b) =>
+        a.createdAt === b.createdAt ? a.id.localeCompare(b.id) : a.createdAt.localeCompare(b.createdAt),
+      );
     const primaryQuestionId =
       orderedQuestions.find((item) => item.status === 'pending')?.id ??
       orderedQuestions.find((item) => item.status !== 'archived')?.id ??
