@@ -191,6 +191,13 @@ class GoalReasoningView(ApiModel):
     v1_status: str | None = None
     #: 上一次 V1 模型回合失败的可读原因。
     v1_error: str | None = None
+    #: R1:当前/最近一轮 OpenJiuwen 工作回合的 turn id、deadline 与真实来源。
+    #: `v1_turn_deadline_at` 非空 = 正在工作;到点仍未完成会转成可重试失败。
+    v1_turn_id: str | None = None
+    v1_turn_deadline_at: datetime | None = None
+    v1_turn_source: str | None = None
+    #: R1:V1 是否强制真实 OpenJiuwen。UI 据此显示“AI 规划 · OpenJiuwen”。
+    v1_require_openjiuwen: bool = False
     #: P2.1:当前战略判断(优先展示的 AI 暂定理解,可被用户纠正)。
     v1_strategic_thesis: str | None = None
     #: P2.1:用户无法回答时 AI 给出的候选方向(最多 3 个)。

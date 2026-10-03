@@ -1930,6 +1930,14 @@ export interface GoalReasoningView {
   v1Status: string | null;
   /** 上一次 V1 模型回合失败的可读原因。 */
   v1Error: string | null;
+  /** R1:当前/最近一轮 OpenJiuwen 工作回合的 turn id。 */
+  v1TurnId: string | null;
+  /** R1:工作回合的截止时刻;非空 = 正在工作。 */
+  v1TurnDeadlineAt: string | null;
+  /** R1:本轮真实模型来源(`openjiuwen`;测试为 `test`)。 */
+  v1TurnSource: string | null;
+  /** R1:V1 是否强制真实 OpenJiuwen。 */
+  v1RequireOpenjiuwen: boolean;
   /** P2.1:当前战略判断(优先展示的 AI 暂定理解,可被用户纠正)。 */
   v1StrategicThesis: string | null;
   /** P2.1:用户无法回答时 AI 给出的候选方向(最多 3 个)。 */

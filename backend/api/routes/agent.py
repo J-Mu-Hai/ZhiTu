@@ -138,7 +138,10 @@ async def v1_confirm_strategy(
     session = await reasoning_service.get_session(db, ctx)
     if session is None or not v1_service.is_v1(session):
         raise InvalidInput("这个空间还没有开始 V1 规划流程。")
-    return await v1_service.confirm_strategy(db, ctx, session, reasoner)
+    # R1:所有 V1 入口都汇入唯一编排器,由它决定下一阶段。
+    return await v1_service.advance_v1_workflow(
+        db, ctx, session, reasoner, event="strategy_confirmed"
+    )
 
 
 async def _v1_session(ctx, db):
@@ -197,7 +200,7 @@ async def v1_review(
     from backend.services import v1_service
 
     session = await _v1_session(ctx, db)
-    return await v1_service.weekend_review(db, ctx, session)
+    return await v1_service.advance_v1_workflow(db, ctx, session, event="weekly_review_due")
 
 
 @router.post(
@@ -213,8 +216,12 @@ async def v1_feedback(
     from backend.services import v1_service
 
     session = await _v1_session(ctx, db)
-    return await v1_service.record_feedback(
-        db, ctx, session, node_id=payload.node_id, outcome=payload.outcome
+    return await v1_service.advance_v1_workflow(
+        db,
+        ctx,
+        session,
+        event="execution_feedback",
+        payload={"node_id": payload.node_id, "outcome": payload.outcome},
     )
 
 
@@ -287,7 +294,9 @@ async def v1_select_direction(
     from backend.services import v1_service
 
     session = await _v1_session(ctx, db)
-    return await v1_service.select_candidate_direction(db, ctx, session, key, reasoner)
+    return await v1_service.advance_v1_workflow(
+        db, ctx, session, reasoner, event="candidate_direction_selected", payload={"key": key}
+    )
 
 
 @router.post(
@@ -303,7 +312,9 @@ async def v1_confirm_goal_definition(
     from backend.services import v1_service
 
     session = await _v1_session(ctx, db)
-    return await v1_service.confirm_goal_definition(db, ctx, session, reasoner)
+    return await v1_service.advance_v1_workflow(
+        db, ctx, session, reasoner, event="goal_definition_confirmed"
+    )
 
 
 @router.post(
@@ -319,7 +330,8 @@ async def v1_continue_strategy(
     from backend.services import v1_service
 
     session = await _v1_session(ctx, db)
-    return await v1_service.continue_strategy(db, ctx, session, reasoner)
+    # 继续形成战略路径是 problem_structure 的自动推进分支,交给编排器统一决定。
+    return await v1_service.advance_v1_workflow(db, ctx, session, reasoner, trigger="space_entered")
 
 
 @router.post(

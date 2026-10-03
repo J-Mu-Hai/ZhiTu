@@ -2299,6 +2299,11 @@
           "default": null,
           "title": "V1Question"
         },
+        "v1RequireOpenjiuwen": {
+          "default": false,
+          "title": "V1Requireopenjiuwen",
+          "type": "boolean"
+        },
         "v1SelectedDirection": {
           "anyOf": [
             {
@@ -2359,6 +2364,43 @@
           ],
           "default": null,
           "title": "V1Strategy"
+        },
+        "v1TurnDeadlineAt": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "V1Turndeadlineat"
+        },
+        "v1TurnId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "V1Turnid"
+        },
+        "v1TurnSource": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "V1Turnsource"
         },
         "v1VisibleAnalysisKeys": {
           "items": {

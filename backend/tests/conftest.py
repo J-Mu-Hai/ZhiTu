@@ -282,6 +282,10 @@ class FakeReasoner:
     """
 
     reply: str = "这是一条来自假模型的回复。"
+    #: R1:显式声明这是测试来源。V1 的强制运行时只放行 `openjiuwen` 与 `test` ——
+    #: 没有它,一个注入漏了的测试会在“OpenJiuwen 未就绪”上失败,而那种失败与它
+    #: 要验的东西无关。
+    v1_source_kind: str = "test"
     claims: tuple = ()
     #: 这一轮要提的变更。写成 dict 而不是 `CreateNodeAction(...)`,是为了让测试里
     #: 那些**故意非法**的用例(未知 op、悬空 n7、`2026-13-45`)能原样写出来 ——

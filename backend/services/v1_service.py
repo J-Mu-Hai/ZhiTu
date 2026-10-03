@@ -31,7 +31,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import uuid
+from datetime import timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -45,6 +48,7 @@ from backend.agent.runtime.base import (
     TurnContext,
 )
 from backend.contracts.reasoning import AgentTurnResponse
+from backend.core.config import settings
 from backend.db.base import utcnow
 from backend.db.models import AgentQuestion, Conversation, GoalReasoningSession, Message, PlanNode
 from backend.db.models.enums import (
@@ -74,6 +78,8 @@ from backend.services import (
 from backend.services.context import WorkspaceContext
 from backend.services.timeutil import today_in
 
+logger = logging.getLogger(__name__)
+
 # =================================================================================
 # V1 阶段一档位
 # =================================================================================
@@ -95,6 +101,12 @@ V1_REPLANNING = "replanning"
 V1_STATUS_IDLE = "idle"
 V1_STATUS_RUNNING = "running"
 V1_STATUS_FAILED = "failed"
+
+#: 真实模型来源。只有这两个值能通过 V1 的强制运行时校验:
+#: - `openjiuwen`:真实经过 OpenJiuwen Workflow 的调用;
+#: - `test`:显式注入的测试 fixture(响应与审计都会如实标明)。
+V1_SOURCE_OPENJIUWEN = "openjiuwen"
+V1_SOURCE_TEST = "test"
 
 #: 三个一级分组:(键, 标题, 说明)。
 _GROUPS: tuple[tuple[str, str, str], ...] = (
@@ -234,6 +246,149 @@ _STRATEGY_FIELD = {
     "defer_or_avoid": "deferOrAvoid",
     "risk_control": "riskControl",
 }
+
+
+# =================================================================================
+# R1:OpenJiuwen 强制运行时 + 工作回合生命周期
+# =================================================================================
+def reasoner_source_kind(reasoner) -> str:
+    """当前 reasoner 的**真实**来源种类。不靠环境变量猜。
+
+    - 显式声明了 `v1_source_kind` 的实现(测试 fixture / 适配器)以声明为准;
+    - 真实适配器按类名与模块识别,避免鸭子类型误判成 openjiuwen;
+    - 其余一律 `unknown`,由强制校验拒绝。
+    """
+    if reasoner is None:
+        return "unknown"
+    declared = getattr(reasoner, "v1_source_kind", None)
+    if isinstance(declared, str) and declared:
+        return declared
+    cls = type(reasoner)
+    module = getattr(cls, "__module__", "")
+    if cls.__name__ == "OpenJiuwenReasoner" or module.endswith("openjiuwen_runtime"):
+        return V1_SOURCE_OPENJIUWEN
+    return "unknown"
+
+
+def source_allowed(kind: str) -> bool:
+    """V1 是否接受这个来源。开关关闭时不限制(保留旧行为)。"""
+    if not settings.v1_require_openjiuwen:
+        return True
+    return kind in (V1_SOURCE_OPENJIUWEN, V1_SOURCE_TEST)
+
+
+def _start_turn(
+    session: GoalReasoningSession,
+    *,
+    stage: str | None,
+    trigger: str,
+    source: str,
+    idempotency_key: str | None = None,
+) -> None:
+    """把一个工作回合持久化到会话上并盖 deadline。**调用方负责 commit。**"""
+    now = utcnow()
+    session.v1_turn_id = uuid.uuid4().hex[:32]
+    session.v1_turn_stage = stage
+    session.v1_turn_trigger = trigger
+    session.v1_turn_started_at = now
+    session.v1_turn_deadline_at = now + timedelta(
+        seconds=max(1, int(settings.v1_agent_turn_timeout_seconds))
+    )
+    session.v1_turn_attempt = int(session.v1_turn_attempt or 0) + 1
+    session.v1_turn_source = source
+    session.v1_turn_idempotency_key = idempotency_key
+    session.v1_status = V1_STATUS_RUNNING
+    session.v1_error = None
+
+
+def _finish_turn(session: GoalReasoningSession, *, status: str) -> None:
+    """结束一个回合:清掉 deadline,落最终状态。**调用方负责 commit。**"""
+    session.v1_status = status
+    session.v1_turn_deadline_at = None
+
+
+async def _reason_with_timeout(reasoner, turn: TurnContext) -> ReasoningResult:
+    """在 V1 的超时窗口内调用 reasoner。到点转可重试超时,不无限等待。"""
+    timeout = max(1, int(settings.v1_agent_turn_timeout_seconds))
+    try:
+        return await asyncio.wait_for(reasoner.reason(turn), timeout=timeout)
+    except TimeoutError:
+        return ReasoningResult(
+            reply=f"这次响应超过 {timeout} 秒还没回来,可以重试。",
+            source=ModelSource.UNAVAILABLE,
+            degraded=True,
+            degraded_reason=DegradedReason.MODEL_TIMEOUT,
+            retryable=True,
+            request_id="v1-timeout",
+            prompt_version="v1",
+        )
+
+
+async def _audit_turn_failure(
+    db,
+    ctx,
+    session: GoalReasoningSession,
+    result: ReasoningResult,
+    *,
+    trigger: str,
+    stage_before: str | None,
+) -> None:
+    """把一次失败的模型回合落到审计。超时用**专用事件**,不混进普通不可用。"""
+    is_timeout = result.degraded_reason == DegradedReason.MODEL_TIMEOUT
+    await _audit(
+        db,
+        ctx,
+        session,
+        "v1_step_timed_out" if is_timeout else "model_unavailable",
+        trigger=trigger,
+        stage_before=stage_before,
+        stage_after=session.v1_stage,
+        source=result.source.value if result.source else None,
+        summary=session.v1_error,
+        validation_status="failed",
+        error_code=(
+            "V1_STEP_TIMEOUT" if is_timeout else str(result.degraded_reason or "MODEL_UNAVAILABLE")
+        ),
+    )
+
+
+async def _refuse_unavailable_source(
+    db: AsyncSession,
+    ctx: WorkspaceContext,
+    session: GoalReasoningSession,
+    *,
+    source: str,
+    trigger: str,
+) -> ReasoningResult:
+    """来源不是真实 OpenJiuwen:准确失败 + 可重试,绝不当成真实规划成功。"""
+    session.v1_status = V1_STATUS_FAILED
+    _finish_turn(session, status=V1_STATUS_FAILED)
+    session.v1_error = (
+        "OpenJiuwen 未就绪,未开始规划。"
+        f"本轮模型来源是 {source or 'unknown'},不满足 V1 的真实 OpenJiuwen 要求,"
+        "已停止,可修复后重试。"
+    )
+    await _audit(
+        db,
+        ctx,
+        session,
+        "v1_openjiuwen_required",
+        trigger=trigger,
+        source=source or None,
+        summary=session.v1_error,
+        validation_status="failed",
+        error_code="V1_OPENJIUWEN_REQUIRED",
+    )
+    await db.commit()
+    return ReasoningResult(
+        reply=session.v1_error,
+        source=ModelSource.UNAVAILABLE,
+        degraded=True,
+        degraded_reason=DegradedReason.MODEL_UNAVAILABLE,
+        retryable=True,
+        request_id="v1-source",
+        prompt_version="v1",
+    )
 
 
 def is_v1(session: GoalReasoningSession | None) -> bool:
@@ -676,26 +831,23 @@ async def _run_assessment(
     turn = await _build_turn_context(
         db, ctx, session, root, user_message=user_message, exclude_message_id=exclude_message_id
     )
-    session.v1_status = V1_STATUS_RUNNING
-    session.v1_error = None
+    source = reasoner_source_kind(reasoner)
+    if not source_allowed(source):
+        return await _refuse_unavailable_source(
+            db, ctx, session, source=source, trigger=trigger
+        )
+    _start_turn(session, stage=stage_before, trigger=trigger, source=source)
     await db.commit()
 
-    result = await reasoner.reason(turn)
+    result = await _reason_with_timeout(reasoner, turn)
     assessment = result.v1_assessment
 
     if result.degraded:
         session.v1_status = V1_STATUS_FAILED
+        _finish_turn(session, status=V1_STATUS_FAILED)
         session.v1_error = result.reply or "模型暂时不可用。"
-        await _audit(
-            db,
-            ctx,
-            session,
-            "model_unavailable",
-            trigger="user_message",
-            source=result.source.value if result.source else None,
-            summary=session.v1_error,
-            validation_status="failed",
-            error_code=str(result.degraded_reason or "MODEL_UNAVAILABLE"),
+        await _audit_turn_failure(
+            db, ctx, session, result, trigger=trigger, stage_before=stage_before
         )
         await db.commit()
         return result
@@ -706,6 +858,7 @@ async def _run_assessment(
         or assessment.key_dimensions
     ):
         session.v1_status = V1_STATUS_FAILED
+        _finish_turn(session, status=V1_STATUS_FAILED)
         session.v1_error = "模型这次的回答没能解析成战略判断。"
         await _audit(
             db,
@@ -810,7 +963,7 @@ async def _run_assessment(
         session.v1_next_action = None
     session.phase = ReasoningSessionPhase.ROADMAP_DRAFT
     session.status = ReasoningSessionStatus.READY
-    session.v1_status = V1_STATUS_IDLE
+    _finish_turn(session, status=V1_STATUS_IDLE)
     session.v1_error = None
 
     # ---- 审计:战略判断 / 关键问题 / 候选方向 / 节点更新 / 战略草案 ----
@@ -1197,30 +1350,33 @@ async def generate_coarse_timeline(
     if root is None:
         raise InvalidInput("这个空间还没有根目标。")
     turn = await _build_timeline_turn_context(db, ctx, session)
-    session.v1_status = V1_STATUS_RUNNING
-    session.v1_error = None
+    source = reasoner_source_kind(reasoner)
+    if not source_allowed(source):
+        return await _refuse_unavailable_source(
+            db, ctx, session, source=source, trigger="strategy_confirmation"
+        )
+    _start_turn(session, stage=V1_STRATEGY_CONFIRMED, trigger="strategy_confirmation", source=source)
     await db.commit()
 
-    result = await reasoner.reason(turn)
+    result = await _reason_with_timeout(reasoner, turn)
     draft = result.v1_timeline
     if result.degraded:
         session.v1_status = V1_STATUS_FAILED
+        _finish_turn(session, status=V1_STATUS_FAILED)
         session.v1_error = result.reply or "模型暂时不可用。"
-        await _audit(
+        await _audit_turn_failure(
             db,
             ctx,
             session,
-            "model_unavailable",
+            result,
             trigger="strategy_confirmation",
-            source=result.source.value if result.source else None,
-            summary=session.v1_error,
-            validation_status="failed",
-            error_code=str(result.degraded_reason or "MODEL_UNAVAILABLE"),
+            stage_before=V1_STRATEGY_CONFIRMED,
         )
         await db.commit()
         return result
     if draft is None or not draft.phases:
         session.v1_status = V1_STATUS_FAILED
+        _finish_turn(session, status=V1_STATUS_FAILED)
         session.v1_error = "模型这次没有给出合法的时间架构。"
         await _audit(
             db,
@@ -1278,6 +1434,7 @@ async def generate_coarse_timeline(
     )
     if outcome.proposal is None:
         session.v1_status = V1_STATUS_FAILED
+        _finish_turn(session, status=V1_STATUS_FAILED)
         session.v1_error = ";".join(error.message for error in outcome.errors) or "时间架构没有通过校验。"
         await _audit(
             db,
@@ -1302,7 +1459,7 @@ async def generate_coarse_timeline(
 
     session.timeline_proposal_id = outcome.proposal.id
     session.v1_stage = V1_COARSE_TIMELINE_REVIEW
-    session.v1_status = V1_STATUS_IDLE
+    _finish_turn(session, status=V1_STATUS_IDLE)
     session.v1_error = None
     await _audit(
         db,
@@ -1968,14 +2125,44 @@ async def reopen_direction_selection(
 # 自动推进与战略确认
 # =================================================================================
 #: 运行中超过这个秒数没有推进,判定为超时:给出明确失败与重试,不无限转圈。
+#: **保留为默认值**;真实窗口取 `V1_AGENT_TURN_TIMEOUT_SECONDS`。
 V1_STALE_SECONDS = 45
+
+#: V1 事件闭集(见规格 4.1)。所有入口都必须能归到其中一个。
+V1_EVENTS = frozenset(
+    {
+        "space_entered",
+        "user_message",
+        "canvas_question_answered",
+        "candidate_direction_selected",
+        "goal_definition_confirmed",
+        "strategy_confirmed",
+        "timeline_proposal_confirmed",
+        "execution_feedback",
+        "weekly_review_due",
+        "retry",
+        "recovery_after_restart",
+    }
+)
+
+
+def _turn_timeout_seconds() -> int:
+    return max(1, int(settings.v1_agent_turn_timeout_seconds or V1_STALE_SECONDS))
 
 
 def _step_is_stale(session: GoalReasoningSession) -> bool:
+    """运行中的回合是否越过 deadline。没有 deadline 时退回 updated_at + 超时窗口。"""
+    if session.v1_turn_deadline_at is not None:
+        deadline = session.v1_turn_deadline_at
+        if deadline.tzinfo is None:
+            from datetime import UTC
+
+            deadline = deadline.replace(tzinfo=UTC)
+        return utcnow() >= deadline
     reference = session.updated_at
     if reference is None:
         return False
-    return (utcnow() - reference).total_seconds() > V1_STALE_SECONDS
+    return (utcnow() - reference).total_seconds() > _turn_timeout_seconds()
 
 
 def _blocked_reason(session: GoalReasoningSession) -> str:
@@ -1988,6 +2175,8 @@ def _blocked_reason(session: GoalReasoningSession) -> str:
         return "等待用户确认时间线"
     if session.v1_strategy and not (session.v1_strategy or {}).get("confirmed"):
         return "等待用户确认战略"
+    if session.v1_stage == V1_STRATEGY_CONFIRMED:
+        return "等待生成粗时间架构"
     if session.v1_stage == V1_WEEKLY_EXECUTION:
         return "已进入周执行"
     return "等待用户输入"
@@ -2000,6 +2189,8 @@ async def advance_v1_workflow(
     reasoner=None,
     *,
     trigger: str = "space_entered",
+    event: str | None = None,
+    payload: dict | None = None,
     trace=None,
 ) -> AgentTurnResponse:
     """V1 工作流的**唯一编排入口**。
@@ -2007,24 +2198,59 @@ async def advance_v1_workflow(
     每次进入空间 / 切阶段都调它:能自行推进的就推进(首轮整体判断、
     problem_structure 自动合成、确认战略后自动时间线),只在真正需要用户时停下,
     并把“为什么停 / 下一步等谁”写进审计。非终态阶段不会停在无解释的 idle。
+
+    `event` 是规格 4.1 的事件闭集之一(默认取 `trigger`)。所有入口——
+    进入空间、用户确认战略、选择方向、执行反馈、周末回顾——都从这里分发,
+    endpoint 不自己决定下一阶段。
     """
+    entry_event = (event or trigger or "space_entered").strip().lower()
+    if entry_event not in V1_EVENTS:
+        # 未知触发不猜语义:按“进入空间”处理,并留下可读原因。
+        entry_event = "space_entered"
+    body = payload or {}
+
     # 1) 超时恢复:运行中卡死 -> 明确失败 + 重试,不无限转圈。
     if session.v1_status == V1_STATUS_RUNNING and _step_is_stale(session):
+        turn_id = session.v1_turn_id
+        turn_stage = session.v1_turn_stage
+        source = session.v1_turn_source
         session.v1_status = V1_STATUS_FAILED
+        _finish_turn(session, status=V1_STATUS_FAILED)
         session.v1_error = "上一次处理超时,可以重试。"
         await _audit(
             db,
             ctx,
             session,
             "v1_step_timed_out",
-            trigger=trigger,
+            trigger=entry_event,
+            source=source,
+            stage_after=turn_stage,
             validation_status="failed",
             error_code="V1_STEP_TIMEOUT",
             summary=session.v1_error,
+            payload={"turnId": turn_id, "stage": turn_stage},
         )
         await db.commit()
-    if session.v1_status in (V1_STATUS_RUNNING, V1_STATUS_FAILED):
+    retrying = entry_event == "retry"
+    # 用户显式确认/选择/反馈类事件必须能继续:它们自带守卫(会在不合法时拒绝),
+    # 不能被“上一次失败”提前挡掉。只有自动推进类入口才在失败态上直接返回。
+    explicit_events = {
+        "candidate_direction_selected",
+        "goal_definition_confirmed",
+        "strategy_confirmed",
+        "execution_feedback",
+        "weekly_review_due",
+    }
+    explicit = entry_event in explicit_events
+    if session.v1_status == V1_STATUS_RUNNING:
+        # 真正在跑:第二请求只读状态,不重复出模型调用。
         return await _response(db, ctx, session, changed=False, trace=trace)
+    if session.v1_status == V1_STATUS_FAILED and not retrying and not explicit:
+        return await _response(db, ctx, session, changed=False, trace=trace)
+    if retrying:
+        # 重试复用同阶段/同幂等语义:清掉失败态,继续走下面的自动推进。
+        session.v1_status = V1_STATUS_IDLE
+        session.v1_error = None
 
     if session.v1_stage is None:
         session.v1_stage = V1_INITIAL_THINKING
@@ -2034,11 +2260,46 @@ async def advance_v1_workflow(
             ctx,
             session,
             "space_entered",
-            trigger=trigger,
+            trigger=entry_event,
             stage_after=session.v1_stage,
             summary="进入空间,建立初步思考状态。",
         )
         await db.commit()
+
+    # 2) 事件分发:所有入口都归到这里,由编排器决定下一阶段。
+    if entry_event == "candidate_direction_selected":
+        return await select_candidate_direction(
+            db, ctx, session, str(body.get("key") or ""), reasoner
+        )
+    if entry_event == "goal_definition_confirmed":
+        return await confirm_goal_definition(db, ctx, session, reasoner)
+    if entry_event == "strategy_confirmed":
+        return await confirm_strategy(db, ctx, session, reasoner)
+    if entry_event == "execution_feedback":
+        return await record_feedback(
+            db,
+            ctx,
+            session,
+            node_id=body.get("node_id"),
+            outcome=str(body.get("outcome") or ""),
+            trace=trace,
+        )
+    if entry_event == "weekly_review_due":
+        return await weekend_review(db, ctx, session, trace=trace)
+
+    # 3) 没有模型运行时就只能停在“等输入”,不假装在思考。
+    if reasoner is None:
+        await _audit(
+            db,
+            ctx,
+            session,
+            "v1_workflow_blocked",
+            trigger=entry_event,
+            stage_after=session.v1_stage,
+            summary="没有可用的模型运行时,停在等待输入。",
+            payload={"stage": session.v1_stage, "nextAction": session.v1_next_action},
+        )
+        return await _response(db, ctx, session, changed=False, trace=trace)
 
     stage = session.v1_stage
     advanced = False
@@ -2060,7 +2321,7 @@ async def advance_v1_workflow(
             user_message=message,
             reasoner=reasoner,
             classification=INPUT_STRATEGIC_FACT,
-            trigger=trigger,
+            trigger=entry_event,
         )
         advanced = True
     elif stage == V1_GOAL_REFRAME and not session.v1_strategic_thesis:
@@ -2073,7 +2334,7 @@ async def advance_v1_workflow(
             user_message=f"请基于「{goal}」给出整体判断。",
             reasoner=reasoner,
             classification=INPUT_STRATEGIC_FACT,
-            trigger=trigger,
+            trigger=entry_event,
         )
         advanced = True
     elif (
@@ -2086,7 +2347,7 @@ async def advance_v1_workflow(
             ctx,
             session,
             "v1_workflow_blocked",
-            trigger=trigger,
+            trigger=entry_event,
             stage_after=stage,
             summary="problem_structure 没有战略草案,自动合成。",
             payload={"stage": stage, "nextAction": session.v1_next_action},
@@ -2097,13 +2358,17 @@ async def advance_v1_workflow(
         await generate_coarse_timeline(db, ctx, session, reasoner, trace=None)
         advanced = True
 
+    # 模型回合失败 / 来源不合规时不算“推进”。
+    if session.v1_status == V1_STATUS_FAILED:
+        advanced = False
+
     if advanced:
         await _audit(
             db,
             ctx,
             session,
             "v1_workflow_advanced",
-            trigger=trigger,
+            trigger=entry_event,
             stage_after=session.v1_stage,
             focus_key=session.v1_focus_key,
             summary=f"自动推进到 {session.v1_stage}。",
@@ -2121,7 +2386,7 @@ async def advance_v1_workflow(
             ctx,
             session,
             "v1_workflow_blocked",
-            trigger=trigger,
+            trigger=entry_event,
             stage_after=session.v1_stage,
             focus_key=session.v1_focus_key,
             summary=_blocked_reason(session),
@@ -2144,42 +2409,15 @@ async def advance(
     *,
     trace,
 ) -> AgentTurnResponse:
-    """进入空间:只建立初始状态,不调用模型、不生成计划。"""
-    stage_before = session.v1_stage
-    if session.v1_stage is None:
-        session.v1_stage = V1_INITIAL_THINKING
-        session.phase = ReasoningSessionPhase.INTAKE
-    session.status = ReasoningSessionStatus.READY
-    if stage_before is None:
-        await _audit(
-            db,
-            ctx,
-            session,
-            "space_entered",
-            trigger="space_entered",
-            stage_after=session.v1_stage,
-            summary="进入空间,建立初步思考状态。",
-        )
-    await db.commit()
-    # P4:周末**自动发起回顾入口** —— 有活跃周计划、且没有未处理提案时,
-    # 汇总完成度并准备一份只调整未来的重规划草案(不静默改写已确认计划)。
-    if (
-        session.v1_stage == V1_WEEKLY_EXECUTION
-        and today_in(ctx.timezone).weekday() >= 5
-        and not await v01_service._has_open_proposal(db, ctx)
-    ):
-        return await weekend_review(db, ctx, session, trace=trace)
-    if trace is not None:
-        from backend.services import agent_trace_service
+    """**已弃用(R1)**:V1 的唯一编排入口是 `advance_v1_workflow`。
 
-        agent_trace_service.mark_terminal(
-            trace,
-            degraded=False,
-            degraded_reason=None,
-            stopped_reason="ready_to_propose",
-            code=None,
-        )
-    return await reasoning_service._response(db, ctx, session, changed=False)
+    这个签名只为兼容可能残留的旧调用方。它不再自己决定阶段,而是原样转发到
+    编排器(不带模型运行时)。新代码不应直接调用它。
+    """
+    logger.warning("v1_service.advance 已弃用,请改用 advance_v1_workflow。")
+    return await advance_v1_workflow(
+        db, ctx, session, reasoner=None, trigger="space_entered", trace=trace
+    )
 
 
 async def confirm_strategy(

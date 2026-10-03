@@ -399,6 +399,11 @@ async def build_view(
         v1_strategy=session.v1_strategy,
         v1_status=session.v1_status,
         v1_error=session.v1_error,
+        #: R1:工作回合生命周期(deadline / 来源),供前端显示进度与失败重试。
+        v1_turn_id=session.v1_turn_id,
+        v1_turn_deadline_at=session.v1_turn_deadline_at,
+        v1_turn_source=session.v1_turn_source,
+        v1_require_openjiuwen=bool(settings.v1_require_openjiuwen and session.v1_stage is not None),
         #: P2.1:战略判断优先 + 候选方向与用户选择。
         v1_strategic_thesis=session.v1_strategic_thesis,
         v1_candidate_directions=session.v1_candidate_directions,

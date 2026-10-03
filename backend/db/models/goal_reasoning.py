@@ -170,6 +170,23 @@ class GoalReasoningSession(UuidPk, TimestampMixin, Base):
     #: P2.3:当前阶段**显式下一步动作**。非终态阶段不允许“无问题、无 CTA、无战略草案”。
     #: 取值如 `continue_strategy`;None = 当前没有额外 CTA(已有待确认问题/战略)。
     v1_next_action: Mapped[str | None] = mapped_column(String(32))
+    # ---- 规划智能体重构 V1(主动循环 R1):OpenJiuwen 工作回合生命周期 ----
+    #: 本回合唯一标识。同一 workspace 同时只能有一个 `running` 回合。
+    v1_turn_id: Mapped[str | None] = mapped_column(String(32))
+    #: 本回合所处的 V1 阶段(进入时快照,便于审计“从哪个阶段进入”)。
+    v1_turn_stage: Mapped[str | None] = mapped_column(String(32))
+    #: 本回合的触发来源(`space_entered` / `user_message` / `strategy_confirmed` …)。
+    v1_turn_trigger: Mapped[str | None] = mapped_column(String(32))
+    #: 本回合开始时刻。
+    v1_turn_started_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
+    #: 本回合截止时刻。超过它仍是 `running` 即判超时,转可重试失败。
+    v1_turn_deadline_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
+    #: 本回合的尝试次数(重试复用同阶段/同语义时递增)。None = 0。
+    v1_turn_attempt: Mapped[int | None] = mapped_column(Integer)
+    #: 本回合真实模型来源(`openjiuwen`;测试 fixture 为 `test`)。
+    v1_turn_source: Mapped[str | None] = mapped_column(String(16))
+    #: 本回合幂等键(同一入口重放不重复调用模型)。
+    v1_turn_idempotency_key: Mapped[str | None] = mapped_column(String(64))
 
     nodes: Mapped[list[ReasoningNode]] = relationship(
         back_populates="session", cascade="all, delete-orphan"

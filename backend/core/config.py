@@ -55,6 +55,18 @@ class Settings(BaseSettings):
     #: 目标空间进入 "先想清楚" 的推理画布(三组固定分析容器),而不是旧的问卷/路线。
     #: 老空间不迁移:它们的 `v1_stage` 为 NULL,行为与加列之前完全一样。
     planning_v1: bool = False
+    #: 仅 V1 新空间:**强制真实 OpenJiuwen 运行时**,禁止静默降级。
+    #:
+    #: 默认 true。V1 的每一轮模型调用前都会校验当前 reasoner 的真实来源;来源不是
+    #: `openjiuwen`(例如 `AGENT_REASONER=auto` 在没装 SDK 时落到了直连模型)时,
+    #: V1 进入 `failed_retryable`,给出准确原因与重试入口,**绝不**把直连/规则/脚本
+    #: 的结果当作真实规划成功。老空间、V0.1 与常规对话不受这一条约束。
+    v1_require_openjiuwen: bool = True
+    #: V1 单个 OpenJiuwen 工作回合的超时秒数(默认 45s)。
+    #:
+    #: 到点未返回即转 `failed_retryable`,审计写 `v1_step_timed_out`;进程中途崩溃
+    #: 留下的 `running` 也会在下次进入空间时按同一 deadline 恢复成可重试失败。
+    v1_agent_turn_timeout_seconds: int = 45
     #: 规划智能体 V1 的**决策审计导出**(P5)。
     #:
     #: **默认关闭**。打开后才允许 `GET /agent/v1/audit-export` 与前端“导出本次规划记录”

@@ -85,6 +85,8 @@ AUDIT_EVENT_TYPES = frozenset(
         "v1_workflow_advanced",
         "v1_workflow_blocked",
         "v1_step_timed_out",
+        # R1:V1 要求真实 OpenJiuwen;来源不满足时准确失败,不静默降级。
+        "v1_openjiuwen_required",
     }
 )
 
