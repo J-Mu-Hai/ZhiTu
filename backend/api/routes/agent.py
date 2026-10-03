@@ -12,9 +12,12 @@
 
 from __future__ import annotations
 
+import json
+import re
+import urllib.parse
 import uuid
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.agent.runtime import Reasoner
@@ -30,6 +33,7 @@ from backend.contracts.reasoning import (
     V01FeedbackRequest,
 )
 from backend.contracts.trace import AgentTraceView
+from backend.core.config import settings
 from backend.db.session import get_db
 from backend.services import agent_trace_service, reasoning_service
 from backend.services.context import WorkspaceContext
@@ -211,6 +215,61 @@ async def v1_feedback(
     session = await _v1_session(ctx, db)
     return await v1_service.record_feedback(
         db, ctx, session, node_id=payload.node_id, outcome=payload.outcome
+    )
+
+
+@router.get(
+    "/{workspace_id}/agent/v1/audit-export",
+    summary="导出 V1 规划决策审计记录(JSON / Markdown)",
+)
+async def v1_audit_export(
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+    fmt: str = Query(default="markdown", alias="format", pattern="^(json|markdown)$"),
+) -> Response:
+    """导出本空间**可审阅的**规划决策记录。
+
+    - 仅 V1 空间可导出;
+    - 仅在 `AGENT_AUDIT_EXPORT` 打开时允许(默认生产关闭);
+    - 只包含已清洗的可审阅内容 —— 不含思维链、系统提示词、密钥或内部异常。
+    """
+    from backend.services import audit_service  # 延迟 import,避免循环
+
+    if not settings.agent_audit_export:
+        raise InvalidInput("决策审计导出没有开启。")
+    session = await reasoning_service.get_session(db, ctx)
+    if session is None or session.v1_stage is None:
+        raise InvalidInput("这个空间还没有可导出的 V1 规划记录。")
+
+    data = await audit_service.export_json(db, ctx, session)
+    if not data["events"]:
+        # 空导出不伪造文件 —— 如实告诉用户还没有记录。
+        raise InvalidInput("本空间尚未产生可导出的规划记录。")
+
+    # 文件名带空间名与时间戳。HTTP 头只能用 latin-1,所以:英文/数字的可用文件名 +
+    # `filename*=UTF-8''` 的完整名(中文空间名不会让响应编码失败)。
+    stamp = audit_service.utcnow().strftime("%Y%m%d-%H%M%S")
+    raw_base = f"agent-audit-{ctx.workspace.title or 'space'}-{stamp}"
+    ascii_base = (
+        re.sub(r"[^0-9A-Za-z_.-]+", "-", raw_base).strip("-.")
+        or f"agent-audit-{str(ctx.id)[:8]}-{stamp}"
+    )
+    ext = "json" if fmt == "json" else "md"
+    disposition = (
+        f'attachment; filename="{ascii_base}.{ext}"; '
+        f"filename*=UTF-8''{urllib.parse.quote(raw_base + '.' + ext)}"
+    )
+    if fmt == "json":
+        return Response(
+            content=json.dumps(data, ensure_ascii=False, indent=2),
+            media_type="application/json; charset=utf-8",
+            headers={"Content-Disposition": disposition},
+        )
+    content = await audit_service.export_markdown(db, ctx, session)
+    return Response(
+        content=content,
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": disposition},
     )
 
 

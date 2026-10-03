@@ -5,6 +5,7 @@
 """
 
 from backend.db.models.analysis import NodeAnalysis
+from backend.db.models.audit import AgentAuditEvent
 from backend.db.models.conversation import Conversation, Message
 from backend.db.models.enums import (
     ACTIVE_QUESTION_STATUSES,
@@ -79,6 +80,7 @@ __all__ = [
     "PLANNING_LEVEL_ORDER",
     "PLANNING_LEVEL_RANK",
     "PROVENANCE_SOURCES",
+    "AgentAuditEvent",
     # 表
     "AgentQuestion",
     "AgentTraceStep",

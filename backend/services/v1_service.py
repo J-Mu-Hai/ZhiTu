@@ -62,6 +62,7 @@ from backend.db.models.enums import (
     RevisionTrigger,
 )
 from backend.services import (
+    audit_service,
     conversation_service,
     node_service,
     proposal_service,
@@ -142,6 +143,25 @@ _STRATEGY_FIELD = {
 def is_v1(session: GoalReasoningSession | None) -> bool:
     """这个会话是不是重构 V1。`v1_stage is None` = 非 V1。"""
     return session is not None and session.v1_stage is not None
+
+
+async def _audit(db, ctx: WorkspaceContext, session, event_type: str, **kwargs):
+    """写一条 V1 审计事件。**只 flush,随调用方的领域事务一起提交。**"""
+    return await audit_service.record(db, ctx, session, event_type=event_type, **kwargs)
+
+
+async def _guard_reject(db, ctx, session, *, reason: str, code: str = "GUARD_REJECTED") -> None:
+    """守卫拒绝:记一条**失败**事件并提交,然后把拒绝交给调用方抛出。"""
+    await _audit(
+        db,
+        ctx,
+        session,
+        "guard_rejected",
+        summary=reason,
+        validation_status="failed",
+        error_code=code,
+    )
+    await db.commit()
 
 
 # =================================================================================
@@ -417,6 +437,12 @@ async def _run_assessment(
         from backend.services.errors import InvalidInput
 
         raise InvalidInput("这个空间还没有根目标。")
+    stage_before = session.v1_stage
+    question_before = session.v1_question
+    _existing = await _v1_questions(db, ctx)
+    before_status = {
+        q.v1_key: (q.v1_analysis or {}).get("status") for q in _existing if q.v1_key
+    }
     turn = await _build_turn_context(
         db, ctx, session, root, user_message=user_message, exclude_message_id=exclude_message_id
     )
@@ -430,11 +456,33 @@ async def _run_assessment(
     if result.degraded:
         session.v1_status = V1_STATUS_FAILED
         session.v1_error = result.reply or "模型暂时不可用。"
+        await _audit(
+            db,
+            ctx,
+            session,
+            "model_unavailable",
+            trigger="user_message",
+            source=result.source.value if result.source else None,
+            summary=session.v1_error,
+            validation_status="failed",
+            error_code=str(result.degraded_reason or "MODEL_UNAVAILABLE"),
+        )
         await db.commit()
         return result
     if assessment is None or (not assessment.global_assessment and not assessment.node_updates):
         session.v1_status = V1_STATUS_FAILED
         session.v1_error = "模型这次的回答没能解析成战略判断。"
+        await _audit(
+            db,
+            ctx,
+            session,
+            "model_output_invalid",
+            trigger="user_message",
+            source=result.source.value if result.source else None,
+            summary=session.v1_error,
+            validation_status="failed",
+            error_code="MODEL_OUTPUT_INVALID",
+        )
         await db.commit()
         return ReasoningResult(
             reply="模型这次的回答没能解析成战略判断,可以再试一次。",
@@ -449,7 +497,7 @@ async def _run_assessment(
         )
 
     questions = await _v1_questions(db, ctx)
-    _changed, _analyses, strategy_values = _apply_updates(questions, assessment)
+    changed, analyses, strategy_values = _apply_updates(questions, assessment)
     persisted = {q.v1_key: (q.v1_analysis or {}) for q in questions if q.v1_key}
 
     if strategy_values and _strategy_ready(persisted, assessment):
@@ -475,6 +523,68 @@ async def _run_assessment(
     session.status = ReasoningSessionStatus.READY
     session.v1_status = V1_STATUS_IDLE
     session.v1_error = None
+
+    # ---- 审计:全局判断 / 关键问题 / 节点更新 / 战略草案 ----
+    await _audit(
+        db,
+        ctx,
+        session,
+        "global_assessment_generated",
+        trigger="user_message",
+        stage_before=stage_before,
+        stage_after=session.v1_stage,
+        focus_key=session.v1_focus_key,
+        focus_reason=session.v1_focus_reason,
+        source=result.source.value if result.source else None,
+        summary=assessment.global_assessment,
+        payload={"globalAssessment": assessment.global_assessment},
+    )
+    if session.v1_question and session.v1_question != question_before:
+        await _audit(
+            db,
+            ctx,
+            session,
+            "global_question_asked",
+            trigger="user_message",
+            focus_key=session.v1_focus_key,
+            summary=session.v1_question,
+            payload={"question": session.v1_question, "focus": session.v1_focus_key},
+        )
+    node_updates = [
+        {
+            "key": question.v1_key,
+            "beforeStatus": before_status.get(question.v1_key),
+            "afterStatus": analyses[question.v1_key]["status"],
+            "summary": analyses[question.v1_key]["judgment"],
+            "facts": analyses[question.v1_key]["knownFacts"],
+            "assumptions": analyses[question.v1_key]["assumptions"],
+            "evidence": analyses[question.v1_key]["evidence"],
+        }
+        for question in changed
+    ]
+    if node_updates:
+        await _audit(
+            db,
+            ctx,
+            session,
+            "node_analysis_updated",
+            trigger="user_message",
+            focus_key=session.v1_focus_key,
+            summary=f"更新了 {len(node_updates)} 个分析节点。",
+            payload={"nodeUpdates": node_updates},
+        )
+    if strategy_values and session.v1_strategy:
+        await _audit(
+            db,
+            ctx,
+            session,
+            "strategy_draft_generated",
+            stage_before=stage_before,
+            stage_after=session.v1_stage,
+            focus_key=session.v1_focus_key,
+            summary="形成战略路径草案。",
+            payload={"strategy": session.v1_strategy},
+        )
     await db.commit()
     return result
 
@@ -488,6 +598,7 @@ async def answer_v1_in_conversation(
     content: str,
     client_message_id: str | None,
     context_node_id,
+    trigger: str = "user_message",
 ):
     """V1 空间里的用户消息(含紫色问题节点的回答):交给模型做战略判断。"""
     conversation = await conversation_service.get_or_create_primary_conversation(db, ctx)
@@ -510,6 +621,28 @@ async def answer_v1_in_conversation(
     root = await reasoning_service.root_plan_node(db, ctx)
     if root is not None:
         await _create_containers(db, ctx, root)
+
+    # ---- 审计:用户输入 / 紫色问题回答 ----
+    if session.v1_stage == V1_INITIAL_THINKING:
+        await _audit(
+            db,
+            ctx,
+            session,
+            "initial_thinking_submitted",
+            trigger=trigger,
+            stage_before=V1_INITIAL_THINKING,
+            summary=content,
+        )
+    elif trigger == "question_answered" or context_node_id is not None:
+        await _audit(
+            db,
+            ctx,
+            session,
+            "canvas_question_answered",
+            trigger=trigger,
+            focus_key=session.v1_focus_key,
+            summary=content,
+        )
 
     result = await _run_assessment(
         db,
@@ -658,6 +791,7 @@ async def generate_coarse_timeline(
     from backend.services.errors import InvalidInput
 
     if session.v1_stage != V1_STRATEGY_CONFIRMED:
+        await _guard_reject(db, ctx, session, reason="当前不在“可生成粗时间架构”的状态。")
         raise InvalidInput("当前不在“可生成粗时间架构”的状态。")
     root = await reasoning_service.root_plan_node(db, ctx)
     if root is None:
@@ -672,11 +806,33 @@ async def generate_coarse_timeline(
     if result.degraded:
         session.v1_status = V1_STATUS_FAILED
         session.v1_error = result.reply or "模型暂时不可用。"
+        await _audit(
+            db,
+            ctx,
+            session,
+            "model_unavailable",
+            trigger="strategy_confirmation",
+            source=result.source.value if result.source else None,
+            summary=session.v1_error,
+            validation_status="failed",
+            error_code=str(result.degraded_reason or "MODEL_UNAVAILABLE"),
+        )
         await db.commit()
         return result
     if draft is None or not draft.phases:
         session.v1_status = V1_STATUS_FAILED
         session.v1_error = "模型这次没有给出合法的时间架构。"
+        await _audit(
+            db,
+            ctx,
+            session,
+            "model_output_invalid",
+            trigger="strategy_confirmation",
+            source=result.source.value if result.source else None,
+            summary=session.v1_error,
+            validation_status="failed",
+            error_code="MODEL_OUTPUT_INVALID",
+        )
         await db.commit()
         return ReasoningResult(
             reply="模型这次没有给出合法的时间架构,可以再试一次。",
@@ -723,6 +879,16 @@ async def generate_coarse_timeline(
     if outcome.proposal is None:
         session.v1_status = V1_STATUS_FAILED
         session.v1_error = ";".join(error.message for error in outcome.errors) or "时间架构没有通过校验。"
+        await _audit(
+            db,
+            ctx,
+            session,
+            "proposal_validation_failed",
+            trigger="strategy_confirmation",
+            summary=session.v1_error,
+            validation_status="failed",
+            error_code="PROPOSAL_VALIDATION_FAILED",
+        )
         await db.commit()
         return ReasoningResult(
             reply=session.v1_error,
@@ -738,6 +904,39 @@ async def generate_coarse_timeline(
     session.v1_stage = V1_COARSE_TIMELINE_REVIEW
     session.v1_status = V1_STATUS_IDLE
     session.v1_error = None
+    await _audit(
+        db,
+        ctx,
+        session,
+        "coarse_timeline_draft_generated",
+        stage_before=V1_STRATEGY_CONFIRMED,
+        stage_after=V1_COARSE_TIMELINE_REVIEW,
+        summary="生成 3–6 个阶段的粗时间架构草案。",
+        payload={
+            "phases": [
+                {
+                    "title": phase.title,
+                    "startWeek": phase.start_week,
+                    "endWeek": phase.end_week,
+                }
+                for phase in draft.phases
+            ]
+        },
+    )
+    await _audit(
+        db,
+        ctx,
+        session,
+        "timeline_proposal_created",
+        summary="粗时间架构提案已生成,待用户确认。",
+        payload={
+            "proposal": {
+                "id": str(outcome.proposal.id),
+                "kind": "timeline",
+                "status": "pending_confirmation",
+            }
+        },
+    )
     await db.commit()
     if trace is not None:
         from backend.services import agent_trace_service
@@ -746,6 +945,23 @@ async def generate_coarse_timeline(
             trace, degraded=False, degraded_reason=None, stopped_reason="ready_to_propose", code=None
         )
     return result
+
+
+async def _proposal_kind(db: AsyncSession, proposal_id) -> str | None:
+    """从提案条目标题判断它是周计划还是日计划(用于审计事件)。"""
+    from backend.db.models import ProposalItem
+
+    items = list(
+        await db.scalars(
+            select(ProposalItem).where(ProposalItem.proposal_id == proposal_id)
+        )
+    )
+    titles = " ".join(str((item.payload or {}).get("title") or "") for item in items)
+    if "本周计划" in titles or "下周预览" in titles:
+        return "weekly"
+    if "日计划" in titles:
+        return "daily"
+    return None
 
 
 async def on_proposal_confirmed(
@@ -775,6 +991,16 @@ async def on_proposal_confirmed(
                     item["planNodeId"] = str(linked) if linked else None
         session.v01_timeline = timeline
         session.v1_stage = V1_WEEKLY_EXECUTION
+        await _audit(
+            db,
+            ctx,
+            session,
+            "timeline_confirmed",
+            stage_before=V1_COARSE_TIMELINE_REVIEW,
+            stage_after=V1_WEEKLY_EXECUTION,
+            summary="时间线已确认,写入正式阶段。",
+            payload={"proposal": {"id": str(proposal_id), "kind": "timeline", "status": "applied"}},
+        )
         await db.commit()
     elif session.v1_stage == V1_REPLANNING:
         for item in timeline:
@@ -782,7 +1008,29 @@ async def on_proposal_confirmed(
                 item["status"] = "planned"
         session.v01_timeline = timeline
         session.v1_stage = V1_WEEKLY_EXECUTION
+        await _audit(
+            db,
+            ctx,
+            session,
+            "replan_confirmed",
+            stage_before=V1_REPLANNING,
+            stage_after=V1_WEEKLY_EXECUTION,
+            summary="未来重规划已确认,已完成历史不变。",
+            payload={"proposal": {"id": str(proposal_id), "kind": "replan", "status": "applied"}},
+        )
         await db.commit()
+    else:
+        kind = await _proposal_kind(db, proposal_id)
+        if kind in ("weekly", "daily"):
+            await _audit(
+                db,
+                ctx,
+                session,
+                "weekly_plan_confirmed" if kind == "weekly" else "daily_plan_confirmed",
+                summary="本周计划已确认。" if kind == "weekly" else "日计划已确认。",
+                payload={"proposal": {"id": str(proposal_id), "kind": kind, "status": "applied"}},
+            )
+            await db.commit()
 
 
 # =================================================================================
@@ -795,11 +1043,23 @@ async def generate_weekly_plan(
     from backend.services.errors import InvalidInput
 
     if session.v1_stage != V1_WEEKLY_EXECUTION:
+        await _guard_reject(db, ctx, session, reason="当前不在周计划阶段。")
         raise InvalidInput("当前不在周计划阶段。")
     root = await reasoning_service.root_plan_node(db, ctx)
     if root is None:
         raise InvalidInput("这个空间还没有根目标。")
-    return await v01_service.generate_weekly_plan(db, ctx, root, session, trace=trace)
+    response = await v01_service.generate_weekly_plan(db, ctx, root, session, trace=trace)
+    if await v01_service._has_open_proposal(db, ctx):
+        await _audit(
+            db,
+            ctx,
+            session,
+            "weekly_plan_proposal_created",
+            summary="生成本周计划与下周预览(待确认)。",
+            payload={"proposal": {"kind": "weekly"}},
+        )
+        await db.commit()
+    return response
 
 
 async def generate_daily_plan(
@@ -809,6 +1069,7 @@ async def generate_daily_plan(
     from backend.services.errors import InvalidInput
 
     if session.v1_stage != V1_WEEKLY_EXECUTION:
+        await _guard_reject(db, ctx, session, reason="当前不在周计划阶段。")
         raise InvalidInput("当前不在周计划阶段。")
     root = await reasoning_service.root_plan_node(db, ctx)
     if root is None:
@@ -890,7 +1151,24 @@ async def generate_daily_plan(
     if outcome.proposal is None:
         session.v1_status = V1_STATUS_FAILED
         session.v1_error = "日计划没有通过校验。"
+        await _audit(
+            db,
+            ctx,
+            session,
+            "proposal_validation_failed",
+            summary="日计划没有通过校验。",
+            validation_status="failed",
+            error_code="PROPOSAL_VALIDATION_FAILED",
+        )
         return await _response(db, ctx, session, changed=False)
+    await _audit(
+        db,
+        ctx,
+        session,
+        "daily_plan_proposal_created",
+        summary="把本周计划拆成少量工作日工作块(待确认)。",
+        payload={"proposal": {"id": str(outcome.proposal.id), "kind": "daily", "status": "pending_confirmation"}},
+    )
     message = await _append_assistant(
         db, ctx, reply="我把本周计划拆成了几天的工作块,确认后写入。(不是均摊七天。)"
     )
@@ -933,6 +1211,14 @@ async def record_feedback(
         reply = f"本周完成率 {done}/{total}(低于 60%)。我先不催你,而是把剩余时间线往后再排一版,你看过再确认。"
     else:
         reply = f"记下了。本周进度 {done}/{total}。"
+    await _audit(
+        db,
+        ctx,
+        session,
+        "execution_feedback_recorded",
+        summary=f"任务反馈:{outcome};本周完成 {done}/{total}。",
+        payload={"nodeId": str(node_id), "outcome": outcome, "done": done, "total": total},
+    )
     message = await _append_assistant(db, ctx, reply=reply)
     return await _response(db, ctx, session, message=message, changed=True)
 
@@ -958,6 +1244,7 @@ async def generate_replan(
         context_node_id=root.id,
         scope_root_id=root.id,
     )
+    stage_before_replan = session.v1_stage
     phase_handles = {node_id: h for h, node_id in turn.node_handles}
     completed_ids = {str(phase.id) for phase in phases if phase.status is NodeStatus.COMPLETED}
     timeline = list(session.v01_timeline or [])
@@ -1006,8 +1293,28 @@ async def generate_replan(
     if outcome.proposal is None:
         session.v1_status = V1_STATUS_FAILED
         session.v1_error = "重规划提案没有通过校验。"
+        await _audit(
+            db,
+            ctx,
+            session,
+            "proposal_validation_failed",
+            trigger="replan",
+            summary=session.v1_error,
+            validation_status="failed",
+            error_code="PROPOSAL_VALIDATION_FAILED",
+        )
         return await _response(db, ctx, session, changed=False)
     session.v1_stage = V1_REPLANNING
+    await _audit(
+        db,
+        ctx,
+        session,
+        "replan_proposal_created",
+        stage_before=stage_before_replan,
+        stage_after=V1_REPLANNING,
+        summary="生成只调整未来阶段的重规划草案,待确认。",
+        payload={"proposal": {"id": str(outcome.proposal.id), "kind": "replan", "status": "pending_confirmation"}},
+    )
     message = await _append_assistant(
         db,
         ctx,
@@ -1024,9 +1331,18 @@ async def weekend_review(
     from backend.services.errors import InvalidInput
 
     if session.v1_stage not in (V1_WEEKLY_EXECUTION, V1_REPLANNING):
+        await _guard_reject(db, ctx, session, reason="当前不在周执行阶段。")
         raise InvalidInput("当前不在周执行阶段。")
     root = await reasoning_service.root_plan_node(db, ctx)
     done, total = await v01_service.weekly_completion(db, ctx, root) if root else (0, 0)
+    await _audit(
+        db,
+        ctx,
+        session,
+        "weekly_review_started",
+        summary=f"发起周末回顾:本周完成 {done}/{total}。",
+        payload={"done": done, "total": total},
+    )
     await _append_assistant(
         db,
         ctx,
@@ -1048,10 +1364,21 @@ async def advance(
     trace,
 ) -> AgentTurnResponse:
     """进入空间:只建立初始状态,不调用模型、不生成计划。"""
+    stage_before = session.v1_stage
     if session.v1_stage is None:
         session.v1_stage = V1_INITIAL_THINKING
         session.phase = ReasoningSessionPhase.INTAKE
     session.status = ReasoningSessionStatus.READY
+    if stage_before is None:
+        await _audit(
+            db,
+            ctx,
+            session,
+            "space_entered",
+            trigger="space_entered",
+            stage_after=session.v1_stage,
+            summary="进入空间,建立初步思考状态。",
+        )
     await db.commit()
     # P4:周末**自动发起回顾入口** —— 有活跃周计划、且没有未处理提案时,
     # 汇总完成度并准备一份只调整未来的重规划草案(不静默改写已确认计划)。
@@ -1088,10 +1415,21 @@ async def confirm_strategy(
 
     strategy = dict(session.v1_strategy or {})
     if not strategy:
+        await _guard_reject(db, ctx, session, reason="现在还没有可确认的战略路径。")
         raise InvalidInput("现在还没有可确认的战略路径。")
     strategy["confirmed"] = True
     session.v1_strategy = strategy
     session.v1_stage = V1_STRATEGY_CONFIRMED
+    await _audit(
+        db,
+        ctx,
+        session,
+        "strategy_confirmed",
+        stage_before=V1_STRATEGY_DRAFT,
+        stage_after=V1_STRATEGY_CONFIRMED,
+        summary="用户确认了战略逻辑。",
+        payload={"strategy": strategy},
+    )
     await db.commit()
     if reasoner is not None:
         await generate_coarse_timeline(db, ctx, session, reasoner)

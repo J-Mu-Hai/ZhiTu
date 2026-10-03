@@ -386,6 +386,8 @@ async def build_view(
         v1_strategy=session.v1_strategy,
         v1_status=session.v1_status,
         v1_error=session.v1_error,
+        #: P5:只有 V1 空间且开关打开时才允许导出审计记录。
+        v1_audit_export_enabled=bool(settings.agent_audit_export and session.v1_stage is not None),
         dates_calibrated=session.dates_calibrated,
         input_version=session.input_version,
         strategy_proposal_id=session.strategy_proposal_id,

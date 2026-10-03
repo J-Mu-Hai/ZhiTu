@@ -191,6 +191,8 @@ class GoalReasoningView(ApiModel):
     v1_status: str | None = None
     #: 上一次 V1 模型回合失败的可读原因。
     v1_error: str | None = None
+    #: P5:该空间是否允许导出决策审计记录(`AGENT_AUDIT_EXPORT`)。前端据此显示/隐藏入口。
+    v1_audit_export_enabled: bool = False
     #: 阶段 11:时间架构里的日期是否已校准。False = 只有相对周,不伪造日历日期。
     dates_calibrated: bool = False
     input_version: str | None = None

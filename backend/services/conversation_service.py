@@ -366,6 +366,7 @@ async def submit_turn(
             content=text,
             client_message_id=client_message_id,
             context_node_id=context_node_id,
+            trigger=trigger,
         )
 
     # 阶段 12:战略 intake 正在等回答时,用户这条消息**就是那轮回答**。

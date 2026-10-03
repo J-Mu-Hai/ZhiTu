@@ -2183,6 +2183,11 @@
           "default": null,
           "title": "V01Timelineproposalid"
         },
+        "v1AuditExportEnabled": {
+          "default": false,
+          "title": "V1Auditexportenabled",
+          "type": "boolean"
+        },
         "v1Error": {
           "anyOf": [
             {
