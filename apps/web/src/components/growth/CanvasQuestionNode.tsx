@@ -201,6 +201,17 @@ export function CanvasQuestionNodeComponent({ data }: NodeProps<QuestionFlowNode
         )}
       </div>
 
+      {/* 规划智能体重构 V1(P2):已知事实与 AI 假设分开展示 —— 事实来自用户/系统,
+          假设必须能被认出来是假设。 */}
+      {question.v1Analysis && question.v1Analysis.knownFacts.length > 0 && (
+        <ul className="cq-known-facts">
+          <li className="cq-label">已知事实</li>
+          {question.v1Analysis.knownFacts.map((fact, index) => (
+            <li key={index}>{fact}</li>
+          ))}
+        </ul>
+      )}
+
       <span className="cq-label cq-label-question">需要你确认的一点</span>
       <p className="cq-question">{question.question}</p>
 

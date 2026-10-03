@@ -276,6 +276,11 @@ export function ConversationPanel() {
    * 面板回到普通尺寸与普通对话布局(节点局部讨论就用普通面板 + 画布详情卡)。
    */
   const v1Initial = reasoning?.v1Stage === 'initial_thinking';
+  /** 规划智能体重构 V1(P2):需要**在对话框回答**的问题(橙色),不是画布上的紫色问题节点。 */
+  const v1ConversationQuestion =
+    reasoning?.v1Stage && reasoning.v1Stage !== 'initial_thinking' && reasoning.v1Question
+      ? reasoning.v1Question
+      : null;
   /** 规划智能体重构 V1(P2):模型回合失败状态与战略路径草案。 */
   const v1StatusFailed = reasoning?.v1Status === 'failed';
   const v1Strategy = reasoning?.v1Strategy ?? null;
@@ -674,6 +679,15 @@ export function ConversationPanel() {
           : primaryQuestion
             ? <div className="context-hint"><span className="tiny-dot" />选择画布中的节点，让讨论更聚焦</div>
             : null}
+
+        {/* 规划智能体重构 V1:需要在对话框回答的关键问题 —— **橙色框**,与画布上
+            的紫色问题节点分开。回答仍然在下面的输入框里,这里只做标识。 */}
+        {v1ConversationQuestion && (
+          <div className="v1-conversation-question" data-testid="v1-conversation-question" role="status">
+            <span className="v1-conversation-tag">对话中回答</span>
+            <p>{v1ConversationQuestion}</p>
+          </div>
+        )}
 
         {showContexts && (
           <div className="context-options">

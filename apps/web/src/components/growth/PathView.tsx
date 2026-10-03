@@ -1146,7 +1146,16 @@ function Canvas() {
       null;
     // **主画布只放当前一个活动问题。** 其余问题折进“思考层”的计数里 —— 六七张问题卡
     // 和阶段节点并列会把主线读没(见 `showThinking`)。
-    const shownQuestions = roadmapExists ? orderedQuestions.filter((item) => item.id === primaryQuestionId) : [];
+    //
+    // 规划智能体重构 V1:固定分组节点(目标重构 / 问题结构 / 战略路径)**进入之后**,
+    // 归属它的紫色问题节点围绕这个根节点显示;在顶层(没进入分组)看不到它们 ——
+    // 判据就是问题的 `sourceNodeId` 是否等于当前空间根。
+    const v1Space = Boolean(reasoning?.v1Stage);
+    const shownQuestions = v1Space
+      ? orderedQuestions.filter((item) => item.sourceNodeId === spaceId)
+      : roadmapExists
+        ? orderedQuestions.filter((item) => item.id === primaryQuestionId)
+        : [];
     const anchorCounts: Record<string, number> = {};
     shownQuestions.forEach((item) => {
       const anchorId = item.sourceNodeId && positionById[item.sourceNodeId] ? item.sourceNodeId : spaceId;
@@ -1159,7 +1168,14 @@ function Canvas() {
       // 保证同一锚点下多个问题不堆叠、刷新前后一致。
       // 放在锚点(根目标)的**留白侧**：根的直接子节点在它右侧 y≈30，
       // 主路线在它正下方。把问题卡放在“右侧偏下”那一块，既不压业务节点也不压路线。
-      const fallback = { x: anchor.x + 380, y: anchor.y + 200 };
+      // V1 的紫色问题节点**围绕分组根节点**匀开;非 V1 保持原来的右侧偏下位置。
+      const count = Math.max(1, shownQuestions.length);
+      const fallback = v1Space
+        ? {
+            x: anchor.x + Math.cos((index / count) * Math.PI * 2) * 330,
+            y: anchor.y + Math.sin((index / count) * Math.PI * 2) * 230,
+          }
+        : { x: anchor.x + 380, y: anchor.y + 200 };
       const placed = questionDragging[positionKey] ?? questionPositions[positionKey] ?? fallback;
       nextNodes.push({
         id: nodeId,

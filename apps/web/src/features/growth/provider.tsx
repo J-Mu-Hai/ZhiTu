@@ -562,6 +562,9 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
    */
   const [reasoning, setReasoning] = useState<backend.GoalReasoningView | null>(null);
   const [reasoningLoading, setReasoningLoading] = useState(false);
+  /** 让回调读到**最新**的推理地图,不把它塞进依赖(否则每次更新都会重建回调)。 */
+  const reasoningRef = useRef(reasoning);
+  useEffect(() => { reasoningRef.current = reasoning; }, [reasoning]);
   /**
    * 让画布定位到某个问题节点的通道。`nonce` 让“再点一次定位”也能重新触发。
    * 它不是计划状态,不持久化 —— 只是一个 UI 意图。
@@ -648,7 +651,11 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
    * 否则“服务端实际存了什么”与“界面显示什么”会用两套代码维护同一份数据。
    */
   const refreshQuestions = useCallback(async () => {
-    const view = await backend.listQuestions(space.id);
+    // 规划智能体重构 V1:紫色问题节点回答后要**留在画布上**(标为已澄清),
+    // 所以 V1 连已处理的问题一起拉;非 V1 保持原样(只拉还没结束的)。
+    const view = await backend.listQuestions(space.id, {
+      includeDecided: Boolean(reasoningRef.current?.v1Stage),
+    });
     setQuestions(view.questions);
   }, [space.id]);
 

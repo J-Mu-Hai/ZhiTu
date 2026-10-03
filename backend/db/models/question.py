@@ -92,6 +92,14 @@ class AgentQuestion(UuidPk, TimestampMixin, Base):
     answered_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
     #: 用户动作审计(answered / skipped / deferred)。只整体读写,不按内容查询。
     events: Mapped[list] = mapped_column(JsonDict, default=list, nullable=False)
+    # ---- 规划智能体重构 V1(P2):固定问题节点标记与模型可审阅判断 ----
+    #: V1 固定问题键(current_state / true_intent / main_line / …)。
+    #: None = 非 V1 问题。模型只能用这个键指涉问题节点。
+    v1_key: Mapped[str | None] = mapped_column(String(48))
+    #: 模型对这个问题的**可审阅判断**:`{judgment, knownFacts[], assumptions[],
+    #: evidence[], importanceReason, uncertainty, status, discussionCount}`。
+    #: 只存结论/假设/来源,不存隐藏思维链。None = 还没有判断。
+    v1_analysis: Mapped[dict | None] = mapped_column(JsonDict)
 
     workspace: Mapped[Workspace] = relationship()  # noqa: F821
 

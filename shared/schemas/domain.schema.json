@@ -3557,6 +3557,31 @@
           "title": "Updatedat",
           "type": "string"
         },
+        "v1Analysis": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "V1Analysis"
+        },
+        "v1Key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "V1Key"
+        },
         "whyNow": {
           "title": "Whynow",
           "type": "string"

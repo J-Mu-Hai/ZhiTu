@@ -67,6 +67,54 @@
 .node-v1-markers .v1-chip-deferred { color: #8a7040; border-color: #e3d6b4; }
 .node-v1-markers .v1-chip-discussing { color: var(--blue-ink, #2f6da3); border-color: #c3dceb; }
 
+/* ---- V1(P2):紫色问题节点里的“已知事实”与判断分区 ---- */
+.canvas-question-node .cq-known-facts {
+  margin: 6px 0 2px;
+  padding: 6px 8px;
+  list-style: none;
+  display: grid;
+  gap: 3px;
+  border-left: 2px solid var(--line, #d8e0e6);
+  background: color-mix(in srgb, var(--line, #d8e0e6) 18%, transparent);
+  border-radius: 0 6px 6px 0;
+}
+.canvas-question-node .cq-known-facts li {
+  font-size: 10px;
+  line-height: 1.55;
+  color: var(--muted, #6f8293);
+}
+.canvas-question-node .cq-known-facts li.cq-label {
+  font-size: 9px;
+  letter-spacing: 0.5px;
+  color: var(--muted, #8798ad);
+}
+
+/* ---- V1(P2):需要**在对话框回答**的关键问题(橙色框) ---- */
+.v1-conversation-question {
+  display: grid;
+  gap: 5px;
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--experience, #c7a06e);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--experience, #c7a06e) 12%, transparent);
+}
+.v1-conversation-tag {
+  justify-self: start;
+  font-size: 9px;
+  letter-spacing: 0.4px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--experience, #c7a06e);
+  color: #fff;
+  font-weight: 700;
+}
+.v1-conversation-question p {
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text, #304b62);
+}
+
 /* ---- V1(P2):右侧面板里的准确状态与战略路径草案 ---- */
 .v1-status {
   display: flex;

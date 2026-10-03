@@ -399,6 +399,10 @@ export interface QuestionView {
   allowCustomInput: boolean;
   status: QuestionStatus;
   answer: QuestionAnswer | null;
+  /** 规划智能体重构 V1(P2):固定问题键(current_state / main_line / …)。null = 非 V1。 */
+  v1Key: string | null;
+  /** 模型对该问题的可审阅判断。null = 还没有判断。 */
+  v1Analysis: V1NodeAnalysis | null;
   createdAt: string;
   updatedAt: string;
   answeredAt: string | null;

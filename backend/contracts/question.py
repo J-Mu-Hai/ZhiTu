@@ -80,6 +80,10 @@ class QuestionView(ApiModel):
     allow_custom_input: bool = False
     status: str
     answer: QuestionAnswer | None = None
+    #: 规划智能体重构 V1(P2):固定问题键(current_state / main_line / …)。null = 非 V1。
+    v1_key: str | None = None
+    #: 模型对该问题的可审阅判断。null = 还没有判断。
+    v1_analysis: dict | None = None
     created_at: datetime
     updated_at: datetime
     answered_at: datetime | None = None

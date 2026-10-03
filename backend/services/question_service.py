@@ -658,6 +658,8 @@ def to_view(question: AgentQuestion) -> QuestionView:
         allow_custom_input=question.allow_custom_input,
         status=question.status.value,
         answer=answer,
+        v1_key=question.v1_key,
+        v1_analysis=question.v1_analysis,
         created_at=question.created_at,
         updated_at=question.updated_at,
         answered_at=question.answered_at,

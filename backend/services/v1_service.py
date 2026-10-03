@@ -1,37 +1,32 @@
 """规划智能体重构 V1 — P2:AI 战略判断、因素筛选与战略路径。
 
-## 它是什么
-
-程序控制流程与安全边界,模型负责**判断**:
+## 结构:分组是画布节点,子项是**画布问题节点**
 
 ```
-INITIAL_THINKING   初始界面只有根目标 + 右侧大号“初步思考”输入区
-        │  用户提交目标
-        ▼
-GOAL_REFRAME       模型给出整体判断 + 一个关键问题;
-                   固定容器(3 组 + 10 项)作为真实 PlanNode 建立
-        │  用户回答 / 讨论
-        ▼
-FACTOR_ANALYSIS    模型只更新焦点与受影响容器(每轮最多 3 个)
-        │  信息足够
-        ▼
-STRATEGY_DRAFT     模型给出战略路径取舍;服务端建立最多 4 个受限战略子项
-        │  用户确认
-        ▼
-STRATEGY_CONFIRMED_FOR_TIMELINE   P3 的交接状态(本身不生成时间架构)
+根目标 (画布节点)
+├─ 目标重构        ← 画布节点(PlanNode,固定框架,可进入)
+│   └─ 进入后有若干**紫色画布问题节点**围绕它
+├─ 问题结构        ← 画布节点
+│   └─ 进入后有若干紫色画布问题节点
+└─ 战略路径        ← 画布节点(先空,信息足够后长出问题)
 ```
 
-## 三条不可破坏的边界
+- 三个分组是 `plan_nodes`(`purpose=information`),**正常在主画布看不到子项**;
+  进入某个分组(它的子空间)才看到归属它的 `agent_questions`。
+- 这些紫色问题节点是 `AgentQuestion`(`presentation=canvas_question`),不是计划节点:
+  不参与排期 / 依赖 / 统计。
+- 需要在**对话框**回答的问题走橙色(会话 intake),不出现在画布上。
 
-1. **模型只能建议,服务端决定接受什么。** 输出契约 `V1AssessmentDraft` 里没有
-   “创建任意节点 / 任务 / 日期 / 周计划”的字段;服务端再按允许键、数量上限与
-   前置条件校验一次(见 `_apply_assessment`)。
-2. **固定容器是真实 PlanNode**(`purpose=information`),可以直接进入、详情、讨论;
-   但它们不排期、不计完成度。P2 更新的是这些容器的**内容**,不生成时间线/任务/提案。
-3. **失败不落半成品。** 模型不可用或输出不合格时,只记状态与可读原因,一个节点都
-   不写;界面拿到的是“可重试”,不是一句编出来的结论。
+## 程序控制 + 模型判断
 
-`v1_stage is None` = 非 V1,本模块所有入口直接返回/不介入。老空间不迁移、不重写。
+模型只负责判断:**整体判断、已存在问题的结论/事实/假设、一个焦点、一个问题、战略取舍**。
+它只能更新已存在的问题键,不能新建任意节点;每轮最多 3 个更新;战略只在四个受限键上加
+节点。服务端决定接受什么、写什么。
+
+## 失败不落半成品
+
+模型不可用 / 输出不合格分别记为准确状态,一个问句内容都不改。`v1_stage is None` = 非 V1,
+本模块所有入口直接返回/不介入。
 """
 
 from __future__ import annotations
@@ -47,7 +42,7 @@ from backend.agent.runtime.base import (
     TurnContext,
 )
 from backend.contracts.reasoning import AgentTurnResponse
-from backend.db.models import Conversation, GoalReasoningSession, Message, PlanNode
+from backend.db.models import AgentQuestion, Conversation, GoalReasoningSession, Message, PlanNode
 from backend.db.models.enums import (
     DegradedReason,
     MessageRole,
@@ -55,6 +50,9 @@ from backend.db.models.enums import (
     NodeOrigin,
     NodePurpose,
     NodeType,
+    QuestionPresentation,
+    QuestionResponseMode,
+    QuestionStatus,
     ReasoningSessionPhase,
     ReasoningSessionStatus,
 )
@@ -65,18 +63,13 @@ from backend.services.timeutil import today_in
 # =================================================================================
 # V1 阶段一档位
 # =================================================================================
-#: 初始界面:只有根目标与干净画布,右侧是大号“初步思考”输入区。
 V1_INITIAL_THINKING = "initial_thinking"
-#: 已建立三组画布,正在澄清目标定义。
 V1_GOAL_REFRAME = "goal_reframe"
-#: 目标定义足以讨论后,进入影响因素分析。
 V1_FACTOR_ANALYSIS = "factor_analysis"
-#: 目标与因素稳定后,形成战略路径草案。
 V1_STRATEGY_DRAFT = "strategy_draft"
 #: 用户已确认战略逻辑;P3 可以据此生成粗时间架构。**P2 本身不实现 P3。**
 V1_STRATEGY_CONFIRMED = "strategy_confirmed_for_timeline"
 
-#: V1 模型回合状态。给 UI 准确状态与重试入口。
 V1_STATUS_IDLE = "idle"
 V1_STATUS_RUNNING = "running"
 V1_STATUS_FAILED = "failed"
@@ -88,42 +81,38 @@ _GROUPS: tuple[tuple[str, str, str], ...] = (
     ("strategy_path", "战略路径", "待形成战略路径。"),
 )
 
-#: 十个固定分析容器:(分组键, 键, 标题)。
-_ANALYSIS: tuple[tuple[str, str, str], ...] = (
-    ("goal_reframe", "current_state", "你现在在哪"),
-    ("goal_reframe", "true_intent", "你真正想要什么"),
-    ("goal_reframe", "value_assessment", "这件事值得做吗"),
-    ("goal_reframe", "key_conflict", "真正卡你的是什么"),
-    ("goal_reframe", "goal_definition", "最后到底要做到什么"),
-    ("problem_structure", "hard_constraints", "硬约束"),
-    ("problem_structure", "controllable_factors", "可控变量"),
-    ("problem_structure", "key_levers", "关键杠杆"),
-    ("problem_structure", "major_risks", "主要风险"),
-    ("problem_structure", "external_conditions", "外部条件"),
+#: 十个固定画布问题节点:(分组键, 键, 问题, 为什么问)。
+_ANALYSIS: tuple[tuple[str, str, str, str], ...] = (
+    ("goal_reframe", "current_state", "你现在在哪?", "已有基础、可投入时间与可用资源决定起点,也决定每个阶段多长。"),
+    ("goal_reframe", "true_intent", "你希望最后能拿出什么具体结果,证明它真正解决了你的问题?", "真实意图不同,成果定义与阶段顺序会完全不同。"),
+    ("goal_reframe", "value_assessment", "这件事值得做吗?如果三年内没有直接回报,你还会做吗?", "先判断值不值得投入,再谈怎么投入,避免把时间花在伪目标上。"),
+    ("goal_reframe", "key_conflict", "真正卡你的是什么?只解决一个障碍,哪一个解决了整件事就会推进?", "只处理最关键的一两个矛盾,比同时补十个短板更有效。"),
+    ("goal_reframe", "goal_definition", "最后到底要做到什么?做到什么程度、拿出什么,你就认为这件事成了?", "没有可观察的成果定义,后面的阶段与时间线都无从判断。"),
+    ("problem_structure", "hard_constraints", "有哪些是你不能改、只能接受的限制?", "硬约束决定哪些路线根本不可行,必须先于偏好确认。"),
+    ("problem_structure", "controllable_factors", "在这件事上,哪些是你能直接行动改变的?", "只讨论能改变的东西,才能把注意力放在真正有产出的动作上。"),
+    ("problem_structure", "key_levers", "哪个变量一旦改善,最终结果的提升最大?", "抓住关键杠杆,比均匀用力更快看到结果。"),
+    ("problem_structure", "major_risks", "最可能让这件事失败的是什么?你能提前看到什么信号?", "提前识别风险与信号,才能设置检查点与备用路径。"),
+    ("problem_structure", "external_conditions", "有哪些外部因素不在你控制内,却会明显影响结果?", "外部条件不在你控制内,却常常决定路线的可行性。"),
 )
 
-#: 战略路径允许的四个受限子项:(键, 标题)。
-_STRATEGY_KEYS: tuple[tuple[str, str], ...] = (
-    ("main_line", "主线"),
-    ("parallel_line", "并行线"),
-    ("defer_or_avoid", "暂缓或放弃"),
-    ("risk_control", "风险控制"),
+#: 战略路径的四个受限问题:(键, 标题, 问题)。
+_STRATEGY_KEYS: tuple[tuple[str, str, str], ...] = (
+    ("main_line", "主线", "主线:最优先投入什么?"),
+    ("parallel_line", "并行线", "并行线:哪些可以同时做,但不该挤占主线?"),
+    ("defer_or_avoid", "暂缓或放弃", "暂缓/放弃:当前不值得做什么?"),
+    ("risk_control", "风险控制", "风险控制:在哪里设置检查点或备用路径?"),
 )
 
-#: 一轮最多接受几个容器更新。解析层已夹过一次;服务层再夹一次 ——
-#: “模型可以建议,但服务端决定接受多少”不能只靠上游那一处。
 MAX_V1_UPDATES = 3
 
-#: 模型可以指涉的全部键(固定容器 + 战略受限子项)。
+#: 模型可以指涉的全部键(10 个固定问题 + 4 个战略问题)。**分组键不可被模型更新。**
 ALLOWED_V1_KEYS = frozenset(
-    {key for key, _title, _desc in _GROUPS}
-    | {key for _group, key, _title in _ANALYSIS}
-    | {key for key, _title in _STRATEGY_KEYS}
+    {key for _group, key, _q, _why in _ANALYSIS} | {key for key, _t, _q in _STRATEGY_KEYS}
 )
-_STRATEGY_KEY_SET = frozenset(key for key, _title in _STRATEGY_KEYS)
+_STRATEGY_KEY_SET = frozenset(key for key, _t, _q in _STRATEGY_KEYS)
 _STRATEGY_GROUP_KEY = "strategy_path"
+_GROUP_KEY_SET = frozenset(key for key, _t, _d in _GROUPS)
 
-#: 战略子项键 -> 线格式(camelCase)字段名。前端 `V1StrategyView` 直接读后者。
 _STRATEGY_FIELD = {
     "main_line": "mainLine",
     "parallel_line": "parallelLine",
@@ -138,25 +127,65 @@ def is_v1(session: GoalReasoningSession | None) -> bool:
 
 
 # =================================================================================
-# 固定容器:真实 PlanNode(purpose=information,不排期、不计完成度)
+# 读
 # =================================================================================
-async def _v1_nodes(db: AsyncSession, ctx: WorkspaceContext) -> list[PlanNode]:
+async def _v1_groups(db: AsyncSession, ctx: WorkspaceContext) -> list[PlanNode]:
     result = await db.execute(
         select(PlanNode)
         .where(
             PlanNode.workspace_id == ctx.id,
-            PlanNode.v1_key.is_not(None),
+            PlanNode.v1_key.in_(tuple(_GROUP_KEY_SET)),
             PlanNode.deleted_at.is_(None),
         )
-        .order_by(PlanNode.depth.asc(), PlanNode.order_index.asc(), PlanNode.created_at.asc())
+        .order_by(PlanNode.order_index.asc(), PlanNode.created_at.asc())
     )
     return list(result.scalars())
+
+
+async def _v1_questions(db: AsyncSession, ctx: WorkspaceContext) -> list[AgentQuestion]:
+    result = await db.execute(
+        select(AgentQuestion)
+        .where(AgentQuestion.workspace_id == ctx.id, AgentQuestion.v1_key.is_not(None))
+        .order_by(AgentQuestion.created_at.asc())
+    )
+    return list(result.scalars())
+
+
+# =================================================================================
+# 建:分组(PlanNode)+ 固定问题节点(AgentQuestion)
+# =================================================================================
+async def _create_question(
+    db: AsyncSession,
+    ctx: WorkspaceContext,
+    *,
+    group: PlanNode,
+    key: str,
+    question: str,
+    why_now: str,
+) -> AgentQuestion:
+    row = AgentQuestion(
+        workspace_id=ctx.id,
+        source_node_id=group.id,
+        source_message_id=None,
+        presentation=QuestionPresentation.CANVAS_QUESTION,
+        question=question,
+        why_now=why_now,
+        response_mode=QuestionResponseMode.FREE_TEXT,
+        options=[],
+        allow_custom_input=True,
+        status=QuestionStatus.PENDING,
+        events=[],
+        v1_key=key,
+    )
+    db.add(row)
+    await db.flush()
+    return row
 
 
 async def _create_containers(
     db: AsyncSession, ctx: WorkspaceContext, root: PlanNode
 ) -> None:
-    """建立三组与十个固定分析容器。**幂等** —— 根下已有子节点就不重复建。"""
+    """建立三组画布节点与十个固定紫色问题节点。**幂等**。"""
     existing = await db.scalar(
         select(PlanNode.id)
         .where(
@@ -184,78 +213,66 @@ async def _create_containers(
         )
         groups[key] = result.node
 
-    for group_key, key, title in _ANALYSIS:
-        parent = groups[group_key]
-        await node_service.create_node(
-            db,
-            ctx,
-            parent_id=parent.id,
-            title=title,
-            node_type=NodeType.CAPABILITY.value,
-            purpose=NodePurpose.INFORMATION.value,
-            origin=NodeOrigin.AI,
-            v1_key=key,
+    for group_key, key, question, why_now in _ANALYSIS:
+        await _create_question(
+            db, ctx, group=groups[group_key], key=key, question=question, why_now=why_now
         )
 
 
-async def _ensure_strategy_nodes(
-    db: AsyncSession, ctx: WorkspaceContext, session: GoalReasoningSession, values: dict[str, str]
+async def _ensure_strategy_questions(
+    db: AsyncSession, ctx: WorkspaceContext, values: dict[str, str]
 ) -> None:
-    """按模型给出的战略子项建立对应的受限节点(每个键最多一次)。"""
-    nodes = await _v1_nodes(db, ctx)
-    existing = {node.v1_key: node for node in nodes}
-    group = existing.get(_STRATEGY_GROUP_KEY)
+    """战略成形时,在“战略路径”分组下建立受限问题节点(每个键最多一次)。"""
+    groups = {group.v1_key: group for group in await _v1_groups(db, ctx)}
+    group = groups.get(_STRATEGY_GROUP_KEY)
     if group is None:
         return
-    for key, title in _STRATEGY_KEYS:
+    existing = {q.v1_key for q in await _v1_questions(db, ctx)}
+    for key, title, question in _STRATEGY_KEYS:
         if key not in values or key in existing:
             continue
-        await node_service.create_node(
-            db,
-            ctx,
-            parent_id=group.id,
-            title=title,
-            node_type=NodeType.CAPABILITY.value,
-            purpose=NodePurpose.INFORMATION.value,
-            description=values[key],
-            origin=NodeOrigin.AI,
-            v1_key=key,
+        row = await _create_question(
+            db, ctx, group=group, key=key, question=question, why_now=title
         )
+        row.analysis_summary = values[key]
+        row.v1_analysis = {"judgment": values[key], "status": "discussing"}
 
 
 # =================================================================================
-# 回合上下文与提示词输入
+# 回合上下文
 # =================================================================================
-def _render_canvas(nodes: list[PlanNode]) -> str:
-    """把 V1 画布渲染给模型:**只有固定键,没有真实 UUID、没有用户原文之外的东西**。"""
-    by_key = {node.v1_key: node for node in nodes if node.v1_key}
+def _render_canvas(groups: list[PlanNode], questions: list[AgentQuestion]) -> str:
+    by_group: dict[str | None, list[AgentQuestion]] = {}
+    for question in questions:
+        by_group.setdefault(str(question.source_node_id) if question.source_node_id else None, []).append(question)
     lines: list[str] = []
+    title_of = {group.v1_key: group.title for group in groups}
     for key, title, _summary in _GROUPS:
-        group = by_key.get(key)
-        if group is not None:
-            lines.append(f"[{key}] {title}")
-        for group_key, child_key, child_title in _ANALYSIS:
-            if group_key != key:
-                continue
-            child = by_key.get(child_key)
-            if child is None:
-                continue
-            analysis = child.v1_analysis or {}
-            lines.append(f"  - [{child_key}] {child_title}")
+        if key not in title_of:
+            continue
+        group = next(group for group in groups if group.v1_key == key)
+        lines.append(f"[{key}] {title}")
+        for question in by_group.get(str(group.id), []):
+            lines.append(f"  - [{question.v1_key}] {question.question}")
+            analysis = question.v1_analysis or {}
             if analysis.get("judgment"):
                 lines.append(f"      判断:{analysis['judgment']}")
             if analysis.get("knownFacts"):
-                lines.append("      已知事实:" + ";".join(str(item) for item in analysis["knownFacts"]))
+                lines.append("      已知事实:" + ";".join(str(x) for x in analysis["knownFacts"]))
             if analysis.get("assumptions"):
-                lines.append("      AI 假设(未验证):" + ";".join(str(item) for item in analysis["assumptions"]))
+                lines.append("      AI 假设(未验证):" + ";".join(str(x) for x in analysis["assumptions"]))
+            if question.answer:
+                answer = question.answer.get("customInput") if isinstance(question.answer, dict) else None
+                if answer:
+                    lines.append(f"      用户已回答:{answer}")
             lines.append(
                 f"      状态:{analysis.get('status', 'unexplored')} / "
-                f"不确定性:{analysis.get('uncertainty', 'medium')}"
+                f"不确定性:{analysis.get('uncertainty', 'medium')} / 提问状态:{question.status.value}"
             )
-    strategy_keys = " / ".join(key for key, _title in _STRATEGY_KEYS)
-    if by_key.get(_STRATEGY_GROUP_KEY) is not None:
+    strategy_keys = " / ".join(key for key, _t, _q in _STRATEGY_KEYS)
+    if _STRATEGY_GROUP_KEY in title_of:
         lines.append(f"战略路径可用子项键:{strategy_keys}(信息足够时才用)")
-    return "\n".join(lines) if lines else "(还没有固定容器)"
+    return "\n".join(lines) if lines else "(还没有固定问题)"
 
 
 async def _build_turn_context(
@@ -267,7 +284,7 @@ async def _build_turn_context(
     user_message: str,
     exclude_message_id=None,
 ) -> TurnContext:
-    nodes = await _v1_nodes(db, ctx)
+    questions = await _v1_questions(db, ctx)
     page = await conversation_service.list_messages(db, ctx, limit=HISTORY_TURNS + 1)
     history = tuple(
         (message.role.value, message.content)
@@ -282,52 +299,36 @@ async def _build_turn_context(
         workspace_title=ctx.workspace.title or "",
         workspace_intent=ctx.workspace.intent or "",
         known=KnownConditions(goal=root.title or None),
-        #: 模型只看到固定键(作为 handle)与标题;真实 UUID 不进提示词。
         nodes=tuple(
             PlanNodeView(
-                handle=node.v1_key or "",
-                title=node.title,
-                node_type=node.node_type.value,
-                status=node.status.value,
-                depth=node.depth,
-                parent_handle=(
-                    next(
-                        (
-                            other.v1_key
-                            for other in nodes
-                            if other.id == node.parent_id and other.v1_key
-                        ),
-                        None,
-                    )
-                ),
-                purpose=node.purpose.value,
+                handle=question.v1_key or "",
+                title=question.question[:80],
+                node_type="question",
+                status=question.status.value,
+                depth=1,
+                purpose="information",
             )
-            for node in nodes
+            for question in questions
+            if question.v1_key
         ),
         history=history,
         user_message=user_message,
         purpose="v1_strategy",
-        reasoning_section=_render_canvas(nodes),
+        reasoning_section=_render_canvas(await _v1_groups(db, ctx), questions),
         node_handles=tuple(
-            (node.v1_key, str(node.id)) for node in nodes if node.v1_key
+            (question.v1_key, str(question.id)) for question in questions if question.v1_key
         ),
     )
 
 
 # =================================================================================
-# 应用模型判断(服务端强制边界)
+# 应用模型判断
 # =================================================================================
 def _apply_updates(
-    nodes: list[PlanNode], draft
-) -> tuple[list[PlanNode], dict[str, dict], dict[str, str]]:
-    """把形状合法的更新落到**已存在的固定容器**上。返回 (改动的节点, 新分析, 战略值)。
-
-    - 未知键直接丢弃(不新建任意节点);
-    - `impacted_node_keys` 里不存在的键也丢弃;
-    - 战略子项不在这里落库,由 `_ensure_strategy_nodes` 处理。
-    """
-    by_key = {node.v1_key: node for node in nodes if node.v1_key}
-    changed: list[PlanNode] = []
+    questions: list[AgentQuestion], draft
+) -> tuple[list[AgentQuestion], dict[str, dict], dict[str, str]]:
+    by_key = {question.v1_key: question for question in questions if question.v1_key}
+    changed: list[AgentQuestion] = []
     analyses: dict[str, dict] = {}
     strategy_values: dict[str, str] = {}
     for update in draft.node_updates[:MAX_V1_UPDATES]:
@@ -338,12 +339,11 @@ def _apply_updates(
             if update.judgment:
                 strategy_values[key] = update.judgment
             continue
-        node = by_key.get(key)
-        if node is None:
+        question = by_key.get(key)
+        if question is None:
             continue
-        existing = dict(node.v1_analysis or {})
+        existing = dict(question.v1_analysis or {})
         impacts = [item for item in update.impacted_node_keys if item in by_key]
-        #: 键全部用 camelCase —— 线格式与 `V1NodeAnalysis` 一致,前端直接读。
         analysis = {
             "judgment": update.judgment or existing.get("judgment", ""),
             "knownFacts": list(update.known_facts) or list(existing.get("knownFacts", [])),
@@ -355,13 +355,16 @@ def _apply_updates(
             "impactedNodeKeys": impacts,
             "discussionCount": int(existing.get("discussionCount", 0)) + 1,
         }
-        node.v1_analysis = analysis
-        # 卡片上的一句话摘要就是判断;长解释留在结构化字段里。
+        question.v1_analysis = analysis
+        # 卡片/问题节点上的一句话:分析摘要与依据。
         if analysis["judgment"]:
-            node.description = analysis["judgment"]
-        node.content_version += 1
+            question.analysis_summary = analysis["judgment"]
+        if analysis["importanceReason"]:
+            question.decision_impact = analysis["importanceReason"]
+        if analysis["assumptions"]:
+            question.confidence_note = "AI 假设:" + ";".join(str(x) for x in analysis["assumptions"])
         analyses[key] = analysis
-        changed.append(node)
+        changed.append(question)
     return changed, analyses, strategy_values
 
 
@@ -371,11 +374,12 @@ def _strategy_ready(analyses: dict[str, dict], draft) -> bool:
     def has(key: str) -> bool:
         return bool((analyses.get(key) or {}).get("judgment"))
 
-    goal = has("goal_definition")
-    conflict = has("key_conflict")
-    lever = has("key_levers") or has("hard_constraints")
-    risk = has("major_risks")
-    return bool(goal and conflict and lever and risk)
+    return bool(
+        has("goal_definition")
+        and has("key_conflict")
+        and (has("key_levers") or has("hard_constraints"))
+        and has("major_risks")
+    )
 
 
 # =================================================================================
@@ -405,15 +409,12 @@ async def _run_assessment(
     result = await reasoner.reason(turn)
     assessment = result.v1_assessment
 
-    # 模型不可用 / 输出解析失败:一个字都不写,如实记录状态。
     if result.degraded:
         session.v1_status = V1_STATUS_FAILED
-        #: 给用户看的那句话(已区分认证失败 / 限流 / 不可用),不是枚举名。
         session.v1_error = result.reply or "模型暂时不可用。"
         await db.commit()
         return result
     if assessment is None or (not assessment.global_assessment and not assessment.node_updates):
-        # 模型没按形状给判断 —— 是“输出不合格”,不是“模型不可用”。
         session.v1_status = V1_STATUS_FAILED
         session.v1_error = "模型这次的回答没能解析成战略判断。"
         await db.commit()
@@ -429,14 +430,12 @@ async def _run_assessment(
             latency_ms=result.latency_ms,
         )
 
-    nodes = await _v1_nodes(db, ctx)
-    _changed, _analyses, strategy_values = _apply_updates(nodes, assessment)
-    # 战略成形条件看的是**库里当前**的判断(包含这一轮刚写进去的),不是只看本轮。
-    persisted = {node.v1_key: (node.v1_analysis or {}) for node in nodes if node.v1_key}
+    questions = await _v1_questions(db, ctx)
+    _changed, _analyses, strategy_values = _apply_updates(questions, assessment)
+    persisted = {q.v1_key: (q.v1_analysis or {}) for q in questions if q.v1_key}
 
-    # 战略路径:服务端条件满足且模型给了子项时,建立受限节点并记录草案。
     if strategy_values and _strategy_ready(persisted, assessment):
-        await _ensure_strategy_nodes(db, ctx, session, strategy_values)
+        await _ensure_strategy_questions(db, ctx, strategy_values)
         merged = dict(session.v1_strategy or {})
         for key, value in strategy_values.items():
             merged[_STRATEGY_FIELD.get(key, key)] = value
@@ -448,6 +447,7 @@ async def _run_assessment(
 
     if assessment.global_assessment:
         session.v1_judgment = assessment.global_assessment
+    #: 需要在对话框回答的橙色问题(至多一个)。
     session.v1_question = assessment.question or None
     session.v1_focus_key = assessment.focus_key
     session.v1_focus_reason = assessment.focus_reason or None
@@ -471,7 +471,7 @@ async def answer_v1_in_conversation(
     client_message_id: str | None,
     context_node_id,
 ):
-    """V1 空间里的用户消息:交给模型做战略判断,服务端再决定写入什么。"""
+    """V1 空间里的用户消息(含紫色问题节点的回答):交给模型做战略判断。"""
     conversation = await conversation_service.get_or_create_primary_conversation(db, ctx)
     user_message = await conversation_service.record_user_message(
         db,
@@ -481,7 +481,6 @@ async def answer_v1_in_conversation(
         client_message_id=client_message_id,
         context_node_id=context_node_id,
     )
-    # 幂等:这一条已经有一轮助手回复就不再重复跑模型、重复写。
     existing = await conversation_service.find_reply_after(
         db, conversation.id, user_message.seq
     )
@@ -534,7 +533,7 @@ async def _append_assistant(
 
 
 # =================================================================================
-# 自动推进(space_entered / retry)与战略确认
+# 自动推进与战略确认
 # =================================================================================
 async def advance(
     db: AsyncSession,
