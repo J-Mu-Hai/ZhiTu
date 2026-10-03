@@ -584,9 +584,11 @@ async def confirm_proposal(
         db, ctx, proposal_id, idempotency_key=payload.idempotency_key
     )
     # 规划智能体 V0.1:确认后按阶段推进状态机(时间线 → WEEKLY_EXECUTION;重规划 → 回到执行)。
-    from backend.services import v01_service  # 延迟 import,避免循环
+    from backend.services import v01_service, v1_service  # 延迟 import,避免循环
 
     await v01_service.on_proposal_confirmed(db, ctx, proposal_id)
+    # 规划智能体重构 V1(P3/P4):同一份提案确认后推进 V1 的粗时间架构 / 重规划状态。
+    await v1_service.on_proposal_confirmed(db, ctx, proposal_id)
     return outcome.response
 
 

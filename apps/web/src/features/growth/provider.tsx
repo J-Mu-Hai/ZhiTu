@@ -1135,6 +1135,35 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
   }, [reloadPlan]);
 
   /**
+   * 规划智能体重构 V1(P4):生成本周计划 / 日计划 / 周末回顾入口。
+   *
+   * 三者都落成**待确认提案**;这里只负责发起、刷新提案与计划、上屏服务端的新消息。
+   */
+  const runV1PlanStep = useCallback(
+    async (step: 'weekly' | 'daily' | 'review') => {
+      try {
+        const response =
+          step === 'weekly'
+            ? await backend.generateV1Weekly(space.id)
+            : step === 'daily'
+              ? await backend.generateV1Daily(space.id)
+              : await backend.reviewV1(space.id);
+        setReasoning(response.reasoning);
+        if (response.message) {
+          setMessages(old => [...old, toMessage(response.message as backend.MessageView)]);
+        }
+        await refreshProposals().catch(() => undefined);
+        await refreshPlan().catch(() => undefined);
+        return response;
+      } catch (cause) {
+        setSendError(cause instanceof ApiError ? cause.message : '这一步没有完成,请重试。');
+        return null;
+      }
+    },
+    [refreshPlan, refreshProposals, space.id],
+  );
+
+  /**
    * 真实空间的一次写入。失败**不吞**:把错误放进 `planError` 让界面显示出来。
    *
    * 吞掉的话,用户点了"完成"、界面没有任何反应、也没有任何提示 —— 他会以为
@@ -2313,7 +2342,7 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     // `ensureStrategicIntake` 是显式目标空间的入口(阶段 12 P0);`ensureReasoningMap`
     // 保留给既有调用点,内部委托前者。
     reasoning, reasoningLoading, ensureStrategicIntake, ensureReasoningMap, refreshReasoning, agentTurn, editReasoningNode,
-    confirmV1Strategy,
+    confirmV1Strategy, runV1PlanStep,
     refineStrategy, refining, requestChat, chatRequestNonce,
     replan, replanState,
     // 上一轮是不是基于已经变过的输入(见 `inputChanged` 的注释),以及"重新分析"

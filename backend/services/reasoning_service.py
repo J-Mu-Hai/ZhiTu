@@ -368,6 +368,8 @@ async def build_view(
                         PlanningWorkflowStage.TIMELINE_REVIEW,
                         PlanningWorkflowStage.REPLANNING,
                     )
+                    # 规划智能体重构 V1(P3/P4):同样在“审阅中”算草案。
+                    or session.v1_stage in ("coarse_timeline_review", "replanning")
                     else "planned"
                 ),
             }

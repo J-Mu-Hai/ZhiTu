@@ -89,6 +89,26 @@
   color: var(--muted, #8798ad);
 }
 
+/* ---- V1(P4):周/日计划与回顾入口 ---- */
+.v1-plan-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.v1-plan-actions button {
+  padding: 6px 10px;
+  border: 1px solid var(--line, #d8e0e6);
+  border-radius: 8px;
+  background: var(--surface-panel, #fffefa);
+  color: var(--text, #304b62);
+  font-size: 11px;
+}
+.v1-plan-actions button:hover:not(:disabled) {
+  border-color: var(--blue-ink, #2f6da3);
+  color: var(--blue-ink, #2f6da3);
+}
+
 /* ---- V1(P2):需要**在对话框回答**的关键问题(橙色框) ---- */
 .v1-conversation-question {
   display: grid;

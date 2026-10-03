@@ -45,6 +45,7 @@ from backend.agent.prompts.planning import (
     render_tools_section,
 )
 from backend.agent.prompts.v1_strategy import render_v1_turn
+from backend.agent.prompts.v1_timeline import render_v1_timeline_turn
 from backend.agent.runtime.base import (
     AnalysisDraft,
     BriefClaim,
@@ -59,6 +60,8 @@ from backend.agent.runtime.base import (
     TurnContext,
     V1AssessmentDraft,
     V1NodeUpdate,
+    V1TimelineDraft,
+    V1TimelinePhaseDraft,
 )
 from backend.db.models.enums import ModelSource
 
@@ -111,6 +114,10 @@ MAX_V1_QUESTION_CHARS = 500
 #: `uncertainty` 与节点状态的闭集。不在里面的回落到默认值。
 V1_UNCERTAINTIES = frozenset({"low", "medium", "high"})
 V1_NODE_STATUSES = frozenset({"unexplored", "discussing", "resolved", "deferred"})
+#: 规划智能体重构 V1(P3):粗时间架构必须是 3–6 个阶段。
+MIN_V1_TIMELINE_PHASES = 3
+MAX_V1_TIMELINE_PHASES = 6
+MAX_V1_TIMELINE_TITLE_CHARS = 120
 
 #: 一次模型调用最多请求几个工具。服务端还会用全局预算卡总量。
 MAX_TOOL_REQUESTS = 2
@@ -178,6 +185,9 @@ def render_turn(turn: TurnContext) -> str:
     if turn.purpose == "v1_strategy":
         # 规划智能体重构 V1(P2):固定容器 + 受限输出(判断 / 节点更新 / 一个焦点 / 一个问题)。
         return render_v1_turn(turn)
+    if turn.purpose == "v1_timeline":
+        # 规划智能体重构 V1(P3):把已确认的战略投影为 3–6 个阶段的粗时间架构。
+        return render_v1_timeline_turn(turn)
     if turn.purpose == "goal_reasoning":
         # 目标推理回合走另一份模板:它关心的是决策维度与取舍,不是任务拆解。
         return render_reasoning_turn(turn)
@@ -284,6 +294,7 @@ PARSED_PAYLOAD_FIELDS = frozenset(
         "reasoningMap",
         "intakeDecision",
         "v1Assessment",
+        "v1Timeline",
     }
 )
 
@@ -328,6 +339,7 @@ def payload_to_result(
         reasoning_map=parse_reasoning_map(payload.get("reasoningMap")),
         intake_decision=parse_intake_decision(payload.get("intakeDecision")),
         v1_assessment=parse_v1_assessment(payload.get("v1Assessment")),
+        v1_timeline=parse_v1_timeline(payload.get("v1Timeline")),
         request_id=request_id,
         prompt_version=prompt_version,
         model_name=model_name,
@@ -796,6 +808,47 @@ def parse_v1_assessment(raw: Any) -> V1AssessmentDraft | None:
     )
 
 
+def parse_v1_timeline(raw: Any) -> V1TimelineDraft | None:
+    """把模型的 `v1Timeline` 变成一份**形状合法**的粗时间架构。
+
+    只做形状判断:阶段少于 3 或多于 6、缺标题、周次/日期不合法 —— 不合格整份拒绝,
+    不写半成品(服务端在 `v1_service` 里再判阶段是否可生成)。
+    """
+    if not isinstance(raw, dict):
+        return None
+    phases: list[V1TimelinePhaseDraft] = []
+    for entry in (raw.get("phases") or [])[:MAX_V1_TIMELINE_PHASES]:
+        if not isinstance(entry, dict):
+            continue
+        title = entry.get("title")
+        if not isinstance(title, str) or not title.strip():
+            continue
+
+        def _text(value: Any) -> str:
+            return value.strip()[:MAX_V1_TEXT_CHARS] if isinstance(value, str) and value.strip() else ""
+
+        phases.append(
+            V1TimelinePhaseDraft(
+                title=title.strip()[:MAX_V1_TIMELINE_TITLE_CHARS],
+                goal=_text(entry.get("goal")),
+                deliverable=_text(entry.get("deliverable")),
+                completion_criteria=_text(entry.get("completionCriteria")),
+                start_week=_clean_week(entry.get("startWeek")),
+                end_week=_clean_week(entry.get("endWeek")),
+                start_date=_clean_iso_date(entry.get("startDate")),
+                end_date=_clean_iso_date(entry.get("endDate")),
+                depends_on=_text(entry.get("dependsOn")),
+            )
+        )
+    if not (MIN_V1_TIMELINE_PHASES <= len(phases) <= MAX_V1_TIMELINE_PHASES):
+        return None
+    summary = raw.get("summary")
+    return V1TimelineDraft(
+        summary=summary.strip()[:MAX_V1_TEXT_CHARS] if isinstance(summary, str) else "",
+        phases=tuple(phases),
+    )
+
+
 def parse_reasoning_map(raw: Any) -> ReasoningMapDraft | None:
     """把模型的 `reasoningMap` 变成一份**形状合法**的草稿。
 
@@ -1139,6 +1192,7 @@ __all__ = [
     "parse_stop_reason",
     "parse_tool_requests",
     "parse_v1_assessment",
+    "parse_v1_timeline",
     "payload_from_chat_completion",
     "payload_to_result",
     "render_turn",

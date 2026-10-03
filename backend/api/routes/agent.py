@@ -123,17 +123,95 @@ async def v01_feedback(
 async def v1_confirm_strategy(
     ctx: WorkspaceContext = Depends(get_workspace_context),
     db: AsyncSession = Depends(get_db),
+    reasoner: Reasoner = Depends(get_reasoner),
 ) -> AgentTurnResponse:
-    """用户确认阶段一的战略逻辑。
+    """用户确认阶段一的战略逻辑,并立即生成**待确认**的粗时间架构草案(P3)。
 
-    **只把会话推进到“可以进入 P3”的状态**,不生成阶段或时间线 —— 那是 P3 的事。
+    确认本身不写正式计划;粗时间架构先落成提案,用户确认后才写入阶段。
     """
     from backend.services import v1_service  # 延迟 import,避免循环
 
     session = await reasoning_service.get_session(db, ctx)
     if session is None or not v1_service.is_v1(session):
         raise InvalidInput("这个空间还没有开始 V1 规划流程。")
-    return await v1_service.confirm_strategy(db, ctx, session)
+    return await v1_service.confirm_strategy(db, ctx, session, reasoner)
+
+
+async def _v1_session(ctx, db):
+    from backend.services import v1_service
+
+    session = await reasoning_service.get_session(db, ctx)
+    if session is None or not v1_service.is_v1(session):
+        raise InvalidInput("这个空间还没有开始 V1 规划流程。")
+    return session
+
+
+@router.post(
+    "/{workspace_id}/agent/v1/weekly/generate",
+    response_model=AgentTurnResponse,
+    summary="规划智能体 V1:生成本周计划与下周预览",
+)
+async def v1_generate_weekly(
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+) -> AgentTurnResponse:
+    from backend.services import v1_service
+
+    session = await _v1_session(ctx, db)
+    trace = agent_trace_service.start_map_trace(
+        ctx, trigger="space_entered", context_node_id=session.root_plan_node_id
+    )
+    db.add(trace)
+    await db.commit()
+    return await v1_service.generate_weekly_plan(db, ctx, session, trace=trace)
+
+
+@router.post(
+    "/{workspace_id}/agent/v1/daily/generate",
+    response_model=AgentTurnResponse,
+    summary="规划智能体 V1:把本周计划拆成少量工作日工作块",
+)
+async def v1_generate_daily(
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+) -> AgentTurnResponse:
+    from backend.services import v1_service
+
+    session = await _v1_session(ctx, db)
+    return await v1_service.generate_daily_plan(db, ctx, session)
+
+
+@router.post(
+    "/{workspace_id}/agent/v1/review",
+    response_model=AgentTurnResponse,
+    summary="规划智能体 V1:周末回顾入口(准备未来重规划草案)",
+)
+async def v1_review(
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+) -> AgentTurnResponse:
+    from backend.services import v1_service
+
+    session = await _v1_session(ctx, db)
+    return await v1_service.weekend_review(db, ctx, session)
+
+
+@router.post(
+    "/{workspace_id}/agent/v1/feedback",
+    response_model=AgentTurnResponse,
+    summary="规划智能体 V1:记录一条执行反馈",
+)
+async def v1_feedback(
+    payload: V01FeedbackRequest,
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+) -> AgentTurnResponse:
+    from backend.services import v1_service
+
+    session = await _v1_session(ctx, db)
+    return await v1_service.record_feedback(
+        db, ctx, session, node_id=payload.node_id, outcome=payload.outcome
+    )
 
 
 @router.get(

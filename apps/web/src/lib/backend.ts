@@ -1969,12 +1969,38 @@ export function updateReasoningNode(
   );
 }
 
-/** 规划智能体重构 V1(P2):确认战略逻辑,进入 P3 的准备状态(不生成时间线)。 */
-export function confirmV1Strategy(workspaceId: string): Promise<GoalReasoningView> {
-  return apiFetch<GoalReasoningView>(`/api/workspaces/${workspaceId}/agent/v1/strategy/confirm`, {
+/** 规划智能体重构 V1(P4):生成本周计划 + 下周预览(落成待确认提案)。 */
+export function generateV1Weekly(workspaceId: string): Promise<AgentTurnResponse> {
+  return apiFetch<AgentTurnResponse>(
+    `/api/workspaces/${workspaceId}/agent/v1/weekly/generate`,
+    { method: 'POST', body: {} },
+  );
+}
+
+/** 规划智能体重构 V1(P4):把本周计划拆成少量工作日工作块(落成待确认提案)。 */
+export function generateV1Daily(workspaceId: string): Promise<AgentTurnResponse> {
+  return apiFetch<AgentTurnResponse>(
+    `/api/workspaces/${workspaceId}/agent/v1/daily/generate`,
+    { method: 'POST', body: {} },
+  );
+}
+
+/** 规划智能体重构 V1(P4):周末回顾入口 —— 汇总完成度并准备未来重规划草案。 */
+export function reviewV1(workspaceId: string): Promise<AgentTurnResponse> {
+  return apiFetch<AgentTurnResponse>(`/api/workspaces/${workspaceId}/agent/v1/review`, {
     method: 'POST',
     body: {},
   });
+}
+
+/** 规划智能体重构 V1(P2):确认战略逻辑,并生成待确认的粗时间架构(P3)。
+ *
+ * 服务端返回的是 `AgentTurnResponse`(含消息与最新地图);这里只把地图交给调用方。 */
+export function confirmV1Strategy(workspaceId: string): Promise<GoalReasoningView> {
+  return apiFetch<AgentTurnResponse>(`/api/workspaces/${workspaceId}/agent/v1/strategy/confirm`, {
+    method: 'POST',
+    body: {},
+  }).then(response => response.reasoning);
 }
 
 /** 细化已确认战略。**只有已确认战略存在时**服务端才接受。 */

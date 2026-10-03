@@ -679,6 +679,38 @@ class V1AssessmentDraft:
 
 
 @dataclass(frozen=True, slots=True)
+class V1TimelinePhaseDraft:
+    """规划智能体 V1(P3):粗时间架构里的一个阶段。
+
+    **不是任务、不是日程。** 只有相对周或已有日期、战略目标、可交付成果与完成标准。
+    """
+
+    title: str
+    goal: str = ""
+    deliverable: str = ""
+    completion_criteria: str = ""
+    #: 相对周(从 1 开始,含端点)。没有日期时用它。
+    start_week: int | None = None
+    end_week: int | None = None
+    #: ISO 日期(YYYY-MM-DD)。有确定截止时用它;不伪造。
+    start_date: str | None = None
+    end_date: str | None = None
+    #: 前置阶段的标题(可空)。
+    depends_on: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class V1TimelineDraft:
+    """规划智能体 V1(P3):阶段一的最终产物 —— 3–6 个阶段的**粗时间架构**。
+
+    它只是草案;用户选择“确认进入详细排期”后才进入阶段二。
+    """
+
+    summary: str = ""
+    phases: tuple[V1TimelinePhaseDraft, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class ReasoningResult:
     """一次模型调用的结果。**永远是可用的**,即使内容为空。"""
 
@@ -712,6 +744,8 @@ class ReasoningResult:
     #: 规划智能体重构 V1(P2)回合的判断。**只有 `purpose == v1_strategy` 会读它。**
     #: None = 不是 V1 回合(或模型没给)。服务端决定接受多少、写入哪些固定容器。
     v1_assessment: V1AssessmentDraft | None = None
+    #: 规划智能体重构 V1(P3)回合的粗时间架构。**只有 `purpose == v1_timeline` 会读它。**
+    v1_timeline: V1TimelineDraft | None = None
     request_id: str = ""
     prompt_version: str = ""
     model_name: str | None = None

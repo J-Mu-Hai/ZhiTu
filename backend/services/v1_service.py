@@ -31,8 +31,11 @@
 
 from __future__ import annotations
 
+import uuid
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from backend.agent.runtime.base import (
     HISTORY_TURNS,
@@ -49,14 +52,23 @@ from backend.db.models.enums import (
     ModelSource,
     NodeOrigin,
     NodePurpose,
+    NodeStatus,
     NodeType,
     QuestionPresentation,
     QuestionResponseMode,
     QuestionStatus,
     ReasoningSessionPhase,
     ReasoningSessionStatus,
+    RevisionTrigger,
 )
-from backend.services import conversation_service, node_service, reasoning_service
+from backend.services import (
+    conversation_service,
+    node_service,
+    proposal_service,
+    reasoning_service,
+    turn_context,
+    v01_service,
+)
 from backend.services.context import WorkspaceContext
 from backend.services.timeutil import today_in
 
@@ -67,8 +79,14 @@ V1_INITIAL_THINKING = "initial_thinking"
 V1_GOAL_REFRAME = "goal_reframe"
 V1_FACTOR_ANALYSIS = "factor_analysis"
 V1_STRATEGY_DRAFT = "strategy_draft"
-#: 用户已确认战略逻辑;P3 可以据此生成粗时间架构。**P2 本身不实现 P3。**
+#: 用户已确认战略逻辑;P3 可以据此生成粗时间架构。
 V1_STRATEGY_CONFIRMED = "strategy_confirmed_for_timeline"
+#: P3:已生成 3–6 个阶段的粗时间架构草案,等用户确认。
+V1_COARSE_TIMELINE_REVIEW = "coarse_timeline_review"
+#: P4:粗时间架构已确认,进入周/日计划与执行。
+V1_WEEKLY_EXECUTION = "weekly_execution"
+#: P4:按执行偏差重规划未来。
+V1_REPLANNING = "replanning"
 
 V1_STATUS_IDLE = "idle"
 V1_STATUS_RUNNING = "running"
@@ -510,6 +528,26 @@ async def answer_v1_in_conversation(
     )
 
 
+async def _response(
+    db,
+    ctx: WorkspaceContext,
+    session: GoalReasoningSession,
+    *,
+    message=None,
+    changed: bool = False,
+    trace=None,
+) -> AgentTurnResponse:
+    """先提交写入、再拼视图 —— **提交必须在拼视图之前**,否则视图看到的是旧状态。"""
+    if trace is not None:
+        from backend.services import agent_trace_service
+
+        agent_trace_service.mark_terminal(
+            trace, degraded=False, degraded_reason=None, stopped_reason="ready_to_propose", code=None
+        )
+    await db.commit()
+    return await reasoning_service._response(db, ctx, session, message=message, changed=changed)
+
+
 async def _append_assistant(
     db,
     ctx: WorkspaceContext,
@@ -533,6 +571,472 @@ async def _append_assistant(
 
 
 # =================================================================================
+# P3:粗时间架构(战略确认后才生成)
+# =================================================================================
+def _timeline_payload(phases) -> list[dict]:
+    """阶段草案 -> 前端时间轴的**唯一权威投影**(与 V0.1 同形)。"""
+    payload: list[dict] = []
+    for index, phase in enumerate(phases, start=1):
+        payload.append(
+            {
+                "id": f"phase-{index}",
+                "title": phase.title,
+                "kind": "phase",
+                "startWeek": phase.start_week,
+                "endWeek": phase.end_week,
+                "startDate": phase.start_date,
+                "endDate": phase.end_date,
+                "goal": phase.goal,
+                "deliverable": phase.deliverable,
+                "completionCriteria": phase.completion_criteria,
+                "status": "draft",
+                "planNodeId": None,
+            }
+        )
+    return payload
+
+
+async def _build_timeline_turn_context(
+    db: AsyncSession, ctx: WorkspaceContext, session: GoalReasoningSession
+) -> TurnContext:
+    page = await conversation_service.list_messages(db, ctx, limit=HISTORY_TURNS)
+    history = tuple((m.role.value, m.content) for m in page.messages)[-HISTORY_TURNS:]
+    today = today_in(ctx.timezone)
+    strategy = session.v1_strategy or {}
+    lines = ["已确认的战略逻辑:"]
+    for field, label in (
+        ("mainLine", "主线"),
+        ("parallelLine", "并行线"),
+        ("deferOrAvoid", "暂缓/放弃"),
+        ("riskControl", "风险控制"),
+    ):
+        if strategy.get(field):
+            lines.append(f"- {label}:{strategy[field]}")
+    if strategy.get("tradeoff"):
+        lines.append(f"- 取舍:{strategy['tradeoff']}")
+    return TurnContext(
+        current_date=today.isoformat(),
+        weekday=today.strftime("%A"),
+        timezone=ctx.timezone,
+        workspace_title=ctx.workspace.title or "",
+        workspace_intent=ctx.workspace.intent or "",
+        known=KnownConditions(),
+        history=history,
+        user_message="把已确认的战略逻辑投影成粗时间架构。",
+        purpose="v1_timeline",
+        reasoning_section="\n".join(lines),
+    )
+
+
+async def _root_handle(db: AsyncSession, ctx: WorkspaceContext, root: PlanNode):
+    conversation = await conversation_service.find_primary_conversation(db, ctx)
+    turn = await turn_context.build_turn_context(
+        db,
+        ctx,
+        conversation_id=conversation.id if conversation else uuid.uuid4(),
+        user_message="生成时间架构提案",
+        context_node_id=root.id,
+        scope_root_id=root.id,
+    )
+    handle = next((h for h, node_id in turn.node_handles if node_id == str(root.id)), None)
+    if handle is None:
+        from backend.services.errors import InvalidInput
+
+        raise InvalidInput("找不到根目标的记号。")
+    return handle, turn.node_handles
+
+
+async def generate_coarse_timeline(
+    db: AsyncSession,
+    ctx: WorkspaceContext,
+    session: GoalReasoningSession,
+    reasoner,
+    *,
+    trace=None,
+) -> ReasoningResult:
+    """把已确认战略投影为 3–6 个阶段,落成**待确认提案**。不写正式计划。"""
+    from backend.services.errors import InvalidInput
+
+    if session.v1_stage != V1_STRATEGY_CONFIRMED:
+        raise InvalidInput("当前不在“可生成粗时间架构”的状态。")
+    root = await reasoning_service.root_plan_node(db, ctx)
+    if root is None:
+        raise InvalidInput("这个空间还没有根目标。")
+    turn = await _build_timeline_turn_context(db, ctx, session)
+    session.v1_status = V1_STATUS_RUNNING
+    session.v1_error = None
+    await db.commit()
+
+    result = await reasoner.reason(turn)
+    draft = result.v1_timeline
+    if result.degraded:
+        session.v1_status = V1_STATUS_FAILED
+        session.v1_error = result.reply or "模型暂时不可用。"
+        await db.commit()
+        return result
+    if draft is None or not draft.phases:
+        session.v1_status = V1_STATUS_FAILED
+        session.v1_error = "模型这次没有给出合法的时间架构。"
+        await db.commit()
+        return ReasoningResult(
+            reply="模型这次没有给出合法的时间架构,可以再试一次。",
+            source=result.source,
+            degraded=True,
+            degraded_reason=DegradedReason.MODEL_OUTPUT_INVALID,
+            retryable=True,
+            request_id=result.request_id,
+            prompt_version=result.prompt_version,
+        )
+
+    session.v01_timeline = _timeline_payload(draft.phases)
+    root_handle, handles = await _root_handle(db, ctx, root)
+    actions: list[dict] = []
+    for index, phase in enumerate(draft.phases, start=1):
+        description = (
+            f"相对范围:第 {phase.start_week}–{phase.end_week} 周\n"
+            f"目标:{phase.goal}\n"
+            f"成果:{phase.deliverable}"
+        )
+        actions.append(
+            {
+                "op": "create_node",
+                "localId": f"n{9200 + index}",
+                "parentRef": root_handle,
+                "title": phase.title,
+                "nodeType": "stage",
+                "purpose": "planning",
+                "description": description,
+                "acceptanceCriteria": phase.completion_criteria or None,
+            }
+        )
+    conversation = await conversation_service.get_or_create_primary_conversation(db, ctx)
+    outcome = await proposal_service.build_from_actions(
+        db,
+        ctx,
+        conversation_id=conversation.id,
+        actions=tuple(actions),
+        handles=handles,
+        reasoning="由已确认战略投影出的粗时间架构草案。",
+        assistant_message=None,
+        trigger_type=RevisionTrigger.INITIAL_PLAN,
+    )
+    if outcome.proposal is None:
+        session.v1_status = V1_STATUS_FAILED
+        session.v1_error = ";".join(error.message for error in outcome.errors) or "时间架构没有通过校验。"
+        await db.commit()
+        return ReasoningResult(
+            reply=session.v1_error,
+            source=result.source,
+            degraded=True,
+            degraded_reason=DegradedReason.MODEL_OUTPUT_INVALID,
+            retryable=True,
+            request_id=result.request_id,
+            prompt_version=result.prompt_version,
+        )
+
+    session.timeline_proposal_id = outcome.proposal.id
+    session.v1_stage = V1_COARSE_TIMELINE_REVIEW
+    session.v1_status = V1_STATUS_IDLE
+    session.v1_error = None
+    await db.commit()
+    if trace is not None:
+        from backend.services import agent_trace_service
+
+        agent_trace_service.mark_terminal(
+            trace, degraded=False, degraded_reason=None, stopped_reason="ready_to_propose", code=None
+        )
+    return result
+
+
+async def on_proposal_confirmed(
+    db: AsyncSession, ctx: WorkspaceContext, proposal_id
+) -> None:
+    """提案确认后由路由调用:V1 的时间架构 / 重规划在这里推进状态。"""
+    session = await reasoning_service.get_session(db, ctx)
+    if session is None or not is_v1(session):
+        return
+    timeline = list(session.v01_timeline or [])
+    if session.v1_stage == V1_COARSE_TIMELINE_REVIEW and session.timeline_proposal_id == proposal_id:
+        root = await reasoning_service.root_plan_node(db, ctx)
+        if root is not None:
+            stages = await db.execute(
+                select(PlanNode).where(
+                    PlanNode.workspace_id == ctx.id,
+                    PlanNode.parent_id == root.id,
+                    PlanNode.node_type == NodeType.STAGE,
+                    PlanNode.deleted_at.is_(None),
+                )
+            )
+            by_title = {node.title: node.id for node in stages.scalars()}
+            for item in timeline:
+                if isinstance(item, dict):
+                    item["status"] = "planned"
+                    linked = by_title.get(str(item.get("title") or ""))
+                    item["planNodeId"] = str(linked) if linked else None
+        session.v01_timeline = timeline
+        session.v1_stage = V1_WEEKLY_EXECUTION
+        await db.commit()
+    elif session.v1_stage == V1_REPLANNING:
+        for item in timeline:
+            if isinstance(item, dict):
+                item["status"] = "planned"
+        session.v01_timeline = timeline
+        session.v1_stage = V1_WEEKLY_EXECUTION
+        await db.commit()
+
+
+# =================================================================================
+# P4:周/日计划、执行反馈与自动回顾重规划
+# =================================================================================
+async def generate_weekly_plan(
+    db: AsyncSession, ctx: WorkspaceContext, session: GoalReasoningSession, *, trace=None
+) -> AgentTurnResponse:
+    """从已确认时间线派生**本周计划 + 下周预览**(复用 V0.1 的版本化提案)。"""
+    from backend.services.errors import InvalidInput
+
+    if session.v1_stage != V1_WEEKLY_EXECUTION:
+        raise InvalidInput("当前不在周计划阶段。")
+    root = await reasoning_service.root_plan_node(db, ctx)
+    if root is None:
+        raise InvalidInput("这个空间还没有根目标。")
+    return await v01_service.generate_weekly_plan(db, ctx, root, session, trace=trace)
+
+
+async def generate_daily_plan(
+    db: AsyncSession, ctx: WorkspaceContext, session: GoalReasoningSession, *, trace=None
+) -> AgentTurnResponse:
+    """把本周计划拆成**少量工作日工作块**(不是均摊七天),落成待确认提案。"""
+    from backend.services.errors import InvalidInput
+
+    if session.v1_stage != V1_WEEKLY_EXECUTION:
+        raise InvalidInput("当前不在周计划阶段。")
+    root = await reasoning_service.root_plan_node(db, ctx)
+    if root is None:
+        raise InvalidInput("这个空间还没有根目标。")
+    phases = await v01_service._phase_nodes(db, ctx, root)
+    weeks = await v01_service._week_nodes(db, phases)
+    current = [
+        week
+        for week in weeks
+        if week.title.startswith("本周计划")
+        and week.status in (NodeStatus.PENDING, NodeStatus.DOING)
+    ]
+    if not current:
+        raise InvalidInput("还没有可排的本周计划。")
+    week = current[0]
+    tasks = await db.execute(
+        select(PlanNode)
+        .where(PlanNode.parent_id == week.id, PlanNode.deleted_at.is_(None))
+        .order_by(PlanNode.order_index.asc())
+    )
+    task_rows = list(tasks.scalars())
+    if not task_rows:
+        raise InvalidInput("本周计划里还没有任务。")
+
+    conversation = await conversation_service.get_or_create_primary_conversation(db, ctx)
+    turn = await turn_context.build_turn_context(
+        db,
+        ctx,
+        conversation_id=conversation.id,
+        user_message="生成日计划",
+        context_node_id=root.id,
+        scope_root_id=root.id,
+    )
+    week_handle = next((h for h, node_id in turn.node_handles if node_id == str(week.id)), None)
+    if week_handle is None:
+        raise InvalidInput("找不到本周计划的记号。")
+
+    # 少量工作日:最多 3 天,不均匀摊到七天。
+    days = ("第 1 个工作日", "第 2 个工作日", "第 3 个工作日")
+    actions: list[dict] = []
+    counter = 0
+    for day_index, day in enumerate(days):
+        day_ref = f"n{9300 + day_index}"
+        actions.append(
+            {
+                "op": "create_node",
+                "localId": day_ref,
+                "parentRef": week_handle,
+                "title": f"日计划 · {day}",
+                "nodeType": "stage",
+                "purpose": "planning",
+                "description": "少量可执行的工作块。",
+            }
+        )
+        blocks = [task_rows[i] for i in range(day_index, len(task_rows), len(days))][:2]
+        for block in blocks:
+            counter += 1
+            actions.append(
+                {
+                    "op": "create_node",
+                    "localId": f"n{9300 + 100 + counter}",
+                    "parentRef": day_ref,
+                    "title": f"{block.title} · 工作块",
+                    "nodeType": "task",
+                    "purpose": "planning",
+                    "description": f"来源:本周计划「{week.title}」。",
+                }
+            )
+    outcome = await proposal_service.build_from_actions(
+        db,
+        ctx,
+        conversation_id=conversation.id,
+        actions=tuple(actions),
+        handles=turn.node_handles,
+        reasoning="由本周计划拆出的少量工作日工作块。",
+        assistant_message=None,
+        trigger_type=RevisionTrigger.INITIAL_PLAN,
+    )
+    if outcome.proposal is None:
+        session.v1_status = V1_STATUS_FAILED
+        session.v1_error = "日计划没有通过校验。"
+        return await _response(db, ctx, session, changed=False)
+    message = await _append_assistant(
+        db, ctx, reply="我把本周计划拆成了几天的工作块,确认后写入。(不是均摊七天。)"
+    )
+    return await _response(db, ctx, session, message=message, changed=True)
+
+
+async def record_feedback(
+    db: AsyncSession,
+    ctx: WorkspaceContext,
+    session: GoalReasoningSession,
+    *,
+    node_id,
+    outcome: str,
+    trace=None,
+) -> AgentTurnResponse:
+    """记录一条任务反馈;完成率 < 60% 时把 V1 推进到重规划阶段。"""
+    from backend.services.errors import InvalidInput
+
+    node = await node_service.load_node(db, ctx, node_id)
+    mapping = {
+        "done": NodeStatus.COMPLETED,
+        "partial": NodeStatus.DOING,
+        "missed": NodeStatus.PENDING,
+        "delayed": NodeStatus.PENDING,
+    }
+    if outcome not in mapping:
+        raise InvalidInput("不认识的反馈结果。")
+    node.status = mapping[outcome]
+    if outcome in {"partial", "delayed"}:
+        note = "部分完成" if outcome == "partial" else "延期"
+        node.description = (node.description or "") + f"\n【反馈】{note}"
+    node.content_version += 1
+    await db.commit()
+
+    root = await reasoning_service.root_plan_node(db, ctx)
+    done, total = await v01_service.weekly_completion(db, ctx, root) if root else (0, 0)
+    rate = (done / total) if total else 0.0
+    if total and rate < 0.6:
+        session.v1_stage = V1_REPLANNING
+        reply = f"本周完成率 {done}/{total}(低于 60%)。我先不催你,而是把剩余时间线往后再排一版,你看过再确认。"
+    else:
+        reply = f"记下了。本周进度 {done}/{total}。"
+    message = await _append_assistant(db, ctx, reply=reply)
+    return await _response(db, ctx, session, message=message, changed=True)
+
+
+async def generate_replan(
+    db: AsyncSession, ctx: WorkspaceContext, session: GoalReasoningSession, *, trace=None
+) -> AgentTurnResponse:
+    """重规划:只为**未来**阶段生成调整提案,已完成的历史一律不动。"""
+    from backend.services.errors import InvalidInput
+
+    root = await reasoning_service.root_plan_node(db, ctx)
+    if root is None:
+        raise InvalidInput("这个空间还没有根目标。")
+    phases = await v01_service._phase_nodes(db, ctx, root)
+    if not phases:
+        raise InvalidInput("还没有已确认的时间线阶段。")
+    conversation = await conversation_service.get_or_create_primary_conversation(db, ctx)
+    turn = await turn_context.build_turn_context(
+        db,
+        ctx,
+        conversation_id=conversation.id,
+        user_message="重规划未来时间线",
+        context_node_id=root.id,
+        scope_root_id=root.id,
+    )
+    phase_handles = {node_id: h for h, node_id in turn.node_handles}
+    completed_ids = {str(phase.id) for phase in phases if phase.status is NodeStatus.COMPLETED}
+    timeline = list(session.v01_timeline or [])
+    for item in timeline:
+        if not isinstance(item, dict) or item.get("planNodeId") in completed_ids:
+            continue
+        if isinstance(item.get("startWeek"), int):
+            item["startWeek"] += 1
+        if isinstance(item.get("endWeek"), int):
+            item["endWeek"] += 1
+        item["status"] = "draft"
+    session.v01_timeline = timeline
+    flag_modified(session, "v01_timeline")
+
+    actions: list[dict] = []
+    for phase in phases:
+        if phase.status is NodeStatus.COMPLETED:
+            continue
+        handle = phase_handles.get(str(phase.id))
+        if handle is None:
+            continue
+        actions.append(
+            {
+                "op": "update_node",
+                "target_ref": handle,
+                "description": (phase.description or "")
+                + "\n【重规划】按当前完成情况,后续阶段整体后移一档。",
+            }
+        )
+    if not actions:
+        message = await _append_assistant(
+            db, ctx, reply="未来阶段都已经完成,暂时不需要重规划。", conversation=conversation
+        )
+        session.v1_stage = V1_WEEKLY_EXECUTION
+        return await _response(db, ctx, session, message=message, changed=False)
+    outcome = await proposal_service.build_from_actions(
+        db,
+        ctx,
+        conversation_id=conversation.id,
+        actions=tuple(actions),
+        handles=turn.node_handles,
+        reasoning="根据最近执行情况,对未完成阶段提出的未来调整。",
+        assistant_message=None,
+        trigger_type=RevisionTrigger.EXECUTION_DEVIATION,
+    )
+    if outcome.proposal is None:
+        session.v1_status = V1_STATUS_FAILED
+        session.v1_error = "重规划提案没有通过校验。"
+        return await _response(db, ctx, session, changed=False)
+    session.v1_stage = V1_REPLANNING
+    message = await _append_assistant(
+        db,
+        ctx,
+        reply="我按最近的完成情况提了一版**只调整未来阶段**的重规划,已完成的阶段原样保留。确认后生效。",
+        conversation=conversation,
+    )
+    return await _response(db, ctx, session, message=message, changed=True)
+
+
+async def weekend_review(
+    db: AsyncSession, ctx: WorkspaceContext, session: GoalReasoningSession, *, trace=None
+) -> AgentTurnResponse:
+    """自动/主动发起的周末回顾入口:汇总完成度,并准备一份未来重规划草案。"""
+    from backend.services.errors import InvalidInput
+
+    if session.v1_stage not in (V1_WEEKLY_EXECUTION, V1_REPLANNING):
+        raise InvalidInput("当前不在周执行阶段。")
+    root = await reasoning_service.root_plan_node(db, ctx)
+    done, total = await v01_service.weekly_completion(db, ctx, root) if root else (0, 0)
+    await _append_assistant(
+        db,
+        ctx,
+        reply=f"这一周完成 {done}/{total}。我按完成情况准备一份**只调整未来**的重规划,你看过再确认。",
+    )
+    await db.commit()
+    return await generate_replan(db, ctx, session, trace=trace)
+
+
+# =================================================================================
 # 自动推进与战略确认
 # =================================================================================
 async def advance(
@@ -549,6 +1053,14 @@ async def advance(
         session.phase = ReasoningSessionPhase.INTAKE
     session.status = ReasoningSessionStatus.READY
     await db.commit()
+    # P4:周末**自动发起回顾入口** —— 有活跃周计划、且没有未处理提案时,
+    # 汇总完成度并准备一份只调整未来的重规划草案(不静默改写已确认计划)。
+    if (
+        session.v1_stage == V1_WEEKLY_EXECUTION
+        and today_in(ctx.timezone).weekday() >= 5
+        and not await v01_service._has_open_proposal(db, ctx)
+    ):
+        return await weekend_review(db, ctx, session, trace=trace)
     if trace is not None:
         from backend.services import agent_trace_service
 
@@ -563,9 +1075,15 @@ async def advance(
 
 
 async def confirm_strategy(
-    db: AsyncSession, ctx: WorkspaceContext, session: GoalReasoningSession
+    db: AsyncSession,
+    ctx: WorkspaceContext,
+    session: GoalReasoningSession,
+    reasoner=None,
 ) -> AgentTurnResponse:
-    """用户确认战略逻辑:**只进入 P3 的准备状态**,不生成任何阶段或时间线。"""
+    """用户确认战略逻辑:进入 P3 准备状态;有 reasoner 时立即生成粗时间架构草案。
+
+    **不生成任何正式计划** —— 粗时间架构先落成待确认提案,用户确认后才写入阶段。
+    """
     from backend.services.errors import InvalidInput
 
     strategy = dict(session.v1_strategy or {})
@@ -575,21 +1093,33 @@ async def confirm_strategy(
     session.v1_strategy = strategy
     session.v1_stage = V1_STRATEGY_CONFIRMED
     await db.commit()
+    if reasoner is not None:
+        await generate_coarse_timeline(db, ctx, session, reasoner)
     return await reasoning_service._response(db, ctx, session, changed=True)
 
 
 __all__ = [
     "ALLOWED_V1_KEYS",
+    "V1_COARSE_TIMELINE_REVIEW",
     "V1_FACTOR_ANALYSIS",
     "V1_GOAL_REFRAME",
     "V1_INITIAL_THINKING",
+    "V1_REPLANNING",
     "V1_STATUS_FAILED",
     "V1_STATUS_IDLE",
     "V1_STATUS_RUNNING",
     "V1_STRATEGY_CONFIRMED",
     "V1_STRATEGY_DRAFT",
+    "V1_WEEKLY_EXECUTION",
     "advance",
     "answer_v1_in_conversation",
     "confirm_strategy",
+    "generate_coarse_timeline",
+    "generate_daily_plan",
+    "generate_replan",
+    "generate_weekly_plan",
     "is_v1",
+    "on_proposal_confirmed",
+    "record_feedback",
+    "weekend_review",
 ]

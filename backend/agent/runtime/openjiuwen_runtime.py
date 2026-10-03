@@ -261,6 +261,17 @@ OUTPUT_CONFIG: dict[str, Any] = {
             "strategyReady": {"type": "boolean"},
         },
     },
+    # 规划智能体重构 V1(P3):粗时间架构回合。**必须声明** —— 同上面几组:
+    # openJiuwen 那条路照声明重建对象,不在声明里的键会到不了解析器。
+    "v1Timeline": {
+        "type": "object",
+        "required": False,
+        "description": "粗时间架构(仅 v1_timeline 回合使用)",
+        "properties": {
+            "summary": {"type": "string"},
+            "phases": {"type": "array"},
+        },
+    },
 }
 
 def component_outputs_schema() -> dict[str, str]:

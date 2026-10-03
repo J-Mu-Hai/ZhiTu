@@ -216,7 +216,7 @@ function IntakeChips({
  * 被"截止时间/每周投入"干扰。`replan` 入口只在**已确认战略 + 存在执行计划**时才出现。
  */
 export function ConversationPanel() {
-  const { growth, selectedId, select, messages, remoteProposals, proposalErrors, inputChanged, deciding, confirmRemote, rejectRemote, replan, replanState, send, retry, sending, sendError, retryable, historyLoading, messagesTruncated, spaceId, questions, focusQuestion, openTrace, traceAvailability, reasoning, agentStatus, confirmV1Strategy, requestChat } = useDemo();
+  const { growth, selectedId, select, messages, remoteProposals, proposalErrors, inputChanged, deciding, confirmRemote, rejectRemote, replan, replanState, send, retry, sending, sendError, retryable, historyLoading, messagesTruncated, spaceId, questions, focusQuestion, openTrace, traceAvailability, reasoning, agentStatus, confirmV1Strategy, runV1PlanStep, requestChat } = useDemo();
   const [input, setInput] = useState('');
   const [showContexts, setShowContexts] = useState(false);
   /** 输入框的 DOM 元素。高度按内容算(见下面那个 effect)。 */
@@ -679,6 +679,21 @@ export function ConversationPanel() {
           : primaryQuestion
             ? <div className="context-hint"><span className="tiny-dot" />选择画布中的节点，让讨论更聚焦</div>
             : null}
+
+        {/* 规划智能体重构 V1(P4):周/日计划与回顾入口。产出是**待确认提案**。 */}
+        {(reasoning?.v1Stage === 'weekly_execution' || reasoning?.v1Stage === 'replanning') && (
+          <div className="v1-plan-actions">
+            <button type="button" disabled={sending} onClick={() => void runV1PlanStep('weekly')}>
+              生成本周计划
+            </button>
+            <button type="button" disabled={sending} onClick={() => void runV1PlanStep('daily')}>
+              生成日计划
+            </button>
+            <button type="button" disabled={sending} onClick={() => void runV1PlanStep('review')}>
+              本周回顾
+            </button>
+          </div>
+        )}
 
         {/* 规划智能体重构 V1:需要在对话框回答的关键问题 —— **橙色框**,与画布上
             的紫色问题节点分开。回答仍然在下面的输入框里,这里只做标识。 */}
