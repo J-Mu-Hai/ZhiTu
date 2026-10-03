@@ -740,6 +740,21 @@ async def generate_weekly_plan(
     handle_of = {node_id: handle for handle, node_id in turn.node_handles}
     _, handles = await _root_handle(db, ctx, root)
     all_weeks = await _week_nodes(db, phases)
+    # 旧“活跃未完成”周计划下的任务:归档旧版本时,只把其中还在 pending/doing 的
+    # 一起归档;已完成任务保持 completed,不改写、不删除。
+    old_week_ids = [
+        week.id for week in all_weeks if week.status in (NodeStatus.PENDING, NodeStatus.DOING)
+    ]
+    old_tasks: dict[uuid.UUID, list[PlanNode]] = {}
+    if old_week_ids:
+        rows = await db.execute(
+            select(PlanNode).where(
+                PlanNode.parent_id.in_(old_week_ids),
+                PlanNode.deleted_at.is_(None),
+            )
+        )
+        for row in rows.scalars():
+            old_tasks.setdefault(row.parent_id, []).append(row)
 
     actions: list[dict] = []
     this_week = phases[0]
@@ -768,6 +783,21 @@ async def generate_weekly_plan(
                         + "\n【历史版本 · 已被重规划替代】",
                     }
                 )
+                # 同一个旧周计划下**未完成**的任务一起归档;completed 的不动。
+                for task in old_tasks.get(old.id, []):
+                    if task.status not in (NodeStatus.PENDING, NodeStatus.DOING):
+                        continue
+                    if str(task.id) not in handle_of:
+                        continue
+                    actions.append(
+                        {
+                            "op": "update_node",
+                            "target_ref": handle_of[str(task.id)],
+                            "status": "archived",
+                            "description": (task.description or "")
+                            + "\n【历史版本 · 已被重规划替代】",
+                        }
+                    )
         # 2) 新活跃版本。标题带版本号 —— 新旧计划在界面上也分得出来。
         version = len(same_anchor) + 1
         counter += 1

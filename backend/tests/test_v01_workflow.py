@@ -225,6 +225,11 @@ async def test_v01_thirty_day_python_end_to_end(
     # 已完成任务永远不修改。
     still_done = [t for t in tasks if final_by_id[t["id"]]["status"] == "completed"]
     assert len(still_done) == 2, "已完成任务的完成状态被改动了"
+    # 旧周计划下的**未完成任务**也随旧版本归档,不再作为活跃 pending/doing 出现。
+    old_statuses = [final_by_id[t["id"]]["status"] for t in tasks]
+    assert old_statuses.count("completed") == 2, old_statuses
+    assert old_statuses.count("archived") == len(tasks) - 2, old_statuses
+    assert not any(status in ("pending", "doing") for status in old_statuses), old_statuses
     # 3) 存在新的活跃当前周计划 + 下周预览。
     active_weeks = [
         node
