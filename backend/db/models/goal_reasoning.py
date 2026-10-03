@@ -143,6 +143,17 @@ class GoalReasoningSession(UuidPk, TimestampMixin, Base):
     v1_judgment: Mapped[str | None] = mapped_column(Text)
     #: 当前唯一需要用户回答的**全局关键问题**。一轮最多一个;回答后清空。
     v1_question: Mapped[str | None] = mapped_column(Text)
+    #: 当前焦点容器标识(`current_state` / …)。模型选出的“最值得讨论的一项”。
+    v1_focus_key: Mapped[str | None] = mapped_column(String(48))
+    #: 为什么这个焦点比其他未知项更能改变路线。给用户看的一句话。
+    v1_focus_reason: Mapped[str | None] = mapped_column(Text)
+    #: 战略路径草案:`{main_line, parallel_line, defer_or_avoid, risk_control,
+    #: tradeoff, confirmed}`。只在四项战略子节点都成形后才写入。
+    v1_strategy: Mapped[dict | None] = mapped_column(JsonDict)
+    #: V1 模型回合状态:`idle` / `running` / `failed`。给 UI 准确状态与重试入口。
+    v1_status: Mapped[str | None] = mapped_column(String(16))
+    #: 上一次模型回合失败的可读原因(成功/未跑时为空)。
+    v1_error: Mapped[str | None] = mapped_column(Text)
 
     nodes: Mapped[list[ReasoningNode]] = relationship(
         back_populates="session", cascade="all, delete-orphan"

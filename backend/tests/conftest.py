@@ -34,6 +34,11 @@ os.environ["APP_ENV"] = "development"
 os.environ["LLM_API_KEY"] = ""
 os.environ["AGENT_REASONER"] = "rule"
 os.environ["DB_ECHO"] = "0"
+# 规划系列开关**不读开发者的 .env**:环境变量优先于 .env(见 pydantic-settings),
+# 这里显式关掉,需要它们的用例自己 monkeypatch。否则本机 `.env` 里开着 PLANNING_V1
+# 会让 V0.1 的用例悄悄走进 V1 分支,失败信息看起来与它要测的东西毫不相干。
+os.environ["PLANNING_V1"] = "0"
+os.environ["V01_PLANNING"] = "0"
 # 连不上库时不允许带病继续 —— 测试里要能看见启动失败。
 os.environ["ALLOW_DEGRADED_DB"] = "0"
 
@@ -297,6 +302,8 @@ class FakeReasoner:
     #: **None 和"给了一个七栏全空的 draft"是两回事**:前者是"模型没提这件事",
     #: 后者是"提了但什么都没说" —— 只有前者不该产生一条分析记录。
     analysis: object | None = None
+    #: 规划智能体重构 V1(P2):这一轮的战略判断(`V1AssessmentDraft`),None = 模型没给。
+    v1_assessment: object | None = None
     calls: list = field(default_factory=list)
 
     async def reason(self, turn):
@@ -329,6 +336,7 @@ class FakeReasoner:
             tool_requests=tuple(parse_tool_requests(list(self.tool_requests))),
             stop_reason=parse_stop_reason(self.stop_reason),
             analysis=self.analysis,
+            v1_assessment=self.v1_assessment,
             request_id="fake-request",
             prompt_version="fake-v1",
             model_name="fake-model",

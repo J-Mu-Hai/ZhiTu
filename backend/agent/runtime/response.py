@@ -44,6 +44,7 @@ from backend.agent.prompts.planning import (
     render_time_section,
     render_tools_section,
 )
+from backend.agent.prompts.v1_strategy import render_v1_turn
 from backend.agent.runtime.base import (
     AnalysisDraft,
     BriefClaim,
@@ -56,6 +57,8 @@ from backend.agent.runtime.base import (
     ReasoningResult,
     ToolRequest,
     TurnContext,
+    V1AssessmentDraft,
+    V1NodeUpdate,
 )
 from backend.db.models.enums import ModelSource
 
@@ -97,6 +100,17 @@ MAX_INTAKE_QUESTION_CHARS = 500
 MAX_INTAKE_WHY_CHARS = 300
 MAX_INTAKE_QUICK_REPLIES = 3
 MAX_INTAKE_QUICK_REPLY_CHARS = 40
+
+#: 规划智能体重构 V1(P2):一轮最多更新几个固定容器。
+#: **这是“不重写整张地图”的硬闸** —— 模型给再多也只接受前几个。
+MAX_V1_NODE_UPDATES = 3
+#: 一个容器一轮每条事实/假设/证据最多几条、每条多长。
+MAX_V1_ITEMS = 8
+MAX_V1_TEXT_CHARS = 800
+MAX_V1_QUESTION_CHARS = 500
+#: `uncertainty` 与节点状态的闭集。不在里面的回落到默认值。
+V1_UNCERTAINTIES = frozenset({"low", "medium", "high"})
+V1_NODE_STATUSES = frozenset({"unexplored", "discussing", "resolved", "deferred"})
 
 #: 一次模型调用最多请求几个工具。服务端还会用全局预算卡总量。
 MAX_TOOL_REQUESTS = 2
@@ -161,6 +175,9 @@ def render_turn(turn: TurnContext) -> str:
     if turn.purpose == "strategic_intake":
         # 阶段 12:intake 是另一种回合契约 —— 只说一句判断 + 一个高杠杆关键问题。
         return render_intake_turn(turn)
+    if turn.purpose == "v1_strategy":
+        # 规划智能体重构 V1(P2):固定容器 + 受限输出(判断 / 节点更新 / 一个焦点 / 一个问题)。
+        return render_v1_turn(turn)
     if turn.purpose == "goal_reasoning":
         # 目标推理回合走另一份模板:它关心的是决策维度与取舍,不是任务拆解。
         return render_reasoning_turn(turn)
@@ -266,6 +283,7 @@ PARSED_PAYLOAD_FIELDS = frozenset(
         "analysis",
         "reasoningMap",
         "intakeDecision",
+        "v1Assessment",
     }
 )
 
@@ -309,6 +327,7 @@ def payload_to_result(
         analysis=parse_analysis(payload.get("analysis")),
         reasoning_map=parse_reasoning_map(payload.get("reasoningMap")),
         intake_decision=parse_intake_decision(payload.get("intakeDecision")),
+        v1_assessment=parse_v1_assessment(payload.get("v1Assessment")),
         request_id=request_id,
         prompt_version=prompt_version,
         model_name=model_name,
@@ -709,6 +728,74 @@ def parse_intake_decision(raw: Any) -> IntakeDecision | None:
     )
 
 
+def parse_v1_assessment(raw: Any) -> V1AssessmentDraft | None:
+    """把模型的 `v1Assessment` 变成一份**形状合法**的 V1 判断。
+
+    **只做形状判断**:`node_key` 是否落在服务端已建立的固定容器上、战略路径条件是否
+    成熟、是否该拒绝这一问 —— 都需要数据库状态与产品规则,在 `v1_service` 里做。
+    这里只丢掉“连形状都不对”的条目,并把数量夹到硬上限(见 `MAX_V1_NODE_UPDATES`)——
+    那是“模型可以建议,但服务端决定接受多少”的落点。
+    """
+    if not isinstance(raw, dict):
+        return None
+
+    updates: list[V1NodeUpdate] = []
+    for entry in (raw.get("nodeUpdates") or [])[:MAX_V1_NODE_UPDATES]:
+        if not isinstance(entry, dict):
+            continue
+        key = entry.get("nodeKey")
+        if not isinstance(key, str) or not key.strip():
+            continue
+        judgment = entry.get("judgment")
+        importance = entry.get("importanceReason")
+        uncertainty = entry.get("uncertainty")
+        status = entry.get("status")
+        impacts = entry.get("impactedNodeKeys")
+        updates.append(
+            V1NodeUpdate(
+                node_key=key.strip()[:48],
+                judgment=(
+                    judgment.strip()[:MAX_V1_TEXT_CHARS]
+                    if isinstance(judgment, str) and judgment.strip()
+                    else ""
+                ),
+                known_facts=_clean_text_list(entry.get("knownFacts"), limit=MAX_V1_ITEMS),
+                assumptions=_clean_text_list(entry.get("assumptions"), limit=MAX_V1_ITEMS),
+                evidence=_clean_text_list(entry.get("evidence"), limit=MAX_V1_ITEMS),
+                importance_reason=(
+                    importance.strip()[:MAX_V1_TEXT_CHARS]
+                    if isinstance(importance, str) and importance.strip()
+                    else ""
+                ),
+                uncertainty=uncertainty if uncertainty in V1_UNCERTAINTIES else "medium",
+                status=status if status in V1_NODE_STATUSES else "discussing",
+                impacted_node_keys=tuple(
+                    item.strip()[:48]
+                    for item in (impacts if isinstance(impacts, list) else [])[:MAX_V1_NODE_UPDATES]
+                    if isinstance(item, str) and item.strip()
+                ),
+            )
+        )
+
+    def _text(value: Any, limit: int) -> str:
+        return value.strip()[:limit] if isinstance(value, str) and value.strip() else ""
+
+    focus_key = raw.get("focusKey")
+    return V1AssessmentDraft(
+        global_assessment=_text(raw.get("globalAssessment"), MAX_V1_TEXT_CHARS),
+        node_updates=tuple(updates),
+        focus_key=(
+            focus_key.strip()[:48]
+            if isinstance(focus_key, str) and focus_key.strip()
+            else None
+        ),
+        focus_reason=_text(raw.get("focusReason"), MAX_V1_TEXT_CHARS),
+        question=_text(raw.get("question"), MAX_V1_QUESTION_CHARS),
+        strategy_tradeoff=_text(raw.get("strategyTradeoff"), MAX_V1_TEXT_CHARS),
+        strategy_ready=bool(raw.get("strategyReady")),
+    )
+
+
 def parse_reasoning_map(raw: Any) -> ReasoningMapDraft | None:
     """把模型的 `reasoningMap` 变成一份**形状合法**的草稿。
 
@@ -1051,6 +1138,7 @@ __all__ = [
     "parse_reasoning_map",
     "parse_stop_reason",
     "parse_tool_requests",
+    "parse_v1_assessment",
     "payload_from_chat_completion",
     "payload_to_result",
     "render_turn",

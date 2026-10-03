@@ -115,6 +115,27 @@ async def v01_feedback(
     )
 
 
+@router.post(
+    "/{workspace_id}/agent/v1/strategy/confirm",
+    response_model=AgentTurnResponse,
+    summary="规划智能体 V1:确认战略逻辑(进入时间架构的准备状态)",
+)
+async def v1_confirm_strategy(
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+) -> AgentTurnResponse:
+    """用户确认阶段一的战略逻辑。
+
+    **只把会话推进到“可以进入 P3”的状态**,不生成阶段或时间线 —— 那是 P3 的事。
+    """
+    from backend.services import v1_service  # 延迟 import,避免循环
+
+    session = await reasoning_service.get_session(db, ctx)
+    if session is None or not v1_service.is_v1(session):
+        raise InvalidInput("这个空间还没有开始 V1 规划流程。")
+    return await v1_service.confirm_strategy(db, ctx, session)
+
+
 @router.get(
     "/{workspace_id}/agent/trace",
     response_model=AgentTraceView,

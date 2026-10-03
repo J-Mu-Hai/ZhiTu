@@ -325,6 +325,9 @@ async def create_node(
     #: 谁建的。用户手建是 `user`;规划智能体 V1 建立的固定分析容器是 `ai`
     #: (画布据此自动画出它与父节点的结构线)。默认保持既有行为。
     origin: NodeOrigin = NodeOrigin.USER,
+    #: 规划智能体 V1 的固定容器标识(current_state / main_line / …)。
+    #: 模型只能用这个键指涉节点;普通用户/规划节点恒为 None。
+    v1_key: str | None = None,
 ) -> EditResult:
     """在 `parent_id` 下面挂一个新节点。默认 `origin=user`(用户手建)。"""
     clean_title = title.strip()
@@ -394,6 +397,7 @@ async def create_node(
             # depth 由父节点推出来,不接受调用方传 —— 传进来的话,它就是第二个真相。
             depth=parent.depth + 1,
             origin=origin,
+            v1_key=v1_key,
         )
         db.add(node)
         await db.flush()

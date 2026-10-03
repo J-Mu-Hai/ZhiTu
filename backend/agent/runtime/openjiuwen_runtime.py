@@ -243,6 +243,24 @@ OUTPUT_CONFIG: dict[str, Any] = {
             "quickReplies": {"type": "array"},
         },
     },
+    # 规划智能体重构 V1(P2):战略判断回合。**必须声明** —— 与上面两组同一条理由:
+    # openJiuwen 那条路拿到的对象是照这份声明重建的,不在声明里的键会到不了解析器。
+    # nodeUpdates 只声明成数组,不声明 items:一条写坏不该让整轮失败,逐条校验在
+    # 与 SDK 无关的 `response.parse_v1_assessment` 里做。
+    "v1Assessment": {
+        "type": "object",
+        "required": False,
+        "description": "V1 战略判断(仅 v1_strategy 回合使用)",
+        "properties": {
+            "globalAssessment": {"type": "string"},
+            "nodeUpdates": {"type": "array"},
+            "focusKey": {"type": "string"},
+            "focusReason": {"type": "string"},
+            "question": {"type": "string"},
+            "strategyTradeoff": {"type": "string"},
+            "strategyReady": {"type": "boolean"},
+        },
+    },
 }
 
 def component_outputs_schema() -> dict[str, str]:

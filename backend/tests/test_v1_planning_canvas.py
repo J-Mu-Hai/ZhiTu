@@ -22,9 +22,10 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.agent.runtime.base import V1AssessmentDraft, V1NodeUpdate
 from backend.core.config import settings
 from backend.db.models import PlanNode, Proposal, ReasoningNode
-from backend.services import v1_service
+from backend.tests.conftest import FakeReasoner
 
 
 async def _turn(client: httpx.AsyncClient, account, key: str) -> dict:
@@ -80,12 +81,30 @@ def _root(nodes: list[dict]) -> dict:
 
 @pytest.mark.asyncio
 async def test_v1_fixed_containers_are_real_plan_nodes(
-    app_client: httpx.AsyncClient, make_account, db: AsyncSession, monkeypatch
+    app_client: httpx.AsyncClient, make_account, db: AsyncSession, monkeypatch, use_reasoner
 ) -> None:
-    # V1 默认关闭(既有空间不变);这条确定性 Demo 显式打开。
+    # V1 默认关闭(既有空间不变);这条定向 Demo 显式打开。
     monkeypatch.setattr(settings, "planning_v1", True)
     monkeypatch.setattr(settings, "v01_planning", False)
     account = await make_account(workspace_title="我想学 Python")
+    use_reasoner(
+        FakeReasoner(
+            reply="Python 是手段而不是成果。30 天后你想拿出什么具体成果?",
+            v1_assessment=V1AssessmentDraft(
+                global_assessment="Python 是手段而不是成果。",
+                node_updates=(
+                    V1NodeUpdate(
+                        node_key="true_intent",
+                        judgment="真实诉求还不明确。",
+                        known_facts=("你写下的目标是:我想学 Python",),
+                    ),
+                ),
+                focus_key="true_intent",
+                focus_reason="它最影响路线。",
+                question="30 天后你想拿出什么具体成果?",
+            ),
+        )
+    )
 
     # ---- 1. 初始:干净画布,只有根目标 ----
     body = await _turn(app_client, account, "v1-1")
@@ -94,16 +113,16 @@ async def test_v1_fixed_containers_are_real_plan_nodes(
     assert view["nodes"] == [], "初始画布不能有任何 reasoning 节点"
     assert await _plan_node_count(db, account) == 1, "阶段一初始不能写业务节点"
 
-    # ---- 2. 提交目标:整体判断 + 一个全局问题,不交代内部实现 ----
+    # ---- 2. 提交目标:模型的整体判断 + 一个全局问题,不交代内部实现 ----
     send = await _send(app_client, account, "我想学 Python", "v1-ans-1")
     reply = send["assistantMessage"]["content"]
     assert "Python" in reply
-    assert v1_service.GLOBAL_QUESTION in reply, reply
+    assert "30 天后" in reply, reply
     assert "容器" not in reply and "三组" not in reply, reply
 
     view = await _reasoning(app_client, account)
     assert view["v1Stage"] == "goal_reframe"
-    assert view["v1Question"] == v1_service.GLOBAL_QUESTION
+    assert view["v1Question"] == "30 天后你想拿出什么具体成果?"
     assert view["v1Judgment"]
     # 没有旧的问题地图/时间线。
     assert view["nodes"] == []
@@ -136,10 +155,12 @@ async def test_v1_fixed_containers_are_real_plan_nodes(
         "真正卡你的是什么",
         "最后到底要做到什么",
     }
-    # 分析容器带“待验证”的暂定判断,且都是信息用途。
+    # 分析容器都是信息用途;被模型更新过的那个带可审阅判断。
     for node in by_parent[by_title["目标重构"]["id"]] + by_parent[by_title["问题结构"]["id"]]:
         assert node["purpose"] == "information"
-        assert "（待验证）" in (node["description"] or "")
+    intent = next(node for node in nodes if node["v1Key"] == "true_intent")
+    assert intent["v1Analysis"]["judgment"] == "真实诉求还不明确。"
+    assert intent["v1Analysis"]["knownFacts"] == ["你写下的目标是:我想学 Python"]
 
     # ---- 4. 没有提案、没有 reasoning 节点 ----
     proposals = await db.scalar(

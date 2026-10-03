@@ -151,6 +151,15 @@ class PlanNode(UuidPk, TimestampMixin, Base):
     # 可空:活着的节点没有批次可言(`deleted_at` 为空的行这一列也是空)。
     archive_batch_id: Mapped[uuid.UUID | None] = mapped_column()
 
+    # ---- 规划智能体重构 V1(P2):固定分析容器标记与模型可审阅判断 ----
+    #: V1 固定容器标识(current_state / true_intent / main_line / …)。
+    #: None = 非 V1 节点。模型只能用这个键指涉节点,不能用任意 id/标题。
+    v1_key: Mapped[str | None] = mapped_column(String(48))
+    #: 模型针对这个容器的**可审阅判断**:`{judgment, known_facts[], assumptions[],
+    #: evidence[], importance_reason, uncertainty, status, discussion_count}`。
+    #: 只存结论/假设/来源,不存隐藏思维链。None = 还没有判断。
+    v1_analysis: Mapped[dict | None] = mapped_column(JsonDict)
+
     workspace: Mapped[Workspace] = relationship()  # noqa: F821
     parent: Mapped[PlanNode | None] = relationship(
         remote_side="PlanNode.id", back_populates="children"

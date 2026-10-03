@@ -626,6 +626,59 @@ class IntakeDecision:
 
 
 @dataclass(frozen=True, slots=True)
+class V1NodeUpdate:
+    """规划智能体 V1(P2):模型对一个**已有固定容器**的可审阅判断。
+
+    它**不是**任意节点的创建/改写。`node_key` 只能落在服务端预先建立的固定容器上
+    (或战略路径的四个受限子项),由服务端校验;不在集合里的一律拒绝。
+    分栏本身就是来源标签:`known_facts` 是读到的,`assumptions` 是 AI 假设的,
+    `evidence` 是带来源的 —— 但它们都仍然要在服务端经过允许键与数量上限。
+    """
+
+    node_key: str
+    judgment: str = ""
+    known_facts: tuple[str, ...] = ()
+    assumptions: tuple[str, ...] = ()
+    evidence: tuple[str, ...] = ()
+    #: 为什么它影响整体战略。
+    importance_reason: str = ""
+    #: low / medium / high。
+    uncertainty: str = "medium"
+    #: unexplored / discussing / resolved / deferred。
+    status: str = "discussing"
+    #: 最少量、且必须已存在的受影响节点键。
+    impacted_node_keys: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class V1AssessmentDraft:
+    """规划智能体 V1(P2)一轮的**受限输出**。
+
+    ## 它是“建议”,不是“命令”
+
+    服务端决定接受哪些、写入多少、是否创建战略子节点。这里没有任务、日期、周/日
+    计划或正式排期字段 —— 那些在结构上就写不出来。
+
+    ## 一次最多一个全局问题
+
+    `question` 单数。模型想多问也只能给一个;要问的必须是会改变目标定义、关键杠杆、
+    战略路径或粗时间范围的问题。
+    """
+
+    #: 当前整体判断(2–4 句,可审阅结论,不含隐藏思维链)。
+    global_assessment: str = ""
+    node_updates: tuple[V1NodeUpdate, ...] = ()
+    focus_key: str | None = None
+    focus_reason: str = ""
+    #: 一轮最多一个。
+    question: str = ""
+    #: 战略取舍:为什么选择这条路线而不是另一条(战略路径成形时才有意义)。
+    strategy_tradeoff: str = ""
+    #: 模型自报“信息已足够形成战略路径”。服务端仍按自己的条件再判一次。
+    strategy_ready: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class ReasoningResult:
     """一次模型调用的结果。**永远是可用的**,即使内容为空。"""
 
@@ -656,6 +709,9 @@ class ReasoningResult:
     #: 阶段 12:战略 intake 回合的决策。**只有 `purpose == strategic_intake` 的回合会读它。**
     #: None = 这一轮不是 intake 回合(或解析失败)。它**不会**变成 `agent_questions`。
     intake_decision: IntakeDecision | None = None
+    #: 规划智能体重构 V1(P2)回合的判断。**只有 `purpose == v1_strategy` 会读它。**
+    #: None = 不是 V1 回合(或模型没给)。服务端决定接受多少、写入哪些固定容器。
+    v1_assessment: V1AssessmentDraft | None = None
     request_id: str = ""
     prompt_version: str = ""
     model_name: str | None = None

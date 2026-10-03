@@ -218,8 +218,14 @@ class PlanNodePayload(ApiModel):
     #: `CONCURRENCY_CONFLICT` —— 说明另一个标签页改过同一段正文。
     #:
     #: 它是**节点级**的,不是空间级(`revision_version` 是空间级)。用空间版本号做
-    #: 正文冲突检测,会让"另一个标签页勾掉了一个任务"变成"我的正文保存失败"。
+    #: 正文冲突检测,会让“另一个标签页勾掉了一个任务”变成“我的正文保存失败”。
     content_version: int = 1
+    #: 规划智能体重构 V1(P2):固定分析容器键(current_state / true_intent / …)。
+    #: None = 非 V1 节点。前端据此渲染事实/假设标记与讨论数。
+    v1_key: str | None = None
+    #: 模型对该容器的可审阅判断:`{judgment, known_facts[], assumptions[], evidence[],
+    #: importance_reason, uncertainty, status, discussion_count}`。None = 还没有判断。
+    v1_analysis: dict | None = None
 
 
 class SessionPayload(ApiModel):

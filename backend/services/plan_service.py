@@ -82,6 +82,9 @@ def node_to_dict(node: PlanNode) -> dict[str, object]:
         "completed_at": node.completed_at,
         "created_at": node.created_at,
         "content_version": node.content_version,
+        # 规划智能体重构 V1(P2):固定容器键与模型的可审阅判断(非 V1 节点为 None)。
+        "v1_key": node.v1_key,
+        "v1_analysis": node.v1_analysis,
     }
 
 

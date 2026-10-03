@@ -375,10 +375,15 @@ async def build_view(
             if isinstance(item, dict)
         ],
         v01_timeline_proposal_id=session.timeline_proposal_id,
-        #: 规划智能体重构 V1:非 V1 会话三列均为 None,老前端行为不变。
+        #: 规划智能体重构 V1:非 V1 会话所有 v1_* 列均为 None,老前端行为不变。
         v1_stage=session.v1_stage,
         v1_judgment=session.v1_judgment,
         v1_question=session.v1_question,
+        v1_focus_key=session.v1_focus_key,
+        v1_focus_reason=session.v1_focus_reason,
+        v1_strategy=session.v1_strategy,
+        v1_status=session.v1_status,
+        v1_error=session.v1_error,
         dates_calibrated=session.dates_calibrated,
         input_version=session.input_version,
         strategy_proposal_id=session.strategy_proposal_id,

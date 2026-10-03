@@ -180,6 +180,17 @@ class GoalReasoningView(ApiModel):
     v1_judgment: str | None = None
     #: 当前唯一需要回答的全局关键问题。None = 不等待全局回答。
     v1_question: str | None = None
+    #: 当前焦点容器键(模型选出的最值得讨论的一项)。
+    v1_focus_key: str | None = None
+    #: 为什么这个焦点比其他未知项更能改变路线。
+    v1_focus_reason: str | None = None
+    #: 战略路径草案:`{main_line, parallel_line, defer_or_avoid, risk_control,
+    #: tradeoff, confirmed}`。None = 还没形成。
+    v1_strategy: dict | None = None
+    #: V1 模型回合状态:`idle` / `running` / `failed`。给 UI 准确状态与重试入口。
+    v1_status: str | None = None
+    #: 上一次 V1 模型回合失败的可读原因。
+    v1_error: str | None = None
     #: 阶段 11:时间架构里的日期是否已校准。False = 只有相对周,不伪造日历日期。
     dates_calibrated: bool = False
     input_version: str | None = None

@@ -355,14 +355,13 @@ async def submit_turn(
     )
 
     v1_session = await reasoning_service.get_session(db, ctx)
-    if (
-        v1_service.is_v1(v1_session)
-        and v1_session.v1_stage == v1_service.V1_INITIAL_THINKING
-    ):
-        # 只有“初步思考”这一档拦截;提交之后 V1 空间回到普通对话节点讨论。
+    if v1_service.is_v1(v1_session):
+        # 规划智能体重构 V1:全部用户消息都由 V1 战略判断回合处理 —— 它只写固定容器
+        # 的可审阅判断,不生成任务 / 时间线 / 提案(边界在 `v1_service` 内强制)。
         return await v1_service.answer_v1_in_conversation(
             db,
             ctx,
+            reasoner,
             v1_session,
             content=text,
             client_message_id=client_message_id,

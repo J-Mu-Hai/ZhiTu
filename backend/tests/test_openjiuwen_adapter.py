@@ -252,6 +252,22 @@ def test_the_output_declaration_matches_what_the_parser_reads() -> None:
             "whyThisMatters": "它决定阶段 1 交什么",
             "quickReplies": ["一个能展示的作品"],
         },
+        "v1Assessment": {
+            "globalAssessment": "Python 是手段而不是成果。",
+            "nodeUpdates": [
+                {
+                    "nodeKey": "true_intent",
+                    "judgment": "真实诉求还不明确。",
+                    "knownFacts": [],
+                    "assumptions": ["（AI 假设）可能为了求职"],
+                }
+            ],
+            "focusKey": "true_intent",
+            "focusReason": "它最影响路线。",
+            "question": "你想拿出什么具体成果?",
+            "strategyTradeoff": "",
+            "strategyReady": False,
+        },
     }
     assert set(payload) == set(OUTPUT_CONFIG), (
         "载荷的键与给 SDK 的输出声明对不上了 —— 有一边多写或少写了"

@@ -2183,6 +2183,42 @@
           "default": null,
           "title": "V01Timelineproposalid"
         },
+        "v1Error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "V1Error"
+        },
+        "v1FocusKey": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "V1Focuskey"
+        },
+        "v1FocusReason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "V1Focusreason"
+        },
         "v1Judgment": {
           "anyOf": [
             {
@@ -2218,6 +2254,31 @@
           ],
           "default": null,
           "title": "V1Stage"
+        },
+        "v1Status": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "V1Status"
+        },
+        "v1Strategy": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "V1Strategy"
         },
         "workflowStage": {
           "anyOf": [
@@ -2796,6 +2857,31 @@
         "title": {
           "title": "Title",
           "type": "string"
+        },
+        "v1Analysis": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "V1Analysis"
+        },
+        "v1Key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "V1Key"
         }
       },
       "required": [

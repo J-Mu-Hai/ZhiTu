@@ -30,6 +30,10 @@ from backend.agent.prompts.goal_reasoning import (
     STRATEGIC_INTAKE_SYSTEM_PROMPT,
 )
 from backend.agent.prompts.planning import PROMPT_VERSION, SYSTEM_PROMPT
+from backend.agent.prompts.v1_strategy import (
+    V1_STRATEGY_PROMPT_VERSION,
+    V1_STRATEGY_SYSTEM_PROMPT,
+)
 from backend.agent.runtime.base import ReasoningResult, TurnContext
 from backend.agent.runtime.response import (
     PayloadInvalid,
@@ -213,6 +217,8 @@ def _prompt_for(turn: TurnContext) -> tuple[str, str]:
         return STRATEGIC_INTAKE_SYSTEM_PROMPT, STRATEGIC_INTAKE_PROMPT_VERSION
     if turn.purpose == "goal_reasoning":
         return GOAL_REASONING_SYSTEM_PROMPT, GOAL_REASONING_PROMPT_VERSION
+    if turn.purpose == "v1_strategy":
+        return V1_STRATEGY_SYSTEM_PROMPT, V1_STRATEGY_PROMPT_VERSION
     return SYSTEM_PROMPT, PROMPT_VERSION
 
 
