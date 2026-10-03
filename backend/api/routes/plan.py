@@ -583,6 +583,10 @@ async def confirm_proposal(
     outcome = await proposal_service.confirm_proposal(
         db, ctx, proposal_id, idempotency_key=payload.idempotency_key
     )
+    # 规划智能体 V0.1:确认后按阶段推进状态机(时间线 → WEEKLY_EXECUTION;重规划 → 回到执行)。
+    from backend.services import v01_service  # 延迟 import,避免循环
+
+    await v01_service.on_proposal_confirmed(db, ctx, proposal_id)
     return outcome.response
 
 

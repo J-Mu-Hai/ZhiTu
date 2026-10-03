@@ -45,6 +45,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.db.base import Base, JsonDict, TimestampMixin, UtcDateTime, UuidPk, enum_type
 from backend.db.models.enums import (
+    PlanningWorkflowStage,
     ReasoningLinkType,
     ReasoningNodeStatus,
     ReasoningNodeType,
@@ -118,6 +119,18 @@ class GoalReasoningSession(UuidPk, TimestampMixin, Base):
     pending_intake_decision: Mapped[dict | None] = mapped_column(JsonDict)
     #: 时间架构里的日期是否已校准。False = 只有相对周(第 1–2 周…),不伪造日历日期。
     dates_calibrated: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # ---- 规划智能体 V0.1:程序控制的三阶段工作流 ----
+    #: V0.1 工作流阶段。**None = 老 workspace / 非 V0.1**,行为与以前完全一样。
+    workflow_stage: Mapped[PlanningWorkflowStage | None] = mapped_column(
+        enum_type(PlanningWorkflowStage, "planning_workflow_stage")
+    )
+    #: 阶段一的发现状态:`{questions[], answer, followups, template, insight}`。
+    #: 最小状态,不是问卷表;用户回答只存一次。
+    discovery: Mapped[dict | None] = mapped_column(JsonDict)
+    #: 时间线确认提案 id。复用现有 proposal → 确认 → 版本校验 → 事务写入。
+    #: 刻意不设外键 —— 与 `focus_reasoning_node_id` 同一取舍:避免 batch 迁移与
+    #: 建表顺序上的循环,由服务层保证它指向本空间的提案。
+    timeline_proposal_id: Mapped[uuid.UUID | None] = mapped_column()
 
     nodes: Mapped[list[ReasoningNode]] = relationship(
         back_populates="session", cascade="all, delete-orphan"

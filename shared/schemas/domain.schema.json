@@ -1978,6 +1978,13 @@
           "title": "Datescalibrated",
           "type": "boolean"
         },
+        "discoveryQuestions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Discoveryquestions",
+          "type": "array"
+        },
         "error": {
           "anyOf": [
             {
@@ -2155,6 +2162,18 @@
         "turnAction": {
           "title": "Turnaction",
           "type": "string"
+        },
+        "workflowStage": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Workflowstage"
         },
         "workspaceId": {
           "format": "uuid",
@@ -6073,6 +6092,33 @@
         "createdAt"
       ],
       "title": "UserProfile",
+      "type": "object"
+    },
+    "V01FeedbackRequest": {
+      "additionalProperties": false,
+      "description": "规划智能体 V0.1 的一条执行反馈。`outcome` 是闭集。",
+      "properties": {
+        "nodeId": {
+          "format": "uuid",
+          "title": "Nodeid",
+          "type": "string"
+        },
+        "outcome": {
+          "enum": [
+            "done",
+            "partial",
+            "missed",
+            "delayed"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        }
+      },
+      "required": [
+        "nodeId",
+        "outcome"
+      ],
+      "title": "V01FeedbackRequest",
       "type": "object"
     },
     "WorkspaceCounts": {

@@ -27,12 +27,13 @@ from backend.contracts.reasoning import (
     AgentTurnResponse,
     GoalReasoningView,
     UpdateReasoningNodeRequest,
+    V01FeedbackRequest,
 )
 from backend.contracts.trace import AgentTraceView
 from backend.db.session import get_db
 from backend.services import agent_trace_service, reasoning_service
 from backend.services.context import WorkspaceContext
-from backend.services.errors import TraceDisabled
+from backend.services.errors import InvalidInput, TraceDisabled
 
 router = APIRouter()
 
@@ -75,6 +76,43 @@ async def run_agent_turn(
       增量重评与战略收敛(步骤 4)。
     """
     return await reasoning_service.run_turn(db, ctx, reasoner, payload=payload)
+
+
+@router.post(
+    "/{workspace_id}/v01/feedback",
+    response_model=AgentTurnResponse,
+    summary="规划智能体 V0.1:记录一条执行反馈",
+)
+async def v01_feedback(
+    payload: V01FeedbackRequest,
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+) -> AgentTurnResponse:
+    """V0.1 周计划的执行反馈:完成 / 部分完成 / 未完成 / 延期。
+
+    写的是任务节点的状态(不新建表、不改历史);完成率 < 60% 时由服务端
+    把工作流推进到 REPLANNING,而不是在这里直接改计划。
+    """
+    from backend.services import v01_service  # 延迟 import,避免循环
+
+    root = await reasoning_service.root_plan_node(db, ctx)
+    session = await reasoning_service.get_session(db, ctx)
+    if root is None or session is None or session.workflow_stage is None:
+        raise InvalidInput("这个空间还没有开始 V0.1 规划流程。")
+    trace = agent_trace_service.start_map_trace(
+        ctx, trigger="progress_update", context_node_id=root.id
+    )
+    db.add(trace)
+    await db.commit()
+    return await v01_service.record_feedback(
+        db,
+        ctx,
+        root,
+        session,
+        node_id=payload.node_id,
+        outcome=payload.outcome,
+        trace=trace,
+    )
 
 
 @router.get(

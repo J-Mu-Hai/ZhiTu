@@ -468,6 +468,9 @@ $env:DATABASE_URL = $DbUrl
 $env:APP_ENV = 'development'
 $env:CORS_ORIGINS = 'http://127.0.0.1:5173,http://localhost:5173'
 $env:AGENT_REASONER = $resolved.Reasoner
+# 规划智能体 V0.1:本地完整体验默认走新的三阶段工作流。
+# 它只影响**新建**目标空间;老 workspace 的 `workflow_stage` 为 NULL,行为不变。
+$env:V01_PLANNING = 'on'
 if ($resolved.Effective -eq 'Script') {
   $env:ZHITU_SCRIPTED_ACTIONS = $Fixture
 } else {

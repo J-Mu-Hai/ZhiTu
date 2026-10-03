@@ -45,6 +45,7 @@ from backend.db.models.enums import (
     ConversationStatus,
     MessageRole,
     ModelSource,
+    PlanningWorkflowStage,
 )
 from backend.services import (
     agent_loop_service,
@@ -356,6 +357,23 @@ async def submit_turn(
             db,
             ctx,
             reasoner,
+            content=text,
+            client_message_id=client_message_id,
+            context_node_id=context_node_id,
+        )
+
+    # 规划智能体 V0.1:DISCOVERY 阶段里用户这条消息**就是那次回答**。
+    from backend.services import v01_service  # 延迟 import,避免循环依赖
+
+    v01_session = await reasoning_service.get_session(db, ctx)
+    if (
+        v01_service.is_v01(v01_session)
+        and v01_session.workflow_stage is PlanningWorkflowStage.DISCOVERY
+    ):
+        return await v01_service.answer_v01_in_conversation(
+            db,
+            ctx,
+            v01_session,
             content=text,
             client_message_id=client_message_id,
             context_node_id=context_node_id,

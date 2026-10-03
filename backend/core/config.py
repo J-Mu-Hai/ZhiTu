@@ -44,6 +44,11 @@ class Settings(BaseSettings):
     #: 于是一整轮变成"模型输出无法解析"。用户看到的是一句和真实原因毫不相干的
     #: 抱怨,而原因只是预算给少了。
     agent_max_tokens: int = 8192
+    #: 规划智能体 V0.1:新建目标空间是否走程序控制的三阶段工作流。
+    #:
+    #: **默认关闭** —— 既有 workspace 与既有测试的行为完全不变(会话 `workflow_stage`
+    #: 保持 NULL)。本地体验与 V0.1 Demo 通过 `.env` 的 `V01_PLANNING=on` 打开。
+    v01_planning: bool = False
     #: 公开研究工具的提供方。**默认 `none` = 不联网**。首期只支持 `tavily`。
     #:
     #: 这是一个**显式开关**:没有配置时如实返回“未配置”,不允许假装查过。

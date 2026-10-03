@@ -570,6 +570,28 @@ class ReasoningSessionStatus(StrEnum):
     FAILED = "failed"
 
 
+class PlanningWorkflowStage(StrEnum):
+    """规划智能体 V0.1 的**程序控制工作流阶段**。
+
+    它回答的是“现在整个规划闭包走到哪一步了”,与 `ReasoningSessionPhase`(推理
+    地图内部的战略档位)分开:后者描述地图状态,这里描述**产品流程**。
+
+    LLM 只能生成各阶段的内容,不能自己改阶段;状态迁移只发生在服务端
+    (`v01_service`)。`None` = 老 workspace / 非 V0.1,行为与以前完全一样。
+    """
+
+    #: 阶段一:全局洞察 + 2–4 个核心问题,用户回答一次。
+    DISCOVERY = "discovery"
+    #: 已生成第一层规划节点,正在产出时间线草案。
+    TIMELINE_DRAFT = "timeline_draft"
+    #: 时间线草案已就绪,等用户确认(proposal)。
+    TIMELINE_REVIEW = "timeline_review"
+    #: 时间线已确认,正在做本周计划与下周预览。
+    WEEKLY_EXECUTION = "weekly_execution"
+    #: 完成率偏低或用户主动触发,正在重规划未来时间线。
+    REPLANNING = "replanning"
+
+
 class ReasoningNodeType(StrEnum):
     """推理地图节点的类型。**不是 `NodeType`** —— 它不参与计划。"""
 

@@ -876,6 +876,11 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
           view.sessionId === null ||
           view.status === 'failed' ||
           view.status === 'idle' ||
+          // 规划智能体 V0.1:任何 V0.1 空间都交给服务端状态机推进一步。
+          // 服务端 `advance` 是幂等的(等待回答 / 有未确认提案时返回当前状态),
+          // 所以这里多发一次不会重复提问或重复生成提案。
+          // `Boolean(...)` 而不是 `!== null`:老后端 / 测试 mock 可能根本没有这个字段。
+          Boolean(view.workflowStage) ||
           emptyIntake;
         if (!needsExplore) return view;
         const trigger = options.retry ? 'retry' : 'space_entered';
@@ -2035,6 +2040,8 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
           retryable: result.retryable,
         }),
       );
+      // 规划智能体 V0.1:回答完之后由服务端状态机推进下一步(生成时间线 / 周计划)。
+      void ensureStrategicIntake(space.id, growth.goalId);
     } catch (cause) {
       const error = cause instanceof ApiError ? cause : null;
       setMessages(old => old.map(m => m.id === optimisticId ? { ...m, pending: false, failed: true } : m));

@@ -1819,6 +1819,10 @@ export interface GoalReasoningView {
   intakeQuestionLimit: number;
   /** 阶段 12:当前正在等回答的 intake 关键问题。null = 不在等回答。 */
   pendingIntake: PendingIntakeView | null;
+  /** 规划智能体 V0.1 的工作流阶段。null = 非 V0.1。 */
+  workflowStage: string | null;
+  /** V0.1 阶段一当前等回答的核心问题(2–4 个)。 */
+  discoveryQuestions: string[];
   /** 阶段 11:时间架构里的日期是否已校准。false = 只有相对周,不伪造日历日期。 */
   datesCalibrated: boolean;
   exploredAt: string | null;

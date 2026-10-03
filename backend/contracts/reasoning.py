@@ -133,6 +133,10 @@ class GoalReasoningView(ApiModel):
     intake_question_limit: int = 0
     #: 阶段 12:当前正在等回答的 intake 关键问题。None = 不在等回答。
     pending_intake: PendingIntakeView | None = None
+    #: 规划智能体 V0.1 的工作流阶段。None = 非 V0.1(老 workspace)。
+    workflow_stage: str | None = None
+    #: V0.1:阶段一当前等回答的核心问题(2–4 个),放在会话面上、不建问题实体。
+    discovery_questions: list[str] = Field(default_factory=list)
     #: 阶段 11:时间架构里的日期是否已校准。False = 只有相对周,不伪造日历日期。
     dates_calibrated: bool = False
     input_version: str | None = None
@@ -143,6 +147,13 @@ class GoalReasoningView(ApiModel):
     links: list[ReasoningLinkView] = Field(default_factory=list)
     #: 最近一次自动探索失败的可读原因。**失败不留半成品地图。**
     error: str | None = None
+
+
+class V01FeedbackRequest(ApiModel):
+    """规划智能体 V0.1 的一条执行反馈。`outcome` 是闭集。"""
+
+    node_id: uuid.UUID
+    outcome: Literal["done", "partial", "missed", "delayed"]
 
 
 class UpdateReasoningNodeRequest(ApiModel):
@@ -180,7 +191,9 @@ __all__ = [
     "AgentTurnResponse",
     "AgentTurnTrigger",
     "GoalReasoningView",
+    "PendingIntakeView",
     "ReasoningLinkView",
     "ReasoningNodeView",
     "UpdateReasoningNodeRequest",
+    "V01FeedbackRequest",
 ]

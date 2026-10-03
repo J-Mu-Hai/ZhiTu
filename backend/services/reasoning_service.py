@@ -41,6 +41,7 @@ from backend.contracts.reasoning import (
     ReasoningLinkView,
     ReasoningNodeView,
 )
+from backend.core.config import settings
 from backend.db.base import utcnow
 from backend.db.models import (
     AgentQuestion,
@@ -58,6 +59,7 @@ from backend.db.models.enums import (
     AgentTraceStep,
     DegradedReason,
     ModelSource,
+    PlanningWorkflowStage,
     ProposalStatus,
     QuestionPresentation,
     ReasoningLinkType,
@@ -163,6 +165,11 @@ async def get_or_create_session(
         phase=ReasoningSessionPhase.INTAKE,
         turn_action=ReasoningTurnAction.ANALYZE,
         status=ReasoningSessionStatus.IDLE,
+        # 规划智能体 V0.1:新建目标空间走程序控制的三阶段工作流(需显式开启)。
+        # 关闭时这一列为 NULL,行为与以前完全一样。
+        workflow_stage=(
+            PlanningWorkflowStage.DISCOVERY if settings.v01_planning else None
+        ),
     )
     db.add(session)
     await db.flush()
@@ -324,6 +331,13 @@ async def build_view(
             if isinstance(session.pending_intake_decision, dict)
             else None
         ),
+        #: 规划智能体 V0.1:程序控制的工作流阶段与阶段一问题。
+        workflow_stage=(
+            session.workflow_stage.value if session.workflow_stage is not None else None
+        ),
+        discovery_questions=[
+            str(item) for item in ((session.discovery or {}).get("questions") or [])
+        ],
         dates_calibrated=session.dates_calibrated,
         input_version=session.input_version,
         strategy_proposal_id=session.strategy_proposal_id,
@@ -839,6 +853,20 @@ async def run_space_entered(
     session = await get_or_create_session(db, ctx)
     assert session is not None  # root 存在时必然建得出来
     now = utcnow()
+
+    # 规划智能体 V0.1:新建目标空间由 `v01_service.advance` 按状态机推进。
+    # 老会话 `workflow_stage is None`,继续走下面的 intake / 架构逻辑。
+    if session.workflow_stage is not None:
+        from backend.services import v01_service  # 延迟 import,避免循环
+
+        trace = agent_trace_service.start_map_trace(
+            ctx, trigger=payload.trigger, context_node_id=root.id
+        )
+        db.add(trace)
+        await db.commit()
+        return await v01_service.advance(
+            db, ctx, root, session, trace=trace
+        )
 
     if session.status == ReasoningSessionStatus.RUNNING and not _running_is_stale(session, now):
         return await _response(db, ctx, session, replayed=True)
