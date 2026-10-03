@@ -24,7 +24,10 @@ from backend.agent.prompts.planning import render_history_section
 from backend.agent.runtime.base import TurnContext
 
 #: V1 战略判断回合的提示词版本。与规划 / 目标推理分开。
-V1_STRATEGY_PROMPT_VERSION = "v1-strategy-v1"
+#: v2:线上模型实测会出现字段漂移(`candidateDirections` 写成 `id/label/note`、
+#: `keyDimensions` 写成字符串数组),因此把“逐字字段名 + 判断必须落在 nodeUpdates”
+#: 写成硬规则。解析器另行做了同义名容错(见 runtime/response.py)。
+V1_STRATEGY_PROMPT_VERSION = "v1-strategy-v2"
 
 
 V1_STRATEGY_SYSTEM_PROMPT = """你是知途的规划智能体,现在处在“**先想清楚**”的阶段一。
@@ -88,6 +91,13 @@ V1_STRATEGY_SYSTEM_PROMPT = """你是知途的规划智能体,现在处在“**�
 
 ## 硬规则
 
+- **字段名必须与上面 JSON 逐字一致。** 候选方向只能是 `key` / `title` / `reason` / `path`
+  (`id` / `label` / `note` 是**错误写法**,服务端会丢弃);维度判断只能是
+  `{ "key", "judgment", "whyItMatters" }` 对象,不要写成字符串数组;
+  `responseMode` 只能取闭集 `none | ask | offer_options | provisional_synthesis |
+  ready_for_strategy`(不要写 `single_select` 这类自造值);
+- **判断必须落在 `nodeUpdates` 里,并带 `nodeKey`。** 只把判断写进 `keyDimensions`
+  或正文,服务端无法把它归到画布容器上 —— 真正会写进战略分析的是 `nodeUpdates`;
 - `strategicThesis` 必须是你自己的高层判断,**不是**复述用户输入、也不是“还缺哪些信息”;
 - `keyDimensions` 最多 **3** 个,只能指向已存在的容器键;
 - `criticalQuestion` **默认可为空**;不为“必须提问”而造问题。只有两个不同答案会显著改变

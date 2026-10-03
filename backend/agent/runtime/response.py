@@ -123,6 +123,50 @@ V1_RESPONSE_MODES = frozenset(
     {"none", "ask", "offer_options", "provisional_synthesis", "ready_for_strategy"}
 )
 
+#: **线上模型字段漂移容错。** 契约里要 `key`/`title`/`reason`/`path`,而真实模型(sptest
+#: 实测 DeepSeek)会用 `id`/`label`/`note` 等同义名。严格只认一种拼法的话,模型给
+#: 的候选方向/判断会在落库前被静默丢掉 —— 这正是 `logs/accept_v1_active_loop.py`
+#: 一次真实验收抓到的:候选方向整段消失,闭环停在 problem_structure。
+#: 容错只做**同义名归一**,不放松数量/长度/闭集校验。
+
+
+def _v1_pick(entry: dict, *names: str):
+    """按顺序取第一个非空同义字段。"""
+    for name in names:
+        value = entry.get(name)
+        if value is not None and value != "" and value != []:
+            return value
+    return None
+
+
+_V1_RESPONSE_MODE_ALIASES = {
+    "": "none",
+    "none": "none",
+    "ask": "ask",
+    "question": "ask",
+    "clarify": "ask",
+    "offer_options": "offer_options",
+    "offeroptions": "offer_options",
+    "options": "offer_options",
+    "single_select": "offer_options",
+    "select": "offer_options",
+    "choose": "offer_options",
+    "provisional_synthesis": "provisional_synthesis",
+    "provisional": "provisional_synthesis",
+    "synthesis": "provisional_synthesis",
+    "strategy_draft": "ready_for_strategy",
+    "strategy": "ready_for_strategy",
+    "ready": "ready_for_strategy",
+    "ready_for_strategy": "ready_for_strategy",
+}
+
+
+def _normalize_v1_response_mode(value: Any) -> str:
+    """把模型爱写的多种叫法归一到闭集;认不出就 `none`(服务端再决定)。"""
+    if not isinstance(value, str):
+        return "none"
+    return _V1_RESPONSE_MODE_ALIASES.get(value.strip().lower(), "none")
+
 #: 规划智能体重构 V1(P3):粗时间架构必须是 3–6 个阶段。
 MIN_V1_TIMELINE_PHASES = 3
 MAX_V1_TIMELINE_PHASES = 6
@@ -761,17 +805,25 @@ def parse_v1_assessment(raw: Any) -> V1AssessmentDraft | None:
         return None
 
     updates: list[V1NodeUpdate] = []
-    for entry in (raw.get("nodeUpdates") or [])[:MAX_V1_NODE_UPDATES]:
+    for entry in (raw.get("nodeUpdates") or raw.get("node_updates") or [])[
+        :MAX_V1_NODE_UPDATES
+    ]:
         if not isinstance(entry, dict):
             continue
-        key = entry.get("nodeKey")
+        key = _v1_pick(entry, "nodeKey", "node_key", "key", "dimensionKey")
         if not isinstance(key, str) or not key.strip():
             continue
-        judgment = entry.get("judgment")
-        importance = entry.get("importanceReason")
-        uncertainty = entry.get("uncertainty")
-        status = entry.get("status")
-        impacts = entry.get("impactedNodeKeys")
+        judgment = _v1_pick(entry, "judgment", "analysis", "text", "conclusion", "summary")
+        importance = _v1_pick(
+            entry, "importanceReason", "importance_reason", "whyItMatters", "why"
+        )
+        uncertainty = _v1_pick(entry, "uncertainty", "confidence")
+        status = _v1_pick(entry, "status")
+        impacts = _v1_pick(entry, "impactedNodeKeys", "impacted_node_keys", "impacts")
+        if isinstance(uncertainty, str):
+            uncertainty = uncertainty.strip().lower()
+        if isinstance(status, str):
+            status = status.strip().lower()
         updates.append(
             V1NodeUpdate(
                 node_key=key.strip()[:48],
@@ -780,7 +832,9 @@ def parse_v1_assessment(raw: Any) -> V1AssessmentDraft | None:
                     if isinstance(judgment, str) and judgment.strip()
                     else ""
                 ),
-                known_facts=_clean_text_list(entry.get("knownFacts"), limit=MAX_V1_ITEMS),
+                known_facts=_clean_text_list(
+                    _v1_pick(entry, "knownFacts", "known_facts", "facts"), limit=MAX_V1_ITEMS
+                ),
                 assumptions=_clean_text_list(entry.get("assumptions"), limit=MAX_V1_ITEMS),
                 evidence=_clean_text_list(entry.get("evidence"), limit=MAX_V1_ITEMS),
                 importance_reason=(
@@ -802,27 +856,43 @@ def parse_v1_assessment(raw: Any) -> V1AssessmentDraft | None:
         return value.strip()[:limit] if isinstance(value, str) and value.strip() else ""
 
     dimensions: list[V1KeyDimension] = []
-    for entry in (raw.get("keyDimensions") or [])[:MAX_V1_KEY_DIMENSIONS]:
+    for entry in (raw.get("keyDimensions") or raw.get("key_dimensions") or [])[
+        :MAX_V1_KEY_DIMENSIONS
+    ]:
         if not isinstance(entry, dict):
+            # 真实模型有时把这一栏写成纯字符串;没有节点键就无法落库,不猜。
             continue
-        key = entry.get("key")
+        key = _v1_pick(entry, "key", "nodeKey", "node_key", "dimensionKey")
         if not isinstance(key, str) or not key.strip():
             continue
         dimensions.append(
             V1KeyDimension(
                 key=key.strip()[:48],
-                judgment=_text(entry.get("judgment"), MAX_V1_TEXT_CHARS),
-                why_it_matters=_text(entry.get("whyItMatters"), MAX_V1_TEXT_CHARS),
+                judgment=_text(
+                    _v1_pick(entry, "judgment", "analysis", "text", "conclusion"),
+                    MAX_V1_TEXT_CHARS,
+                ),
+                why_it_matters=_text(
+                    _v1_pick(entry, "whyItMatters", "why_it_matters", "why", "importanceReason"),
+                    MAX_V1_TEXT_CHARS,
+                ),
             )
         )
     directions: list[V1CandidateDirection] = []
     seen_direction_keys: set[str] = set()
-    for entry in (raw.get("candidateDirections") or [])[:MAX_V1_CANDIDATE_DIRECTIONS]:
+    for entry in (raw.get("candidateDirections") or raw.get("candidate_directions") or [])[
+        :MAX_V1_CANDIDATE_DIRECTIONS
+    ]:
         if not isinstance(entry, dict):
             continue
-        key = entry.get("key")
-        title = entry.get("title")
-        if not isinstance(key, str) or not key.strip() or not isinstance(title, str) or not title.strip():
+        key = _v1_pick(entry, "key", "id", "value", "code")
+        title = _v1_pick(entry, "title", "label", "name")
+        if (
+            not isinstance(key, str)
+            or not key.strip()
+            or not isinstance(title, str)
+            or not title.strip()
+        ):
             continue
         clean_key = key.strip()[:48]
         if clean_key in seen_direction_keys:
@@ -832,17 +902,29 @@ def parse_v1_assessment(raw: Any) -> V1AssessmentDraft | None:
             V1CandidateDirection(
                 key=clean_key,
                 title=title.strip()[:MAX_V1_TIMELINE_TITLE_CHARS],
-                reason=_text(entry.get("reason"), MAX_V1_TEXT_CHARS),
-                path=_text(entry.get("path"), MAX_V1_TEXT_CHARS),
+                reason=_text(
+                    _v1_pick(entry, "reason", "note", "description", "why"), MAX_V1_TEXT_CHARS
+                ),
+                path=_text(
+                    _v1_pick(entry, "path", "how", "detail", "action"), MAX_V1_TEXT_CHARS
+                ),
             )
         )
 
-    focus_key = raw.get("focusKey")
-    response_mode = raw.get("responseMode")
-    thesis = _text(raw.get("strategicThesis"), MAX_V1_TEXT_CHARS)
-    assessment_text = _text(raw.get("globalAssessment"), MAX_V1_TEXT_CHARS)
-    critical = _text(raw.get("criticalQuestion"), MAX_V1_QUESTION_CHARS) or _text(
-        raw.get("question"), MAX_V1_QUESTION_CHARS
+    focus_key = _v1_pick(raw, "focusKey", "focus_key", "focus")
+    response_mode = _normalize_v1_response_mode(
+        _v1_pick(raw, "responseMode", "response_mode")
+    )
+    thesis = _text(
+        _v1_pick(raw, "strategicThesis", "strategic_thesis", "thesis"), MAX_V1_TEXT_CHARS
+    )
+    assessment_text = _text(
+        _v1_pick(raw, "globalAssessment", "global_assessment", "assessment"),
+        MAX_V1_TEXT_CHARS,
+    )
+    critical = _text(
+        _v1_pick(raw, "criticalQuestion", "critical_question", "question", "ask"),
+        MAX_V1_QUESTION_CHARS,
     )
     return V1AssessmentDraft(
         global_assessment=assessment_text or thesis,
@@ -854,15 +936,20 @@ def parse_v1_assessment(raw: Any) -> V1AssessmentDraft | None:
             if isinstance(focus_key, str) and focus_key.strip()
             else None
         ),
-        focus_reason=_text(raw.get("focusReason"), MAX_V1_TEXT_CHARS),
-        response_mode=(
-            response_mode if response_mode in V1_RESPONSE_MODES else "none"
+        focus_reason=_text(
+            _v1_pick(raw, "focusReason", "focus_reason", "why"), MAX_V1_TEXT_CHARS
         ),
+        response_mode=response_mode if response_mode in V1_RESPONSE_MODES else "none",
         critical_question=critical,
         question=critical,
         candidate_directions=tuple(directions),
-        strategy_tradeoff=_text(raw.get("strategyTradeoff"), MAX_V1_TEXT_CHARS),
-        strategy_ready=bool(raw.get("strategyReady")),
+        strategy_tradeoff=_text(
+            _v1_pick(raw, "strategyTradeoff", "strategy_tradeoff", "tradeoff"),
+            MAX_V1_TEXT_CHARS,
+        ),
+        strategy_ready=bool(
+            _v1_pick(raw, "strategyReady", "strategy_ready", "ready")
+        ),
     )
 
 
