@@ -54,14 +54,18 @@ export function Workbench() {
       ? reasoning.mapVersion
       : 0;
   const switchedArchitectureRef = useRef(0);
+  const urlWorkspace = params.get('workspace');
   useEffect(() => {
     if (architectureVersion <= 0) return;
     if (switchedArchitectureRef.current === architectureVersion) return;
+    // **正在切空间时不要用旧 workspace id 导航。** 只有当前 URL 里的空间与 Provider
+    // 此刻的空间一致时才切视图；否则这个 effect 会把刚到的新空间拽回旧空间的时间线。
+    if (urlWorkspace !== workspaceId) return;
     switchedArchitectureRef.current = architectureVersion;
     if (view !== 'timeline') {
       router.replace(`/workbench?${workspaceParam}&view=timeline`, { scroll: false });
     }
-  }, [architectureVersion, view, router, workspaceParam]);
+  }, [architectureVersion, view, router, workspaceParam, urlWorkspace, workspaceId]);
   return <div className="workbench open-workbench"><div className={`workbench-body ${chatOpen ? '' : 'chat-hidden'}`}><section className="workspace">
     <div className="space-topbar">{!isRootSpace && <button className="icon-button space-back" aria-label="返回上级空间" onClick={() => enterSpace(growth.nodes[spaceId]?.parentId ?? growth.goalId)}><ArrowLeft size={15}/></button>}<div className="view-tabs" role="tablist" aria-label="工作台视图">{tabs.map(({id,label,Icon}) => <button key={id} role="tab" aria-selected={view === id} aria-label={label} className={view === id ? 'selected' : ''} onClick={() => router.replace(`/workbench?${workspaceParam}&view=${id}`, { scroll: false })}><Icon size={15}/><span>{label}</span></button>)}</div>{!chatOpen && <button className="icon-button reopen-chat" aria-label="展开对话" onClick={() => setChatChoice(true)}><PanelRightOpen size={18}/></button>}</div>
     {/* 视图是一个三元表达式,所以**切一下页签,整棵画布子树就被卸载了** —— 这是有意的:
