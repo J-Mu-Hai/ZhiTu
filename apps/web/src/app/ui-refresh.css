@@ -615,3 +615,122 @@
 .cq-impact { overflow-wrap: anywhere; }
 .cq-options { min-width: 0; }
 .cq-option { max-width: 100%; min-width: 0; }
+/* 阶段 9.2:统一 Agent 活动状态条 + 运行记录可用性                       */
+/* ------------------------------------------------------------------ */
+
+/*
+ * 状态条:在浮动标题下方、对话正文上方。覆盖全部 Agent 调用(对话轮与地图轮)。
+ * 静态图标,不新增动画 —— 状态本身已经说明在做什么。
+ */
+.agent-activity {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--line-soft, #dfe9ee);
+  background: color-mix(in srgb, var(--blue, #5e93c7) 7%, var(--surface-panel, #fffefa));
+  color: #315b7a;
+  font-size: 12px;
+}
+.agent-activity-icon { display: inline-flex; color: var(--blue-ink, #2f6da3); }
+.agent-activity-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue, #5e93c7) 18%, transparent);
+}
+.agent-activity-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.agent-activity-starting,
+.agent-activity-running { color: #315b7a; }
+.agent-activity-waiting_long {
+  color: #8a5a1f;
+  background: color-mix(in srgb, var(--experience, #c7a06e) 12%, var(--surface-panel, #fffefa));
+}
+.agent-activity-waiting_long .agent-activity-icon { color: #8a5a1f; }
+.agent-activity-completed {
+  color: #477a6e;
+  background: color-mix(in srgb, var(--research, #61ad9e) 9%, var(--surface-panel, #fffefa));
+}
+.agent-activity-completed .agent-activity-icon { color: #477a6e; }
+.agent-activity-failed {
+  color: #9c5334;
+  background: #fdf2ea;
+}
+.agent-activity-failed .agent-activity-icon { color: #9c5334; }
+.agent-activity-link,
+.agent-activity-retry {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font-size: 11px;
+}
+.agent-activity-close {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  color: inherit;
+}
+.agent-activity-close:hover { background: rgba(0, 0, 0, 0.06); }
+
+/*
+ * 运行记录不可用时的小状态。**不显示正常的“运行记录”图标入口** —— 那会把一次
+ * 404/500/网络错误伪装成可用。
+ */
+.trace-unavailable {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.trace-unavailable-detail,
+.trace-unavailable-retry {
+  padding: 3px 8px;
+  border: 1px solid #e6c9b2;
+  border-radius: 999px;
+  background: #fdf2ea;
+  color: #8a5a3c;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.trace-unavailable-retry {
+  border-color: #cadde7;
+  background: #fff;
+  color: var(--blue-ink, #2f6da3);
+}
+.trace-unavailable-retry:hover { border-color: #9cc0d8; }
+
+/* 抽屉里的脱敏错误详情。只列错误码 / HTTP / 后端地址 / 建议。 */
+.trace-error {
+  padding: 14px;
+  border: 1px solid #f0d8c5;
+  border-radius: var(--radius-card, 14px);
+  background: #fdf6f0;
+  color: #7a4a30;
+}
+.trace-error-title { display: flex; align-items: center; gap: 7px; font-weight: 600; color: #9c5334; }
+.trace-error-meta { margin: 10px 0 0; display: grid; gap: 5px; }
+.trace-error-meta > div { display: flex; gap: 8px; }
+.trace-error-meta dt { width: 72px; flex-shrink: 0; color: #8a6a52; }
+.trace-error-meta dd { margin: 0; color: #5c3a28; overflow-wrap: anywhere; }
+.trace-error-advice { margin-top: 10px; font-size: 12px; line-height: 1.7; color: #7a5a44; }
+.trace-error-retry {
+  margin-top: 10px;
+  padding: 5px 12px;
+  border: 1px solid #e6c9b2;
+  border-radius: 8px;
+  background: #fffefa;
+  color: #8a5a3c;
+  font-size: 12px;
+}

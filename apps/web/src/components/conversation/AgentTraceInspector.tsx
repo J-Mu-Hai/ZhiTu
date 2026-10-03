@@ -2,6 +2,8 @@
 import { useEffect, useState } from 'react';
 import { AlertCircle, Copy, RotateCcw, X } from 'lucide-react';
 import { useDemo } from '@/features/growth/provider';
+import type { TraceAvailability } from '@/features/growth/provider';
+import { API_BASE } from '@/lib/api';
 import type { AgentTraceTurnView } from '@/lib/backend';
 
 /**
@@ -161,8 +163,51 @@ function TurnCard({ turn, workspaceShortId }: { turn: AgentTraceTurnView; worksp
   );
 }
 
+/**
+ * 运行记录不可用时的**脱敏**详情。
+ *
+ * 只展示:错误码、HTTP 状态、后端地址、操作建议。**不展示** token、Authorization、
+ * Cookie、密钥或任何请求体 —— 即使界面处于本地开发,也不把凭据当作“方便排障”的一部分。
+ */
+function TraceUnavailableDetail({
+  availability,
+  onRetry,
+}: {
+  availability: Extract<TraceAvailability, { status: 'unavailable' }>;
+  onRetry: () => void;
+}) {
+  return (
+    <div className="trace-error" role="alert" data-testid="trace-unavailable-detail">
+      <p className="trace-error-title">
+        <AlertCircle size={14} />连接不上运行记录
+      </p>
+      <dl className="trace-error-meta">
+        <div>
+          <dt>错误码</dt>
+          <dd data-testid="trace-error-code">{availability.code}</dd>
+        </div>
+        <div>
+          <dt>HTTP</dt>
+          <dd data-testid="trace-error-status">{availability.httpStatus || '—'}</dd>
+        </div>
+        <div>
+          <dt>后端地址</dt>
+          <dd data-testid="trace-error-api">{API_BASE}</dd>
+        </div>
+      </dl>
+      <p className="trace-error-advice">
+        请确认本地后端已重启（旧进程可能还没有这个接口），然后重试连接。
+      </p>
+      <button type="button" className="trace-error-retry" onClick={onRetry}>
+        重试连接
+      </button>
+    </div>
+  );
+}
+
 export function AgentTraceInspector() {
-  const { trace, traceOpen, traceDisabled, traceError, traceLoading, closeTrace, refreshTrace } = useDemo();
+  const { traceAvailability, traceOpen, closeTrace, refreshTrace } = useDemo();
+  const trace = traceAvailability.status === 'enabled' ? traceAvailability.view : null;
 
   useEffect(() => {
     if (!traceOpen) return;
@@ -196,23 +241,22 @@ export function AgentTraceInspector() {
         </header>
 
         <div className="trace-body">
-          {traceDisabled && (
-            <p className="trace-empty" role="status">本地诊断入口没有开启。</p>
-          )}
-          {!traceDisabled && traceError && (
-            <div className="turn-error" role="alert">
-              <AlertCircle size={14} />
-              <span>{traceError}</span>
-              <button type="button" onClick={() => void refreshTrace()}>重试</button>
-            </div>
-          )}
-          {!traceDisabled && !traceError && traceLoading && !trace && (
+          {traceAvailability.status === 'probing' && (
             <p className="trace-empty" role="status">正在读取运行记录…</p>
           )}
-          {!traceDisabled && trace && trace.turns.length === 0 && (
+          {traceAvailability.status === 'disabled' && (
+            <p className="trace-empty" role="status">本地诊断入口没有开启。</p>
+          )}
+          {traceAvailability.status === 'unavailable' && (
+            <TraceUnavailableDetail
+              availability={traceAvailability}
+              onRetry={() => void refreshTrace()}
+            />
+          )}
+          {traceAvailability.status === 'enabled' && trace && trace.turns.length === 0 && (
             <p className="trace-empty" role="status">还没有运行记录。发一条消息后再看。</p>
           )}
-          {!traceDisabled && trace?.turns.map(turn => (
+          {traceAvailability.status === 'enabled' && trace?.turns.map(turn => (
             <TurnCard key={turn.id} turn={turn} workspaceShortId={trace.workspaceShortId} />
           ))}
         </div>

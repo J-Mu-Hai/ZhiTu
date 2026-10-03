@@ -21,6 +21,184 @@ import type { RelationPayload } from '@/lib/backend';
 import { ApiError, getToken } from '@/lib/api';
 
 /**
+ * 运行记录的**可用性状态机**(阶段 9.2)。
+ *
+ * 之前只有一个 `traceDisabled` 布尔值:初始探测里任何**非** `TRACE_DISABLED` 的失败
+ * (旧后端 404、500、网络不可达、401)都被吞掉,`traceProbed` 照样置真,于是那个
+ * “看起来正常”的入口仍然显示 —— 用户点开才看到一句泛化的“请求失败”。
+ *
+ * 现在拆成四态:只有 `enabled` 才显示正常入口;`unavailable` 显示可理解的小状态与
+ * 脱敏错误详情。
+ */
+export type TraceAvailability =
+  | { status: 'probing' }
+  | { status: 'enabled'; view: backend.AgentTraceView }
+  | { status: 'disabled' }
+  | { status: 'unavailable'; code: string; httpStatus: number; message: string };
+
+/** 一次正在进行的 Agent 调用。 */
+export type AgentActivity = { trigger: string; label: string; startedAt: number };
+
+/** 最近一次 Agent 调用的终态结论。 */
+export type AgentOutcome = {
+  trigger: string;
+  status: 'completed' | 'failed' | 'timed_out';
+  terminalCode: string | null;
+  safeSummary: string | null;
+  retryable: boolean;
+  /** 对应的服务端 turn(可能还没轮询到)。 */
+  turnId: string | null;
+};
+
+/** 界面上那一条持续可见的 Agent 状态。 */
+export type AgentLiveStatus = {
+  tone: 'starting' | 'running' | 'waiting_long' | 'completed' | 'failed';
+  text: string;
+  /** 终态失败时是否可关闭。 */
+  closable: boolean;
+  /** 服务端是否允许重试。 */
+  retryable: boolean;
+  trigger: string;
+};
+
+/** 启动文案。**“正在启动”不是伪造进度**:请求已发出、轨迹还没落库时只能说这个。 */
+const AGENT_ACTIVITY_LABELS: Record<string, string> = {
+  user_message: '正在启动目标分析…',
+  reanalyze: '正在启动节点分析…',
+  question_answered: '正在启动目标分析…',
+  space_entered: '正在启动目标分析…',
+  regenerate_roadmap: '正在启动路线重生成…',
+  strategy_confirmation: '正在确认战略…',
+  refine: '正在启动阶段细化…',
+  retry: '正在重试…',
+  node_selected: '正在启动目标分析…',
+  progress_update: '正在启动目标分析…',
+  execution_planning: '正在启动阶段细化…',
+};
+
+/** 步骤 -> 文案。与服务端 `current_step` 一一对应。 */
+const AGENT_STEP_TEXT: Record<string, string> = {
+  queued: '正在准备上下文…',
+  resolving_context: '正在准备上下文…',
+  waiting_model: '正在等待模型响应',
+  running_tool: '正在执行工具…',
+  retrying: '正在校验路线结构…',
+  validating_output: '正在校验路线结构…',
+  persisting: '正在写入战略草案…',
+  completed: '已完成',
+  failed: '这一轮没有完成',
+  timed_out: '模型响应超时',
+  cancelled: '已取消',
+  unavailable: '正在处理…',
+};
+
+function outcomeOfTurn(turn: backend.AgentTraceTurnView): AgentOutcome {
+  return {
+    trigger: turn.trigger,
+    status:
+      turn.status === 'completed' ? 'completed' : turn.status === 'timed_out' ? 'timed_out' : 'failed',
+    terminalCode: turn.terminalCode,
+    safeSummary: turn.safeSummary,
+    retryable: turn.retryable,
+    turnId: turn.id,
+  };
+}
+
+/**
+ * 基线之后**最新**的那条 turn。
+ *
+ * 轨迹按时间倒序。基线是本次调用开始前最新的一条;`turns[0]` 与它相同就说明还没有
+ * 新的 turn;不同则 `turns[0]` 就是新的。**不能**用 `find(id !== baseline)` —— 那会
+ * 抓到一条更旧的 turn,把上一次的终态当成这一次的结论。
+ */
+function newestTurnAfter(
+  view: backend.AgentTraceView | null,
+  baselineId: string | null,
+): backend.AgentTraceTurnView | null {
+  if (!view || view.turns.length === 0) return null;
+  if (baselineId == null) return view.turns[0];
+  return view.turns[0].id === baselineId ? null : view.turns[0];
+}
+
+/** HTTP 失败(网络/401/404/500…)-> 终态结论。**只用后端给的可读文案,不编。** */
+function outcomeOfError(trigger: string, error: ApiError | null): AgentOutcome {
+  return {
+    trigger,
+    status: 'failed',
+    terminalCode: error?.code ?? 'NETWORK_UNREACHABLE',
+    safeSummary: error?.message ?? '这一轮没有完成。',
+    retryable: error ? error.retryable : true,
+    turnId: null,
+  };
+}
+
+/** 请求成功返回,但 result 说明这一轮降级/失败时的兜底结论。 */
+function outcomeOfFailure(
+  trigger: string,
+  opts: {
+    failed?: boolean;
+    degradedReason?: string | null;
+    retryable?: boolean;
+    code?: string;
+    summary?: string | null;
+  },
+): AgentOutcome {
+  const timedOut = opts.degradedReason === 'MODEL_TIMEOUT';
+  if (opts.failed || timedOut) {
+    return {
+      trigger,
+      status: timedOut ? 'timed_out' : 'failed',
+      terminalCode: opts.code ?? opts.degradedReason ?? 'MODEL_UNAVAILABLE',
+      safeSummary: opts.summary ?? null,
+      retryable: Boolean(opts.retryable),
+      turnId: null,
+    };
+  }
+  return {
+    trigger,
+    status: 'completed',
+    terminalCode: 'COMPLETED',
+    safeSummary: null,
+    retryable: false,
+    turnId: null,
+  };
+}
+
+/** 从真实的步骤与**服务端**等待秒数拼出状态文案。 */
+function liveStatusOfTurn(turn: backend.AgentTraceTurnView): AgentLiveStatus {
+  if (turn.currentStep === 'waiting_model') {
+    const seconds = turn.waitingSeconds;
+    return {
+      tone: turn.waitingTooLong ? 'waiting_long' : 'running',
+      text: `${turn.waitingTooLong ? '仍在等待模型响应' : '正在等待模型响应'}${seconds != null ? ` · 已 ${seconds} 秒` : ''}`,
+      closable: false,
+      retryable: false,
+      trigger: turn.trigger,
+    };
+  }
+  return {
+    tone: 'running',
+    text: AGENT_STEP_TEXT[turn.currentStep] ?? '正在处理…',
+    closable: false,
+    retryable: false,
+    trigger: turn.trigger,
+  };
+}
+
+function terminalStatusOfOutcome(outcome: AgentOutcome): AgentLiveStatus {
+  if (outcome.status === 'completed') {
+    return { tone: 'completed', text: '已完成', closable: false, retryable: false, trigger: outcome.trigger };
+  }
+  return {
+    tone: 'failed',
+    text: outcome.safeSummary ?? '这一轮没有完成，可以查看运行记录。',
+    closable: true,
+    retryable: outcome.retryable,
+    trigger: outcome.trigger,
+  };
+}
+
+/**
  * 成长空间状态。
  *
  * ## 现在只有一种空间:真实空间
@@ -396,21 +574,23 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
   );
 
   /**
-   * 运行记录(本地诊断)。
+   * 运行记录(本地诊断)的**可用性状态机**。
    *
-   * - `trace`: 服务端脱敏投影。**不是思维链** —— 只有步骤、耗时、工具摘要与
-   *   可读终态原因。见 `backend/contracts/trace.py`。
-   * - `traceOpen`: 抽屉是否打开。
-   * - `traceDisabled`: 服务端没有开启这个入口(生产默认关)。为真时按钮整块不渲染。
-   * - `traceProbed`: 已经问过一次服务端"这里能不能用";问之前不显示入口,避免
-   *   在生产环境闪一下再消失。
+   * 只有 `enabled` 才显示正常的“运行记录”入口;`disabled` = 服务端关闭,不显示;
+   * `unavailable` = 旧后端/网络/鉴权等失败,显示“运行记录暂不可用 · 重试连接”。
    */
-  const [trace, setTrace] = useState<backend.AgentTraceView | null>(null);
+  const [traceAvailability, setTraceAvailability] = useState<TraceAvailability>({ status: 'probing' });
   const [traceOpen, setTraceOpen] = useState(false);
-  const [traceLoading, setTraceLoading] = useState(false);
-  const [traceDisabled, setTraceDisabled] = useState(false);
-  const [traceProbed, setTraceProbed] = useState(false);
-  const [traceError, setTraceError] = useState<string | null>(null);
+  /** 最新一份轨迹。给异步回调读,不让它们读到旧 state。 */
+  const traceViewRef = useRef<backend.AgentTraceView | null>(null);
+
+  /** 正在进行的 Agent 调用(可能嵌套:回答 + 随后的地图重评)。 */
+  const [agentActivity, setAgentActivity] = useState<AgentActivity | null>(null);
+  /** 最近一次 Agent 终态结论。`completed` 短暂展示;`failed`/`timed_out` 保留到用户关闭。 */
+  const [agentOutcome, setAgentOutcome] = useState<AgentOutcome | null>(null);
+  /** 用户关掉状态条后,在**下一次** Agent 调用之前不再显示它。 */
+  const [agentDismissed, setAgentDismissed] = useState(false);
+  const activityRef = useRef<{ count: number; baselineTurnId: string | null }>({ count: 0, baselineTurnId: null });
 
   // 只存属于浏览器的三样(见 `LocalPrefs`)。计划与消息都在后端,不在这里。
   useEffect(() => {
@@ -480,32 +660,39 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
   }, [space.id]);
 
   /**
-   * 只读地重拉运行轨迹。
+   * 只读地重拉运行轨迹,并更新**可用性状态**。
    *
-   * **开关关闭时把它当成"这个入口不存在"** —— 设 `traceDisabled` 而不是报错。
-   * 生产环境默认关闭,普通用户不该看到一个坏掉的诊断面板。
+   * - 成功 -> `enabled`;
+   * - `TRACE_DISABLED` -> `disabled`(服务端关掉了这个入口,不显示);
+   * - 其余任何失败(旧后端 404、500、网络不可达、401)-> `unavailable`,
+   *   **绝不显示成“看似可用”的正常入口**。
+   *
+   * 用户点“重试连接”会再调它;成功后自动回 `enabled`。
    */
-  const refreshTrace = useCallback(async () => {
-    if (!isReal) return null;
-    setTraceLoading(true);
+  const refreshTrace = useCallback(async (): Promise<boolean> => {
+    if (!isReal) {
+      setTraceAvailability({ status: 'disabled' });
+      return false;
+    }
     try {
       const view = await backend.getAgentTrace(space.id);
-      setTrace(view);
-      setTraceDisabled(false);
-      setTraceError(null);
-      return view;
+      traceViewRef.current = view;
+      setTraceAvailability({ status: 'enabled', view });
+      return true;
     } catch (cause) {
-      setTrace(null);
+      traceViewRef.current = null;
       if (cause instanceof ApiError && cause.code === 'TRACE_DISABLED') {
-        setTraceDisabled(true);
-        setTraceError(null);
+        setTraceAvailability({ status: 'disabled' });
       } else {
-        setTraceError(cause instanceof ApiError ? cause.message : '读取运行记录失败。');
+        const error = cause instanceof ApiError ? cause : null;
+        setTraceAvailability({
+          status: 'unavailable',
+          code: error?.code ?? 'NETWORK_UNREACHABLE',
+          httpStatus: error?.status ?? 0,
+          message: error?.message ?? '读取运行记录失败。',
+        });
       }
-      return null;
-    } finally {
-      setTraceLoading(false);
-      setTraceProbed(true);
+      return false;
     }
   }, [isReal, space.id]);
 
@@ -516,38 +703,131 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
   const closeTrace = useCallback(() => setTraceOpen(false), []);
 
   /**
+   * 开始一次 Agent 调用。**立即**显示“正在启动”——此时服务端轨迹可能还没落库。
+   *
+   * 嵌套调用(例如回答问题后紧跟一轮地图重评)只记一次基线:第一个开始时记下
+   * “之前最新的一条 turn”,全部结束时再看有没有**更新的**终态。
+   */
+  const beginAgentActivity = useCallback((trigger: string, label: string) => {
+    if (activityRef.current.count === 0) {
+      activityRef.current.baselineTurnId = traceViewRef.current?.turns[0]?.id ?? null;
+    }
+    activityRef.current.count += 1;
+    setAgentOutcome(null);
+    setAgentDismissed(false);
+    setAgentActivity({ trigger, label, startedAt: Date.now() });
+  }, []);
+
+  /**
+   * 结束一次 Agent 调用。**终态以服务端轨迹为准**:如果基线之后出现了新的终态 turn,
+   * 用它;否则用调用方给的降级/错误兜底。
+   */
+  const finishAgentActivity = useCallback((fallback: AgentOutcome) => {
+    activityRef.current.count = Math.max(0, activityRef.current.count - 1);
+    if (activityRef.current.count > 0) return;
+    const baseline = activityRef.current.baselineTurnId;
+    setAgentActivity(null);
+    const turn = newestTurnAfter(traceViewRef.current, baseline);
+    setAgentOutcome(turn?.terminal ? outcomeOfTurn(turn) : fallback);
+  }, []);
+
+  const dismissAgentStatus = useCallback(() => {
+    setAgentOutcome(null);
+    // 即使那一轮请求还在飞,关掉之后也不再从轨迹里重新推导终态 —— 直到下一次调用。
+    setAgentDismissed(true);
+  }, []);
+
+  /** `completed` 短暂展示后自动收掉,不常驻一句“已完成”。 */
+  useEffect(() => {
+    if (agentOutcome?.status !== 'completed') return;
+    const timer = setTimeout(() => setAgentOutcome(null), 2500);
+    return () => clearTimeout(timer);
+  }, [agentOutcome]);
+
+  /**
    * 进入真实空间时探一次服务端开关。
    *
-   * 只问一次,而且**在显示入口之前**问 —— 生产环境默认关闭时不会先闪一个按钮。
+   * **在显示入口之前**探,且区分“关闭”与“不可用”——后者不显示正常入口。
    */
   useEffect(() => {
-    if (!isReal) return;
+    if (!isReal) {
+      setTraceAvailability({ status: 'disabled' });
+      return;
+    }
     let cancelled = false;
+    setTraceAvailability({ status: 'probing' });
     backend.getAgentTrace(space.id)
       .then(view => {
         if (cancelled) return;
-        setTrace(view);
-        setTraceDisabled(false);
+        traceViewRef.current = view;
+        setTraceAvailability({ status: 'enabled', view });
       })
       .catch(cause => {
         if (cancelled) return;
-        if (cause instanceof ApiError && cause.code === 'TRACE_DISABLED') setTraceDisabled(true);
-      })
-      .finally(() => { if (!cancelled) setTraceProbed(true); });
+        traceViewRef.current = null;
+        if (cause instanceof ApiError && cause.code === 'TRACE_DISABLED') {
+          setTraceAvailability({ status: 'disabled' });
+        } else {
+          const error = cause instanceof ApiError ? cause : null;
+          setTraceAvailability({
+            status: 'unavailable',
+            code: error?.code ?? 'NETWORK_UNREACHABLE',
+            httpStatus: error?.status ?? 0,
+            message: error?.message ?? '读取运行记录失败。',
+          });
+        }
+      });
     return () => { cancelled = true; };
   }, [isReal, space.id]);
 
   /**
-   * 有一个 turn 在跑时才轮询,终态一到就停。
+   * 轮询条件(阶段 9.2):**抽屉打开,或有 Agent 正在跑,或服务端有 running turn。**
+   * 不再只在抽屉打开时轮询 —— 自动地图轮也要有持续可见的状态。
    *
-   * **不靠动画制造"还在工作"的错觉** —— 每 3 秒读一次服务端真实状态,停了就是停了。
+   * 有请求在飞时快一点(1.5s),其余 3s;条件不成立时**完全停止**,不无限转圈。
    */
-  const traceHasRunningTurn = Boolean(trace?.turns.some(turn => turn.status === 'running'));
+  const agentInFlight = agentActivity !== null;
+  const traceHasRunningTurn =
+    traceAvailability.status === 'enabled' &&
+    traceAvailability.view.turns.some(turn => turn.status === 'running');
   useEffect(() => {
-    if (!traceOpen || !traceHasRunningTurn || !isReal) return;
-    const timer = setInterval(() => { void refreshTrace(); }, 3000);
+    if (!isReal) return;
+    if (!traceOpen && !agentInFlight && !traceHasRunningTurn) return;
+    const interval = agentInFlight ? 1500 : 3000;
+    const timer = setInterval(() => { void refreshTrace(); }, interval);
     return () => clearInterval(timer);
-  }, [traceOpen, traceHasRunningTurn, isReal, refreshTrace]);
+  }, [traceOpen, agentInFlight, traceHasRunningTurn, isReal, refreshTrace]);
+
+  /**
+   * 界面上那一条持续可见的 Agent 状态。
+   *
+   * 优先级:请求在飞 -> 用基线之后的新 turn(没有就说“正在启动”);
+   * 否则用服务端最近的 running turn;再否则用最近一次终态结论。
+   */
+  const agentStatus = useMemo<AgentLiveStatus | null>(() => {
+    if (agentDismissed) return null;
+    const view = traceAvailability.status === 'enabled' ? traceAvailability.view : null;
+    const running = view?.turns.find(turn => turn.status === 'running') ?? null;
+    if (agentActivity) {
+      // **服务端说有一个 turn 在跑,就展示它。** 同一时刻最多一个 running turn;
+      // 不能用“基线之后的新 turn”把它挡掉 —— 真实系统里那条行在建好后原地更新,
+      // 它的 id 可能一直没变。
+      if (running) return liveStatusOfTurn(running);
+      const baseline = activityRef.current.baselineTurnId;
+      const turn = newestTurnAfter(view, baseline);
+      if (turn?.terminal) return terminalStatusOfOutcome(outcomeOfTurn(turn));
+      return {
+        tone: 'starting',
+        text: agentActivity.label,
+        closable: false,
+        retryable: false,
+        trigger: agentActivity.trigger,
+      };
+    }
+    if (running) return liveStatusOfTurn(running);
+    if (agentOutcome) return terminalStatusOfOutcome(agentOutcome);
+    return null;
+  }, [traceAvailability, agentActivity, agentDismissed, agentOutcome]);
 
   /** 自动梳理只飞一趟 —— 初始进入、点进子空间、计划刷新都可能触发它。 */
   const reasoningInFlight = useRef(false);
@@ -567,17 +847,31 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
       const needsExplore =
         Boolean(options.retry) || view.sessionId === null || view.status === 'failed' || view.status === 'idle';
       if (!needsExplore) return view;
-      const response = await backend.runAgentTurn(space.id, {
-        trigger: options.retry ? 'retry' : 'space_entered',
-        // 服务端还比对 `input_version`;这把钥匙只负责“同一份内容重试不重复跑”。
-        idempotencyKey: options.retry
-          ? `retry:${crypto.randomUUID()}`
-          : `enter:${space.id}:${view.inputVersion ?? 'first'}`,
-      });
-      setReasoning(response.reasoning);
-      if (response.message) setMessages((old) => [...old, toMessage(response.message as backend.MessageView)]);
-      if (response.question) await refreshQuestions().catch(() => undefined);
-      return response.reasoning;
+      const trigger = options.retry ? 'retry' : 'space_entered';
+      beginAgentActivity(trigger, AGENT_ACTIVITY_LABELS.space_entered);
+      try {
+        const response = await backend.runAgentTurn(space.id, {
+          trigger,
+          // 服务端还比对 `input_version`;这把钥匙只负责“同一份内容重试不重复跑”。
+          idempotencyKey: options.retry
+            ? `retry:${crypto.randomUUID()}`
+            : `enter:${space.id}:${view.inputVersion ?? 'first'}`,
+        });
+        setReasoning(response.reasoning);
+        if (response.message) setMessages((old) => [...old, toMessage(response.message as backend.MessageView)]);
+        if (response.question) await refreshQuestions().catch(() => undefined);
+        finishAgentActivity(
+          outcomeOfFailure(trigger, {
+            failed: response.degraded || response.reasoning.status === 'failed',
+            degradedReason: response.degradedReason,
+            retryable: response.retryable,
+          }),
+        );
+        return response.reasoning;
+      } catch (cause) {
+        finishAgentActivity(outcomeOfError(trigger, cause instanceof ApiError ? cause : null));
+        throw cause;
+      }
     } catch (cause) {
       setSendError(cause instanceof ApiError ? cause.message : '目标梳理没有完成,稍后可以重试。');
       return reasoning;
@@ -585,11 +879,13 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
       reasoningInFlight.current = false;
       setReasoningLoading(false);
     }
-  }, [isReal, reasoning, refreshQuestions, space.id]);
+  }, [beginAgentActivity, finishAgentActivity, isReal, reasoning, refreshQuestions, space.id]);
 
   /** 显式 Agent turn:节点讨论 / 自动分析 / 展开 / 暂缓 / 标记完成 / 战略确认。 */
   const agentTurn = useCallback(
     async (payload: Omit<backend.AgentTurnRequest, 'idempotencyKey'> & { idempotencyKey?: string }) => {
+      const trigger = payload.trigger;
+      beginAgentActivity(trigger, AGENT_ACTIVITY_LABELS[trigger] ?? AGENT_ACTIVITY_LABELS.user_message);
       try {
         const response = await backend.runAgentTurn(space.id, {
           ...payload,
@@ -600,14 +896,21 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
         if (response.proposalErrors.length) setProposalErrors(response.proposalErrors);
         await refreshQuestions().catch(() => undefined);
         await refreshProposals().catch(() => undefined);
-        if (traceOpen) void refreshTrace();
+        finishAgentActivity(
+          outcomeOfFailure(trigger, {
+            failed: response.degraded || response.reasoning.status === 'failed',
+            degradedReason: response.degradedReason,
+            retryable: response.retryable,
+          }),
+        );
         return response;
       } catch (cause) {
         setSendError(cause instanceof ApiError ? cause.message : '这一步没有完成,请重试。');
+        finishAgentActivity(outcomeOfError(trigger, cause instanceof ApiError ? cause : null));
         return null;
       }
     },
-    [refreshProposals, refreshQuestions, refreshTrace, space.id, traceOpen],
+    [beginAgentActivity, finishAgentActivity, refreshProposals, refreshQuestions, space.id],
   );
 
   /** 用户编辑地图节点的标题 / 原文。**只改这两列**,Agent 之后不再覆盖标题。 */
@@ -629,6 +932,7 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     if (refining) return;
     setRefining(true);
     setSendError(null);
+    beginAgentActivity('refine', AGENT_ACTIVITY_LABELS.refine);
     try {
       const result = await backend.refineStrategy(space.id);
       setMessages((old) => [
@@ -641,12 +945,20 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
       setInputChanged(result.inputChanged);
       await refreshProposals();
       await refreshQuestions();
+      finishAgentActivity(
+        outcomeOfFailure('refine', {
+          failed: result.degraded,
+          degradedReason: result.degradedReason,
+          retryable: result.retryable,
+        }),
+      );
     } catch (cause) {
       setSendError(cause instanceof ApiError ? cause.message : '细化没有完成,请重试。');
+      finishAgentActivity(outcomeOfError('refine', cause instanceof ApiError ? cause : null));
     } finally {
       setRefining(false);
     }
-  }, [refining, refreshProposals, refreshQuestions, space.id]);
+  }, [beginAgentActivity, finishAgentActivity, refining, refreshProposals, refreshQuestions, space.id]);
 
   // 计划第一次到达(或换空间)时自动梳理一次问题地图。**幂等由服务端保证** ——
   // 这个 effect 多跑几次不会重复建节点。依赖里不带 `ensureReasoningMap`(它依赖
@@ -1610,6 +1922,7 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     // 上一轮的校验错误不再"当前"。留在屏幕上的话,用户发完新的一句会以为
     // **这一轮**又没通过 —— 而它其实是上一轮的陈旧内容。
     setProposalErrors([]);
+    beginAgentActivity('user_message', AGENT_ACTIVITY_LABELS.user_message);
 
     // 用户的话先上屏。后端是先落库再调模型的,所以这条气泡背后的那一行一定存在,
     // 哪怕模型超时 —— 这正是"模型失败不能丢掉用户输入"在界面上的样子。
@@ -1650,12 +1963,20 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
       await refreshProposals();
       // 也可能提了一个问题。与提案一样,从服务端重新拉。
       await refreshQuestions();
+      finishAgentActivity(
+        outcomeOfFailure('user_message', {
+          failed: result.degraded,
+          degradedReason: result.degradedReason,
+          retryable: result.retryable,
+        }),
+      );
     } catch (cause) {
       const error = cause instanceof ApiError ? cause : null;
       setMessages(old => old.map(m => m.id === optimisticId ? { ...m, pending: false, failed: true } : m));
       setSendError(error?.message ?? '发送失败。');
       setRetryable(error ? error.retryable : true);
       setLastFailed({ clientMessageId, text });
+      finishAgentActivity(outcomeOfError('user_message', error));
     } finally {
       setSending(false);
       if (traceOpen) void refreshTrace();
@@ -1679,6 +2000,7 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     setSendError(null);
     setRetryable(false);
     setProposalErrors([]);
+    beginAgentActivity('reanalyze', AGENT_ACTIVITY_LABELS.reanalyze);
     try {
       const result = await backend.refreshAnalysis(space.id, nodeId);
       setMessages(old => [
@@ -1692,12 +2014,20 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
       setLastFailed(null);
       await refreshProposals();
       await refreshQuestions();
+      finishAgentActivity(
+        outcomeOfFailure('reanalyze', {
+          failed: result.degraded,
+          degradedReason: result.degradedReason,
+          retryable: result.retryable,
+        }),
+      );
     } catch (cause) {
       // 失败要**说出来**。一次"点了没反应"的重新分析会被读成"已经分析过了,
       // 内容没变" —— 而真实情况是这次压根没问到模型。
       const error = cause instanceof ApiError ? cause : null;
       setSendError(error?.message ?? '重新分析失败。');
       setRetryable(error ? error.retryable : true);
+      finishAgentActivity(outcomeOfError('reanalyze', error));
     } finally {
       setSending(false);
     }
@@ -1725,6 +2055,7 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     setQuestions(old =>
       old.map(q => (q.id === questionId ? { ...q, status: 'investigating' } : q)),
     );
+    beginAgentActivity('question_answered', AGENT_ACTIVITY_LABELS.question_answered);
     try {
       const result = await backend.answerQuestion(space.id, questionId, {
         selectedOptionIds: payload.selectedOptionIds,
@@ -1746,6 +2077,13 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
       }
       // 后续模型可能又提了新问题;列表以服务端为准。
       await refreshQuestions();
+      finishAgentActivity(
+        outcomeOfFailure('question_answered', {
+          failed: result.turn ? result.turn.degraded : false,
+          degradedReason: result.turn ? result.turn.degradedReason : null,
+          retryable: result.turn ? result.turn.retryable : false,
+        }),
+      );
       if (traceOpen) void refreshTrace();
       // 如果问题挂在地图节点上,让推理地图也跟着增量重评(状态、摘要、焦点)。
       const reasoningNodeId = result.question.reasoningNodeId;
@@ -1767,6 +2105,7 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
       if (!(cause instanceof ApiError && cause.code === 'QUESTION_NOT_ANSWERABLE')) {
         setSendError(cause instanceof ApiError ? cause.message : '回答失败,请重试。');
       }
+      finishAgentActivity(outcomeOfError('question_answered', cause instanceof ApiError ? cause : null));
       await refreshQuestions().catch(() => undefined);
       return false;
     }
@@ -1831,6 +2170,26 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     if (traceOpen) void refreshTrace();
   }
 
+  /**
+   * 从状态条上重试最近一次失败的 Agent turn。
+   *
+   * 只在服务端 `retryable` 为真时才会被渲染出来。沿用既有幂等路径:能定位到那条
+   * turn 就走 `retryTraceTurn`,否则对话轮重发,地图轮走 `trigger: retry`。
+   */
+  async function retryAgentFailure() {
+    const view = traceAvailability.status === 'enabled' ? traceAvailability.view : null;
+    const turn = view?.turns.find(item => item.id === agentOutcome?.turnId) ?? null;
+    if (turn?.retryable) {
+      await retryTraceTurn(turn);
+      return;
+    }
+    if (lastFailed) {
+      await retry();
+      return;
+    }
+    await agentTurn({ trigger: 'retry' });
+  }
+
   return { growth, workspaceId: space.id, isRealSpace: space.kind === 'real', apply, selectedId, select, messages, send, retry, sending, sendError, retryable, brief, historyLoading, messagesTruncated, positions,
     // 计划。`revisionVersion` 是"你眼前这份是第几版" —— 界面上比对提案的
     // `baseRevisionVersion` 用它,能在发请求**之前**发现"你看的那份已经旧了"。
@@ -1843,9 +2202,9 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     // 问题节点。与提案分开:问题落库即成卡片,不需要确认;回答后模型提的变更
     // 仍然进 `remoteProposals`,仍然要用户点确认。
     questions, submitAnswer, dismissQuestion, postponeQuestion, questionFocus, focusQuestion,
-    // 运行记录(本地诊断)。`traceProbed` 为真且 `traceDisabled` 为假时才显示入口。
-    trace, traceOpen, traceProbed, traceDisabled, traceError, traceLoading,
-    openTrace, closeTrace, refreshTrace, retryTraceTurn,
+    // 运行记录(本地诊断):四态可用性 + 统一 Agent 活动状态。
+    traceAvailability, traceOpen, openTrace, closeTrace, refreshTrace, retryTraceTurn,
+    agentStatus, dismissAgentStatus, retryAgentFailure,
     // 目标推理地图。与业务计划、问题都分开;进入空间会自动梳理一次(幂等)。
     reasoning, reasoningLoading, ensureReasoningMap, refreshReasoning, agentTurn, editReasoningNode,
     refineStrategy, refining,

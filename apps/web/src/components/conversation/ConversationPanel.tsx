@@ -178,7 +178,7 @@ function ProposalErrorNotice({ errors }: { errors: { code: string; message: stri
  * 被"截止时间/每周投入"干扰。`replan` 入口只在**已确认战略 + 存在执行计划**时才出现。
  */
 export function ConversationPanel() {
-  const { growth, selectedId, select, messages, remoteProposals, proposalErrors, inputChanged, deciding, confirmRemote, rejectRemote, replan, replanState, send, retry, sending, sendError, retryable, historyLoading, messagesTruncated, spaceId, questions, focusQuestion, openTrace, traceProbed, traceDisabled } = useDemo();
+  const { growth, selectedId, select, messages, remoteProposals, proposalErrors, inputChanged, deciding, confirmRemote, rejectRemote, replan, replanState, send, retry, sending, sendError, retryable, historyLoading, messagesTruncated, spaceId, questions, focusQuestion, openTrace, traceAvailability } = useDemo();
   const [input, setInput] = useState('');
   const [showContexts, setShowContexts] = useState(false);
   /** 输入框的 DOM 元素。高度按内容算(见下面那个 effect)。 */
@@ -414,7 +414,7 @@ export function ConversationPanel() {
           <div className="turn-error turn-error-compact" role="status">
             <AlertCircle size={14} />
             <span>本轮未应用：信息已更新</span>
-            {traceProbed && !traceDisabled ? (
+            {traceAvailability.status === 'enabled' ? (
               <button type="button" className="turn-error-toggle" onClick={openTrace}>查看运行记录</button>
             ) : (
               <span>，请到节点的「AI 分析」里重新分析</span>

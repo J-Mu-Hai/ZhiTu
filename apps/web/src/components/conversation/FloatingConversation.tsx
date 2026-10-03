@@ -2,6 +2,7 @@
 import { useRef, useState } from 'react';
 import { Grip, X, ScrollText } from 'lucide-react';
 import { ConversationPanel } from './ConversationPanel';
+import { AgentActivityBar } from './AgentActivityBar';
 import { useDemo } from '@/features/growth/provider';
 
 /**
@@ -29,11 +30,13 @@ import { useDemo } from '@/features/growth/provider';
  */
 export function FloatingConversation({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [offset, setOffset] = useState({x:0,y:0});
-  const { sending, openTrace, traceProbed, traceDisabled, trace } = useDemo();
-  const traceRunning = Boolean(trace?.turns.some(turn => turn.status === 'running'));
-  const traceFailed = Boolean(trace?.turns.some(turn => turn.status === 'failed' || turn.status === 'timed_out'));
-  // 服务端开关关闭时**整块不渲染** —— 一个永远打不开的按钮比没有更坏。
-  const showTrace = traceProbed && !traceDisabled;
+  const { sending, openTrace, traceAvailability, refreshTrace } = useDemo();
+  const traceView = traceAvailability.status === 'enabled' ? traceAvailability.view : null;
+  const traceRunning = Boolean(traceView?.turns.some(turn => turn.status === 'running'));
+  const traceFailed = Boolean(traceView?.turns.some(turn => turn.status === 'failed' || turn.status === 'timed_out'));
+  // 只有“可用”才显示正常入口;关闭时整块不渲染;不可用时显示可理解的小状态。
+  const traceAvailable = traceAvailability.status === 'enabled';
+  const traceUnavailable = traceAvailability.status === 'unavailable';
   const drag = useRef<{x:number;y:number;left:number;top:number}|null>(null);
   return <div className="conversation-overlay" hidden={!open}>
     <section className="floating-conversation" aria-label="浮动对话卡片群" style={{transform:`translate(${offset.x}px, ${offset.y}px)`}}>
@@ -44,7 +47,7 @@ export function FloatingConversation({ open, onClose }: { open: boolean; onClose
             正在思考…
           </span>
         )}
-        {showTrace && (
+        {traceAvailable && (
           <button
             type="button"
             className="icon-button trace-entry"
@@ -58,7 +61,18 @@ export function FloatingConversation({ open, onClose }: { open: boolean; onClose
             {!traceRunning && traceFailed && <span className="trace-dot trace-dot-error" aria-hidden="true" />}
           </button>
         )}
+        {traceUnavailable && (
+          <span className="trace-unavailable" data-testid="trace-unavailable">
+            <button type="button" className="trace-unavailable-detail" onClick={openTrace}>
+              运行记录暂不可用
+            </button>
+            <button type="button" className="trace-unavailable-retry" onClick={() => void refreshTrace()}>
+              重试连接
+            </button>
+          </span>
+        )}
         <button className="icon-button" aria-label="让对话内容消失" onClick={onClose}><X size={15}/></button></div>
+      <AgentActivityBar/>
       <ConversationPanel/>
     </section>
   </div>;
