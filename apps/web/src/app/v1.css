@@ -109,6 +109,103 @@
   color: var(--blue-ink, #2f6da3);
 }
 
+/* ================================================================== */
+/* P2.2.1:Stage 1“思考模式”的右侧面板空间策略                       */
+/*                                                                     */
+/* 战略判断 + 候选方向 + 节点详情 + 对话输入都挤在一个普通短对话面板里 */
+/* 会把输入框顶出屏幕。这里给它更宽、更高的一档,并保证:               */
+/*   头部固定、消息/行动区独立滚动、输入区始终固定在底部。             */
+/* 只作用于 `.v1-thinking`,普通非 V1 对话尺寸不变。                    */
+/* ================================================================== */
+
+/* 桌面端:明显更宽(560–640px);画布同步让出空间,不被遮挡到不可操作。 */
+.open-workbench .workbench-body.v1-thinking .workspace {
+  padding-right: clamp(560px, 46vw, 640px);
+}
+.workbench-body.v1-thinking .conversation-overlay {
+  width: clamp(560px, 46vw, 640px);
+  top: 0;
+  bottom: 0;
+}
+.workbench-body.v1-thinking .floating-conversation {
+  inset: 10px 16px 14px 12px;
+}
+
+/* flex column + min-height:0:内容再多也不能把输入框挤出去。 */
+.workbench-body.v1-thinking .floating-conversation .conversation-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* 中间区独立滚动(消息 + Stage 1 行动区)。 */
+.workbench-body.v1-thinking .floating-conversation .conversation-history {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 14px;
+}
+/* 输入区固定在底部,始终可见;不因上方内容变高。 */
+.workbench-body.v1-thinking .floating-conversation .composer-area {
+  flex-shrink: 0;
+  position: static;
+  padding-top: 8px;
+}
+
+/* Stage 1 行动区:在滚动区里,卡片完整可见、可点。 */
+.v1-stage1 {
+  display: grid;
+  gap: 12px;
+  margin: 12px 0 4px;
+}
+.v1-stage1 > :first-child {
+  margin-top: 0;
+}
+.workbench-body.v1-thinking .v1-thesis,
+.workbench-body.v1-thinking .v1-directions,
+.workbench-body.v1-thinking .v1-goal-confirm,
+.workbench-body.v1-thinking .v1-conversation-question,
+.workbench-body.v1-thinking .v1-plan-actions,
+.workbench-body.v1-thinking .v1-strategy-card,
+.workbench-body.v1-thinking .v1-status {
+  margin-left: 0;
+  margin-right: 0;
+}
+/* 候选卡:整张可点、状态清晰。 */
+.v1-stage1 .v1-directions > button {
+  width: 100%;
+  cursor: pointer;
+  pointer-events: auto;
+}
+.v1-stage1 .v1-directions > button:disabled {
+  cursor: progress;
+  opacity: 0.7;
+}
+.v1-directions-status {
+  font-size: 11px;
+  color: var(--muted, #6f8293);
+}
+
+/* 窄屏:思考模式改成覆盖画布的大抽屉,不压缩到不可读。 */
+@media (max-width: 720px) {
+  .open-workbench .workbench-body.v1-thinking .workspace {
+    padding-right: 0;
+  }
+  .workbench-body.v1-thinking .conversation-overlay {
+    left: 0;
+    right: 0;
+    top: auto;
+    bottom: 0;
+    width: auto;
+    height: min(80dvh, 720px);
+    background: #f6f9fced;
+    backdrop-filter: blur(10px);
+  }
+  .workbench-body.v1-thinking .floating-conversation {
+    inset: 0;
+  }
+}
+
 /* ---- V1(P2.2):分析节点标题 + 确认目标定义 ---- */
 .canvas-question-node .cq-v1-title {
   display: block;

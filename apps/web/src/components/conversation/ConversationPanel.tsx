@@ -610,49 +610,121 @@ export function ConversationPanel() {
           </p>
         )}
 
-        <div ref={bottom} />
-      </div>
-
-      {/*
-       * 规划智能体重构 V1(P2):战略判断的**准确状态**与战略路径草案。
-       * 失败时只报“可重试”,不把“模型输出不合格”说成“模型不可用”。
-       */}
-      {v1StatusFailed && (
-        <div className="v1-status" role="status">
-          <span>{reasoning?.v1Error ?? '这次战略判断没有完成。'}</span>
-          <button type="button" disabled={sending} onClick={() => void retry()}>
-            重试
-          </button>
-        </div>
-      )}
-      {v1Strategy && v1StrategyLines.length > 0 && (
-        <div className="v1-strategy-card" data-testid="v1-strategy">
-          <span className="eyebrow">战略路径草案</span>
-          <ul>
-            {v1StrategyLines.map(([label, value]) => (
-              <li key={label}>
-                <strong>{label}</strong>
-                {value}
-              </li>
-            ))}
-          </ul>
-          {v1Strategy.tradeoff && (
-            <p className="v1-strategy-tradeoff">取舍：{v1Strategy.tradeoff}</p>
-          )}
-          {v1StrategyConfirmed ? (
-            <p className="v1-strategy-confirmed">战略逻辑已确认。</p>
-          ) : (
-            <div className="v1-strategy-actions">
-              <button type="button" onClick={() => void confirmV1Strategy()}>
-                确认这条战略逻辑，进入时间架构
-              </button>
-              <button type="button" className="text-button" onClick={requestChat}>
-                继续调整战略
+        {/*
+         * 规划智能体重构 V1 Stage 1:战略判断 / 候选方向 / 目标确认 / 关键问题。
+         *
+         * **放在滚动区里**,不是 composer 上方 —— 否则内容一多会把输入框顶出屏幕,
+         * 而且这一层在浮动面板里是 `pointer-events:none` 的兄弟区域,会吞掉点击。
+         */}
+        <div className="v1-stage1">
+          {v1StatusFailed && (
+            <div className="v1-status" role="status">
+              <span>{reasoning?.v1Error ?? '这次战略判断没有完成。'}</span>
+              <button type="button" disabled={sending} onClick={() => void retry()}>
+                重试
               </button>
             </div>
           )}
+          {v1Strategy && v1StrategyLines.length > 0 && (
+            <div className="v1-strategy-card" data-testid="v1-strategy">
+              <span className="eyebrow">战略路径草案</span>
+              <ul>
+                {v1StrategyLines.map(([label, value]) => (
+                  <li key={label}>
+                    <strong>{label}</strong>
+                    {value}
+                  </li>
+                ))}
+              </ul>
+              {v1Strategy.tradeoff && (
+                <p className="v1-strategy-tradeoff">取舍：{v1Strategy.tradeoff}</p>
+              )}
+              {v1StrategyConfirmed ? (
+                <p className="v1-strategy-confirmed">战略逻辑已确认。</p>
+              ) : (
+                <div className="v1-strategy-actions">
+                  <button type="button" onClick={() => void confirmV1Strategy()}>
+                    确认这条战略逻辑，进入时间架构
+                  </button>
+                  <button type="button" className="text-button" onClick={requestChat}>
+                    继续调整战略
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+          {v1Thesis && (
+            <div className="v1-thesis" data-testid="v1-thesis">
+              <span className="eyebrow">当前战略判断</span>
+              <p>{v1Thesis}</p>
+            </div>
+          )}
+          {v1Directions.length > 0 && (
+            <div className="v1-directions" data-testid="v1-directions">
+              <span className="eyebrow">你可以选一个起点，也可以直接否定我</span>
+              {v1Directions.map(direction => (
+                <button
+                  key={direction.key}
+                  type="button"
+                  className={direction.key === v1SelectedDirection ? 'is-selected' : ''}
+                  disabled={v1Selecting}
+                  onClick={() => {
+                    setV1Selecting(true);
+                    void selectV1Direction(direction.key).finally(() => setV1Selecting(false));
+                  }}
+                >
+                  <strong>{direction.title}</strong>
+                  {direction.reason && <span>{direction.reason}</span>}
+                  {direction.path && <em>{direction.path}</em>}
+                </button>
+              ))}
+              {v1Selecting && (
+                <p className="v1-directions-status" role="status">正在据此重新判断…</p>
+              )}
+            </div>
+          )}
+          {v1GoalConfirmable && (
+            <div className="v1-goal-confirm">
+              <button
+                type="button"
+                disabled={sending || v1Selecting}
+                onClick={() => void confirmV1Goal()}
+              >
+                确认这个目标定义
+              </button>
+              <button
+                type="button"
+                className="text-button"
+                disabled={sending || v1Selecting}
+                onClick={requestChat}
+              >
+                继续修改理解
+              </button>
+            </div>
+          )}
+          {(reasoning?.v1Stage === 'weekly_execution' || reasoning?.v1Stage === 'replanning') && (
+            <div className="v1-plan-actions">
+              <button type="button" disabled={sending} onClick={() => void runV1PlanStep('weekly')}>
+                生成本周计划
+              </button>
+              <button type="button" disabled={sending} onClick={() => void runV1PlanStep('daily')}>
+                生成日计划
+              </button>
+              <button type="button" disabled={sending} onClick={() => void runV1PlanStep('review')}>
+                本周回顾
+              </button>
+            </div>
+          )}
+          {v1ConversationQuestion && (
+            <div className="v1-conversation-question" data-testid="v1-conversation-question" role="status">
+              <span className="v1-conversation-tag">对话中回答</span>
+              <p>{v1ConversationQuestion}</p>
+            </div>
+          )}
         </div>
-      )}
+
+        <div ref={bottom} />
+      </div>
 
       <div className="composer-area">
         {/* 问题入口已经移到标题栏下方那条紧凑状态条(见 `QuestionStatusBar`)。
@@ -687,80 +759,6 @@ export function ConversationPanel() {
           : primaryQuestion
             ? <div className="context-hint"><span className="tiny-dot" />选择画布中的节点，让讨论更聚焦</div>
             : null}
-
-        {/* 规划智能体重构 V1(P2.1):**先给战略判断**,默认不提问。 */}
-        {v1Thesis && (
-          <div className="v1-thesis" data-testid="v1-thesis">
-            <span className="eyebrow">当前战略判断</span>
-            <p>{v1Thesis}</p>
-          </div>
-        )}
-        {v1Directions.length > 0 && (
-          <div className="v1-directions" data-testid="v1-directions">
-            <span className="eyebrow">你可以选一个起点，也可以直接否定我</span>
-            {v1Directions.map(direction => (
-              <button
-                key={direction.key}
-                type="button"
-                className={direction.key === v1SelectedDirection ? 'is-selected' : ''}
-                disabled={v1Selecting}
-                onClick={() => {
-                  setV1Selecting(true);
-                  void selectV1Direction(direction.key).finally(() => setV1Selecting(false));
-                }}
-              >
-                <strong>{direction.title}</strong>
-                {direction.reason && <span>{direction.reason}</span>}
-                {direction.path && <em>{direction.path}</em>}
-              </button>
-            ))}
-          </div>
-        )}
-
-        {/* 规划智能体重构 V1(P2.2):确认目标定义后,才进入“问题结构”。不跳时间线。 */}
-        {v1GoalConfirmable && (
-          <div className="v1-goal-confirm">
-            <button
-              type="button"
-              disabled={sending || v1Selecting}
-              onClick={() => void confirmV1Goal()}
-            >
-              确认这个目标定义
-            </button>
-            <button
-              type="button"
-              className="text-button"
-              disabled={sending || v1Selecting}
-              onClick={requestChat}
-            >
-              继续修改理解
-            </button>
-          </div>
-        )}
-
-        {/* 规划智能体重构 V1(P4):周/日计划与回顾入口。产出是**待确认提案**。 */}
-        {(reasoning?.v1Stage === 'weekly_execution' || reasoning?.v1Stage === 'replanning') && (
-          <div className="v1-plan-actions">
-            <button type="button" disabled={sending} onClick={() => void runV1PlanStep('weekly')}>
-              生成本周计划
-            </button>
-            <button type="button" disabled={sending} onClick={() => void runV1PlanStep('daily')}>
-              生成日计划
-            </button>
-            <button type="button" disabled={sending} onClick={() => void runV1PlanStep('review')}>
-              本周回顾
-            </button>
-          </div>
-        )}
-
-        {/* 规划智能体重构 V1:需要在对话框回答的关键问题 —— **橙色框**,与画布上
-            的紫色问题节点分开。回答仍然在下面的输入框里,这里只做标识。 */}
-        {v1ConversationQuestion && (
-          <div className="v1-conversation-question" data-testid="v1-conversation-question" role="status">
-            <span className="v1-conversation-tag">对话中回答</span>
-            <p>{v1ConversationQuestion}</p>
-          </div>
-        )}
 
         {showContexts && (
           <div className="context-options">
