@@ -183,6 +183,22 @@ function GrowthNodeComponent({ id, data, selected }: NodeProps<GrowthFlowNode>) 
         )}
       </div>
       {(node.description || data.root) && <p className="node-description">{node.description || '根目标'}</p>}
+      {/*
+       * 规划智能体重构 V1(P2):固定容器上的一行轻量标记 —— 当前判断的
+       * 状态、已知事实数、AI 假设数、讨论数。**长解释不在这里**,在右侧详情/讨论里。
+       */}
+      {node.v1Analysis && (
+        <p className="node-v1-markers">
+          <span className={`v1-chip v1-chip-${node.v1Analysis.status}`}>
+            {node.v1Analysis.status === 'resolved' ? '已澄清'
+              : node.v1Analysis.status === 'deferred' ? '暂缓'
+              : node.v1Analysis.status === 'discussing' ? '讨论中' : '待讨论'}
+          </span>
+          {node.v1Analysis.knownFacts.length > 0 && <span>事实 {node.v1Analysis.knownFacts.length}</span>}
+          {node.v1Analysis.assumptions.length > 0 && <span>假设 {node.v1Analysis.assumptions.length}</span>}
+          {node.v1Analysis.discussionCount > 0 && <span>讨论 {node.v1Analysis.discussionCount}</span>}
+        </p>
+      )}
       {node.status === 'doing' && <span className="node-doing" />}
       {/*
         节点上原来常驻一个垃圾桶。**它现在收进菜单里了**(§9.1.1:低频操作收进菜单,

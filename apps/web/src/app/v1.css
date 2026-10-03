@@ -48,3 +48,97 @@
 .floating-conversation .composer.is-v1-initial + .composer-footnote {
   color: var(--muted, #718598);
 }
+
+/* ---- V1(P2):固定容器卡片上的一行轻量标记(事实/假设/讨论数) ---- */
+.node-v1-markers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 5px;
+  font-size: 9px;
+  color: var(--muted, #6f8293);
+}
+.node-v1-markers .v1-chip {
+  border-radius: 999px;
+  padding: 1px 6px;
+  border: 1px solid var(--line, #d8e0e6);
+}
+.node-v1-markers .v1-chip-resolved { color: #3f7d63; border-color: #bcdccb; }
+.node-v1-markers .v1-chip-deferred { color: #8a7040; border-color: #e3d6b4; }
+.node-v1-markers .v1-chip-discussing { color: var(--blue-ink, #2f6da3); border-color: #c3dceb; }
+
+/* ---- V1(P2):右侧面板里的准确状态与战略路径草案 ---- */
+.v1-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 16px 8px;
+  padding: 8px 10px;
+  border: 1px solid #e7c9c0;
+  border-radius: 9px;
+  background: #fdf4f1;
+  font-size: 11px;
+  color: #8a5344;
+}
+.v1-status span { flex: 1; }
+.v1-status button {
+  padding: 4px 10px;
+  border-radius: 7px;
+  border: 1px solid #d9b8ac;
+  color: #8a5344;
+  font-size: 11px;
+}
+.v1-strategy-card {
+  margin: 0 16px 10px;
+  padding: 12px;
+  border: 1px solid var(--line, #d8e0e6);
+  border-radius: 12px;
+  background: var(--surface-panel, #fffefa);
+}
+.v1-strategy-card .eyebrow { display: block; font-size: 9px; }
+.v1-strategy-card ul {
+  margin: 7px 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 5px;
+}
+.v1-strategy-card li {
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text, #304b62);
+}
+.v1-strategy-card li strong {
+  display: inline-block;
+  min-width: 52px;
+  color: var(--muted, #6f8293);
+  font-weight: 600;
+}
+.v1-strategy-tradeoff {
+  margin-top: 8px;
+  padding-left: 9px;
+  border-left: 2px solid var(--blue-ink, #2f6da3);
+  font-size: 11px;
+  line-height: 1.65;
+  color: var(--muted, #6f8293);
+}
+.v1-strategy-confirmed {
+  margin-top: 8px;
+  font-size: 11px;
+  color: #3f7d63;
+}
+.v1-strategy-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+.v1-strategy-actions > button:first-child {
+  padding: 6px 12px;
+  border-radius: 8px;
+  background: var(--blue-ink, #2f6da3);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+}

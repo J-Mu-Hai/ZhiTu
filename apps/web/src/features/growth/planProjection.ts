@@ -118,6 +118,9 @@ export function toGrowthNode(node: PlanNodePayload, sessions: GrowthSession[] = 
     estimateMinutes: node.estimateMinutes ?? undefined,
     estimatedHours:
       node.estimateMinutes === null ? undefined : Math.round((node.estimateMinutes / 60) * 10) / 10,
+    // 规划智能体重构 V1(P2):固定容器键与模型的可审阅判断(非 V1 节点为 undefined)。
+    v1Key: node.v1Key ?? undefined,
+    v1Analysis: node.v1Analysis ?? undefined,
   };
 }
 

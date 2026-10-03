@@ -973,6 +973,22 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     [space.id],
   );
 
+  /**
+   * 规划智能体重构 V1(P2):确认战略逻辑。
+   *
+   * **只把会话推进到“可以进入 P3”的准备状态**,不生成阶段或时间线。
+   */
+  const confirmV1Strategy = useCallback(async () => {
+    try {
+      const view = await backend.confirmV1Strategy(space.id);
+      setReasoning(view);
+      return view;
+    } catch (cause) {
+      setSendError(cause instanceof ApiError ? cause.message : '确认战略失败,请重试。');
+      return null;
+    }
+  }, [space.id]);
+
   /** 「细化第一阶段」:把已确认战略交给既有的对话工作流拆出阶段/里程碑提案。 */
   const [refining, setRefining] = useState(false);
   /**
@@ -2290,6 +2306,7 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     // `ensureStrategicIntake` 是显式目标空间的入口(阶段 12 P0);`ensureReasoningMap`
     // 保留给既有调用点,内部委托前者。
     reasoning, reasoningLoading, ensureStrategicIntake, ensureReasoningMap, refreshReasoning, agentTurn, editReasoningNode,
+    confirmV1Strategy,
     refineStrategy, refining, requestChat, chatRequestNonce,
     replan, replanState,
     // 上一轮是不是基于已经变过的输入(见 `inputChanged` 的注释),以及"重新分析"

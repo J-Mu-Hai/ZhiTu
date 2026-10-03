@@ -216,7 +216,7 @@ function IntakeChips({
  * 被"截止时间/每周投入"干扰。`replan` 入口只在**已确认战略 + 存在执行计划**时才出现。
  */
 export function ConversationPanel() {
-  const { growth, selectedId, select, messages, remoteProposals, proposalErrors, inputChanged, deciding, confirmRemote, rejectRemote, replan, replanState, send, retry, sending, sendError, retryable, historyLoading, messagesTruncated, spaceId, questions, focusQuestion, openTrace, traceAvailability, reasoning, agentStatus } = useDemo();
+  const { growth, selectedId, select, messages, remoteProposals, proposalErrors, inputChanged, deciding, confirmRemote, rejectRemote, replan, replanState, send, retry, sending, sendError, retryable, historyLoading, messagesTruncated, spaceId, questions, focusQuestion, openTrace, traceAvailability, reasoning, agentStatus, confirmV1Strategy, requestChat } = useDemo();
   const [input, setInput] = useState('');
   const [showContexts, setShowContexts] = useState(false);
   /** 输入框的 DOM 元素。高度按内容算(见下面那个 effect)。 */
@@ -276,6 +276,15 @@ export function ConversationPanel() {
    * 面板回到普通尺寸与普通对话布局(节点局部讨论就用普通面板 + 画布详情卡)。
    */
   const v1Initial = reasoning?.v1Stage === 'initial_thinking';
+  /** 规划智能体重构 V1(P2):模型回合失败状态与战略路径草案。 */
+  const v1StatusFailed = reasoning?.v1Status === 'failed';
+  const v1Strategy = reasoning?.v1Strategy ?? null;
+  const v1StrategyConfirmed =
+    reasoning?.v1Stage === 'strategy_confirmed_for_timeline' || Boolean(v1Strategy?.confirmed);
+  const v1StrategyLines: [string, string][] = v1Strategy
+    ? ([['主线', v1Strategy.mainLine], ['并行线', v1Strategy.parallelLine], ['暂缓/放弃', v1Strategy.deferOrAvoid], ['风险控制', v1Strategy.riskControl]] as [string, string | undefined][])
+        .filter((entry): entry is [string, string] => Boolean(entry[1]))
+    : [];
   // 阶段 12:待回答问题只来自会话状态(`reasoning.pendingIntake`),**不是问题实体**。
   const primaryIntake = reasoning?.pendingIntake ?? null;
   const intakeAsked = reasoning?.intakeQuestionsAsked ?? 0;
@@ -590,6 +599,47 @@ export function ConversationPanel() {
 
         <div ref={bottom} />
       </div>
+
+      {/*
+       * 规划智能体重构 V1(P2):战略判断的**准确状态**与战略路径草案。
+       * 失败时只报“可重试”,不把“模型输出不合格”说成“模型不可用”。
+       */}
+      {v1StatusFailed && (
+        <div className="v1-status" role="status">
+          <span>{reasoning?.v1Error ?? '这次战略判断没有完成。'}</span>
+          <button type="button" disabled={sending} onClick={() => void retry()}>
+            重试
+          </button>
+        </div>
+      )}
+      {v1Strategy && v1StrategyLines.length > 0 && (
+        <div className="v1-strategy-card" data-testid="v1-strategy">
+          <span className="eyebrow">战略路径草案</span>
+          <ul>
+            {v1StrategyLines.map(([label, value]) => (
+              <li key={label}>
+                <strong>{label}</strong>
+                {value}
+              </li>
+            ))}
+          </ul>
+          {v1Strategy.tradeoff && (
+            <p className="v1-strategy-tradeoff">取舍：{v1Strategy.tradeoff}</p>
+          )}
+          {v1StrategyConfirmed ? (
+            <p className="v1-strategy-confirmed">战略逻辑已确认。</p>
+          ) : (
+            <div className="v1-strategy-actions">
+              <button type="button" onClick={() => void confirmV1Strategy()}>
+                确认这条战略逻辑，进入时间架构
+              </button>
+              <button type="button" className="text-button" onClick={requestChat}>
+                继续调整战略
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="composer-area">
         {/* 问题入口已经移到标题栏下方那条紧凑状态条(见 `QuestionStatusBar`)。

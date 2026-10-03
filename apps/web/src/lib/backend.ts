@@ -645,6 +645,38 @@ export interface PlanNodePayload {
    * 去挡正文保存的话,"另一个标签页勾掉了一个任务"会让正在写正文的人保存失败。
    */
   contentVersion: number;
+  /** 规划智能体重构 V1(P2):固定分析容器键。null = 非 V1 节点。 */
+  v1Key: string | null;
+  /** 模型对该容器的可审阅判断。null = 还没有判断。 */
+  v1Analysis: V1NodeAnalysis | null;
+}
+
+/**
+ * 规划智能体重构 V1(P2):一个固定容器的**可审阅判断**。
+ *
+ * 分栏本身就是来源标签:`knownFacts` 是读到的,`assumptions` 是 AI 假设的,
+ * `evidence` 是带来源的。**不存隐藏思维链。**
+ */
+export interface V1NodeAnalysis {
+  judgment: string;
+  knownFacts: string[];
+  assumptions: string[];
+  evidence: string[];
+  importanceReason: string;
+  uncertainty: 'low' | 'medium' | 'high';
+  status: 'unexplored' | 'discussing' | 'resolved' | 'deferred';
+  impactedNodeKeys: string[];
+  discussionCount: number;
+}
+
+/** 规划智能体重构 V1(P2):战略路径草案。 */
+export interface V1StrategyView {
+  mainLine?: string;
+  parallelLine?: string;
+  deferOrAvoid?: string;
+  riskControl?: string;
+  tradeoff?: string;
+  confirmed?: boolean;
 }
 
 export interface DependencyPayload {
@@ -1861,6 +1893,16 @@ export interface GoalReasoningView {
   v1Judgment: string | null;
   /** 当前唯一需要回答的全局关键问题。null = 不等待全局回答。 */
   v1Question: string | null;
+  /** 当前焦点容器键(模型选出的最值得讨论的一项)。 */
+  v1FocusKey: string | null;
+  /** 为什么这个焦点比其他未知项更能改变路线。 */
+  v1FocusReason: string | null;
+  /** 战略路径草案。null = 还没形成。 */
+  v1Strategy: V1StrategyView | null;
+  /** V1 模型回合状态:`idle` / `running` / `failed`。 */
+  v1Status: string | null;
+  /** 上一次 V1 模型回合失败的可读原因。 */
+  v1Error: string | null;
   /** 阶段 11:时间架构里的日期是否已校准。false = 只有相对周,不伪造日历日期。 */
   datesCalibrated: boolean;
   exploredAt: string | null;
@@ -1921,6 +1963,14 @@ export function updateReasoningNode(
     `/api/workspaces/${workspaceId}/reasoning/nodes/${nodeId}`,
     { method: 'PATCH', body: payload },
   );
+}
+
+/** 规划智能体重构 V1(P2):确认战略逻辑,进入 P3 的准备状态(不生成时间线)。 */
+export function confirmV1Strategy(workspaceId: string): Promise<GoalReasoningView> {
+  return apiFetch<GoalReasoningView>(`/api/workspaces/${workspaceId}/agent/v1/strategy/confirm`, {
+    method: 'POST',
+    body: {},
+  });
 }
 
 /** 细化已确认战略。**只有已确认战略存在时**服务端才接受。 */

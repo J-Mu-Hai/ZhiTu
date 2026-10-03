@@ -1,4 +1,4 @@
-import type { ResearchView } from '@/lib/backend';
+import type { ResearchView, V1NodeAnalysis } from '@/lib/backend';
 
 export type Category = 'academic' | 'research' | 'experience' | 'personal';
 
@@ -97,6 +97,10 @@ export interface GrowthNode {
    * "我读到的**那一版**" —— 而不是"现在最新的一版"。拿后者去比,锁就形同虚设。
    */
   contentVersion?: number;
+  /** 规划智能体重构 V1(P2):固定分析容器键(P1 建立的 3 组 + 10 项)。 */
+  v1Key?: string;
+  /** 模型对该容器的可审阅判断(判断 / 事实 / 假设 / 来源 / 不确定性 / 讨论数)。 */
+  v1Analysis?: V1NodeAnalysis;
 }
 export type Task = GrowthNode & { type: 'task' };
 export type Milestone = GrowthNode & { type: 'milestone' };
