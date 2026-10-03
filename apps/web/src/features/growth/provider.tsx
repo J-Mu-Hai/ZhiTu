@@ -1918,6 +1918,9 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     try {
       await backend.confirmProposal(space.id, proposalId, keyFor(proposalId));
       await Promise.all([refreshPlan(), refreshProposals()]);
+      // 规划智能体 V0.1:确认后阶段会推进、时间线项从 draft 变 planned,
+      // 重新拉一次推理视图,时间轴才能从虚线切到实线。
+      await refreshReasoning().catch(() => undefined);
       // 如果被确认的是推理地图收敛出的战略草案,让地图把关联写回并进入执行规划。
       if (reasoning?.strategyProposalId === proposalId) {
         void agentTurn({ trigger: 'strategy_confirmation' });

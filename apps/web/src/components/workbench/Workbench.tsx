@@ -7,6 +7,7 @@ import { TimelineView } from './TimelineView';
 import { TaskView } from './TaskView';
 import { ScheduleView } from './ScheduleView';
 import { FloatingConversation } from '@/components/conversation/FloatingConversation';
+import { DiscoveryPrompt } from './DiscoveryPrompt';
 import { AgentTraceInspector } from '@/components/conversation/AgentTraceInspector';
 import { useDemo } from '@/features/growth/provider';
 import { useMobileLayout } from '@/lib/media';
@@ -28,7 +29,7 @@ export function Workbench() {
   const narrow = useMobileLayout();
   const [chatChoice, setChatChoice] = useState<boolean | null>(null);
   const chatOpen = chatChoice ?? !narrow;
-  const { growth, spaceId, canvasKey, enterSpace, workspaceId, reasoning, chatRequestNonce } = useDemo();
+  const { growth, spaceId, canvasKey, enterSpace, workspaceId, reasoning, chatRequestNonce, send, sending } = useDemo();
   // **根目标不叫 `'goal'`。** 那是 `emptyGrowth` 用的哨兵值,只有在计划还没从后端
   // 拿到的时候才存在;真实空间拿到计划之后,根节点的 id 是一个 UUID。所以拿
   // `spaceId !== 'goal'` 当"我是不是在根这一层"来判断,在真实空间里恒为真。
@@ -54,6 +55,8 @@ export function Workbench() {
       ? reasoning.mapVersion
       : 0;
   const switchedArchitectureRef = useRef(0);
+  // 规划智能体 V0.1:阶段一(DISCOVERY)用中央大输入框,画布保持干净。
+  const discovery = reasoning?.workflowStage === 'discovery';
   // 阶段 11:“调整战略”把对话 Dock 展开 —— 只是把注意力带回对话,不替用户发言。
   useEffect(() => {
     if (chatRequestNonce > 0) setChatChoice(true);
@@ -71,11 +74,13 @@ export function Workbench() {
     }
   }, [architectureVersion, view, router, workspaceParam, urlWorkspace, workspaceId]);
   return <div className="workbench open-workbench"><div className={`workbench-body ${chatOpen ? '' : 'chat-hidden'}`}><section className="workspace">
-    <div className="space-topbar">{!isRootSpace && <button className="icon-button space-back" aria-label="返回上级空间" onClick={() => enterSpace(growth.nodes[spaceId]?.parentId ?? growth.goalId)}><ArrowLeft size={15}/></button>}<div className="view-tabs" role="tablist" aria-label="工作台视图">{tabs.map(({id,label,Icon}) => <button key={id} role="tab" aria-selected={view === id} aria-label={label} className={view === id ? 'selected' : ''} onClick={() => router.replace(`/workbench?${workspaceParam}&view=${id}`, { scroll: false })}><Icon size={15}/><span>{label}</span></button>)}</div>{!chatOpen && <button className="icon-button reopen-chat" aria-label="展开对话" onClick={() => setChatChoice(true)}><PanelRightOpen size={18}/></button>}</div>
+    <div className="space-topbar">{!isRootSpace && <button className="icon-button space-back" aria-label="返回上级空间" onClick={() => enterSpace(growth.nodes[spaceId]?.parentId ?? growth.goalId)}><ArrowLeft size={15}/></button>}{discovery ? null : <div className="view-tabs" role="tablist" aria-label="工作台视图">{tabs.map(({id,label,Icon}) => <button key={id} role="tab" aria-selected={view === id} aria-label={label} className={view === id ? 'selected' : ''} onClick={() => router.replace(`/workbench?${workspaceParam}&view=${id}`, { scroll: false })}><Icon size={15}/><span>{label}</span></button>)}</div>}{!chatOpen && <button className="icon-button reopen-chat" aria-label="展开对话" onClick={() => setChatChoice(true)}><PanelRightOpen size={18}/></button>}</div>
     {/* 视图是一个三元表达式,所以**切一下页签,整棵画布子树就被卸载了** —— 这是有意的:
         画布和列表不该抢同一个位置,而隐藏着不卸载会让 ReactFlow 拿到一个尺寸为 0 的容器。
         代价是画布内部的东西(平移缩放、弹窗里没提交的输入)会跟着没,所以那两样都
         存在组件外面:视口在 Provider(`viewports`),输入在 `features/growth/drafts.ts`。
         `key` 用的是 `canvasKey` 而不是 `spaceId`,理由见 Provider 里 `canvasKey` 那段。 */}
-    <div className="view-content">{view === 'path' ? <PathView key={canvasKey}/> : view === 'timeline' ? <TimelineView/> : view === 'schedule' ? <ScheduleView/> : <TaskView/>}</div></section><FloatingConversation open={chatOpen} onClose={() => setChatChoice(false)}/><AgentTraceInspector/></div></div>;
+    {discovery
+      ? <DiscoveryPrompt questions={reasoning?.discoveryQuestions ?? []} busy={sending} onSend={text => { void send(text); }} />
+      : <div className="view-content">{view === 'path' ? <PathView key={canvasKey}/> : view === 'timeline' ? <TimelineView/> : view === 'schedule' ? <ScheduleView/> : <TaskView/>}</div>}</section><FloatingConversation open={chatOpen} onClose={() => setChatChoice(false)}/><AgentTraceInspector/></div></div>;
 }

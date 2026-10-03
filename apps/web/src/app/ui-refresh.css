@@ -819,3 +819,68 @@
 .intake-chip.is-recommended { border-color: color-mix(in srgb, var(--blue, #5e93c7) 55%, var(--line)); color: var(--blue-ink, #2f6da3); font-weight: 600; }
 .intake-chip.is-send { border-color: var(--blue-ink, #2f6da3); background: var(--blue-ink, #2f6da3); color: #fff; font-weight: 600; }
 .intake-chip-tag { font-size: 8px; padding: 0 4px; border-radius: var(--radius-pill, 999px); background: var(--blue-ink, #2f6da3); color: #fff; font-weight: 700; }
+
+/* ------------------------------------------------------------------ */
+/* 规划智能体 V0.1:阶段一(DISCOVERY)的中央大输入框                      */
+/* ------------------------------------------------------------------ */
+.discovery-prompt {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.discovery-prompt-inner {
+  width: min(620px, 100%);
+  display: grid;
+  gap: 10px;
+}
+.discovery-prompt-inner h2 {
+  margin: 2px 0 4px;
+  font-size: 19px;
+  line-height: 1.4;
+  color: var(--text, #304b62);
+}
+.discovery-prompt-questions {
+  margin: 0 0 4px;
+  padding-left: 18px;
+  display: grid;
+  gap: 5px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--muted, #6f8293);
+}
+.discovery-prompt-form {
+  margin-top: 4px;
+  padding: 12px;
+  border: 1px solid var(--line, #d8e0e6);
+  border-radius: 16px;
+  background: var(--surface-panel, #fffefa);
+  box-shadow: 0 10px 30px -22px rgba(37, 74, 104, 0.5);
+}
+.discovery-prompt-form textarea {
+  width: 100%;
+  border: 0;
+  outline: none;
+  resize: none;
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text, #304b62);
+}
+.discovery-prompt-form button {
+  margin-top: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 16px;
+  border-radius: 10px;
+  background: var(--blue-ink, #2f6da3);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+}
+.discovery-prompt-form button:disabled {
+  opacity: 0.5;
+}

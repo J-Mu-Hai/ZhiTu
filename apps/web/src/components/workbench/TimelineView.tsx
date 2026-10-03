@@ -6,6 +6,7 @@ import type { GrowthNode } from '@/types/growth';
 import { useDemo } from '@/features/growth/provider';
 import { anchoredZoom, dateString, dateToX, dayNumber, getVisibleItems, layoutItems, timelineItems, timelineTicks, unscheduledNodes, zoomLevelFor, todayInTimeZone, type TimelineItem } from '@/features/growth/timeline';
 import { StrategyArchitecturePreview } from './StrategyArchitecturePreview';
+import { V01TimelineAxis } from './V01TimelineAxis';
 import styles from './TimelineView.module.css';
 
 const colors = { academic: '#749ce1', research: '#61ad9e', experience: '#c7a06e', personal: '#a294ce' };
@@ -84,7 +85,7 @@ type Gesture = { x: number; start: number };
  * 说一次,不再用一条常驻说明占空间。
  */
 export function TimelineView() {
-  const { growth, selectedId, select, apply, updateNode, spaceId, workspaceId, isRealSpace, planError, timelineViewport: viewport, setTimelineViewport: setViewport } = useDemo();
+  const { growth, selectedId, select, apply, updateNode, spaceId, workspaceId, isRealSpace, planError, timelineViewport: viewport, setTimelineViewport: setViewport, reasoning, confirmRemote, rejectRemote, deciding } = useDemo();
   const router = useRouter();
   // 每次渲染重新算一次。它只在跨过午夜时才会变,而这个组件本来就会因为别的原因
   // 重渲染很多次 —— 为它加一个定时器是没必要的复杂度。
@@ -167,6 +168,20 @@ export function TimelineView() {
   }
   function finish() { gesture.current = null; }
   function reveal(item: TimelineItem) { choose(item.node.id); setClusterOpen(false); setViewport(v => ({ ...v, start: item.start - size.width / v.density * .35 })); }
+  const v01Items = reasoning?.v01Timeline ?? [];
+  // 规划智能体 V0.1:时间线**就是主轴本身** —— 不再在轴上再摆一块
+  // StrategyArchitecturePreview。确认前的草案是虚线,确认后是实线,结构一致。
+  if (v01Items.length > 0) {
+    return <div className={styles.view} data-testid="timeline-view" data-v01="true">
+      <V01TimelineAxis
+        items={v01Items}
+        proposalId={reasoning?.v01TimelineProposalId ?? null}
+        deciding={deciding}
+        onConfirm={id => { void confirmRemote(id); }}
+        onReject={id => { void rejectRemote(id); }}
+      />
+    </div>;
+  }
   return <div className={styles.view} data-testid="timeline-view" data-zoom={level}>
     {/* 交互说明只说一次,而且是给读屏的;**不再用常驻说明条占空间**。 */}
     <p id="timeline-help" className={styles.srOnly}>拖动空白平移，Ctrl 或 Command 加滚轮缩放，方向键平移，加号减号缩放，Home 回到今天。改具体安排请用「排期」。</p>

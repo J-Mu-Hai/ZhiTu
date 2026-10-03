@@ -1800,6 +1800,22 @@ export interface PendingIntakeView {
   quickReplies: string[];
 }
 
+/** V0.1 时间轴上的一个投影项(阶段 / 里程碑 / 截止 / 成果)。 */
+export interface V01TimelineItemView {
+  id: string;
+  title: string;
+  kind: 'phase' | 'milestone' | 'deadline' | 'deliverable';
+  startWeek: number | null;
+  endWeek: number | null;
+  startDate: string | null;
+  endDate: string | null;
+  goal: string;
+  deliverable: string;
+  completionCriteria: string;
+  status: 'draft' | 'planned';
+  planNodeId: string | null;
+}
+
 /** 当前目标推理地图。读接口与 agent turn 都返回这一份。 */
 export interface GoalReasoningView {
   workspaceId: string;
@@ -1823,6 +1839,10 @@ export interface GoalReasoningView {
   workflowStage: string | null;
   /** V0.1 阶段一当前等回答的核心问题(2–4 个)。 */
   discoveryQuestions: string[];
+  /** V0.1 时间线投影(唯一权威来源)。非 V0.1 一律为空。 */
+  v01Timeline: V01TimelineItemView[];
+  /** V0.1 待确认的时间线提案 id。null = 没有待确认草案。 */
+  v01TimelineProposalId: string | null;
   /** 阶段 11:时间架构里的日期是否已校准。false = 只有相对周,不伪造日历日期。 */
   datesCalibrated: boolean;
   exploredAt: string | null;
