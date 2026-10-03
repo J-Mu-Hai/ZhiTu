@@ -233,6 +233,17 @@ async def _find_reply_after(db, conversation_id: uuid.UUID, seq: int) -> Message
     return result.scalar_one_or_none()
 
 
+async def find_reply_after(
+    db, conversation_id: uuid.UUID, seq: int
+) -> Message | None:
+    """`_find_reply_after` 的公开入口。
+
+    阶段 12 的 intake 回答路径要自己判断“这条用户消息是不是已经处理过”,
+    用它做幂等重放;把私有函数公开出来,而不是让别的模块去访问下划线。
+    """
+    return await _find_reply_after(db, conversation_id, seq)
+
+
 def _snapshot_for_analysis(
     *,
     snapshot: InputSnapshot,

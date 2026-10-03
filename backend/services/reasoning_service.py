@@ -56,6 +56,7 @@ from backend.db.models import (
 from backend.db.models.enums import (
     ACTIVE_QUESTION_STATUSES,
     AgentTraceStep,
+    DegradedReason,
     ModelSource,
     ProposalStatus,
     QuestionPresentation,
@@ -984,17 +985,31 @@ def _compose_intake_reply(reply: str, question: str) -> str:
     return f"{clean}\n\n{asked}"
 
 
-async def _persist_failure_notice(db, ctx, *, reply: str):
+async def _persist_failure_notice(
+    db,
+    ctx,
+    *,
+    reply: str,
+    source: ModelSource = ModelSource.DIRECT_LLM,
+    degraded_reason: DegradedReason = DegradedReason.MODEL_OUTPUT_INVALID,
+):
     """把一条**可重试的失败提示**落成助手消息。
 
     它是一条真正的助手消息(不是编造的模型回复):`degraded=True`,
     界面上会如实显示为“这次没有完成”,而不是普通回答。
+
+    `source` / `degraded_reason` 由调用方给出 —— 这是正确归因的关键:
+    - **模型真实不可达 / 超时 / 无 Key** -> `UNAVAILABLE` + 真实原因
+      (界面才会显示“模型不可用”);
+    - **模型可用、但输出被战略守卫拒绝** -> `DIRECT_LLM` + `MODEL_OUTPUT_INVALID`
+      (绝不能伪装成模型不可用)。
     """
     conversation = await conversation_service.get_or_create_primary_conversation(db, ctx)
     synthetic = ReasoningResult(
         reply=reply,
-        source=ModelSource.UNAVAILABLE,
+        source=source,
         degraded=True,
+        degraded_reason=degraded_reason,
         retryable=True,
     )
     return await conversation_service.append_reply(
@@ -1017,10 +1032,21 @@ async def _run_intake(
     返回 `AgentTurnResponse` = 已经问出一个问题(或失败终态);返回 `str` = intake 结束,
     调用方应转到时间架构模式(返回的是架构触发文本)。
 
-    模型输出不合格(缺决策、动作不合法、问执行细节、重复已知信息)时,在本轮预算内
-    用结构化纠正**再试一次**;两次都不合格就拒绝该输出、写终态 `failed`,
-    **不写半张地图、不写半个问题卡、不假装成功**。
+    不合格输出(缺决策、动作不合法、问执行细节、重复已知信息)的处理:
+    - **未接近上限** -> 本轮预算内用结构化纠正**再试一次**;两次都不合格就拒绝该
+      输出、写终态 `failed`,不写半张地图、不写半个问题卡、不假装成功;
+    - **已经问过 4 个(接近上限)** -> 不再纠正、不展示不合格问题、不判失败,
+      直接收束到时间架构;
+    - **已经到 5 问上限** -> 连模型都不再问,直接收束。
     """
+    # 到顶:直接进入时间架构。**不再接受或校验新的 intake 问题。**
+    if session.intake_questions_asked >= MAX_INTAKE_QUESTIONS:
+        session.pending_intake_message_id = None
+        session.pending_intake_decision = None
+        session.status = ReasoningSessionStatus.RUNNING
+        await db.commit()
+        return ARCHITECTURE_TRIGGER
+
     result: ReasoningResult | None = None
     known_dimensions: frozenset[str] = frozenset()
     prompt = trigger_message
@@ -1034,6 +1060,7 @@ async def _run_intake(
         result = await reasoner.reason(turn)
         agent_trace_service.mark_step(trace, AgentTraceStep.VALIDATING_OUTPUT)
         if result.degraded:
+            # **真实的**模型不可达 / 超时 / 无 Key —— 只有这里才允许 `unavailable`。
             session.status = ReasoningSessionStatus.FAILED
             session.last_error = "模型这次没有给出可用的战略判断。"
             agent_trace_service.mark_terminal(
@@ -1043,7 +1070,11 @@ async def _run_intake(
                 stopped_reason="failed",
             )
             message = await _persist_failure_notice(
-                db, ctx, reply="这次没有形成可用的战略判断,你可以再试一次。"
+                db,
+                ctx,
+                reply="模型这次没有响应,可以重试。",
+                source=ModelSource.UNAVAILABLE,
+                degraded_reason=result.degraded_reason or DegradedReason.MODEL_UNAVAILABLE,
             )
             await db.commit()
             return await _response(db, ctx, session, message=message, result=result)
@@ -1055,11 +1086,21 @@ async def _run_intake(
         )
         if error is None:
             break
+        # 接近上限(已经问过 4 个):别再纠正、不把不合格问题展示给用户、也不判失败。
+        # 此前几轮已经收集到足够信息,直接收束到时间架构。
+        if session.intake_questions_asked >= MAX_INTAKE_QUESTIONS - 1:
+            agent_trace_service.mark_retry(trace)
+            session.pending_intake_message_id = None
+            session.pending_intake_decision = None
+            session.status = ReasoningSessionStatus.RUNNING
+            await db.commit()
+            return ARCHITECTURE_TRIGGER
         if attempt == 0:
             agent_trace_service.mark_retry(trace)
             prompt = f"{trigger_message}\n\n{INTAKE_CORRECTION_MESSAGE}"
             continue
-        # 两次都不合格:拒绝该输出,不写半张地图、不写半个问题卡。
+        # 两次都不合格(未接近上限):拒绝该输出,不写半张地图、不写半个问题卡。
+        # **归因是“模型输出不合格”,不是“模型不可用”。**
         session.status = ReasoningSessionStatus.FAILED
         session.last_error = error
         agent_trace_service.mark_terminal(
@@ -1070,7 +1111,11 @@ async def _run_intake(
             code="INTAKE_INVALID",
         )
         message = await _persist_failure_notice(
-            db, ctx, reply="这次没有形成可用的战略判断,你可以再试一次。"
+            db,
+            ctx,
+            reply="这次的问题偏离了战略澄清范围,尚未生成时间架构。可以重试。",
+            source=ModelSource.DIRECT_LLM,
+            degraded_reason=DegradedReason.MODEL_OUTPUT_INVALID,
         )
         await db.commit()
         return await _response(db, ctx, session, message=message, result=result)
@@ -1702,12 +1747,28 @@ async def answer_intake_in_conversation(
         client_message_id=client_message_id,
         context_node_id=context_node_id,
     )
+    # 幂等:同一条用户消息已经处理过(已经有后续助手回复)就原样返回,绝不重复问一题。
+    existing_reply = await conversation_service.find_reply_after(
+        db, conversation.id, user_message.seq
+    )
+    if existing_reply is not None:
+        brief = await brief_service.load_brief(db, ctx.id)
+        return conversation_service.turn_outcome_for_reply(
+            user_message=user_message,
+            assistant_message=existing_reply,
+            brief=brief,
+        )
     trace = agent_trace_service.start_map_trace(
         ctx, trigger="user_message", context_node_id=root.id
     )
     db.add(trace)
     session.status = ReasoningSessionStatus.RUNNING
     session.last_error = None
+    # **已经拿到用户回答、开始处理**:旧 pending 在这一刻(与 RUNNING 同一个事务)
+    # 清掉。此后无论成功问下一题、生成架构、被守卫拒绝还是失败,都不会留下
+    # “failed 但仍挂着旧 pending” 的矛盾状态。
+    session.pending_intake_message_id = None
+    session.pending_intake_decision = None
     await db.commit()
 
     response = await _explore_and_apply(
@@ -1724,9 +1785,23 @@ async def answer_intake_in_conversation(
         assistant = await db.get(Message, response.message.id)
     if assistant is None:
         # 时间架构最终失败时也必须给用户一条可重试的提示,而不是一个空回合。
-        assistant = await _persist_failure_notice(
-            db, ctx, reply="这次没有生成可用的时间架构,你可以再试一次。"
-        )
+        # **归因如实**:真实不可达才叫模型不可用;其余是输出不合格。
+        if response.degraded:
+            assistant = await _persist_failure_notice(
+                db,
+                ctx,
+                reply="这次没有生成可用的时间架构,可以重试。",
+                source=ModelSource.UNAVAILABLE,
+                degraded_reason=DegradedReason.MODEL_UNAVAILABLE,
+            )
+        else:
+            assistant = await _persist_failure_notice(
+                db,
+                ctx,
+                reply="这次没有生成可用的时间架构,可以重试。",
+                source=ModelSource.DIRECT_LLM,
+                degraded_reason=DegradedReason.MODEL_OUTPUT_INVALID,
+            )
         await db.commit()
     brief = await brief_service.load_brief(db, ctx.id)
     return conversation_service.turn_outcome_for_reply(
