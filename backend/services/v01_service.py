@@ -714,8 +714,13 @@ async def generate_weekly_plan(
     session: GoalReasoningSession,
     *,
     trace,
+    include_monthly: bool = False,
 ) -> AgentTurnResponse:
     """从已确认时间线的第一个阶段派生“本周计划 + 下周预览”。
+
+    `include_monthly=True` 时(仅 V1 主动循环使用)在同一份提案里补上阶段内的
+    **月度里程碑**,使“月 → 周 → 日”的层级从同一份待确认提案开始。默认 False ——
+    V0.1 的行为一字不变。
 
     **版本化替换,不覆盖历史。** 重规划之后,旧的“活跃未完成”周计划被**归档**
     (可恢复的历史版本,不物理删除,保留与阶段/周次的父子关系);已完成的任务、
@@ -832,6 +837,54 @@ async def generate_weekly_plan(
                 }
             )
 
+    # R3:月度里程碑。只补**还没建过**的阶段,重复生成不会堆叠出第二份同名里程碑。
+    if include_monthly:
+        existing_month = set(
+            await db.scalars(
+                select(PlanNode.title).where(
+                    PlanNode.workspace_id == ctx.id,
+                    PlanNode.title.like("月度里程碑 · %"),
+                    PlanNode.deleted_at.is_(None),
+                )
+            )
+        )
+        timeline_items = [
+            item for item in (session.v01_timeline or []) if isinstance(item, dict)
+        ]
+        range_by_title = {
+            str(item.get("title") or ""): (item.get("startWeek"), item.get("endWeek"))
+            for item in timeline_items
+        }
+        for phase in phases:
+            title = f"月度里程碑 · {phase.title}"
+            if title in existing_month:
+                continue
+            phase_handle = handle_of.get(str(phase.id))
+            if phase_handle is None:
+                continue
+            start_week, end_week = range_by_title.get(phase.title, (None, None))
+            span = (
+                f"相对范围:第 {start_week}–{end_week} 周"
+                if isinstance(start_week, int) and isinstance(end_week, int)
+                else "相对范围:待校准"
+            )
+            counter += 1
+            actions.append(
+                {
+                    "op": "create_node",
+                    "localId": f"n{9250 + counter}",
+                    "parentRef": phase_handle,
+                    "title": title,
+                    "nodeType": "stage",
+                    "purpose": "planning",
+                    "description": (
+                        f"阶段内关键里程碑 · {phase.title}\n"
+                        f"{span}\n"
+                        f"目标:{phase.description or phase.title}"
+                    ),
+                }
+            )
+
     if not actions:
         from backend.services.errors import InvalidInput
 
@@ -843,7 +896,7 @@ async def generate_weekly_plan(
         conversation_id=conversation.id if conversation else None,
         actions=tuple(actions),
         handles=handles,
-        reasoning="由已确认时间线的第一个阶段派生的本周计划与下周预览(版本化替换,旧版本归档)。",
+        reasoning="由已确认时间线的第一个阶段派生的月度里程碑、本周计划与下周预览(版本化替换,旧版本归档)。",
         assistant_message=None,
         trigger_type=RevisionTrigger.INITIAL_PLAN,
     )

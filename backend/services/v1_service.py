@@ -1653,9 +1653,19 @@ async def on_proposal_confirmed(
 # P4:周/日计划、执行反馈与自动回顾重规划
 # =================================================================================
 async def generate_weekly_plan(
-    db: AsyncSession, ctx: WorkspaceContext, session: GoalReasoningSession, *, trace=None
+    db: AsyncSession,
+    ctx: WorkspaceContext,
+    session: GoalReasoningSession,
+    *,
+    trace=None,
+    include_monthly: bool = True,
 ) -> AgentTurnResponse:
-    """从已确认时间线派生**本周计划 + 下周预览**(复用 V0.1 的版本化提案)。"""
+    """从已确认时间线派生**月度里程碑 + 本周计划 + 下周预览**。
+
+    复用 V0.1 的版本化提案(旧未完成版本归档,已完成历史不动)。`include_monthly`
+    默认 True —— V1 的“最近可执行窗口”从月度里程碑开始;显式重新生成本周计划时
+    可以关掉(里程碑已经存在)。
+    """
     from backend.services.errors import InvalidInput
 
     if session.v1_stage != V1_WEEKLY_EXECUTION:
@@ -1664,24 +1674,53 @@ async def generate_weekly_plan(
     root = await reasoning_service.root_plan_node(db, ctx)
     if root is None:
         raise InvalidInput("这个空间还没有根目标。")
-    response = await v01_service.generate_weekly_plan(db, ctx, root, session, trace=trace)
+    response = await v01_service.generate_weekly_plan(
+        db, ctx, root, session, trace=trace, include_monthly=include_monthly
+    )
     if await v01_service._has_open_proposal(db, ctx):
         await _audit(
             db,
             ctx,
             session,
             "weekly_plan_proposal_created",
-            summary="生成本周计划与下周预览(待确认)。",
+            summary="生成月度里程碑、本周计划与下周预览(待确认)。",
             payload={"proposal": {"kind": "weekly"}},
         )
         await db.commit()
     return response
 
 
+async def _v1_capacity_window(db, ctx, turn) -> tuple[bool, list[str]]:
+    """读这个人的可用容量:返回 (是否已配置容量, 本周内可用日期 ISO 列表)。
+
+    **只读**。没有配置容量档案 / 没有可用时段时返回 `(False, [])` —— 调用方据此把
+    日工作块标为“待校准”,而**不是**伪造一个具体日期。
+    """
+    today = today_in(ctx.timezone)
+    handles = {uuid.UUID(node_id): handle for handle, node_id in turn.node_handles}
+    try:
+        view = await turn_context.load_time_view(db, ctx, today=today, handles=handles)
+    except Exception:  # pragma: no cover - 读不到容量信息时按“待校准”处理
+        logger.warning("读取容量信息失败,日计划将标为待校准。", exc_info=True)
+        return False, []
+    if not view.capacity_configured or not view.windows or view.weekly_budget_minutes <= 0:
+        return False, []
+    weekdays = {window.weekday for window in view.windows}
+    dates = [
+        (today + timedelta(days=offset)).isoformat()
+        for offset in range(7)
+        if (today + timedelta(days=offset)).weekday() in weekdays
+    ]
+    return True, dates
+
+
 async def generate_daily_plan(
     db: AsyncSession, ctx: WorkspaceContext, session: GoalReasoningSession, *, trace=None
 ) -> AgentTurnResponse:
-    """把本周计划拆成**少量工作日工作块**(不是均摊七天),落成待确认提案。"""
+    """把本周计划拆成**少量工作日工作块**(不是均摊七天),落成待确认提案。
+
+    只有用户配置了可用容量/时段时,才把工作块落到具体日期;否则明确标为“待校准”。
+    """
     from backend.services.errors import InvalidInput
 
     if session.v1_stage != V1_WEEKLY_EXECUTION:
@@ -1723,12 +1762,21 @@ async def generate_daily_plan(
     if week_handle is None:
         raise InvalidInput("找不到本周计划的记号。")
 
+    # R3:可用容量接入时才排到具体日期;否则明确“待校准”。
+    capacity_ok, available_dates = await _v1_capacity_window(db, ctx, turn)
+    session.dates_calibrated = capacity_ok
+
     # 少量工作日:最多 3 天,不均匀摊到七天。
     days = ("第 1 个工作日", "第 2 个工作日", "第 3 个工作日")
     actions: list[dict] = []
     counter = 0
     for day_index, day in enumerate(days):
         day_ref = f"n{9300 + day_index}"
+        if capacity_ok and available_dates:
+            planned_date = available_dates[min(day_index, len(available_dates) - 1)]
+            day_description = f"计划日期:{planned_date}(按已配置可用时段校准)。"
+        else:
+            day_description = "待校准:尚未配置每周可用时段,这不是已排入的具体日期。"
         actions.append(
             {
                 "op": "create_node",
@@ -1737,7 +1785,7 @@ async def generate_daily_plan(
                 "title": f"日计划 · {day}",
                 "nodeType": "stage",
                 "purpose": "planning",
-                "description": "少量可执行的工作块。",
+                "description": day_description,
             }
         )
         blocks = [task_rows[i] for i in range(day_index, len(task_rows), len(days))][:2]
@@ -1783,11 +1831,23 @@ async def generate_daily_plan(
         session,
         "daily_plan_proposal_created",
         summary="把本周计划拆成少量工作日工作块(待确认)。",
-        payload={"proposal": {"id": str(outcome.proposal.id), "kind": "daily", "status": "pending_confirmation"}},
+        payload={
+            "proposal": {
+                "id": str(outcome.proposal.id),
+                "kind": "daily",
+                "status": "pending_confirmation",
+            },
+            "datesCalibrated": capacity_ok,
+        },
     )
-    message = await _append_assistant(
-        db, ctx, reply="我把本周计划拆成了几天的工作块,确认后写入。(不是均摊七天。)"
+    reply = (
+        "我把本周计划拆成了几天的工作块,并按你已配置的可用时段校到了具体日期。确认后写入。"
+        "(不是均摊七天。)"
+        if capacity_ok
+        else "我把本周计划拆成了几天的工作块。你还没配置每周可用时段,这些工作块先标为**待校准**,"
+        "配置后我再排到具体日期。确认后写入。(不是均摊七天。)"
     )
+    message = await _append_assistant(db, ctx, reply=reply)
     return await _response(db, ctx, session, message=message, changed=True)
 
 
