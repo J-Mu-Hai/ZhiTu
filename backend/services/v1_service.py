@@ -126,6 +126,8 @@ _STRATEGY_KEYS: tuple[tuple[str, str, str], ...] = (
 
 MAX_V1_UPDATES = 3
 MAX_V1_DIMENSIONS = 3
+#: P2.3:problem_structure 中“继续形成战略路径”的显式下一步动作。
+NEXT_CONTINUE_STRATEGY = "continue_strategy"
 #: 阶段一全局关键问题的总预算。超过后服务端不再接受新问题。
 MAX_V1_QUESTIONS = 3
 
@@ -737,6 +739,8 @@ async def _run_assessment(
     )
     persisted = {q.v1_key: (q.v1_analysis or {}) for q in questions if q.v1_key}
 
+    from_problem_structure = session.v1_stage == V1_PROBLEM_STRUCTURE
+    synthesized = False
     if strategy_values and _strategy_ready(persisted, assessment):
         await _ensure_strategy_questions(db, ctx, strategy_values)
         merged = dict(session.v1_strategy or {})
@@ -745,8 +749,9 @@ async def _run_assessment(
         merged["tradeoff"] = assessment.strategy_tradeoff or merged.get("tradeoff", "")
         merged["confirmed"] = False
         session.v1_strategy = merged
-        if session.v1_stage in (V1_GOAL_REFRAME, V1_FACTOR_ANALYSIS):
+        if session.v1_stage in (V1_GOAL_REFRAME, V1_FACTOR_ANALYSIS, V1_PROBLEM_STRUCTURE):
             session.v1_stage = V1_STRATEGY_DRAFT
+        synthesized = True
 
     thesis = assessment.strategic_thesis or assessment.global_assessment
     if thesis:
@@ -791,6 +796,11 @@ async def _run_assessment(
         session.v1_question = None
     if session.v1_stage == V1_INITIAL_THINKING:
         session.v1_stage = V1_GOAL_REFRAME
+    # P2.3:非终态阶段不允许“idle + 无问题 + 无 CTA + 无战略”。
+    if session.v1_stage == V1_PROBLEM_STRUCTURE:
+        session.v1_next_action = None if synthesized else NEXT_CONTINUE_STRATEGY
+    else:
+        session.v1_next_action = None
     session.phase = ReasoningSessionPhase.ROADMAP_DRAFT
     session.status = ReasoningSessionStatus.READY
     session.v1_status = V1_STATUS_IDLE
@@ -915,6 +925,25 @@ async def _run_assessment(
             focus_key=session.v1_focus_key,
             summary="形成战略路径草案。",
             payload={"strategy": session.v1_strategy},
+        )
+        if from_problem_structure:
+            await _audit(
+                db,
+                ctx,
+                session,
+                "problem_structure_synthesized",
+                stage_before=V1_PROBLEM_STRUCTURE,
+                stage_after=session.v1_stage,
+                summary="problem_structure 中主动完成第一版战略路径。",
+                payload={"strategy": session.v1_strategy},
+            )
+        await _audit(
+            db,
+            ctx,
+            session,
+            "strategy_review_ready",
+            stage_after=session.v1_stage,
+            summary="战略草案已就绪,等用户确认或调整。",
         )
     await db.commit()
     return result
@@ -1731,6 +1760,10 @@ async def select_candidate_direction(
     """
     from backend.services.errors import InvalidInput
 
+    # P2.3:候选方向只属于 goal_reframe。目标定义确认后必须走“重新选择起点”。
+    if session.v1_stage != V1_GOAL_REFRAME:
+        await _guard_reject(db, ctx, session, reason="目标定义已确认,请先“重新选择起点”。")
+        raise InvalidInput("目标定义已确认;如要改方向,请先选择“重新选择起点”。")
     directions = [d for d in (session.v1_candidate_directions or []) if isinstance(d, dict)]
     valid = {str(d.get("key")) for d in directions}
     if key not in valid:
@@ -1782,15 +1815,24 @@ async def select_candidate_direction(
 
 
 async def confirm_goal_definition(
-    db: AsyncSession, ctx: WorkspaceContext, session: GoalReasoningSession
+    db: AsyncSession,
+    ctx: WorkspaceContext,
+    session: GoalReasoningSession,
+    reasoner=None,
 ) -> AgentTurnResponse:
-    """用户确认目标定义:才从 goal_reframe 转入 problem_structure。"""
+    """用户确认目标定义:进入 problem_structure,并**自动发起一次战略合成回合**。
+
+    P2.3:确认后绝不是“idle 无下一步”。自动合成要么形成战略草案(等确认),
+    要么留下显式 CTA `continue_strategy`。
+    """
     from backend.services.errors import InvalidInput
 
     if session.v1_stage != V1_GOAL_REFRAME:
         await _guard_reject(db, ctx, session, reason="当前不在目标重构阶段。")
         raise InvalidInput("当前不在目标重构阶段。")
     session.v1_stage = V1_PROBLEM_STRUCTURE
+    #: 先给一个明确 CTA;合成成功后会被清掉。
+    session.v1_next_action = NEXT_CONTINUE_STRATEGY
     await _audit(
         db,
         ctx,
@@ -1799,6 +1841,109 @@ async def confirm_goal_definition(
         stage_before=V1_GOAL_REFRAME,
         stage_after=V1_PROBLEM_STRUCTURE,
         summary="用户确认了目标定义,进入问题结构。",
+    )
+    await _audit(
+        db,
+        ctx,
+        session,
+        "problem_structure_entered",
+        stage_before=V1_GOAL_REFRAME,
+        stage_after=V1_PROBLEM_STRUCTURE,
+        summary="进入问题结构,自动发起战略路径合成。",
+    )
+    await db.commit()
+    if reasoner is None:
+        return await reasoning_service._response(db, ctx, session, changed=True)
+
+    result = await _run_assessment(
+        db,
+        ctx,
+        session,
+        user_message=(
+            "目标定义已确认。请基于已有目标定义、已采用的起点与已知事实,"
+            "主动识别可控变量、主要风险与关键杠杆,形成第一版战略路径;不要再问新问题。"
+        ),
+        reasoner=reasoner,
+        classification=INPUT_USER_PREFERENCE,
+        force_no_question=True,
+        trigger="problem_structure_entered",
+    )
+    await _append_assistant(
+        db,
+        ctx,
+        reply=result.reply,
+        conversation=await conversation_service.get_or_create_primary_conversation(db, ctx),
+        result=result,
+    )
+    await db.commit()
+    return await reasoning_service._response(db, ctx, session, changed=True)
+
+
+async def continue_strategy(
+    db: AsyncSession,
+    ctx: WorkspaceContext,
+    session: GoalReasoningSession,
+    reasoner=None,
+) -> AgentTurnResponse:
+    """`responseMode=none` 的兜底 CTA:受控地再跑一次战略合成回合。"""
+    from backend.services.errors import InvalidInput
+
+    if session.v1_stage not in (V1_PROBLEM_STRUCTURE, V1_FACTOR_ANALYSIS):
+        await _guard_reject(db, ctx, session, reason="当前不在问题结构阶段。")
+        raise InvalidInput("当前不在问题结构阶段。")
+    await _audit(
+        db,
+        ctx,
+        session,
+        "strategy_continue_triggered",
+        stage_before=session.v1_stage,
+        summary="用户触发继续形成战略路径。",
+    )
+    await db.commit()
+    if reasoner is None:
+        return await reasoning_service._response(db, ctx, session, changed=True)
+    result = await _run_assessment(
+        db,
+        ctx,
+        session,
+        user_message="请基于已有分析继续形成第一版战略路径;不要再问新问题。",
+        reasoner=reasoner,
+        classification=INPUT_USER_PREFERENCE,
+        force_no_question=True,
+        trigger="strategy_continue",
+    )
+    await _append_assistant(
+        db,
+        ctx,
+        reply=result.reply,
+        conversation=await conversation_service.get_or_create_primary_conversation(db, ctx),
+        result=result,
+    )
+    await db.commit()
+    return await reasoning_service._response(db, ctx, session, changed=True)
+
+
+async def reopen_direction_selection(
+    db: AsyncSession, ctx: WorkspaceContext, session: GoalReasoningSession
+) -> AgentTurnResponse:
+    """用户明确要求“重新选择起点”:回到 goal_reframe,重新开放候选方向。"""
+    from backend.services.errors import InvalidInput
+
+    if not session.v1_candidate_directions:
+        await _guard_reject(db, ctx, session, reason="还没有可重新选择的候选方向。")
+        raise InvalidInput("还没有可重新选择的候选方向。")
+    stage_before = session.v1_stage
+    session.v1_stage = V1_GOAL_REFRAME
+    session.v1_selected_direction = None
+    session.v1_next_action = None
+    await _audit(
+        db,
+        ctx,
+        session,
+        "direction_reselection_started",
+        stage_before=stage_before,
+        stage_after=V1_GOAL_REFRAME,
+        summary="用户选择重新选择起点,回到目标重构。",
     )
     await db.commit()
     return await reasoning_service._response(db, ctx, session, changed=True)
@@ -1891,6 +2036,7 @@ async def confirm_strategy(
 __all__ = [
     "ALLOWED_V1_KEYS",
     "ANALYSIS_DIMENSION_KEYS",
+    "NEXT_CONTINUE_STRATEGY",
     "V1_COARSE_TIMELINE_REVIEW",
     "V1_FACTOR_ANALYSIS",
     "V1_GOAL_REFRAME",
@@ -1908,6 +2054,7 @@ __all__ = [
     "classify_user_message",
     "confirm_goal_definition",
     "confirm_strategy",
+    "continue_strategy",
     "dimension_projection",
     "dimension_title",
     "generate_coarse_timeline",
@@ -1917,6 +2064,7 @@ __all__ = [
     "is_v1",
     "on_proposal_confirmed",
     "record_feedback",
+    "reopen_direction_selection",
     "select_candidate_direction",
     "visible_dimension_keys",
     "weekend_review",

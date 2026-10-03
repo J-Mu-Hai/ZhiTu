@@ -205,6 +205,10 @@ class GoalReasoningView(ApiModel):
     v1_actual_pending_question_count: int = 0
     #: P2.2:十维 + 四战略的分析维度投影(key / title / visible / isFocus / requiresResponse)。
     v1_dimensions: list[dict] = Field(default_factory=list)
+    #: P2.3:显式下一步动作(如 `continue_strategy`)。非终态阶段不允许“无下一步”。
+    v1_next_action: str | None = None
+    #: P2.3:是否仍可切换候选起点(只在 goal_reframe)。
+    v1_can_reselect_direction: bool = False
     #: P5:该空间是否允许导出决策审计记录(`AGENT_AUDIT_EXPORT`)。前端据此显示/隐藏入口。
     v1_audit_export_enabled: bool = False
     #: 阶段 11:时间架构里的日期是否已校准。False = 只有相对周,不伪造日历日期。

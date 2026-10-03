@@ -408,6 +408,9 @@ async def build_view(
         v1_hidden_analysis_count=v1_hidden_count,
         v1_actual_pending_question_count=v1_pending_questions,
         v1_dimensions=v1_dimensions,
+        v1_next_action=session.v1_next_action,
+        #: 候选起点只在 goal_reframe 可切换;一旦确认目标定义就收起。
+        v1_can_reselect_direction=session.v1_stage == "goal_reframe",
         #: P5:只有 V1 空间且开关打开时才允许导出审计记录。
         v1_audit_export_enabled=bool(settings.agent_audit_export and session.v1_stage is not None),
         dates_calibrated=session.dates_calibrated,

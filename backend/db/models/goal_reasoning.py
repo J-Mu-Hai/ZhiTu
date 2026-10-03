@@ -167,6 +167,9 @@ class GoalReasoningSession(UuidPk, TimestampMixin, Base):
     v1_last_focus_key: Mapped[str | None] = mapped_column(String(48))
     #: 连续“低信息/不确定/元对话”回答的轮数;>=2 时必须给候选方向或暂定综合。
     v1_low_info_streak: Mapped[int | None] = mapped_column(Integer)
+    #: P2.3:当前阶段**显式下一步动作**。非终态阶段不允许“无问题、无 CTA、无战略草案”。
+    #: 取值如 `continue_strategy`;None = 当前没有额外 CTA(已有待确认问题/战略)。
+    v1_next_action: Mapped[str | None] = mapped_column(String(32))
 
     nodes: Mapped[list[ReasoningNode]] = relationship(
         back_populates="session", cascade="all, delete-orphan"

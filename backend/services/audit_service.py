@@ -75,6 +75,12 @@ AUDIT_EVENT_TYPES = frozenset(
         "provisional_synthesis_created",
         "conversation_feedback_received",
         "goal_definition_confirmed",
+        # P2.3:消除 problem_structure 空转,建立战略路径自动推进。
+        "problem_structure_entered",
+        "problem_structure_synthesized",
+        "strategy_review_ready",
+        "direction_reselection_started",
+        "strategy_continue_triggered",
     }
 )
 

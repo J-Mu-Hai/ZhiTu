@@ -298,11 +298,43 @@ async def v1_select_direction(
 async def v1_confirm_goal_definition(
     ctx: WorkspaceContext = Depends(get_workspace_context),
     db: AsyncSession = Depends(get_db),
+    reasoner: Reasoner = Depends(get_reasoner),
 ) -> AgentTurnResponse:
     from backend.services import v1_service
 
     session = await _v1_session(ctx, db)
-    return await v1_service.confirm_goal_definition(db, ctx, session)
+    return await v1_service.confirm_goal_definition(db, ctx, session, reasoner)
+
+
+@router.post(
+    "/{workspace_id}/agent/v1/strategy/continue",
+    response_model=AgentTurnResponse,
+    summary="规划智能体 V1:继续形成战略路径(responseMode=none 的兑底 CTA)",
+)
+async def v1_continue_strategy(
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+    reasoner: Reasoner = Depends(get_reasoner),
+) -> AgentTurnResponse:
+    from backend.services import v1_service
+
+    session = await _v1_session(ctx, db)
+    return await v1_service.continue_strategy(db, ctx, session, reasoner)
+
+
+@router.post(
+    "/{workspace_id}/agent/v1/direction/reopen",
+    response_model=AgentTurnResponse,
+    summary="规划智能体 V1:重新选择起点(回到 goal_reframe)",
+)
+async def v1_reopen_direction(
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+) -> AgentTurnResponse:
+    from backend.services import v1_service
+
+    session = await _v1_session(ctx, db)
+    return await v1_service.reopen_direction_selection(db, ctx, session)
 
 
 @router.get(

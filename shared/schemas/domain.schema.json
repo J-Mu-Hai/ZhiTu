@@ -2193,6 +2193,11 @@
           "title": "V1Auditexportenabled",
           "type": "boolean"
         },
+        "v1CanReselectDirection": {
+          "default": false,
+          "title": "V1Canreselectdirection",
+          "type": "boolean"
+        },
         "v1CandidateDirections": {
           "anyOf": [
             {
@@ -2269,6 +2274,18 @@
           ],
           "default": null,
           "title": "V1Judgment"
+        },
+        "v1NextAction": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "V1Nextaction"
         },
         "v1Question": {
           "anyOf": [
