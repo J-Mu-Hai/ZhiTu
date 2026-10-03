@@ -53,7 +53,7 @@ import type { GrowthEdge, GrowthNode, GrowthRelationType } from '@/types/growth'
 import { SpaceFiles } from './SpaceFiles';
 import { CanvasQuestionNodeComponent, QuestionInteractionContext, type CanvasQuestionDraft, type QuestionFlowNode, type QuestionInteraction } from './CanvasQuestionNode';
 import { ReasoningNodeComponent, type ReasoningFlowNode } from './ReasoningNode';
-import type { ReasoningNodeView } from '@/lib/backend';
+import { downloadV1Audit, type ReasoningNodeView } from '@/lib/backend';
 
 type GrowthFlowData = {
   object: GrowthNode;
@@ -752,6 +752,20 @@ function Canvas() {
   );
   const openReasoningNode = reasoning?.nodes.find((item) => item.handle === openReasoningHandle) ?? null;
   const [submitting, setSubmitting] = useState(false);
+  /** 规划智能体重构 V1(P5):决策审计导出。仅在 V1 + 开关打开时可用。 */
+  const [auditNote, setAuditNote] = useState<string | null>(null);
+  const exportV1Audit = useCallback(
+    async (withJson: boolean) => {
+      setAuditNote(null);
+      try {
+        await downloadV1Audit(workspaceId, 'markdown');
+        if (withJson) await downloadV1Audit(workspaceId, 'json');
+      } catch (cause) {
+        setAuditNote(cause instanceof Error ? cause.message : '导出失败,请重试。');
+      }
+    },
+    [workspaceId],
+  );
   /**
    * 当前选中的**边**。与节点的 `selectedId` 是两回事:`selectedId` 决定"聚焦所选"
    * 和节点高亮,这个只决定哪条线是加粗的。
@@ -1893,6 +1907,13 @@ function Canvas() {
           <button disabled={!canCreate} title={canCreate ? undefined : '正在读取计划…'} onClick={() => { setPlanError(null); patchDraft({ dialog: 'node' }); }}><Plus size={15}/>{createLabel}</button>
           <button disabled={!canCreate || relationCandidates.length < 2} title={relationCandidates.length < 2 ? '这一层至少要有两个节点才能连关系' : undefined} onClick={() => openRelationForm()}><GitBranch size={15}/>建立关系</button>
           <button onClick={() => setArchiveOpen(true)} title="看看这个空间归档过什么,把想留的恢复回来"><Archive size={15}/>归档 <small>{archived.length || ''}</small></button>
+          {/* 规划智能体重构 V1(P5):决策审计导出。**只在 V1 且开关打开时出现**,不占常驻 UI。 */}
+          {Boolean(reasoning?.v1Stage) && reasoning?.v1AuditExportEnabled && (
+            <>
+              <button onClick={() => void exportV1Audit(false)} title="下载本次规划的决策记录(Markdown)"><FileText size={15}/>导出本次规划记录</button>
+              <button onClick={() => void exportV1Audit(true)} title="同时下载 JSON(供 Codex 分析)"><FileText size={15}/>同时下载 JSON</button>
+            </>
+          )}
         </div></details>
         {/* 布局没存上。**拖动是可以悄悄失败的操作** —— 画面上节点就停在你放手的地方,
             而库里没有,刷新之后它回到原处,中间没有任何东西提示过你。所以这一行必须
@@ -1911,6 +1932,12 @@ function Canvas() {
           <div className="layout-history-note" role="status">
             <span>{historyNote}</span>
             <button onClick={() => setHistoryNote(null)}>知道了</button>
+          </div>
+        )}
+        {auditNote && (
+          <div className="layout-save-error" role="alert">
+            <span>{auditNote}</span>
+            <button onClick={() => setAuditNote(null)}>知道了</button>
           </div>
         )}
       </div>

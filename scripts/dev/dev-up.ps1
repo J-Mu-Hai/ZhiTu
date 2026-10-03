@@ -471,6 +471,9 @@ $env:AGENT_REASONER = $resolved.Reasoner
 # 规划智能体 V0.1:本地完整体验默认走新的三阶段工作流。
 # 它只影响**新建**目标空间;老 workspace 的 `workflow_stage` 为 NULL,行为不变。
 $env:V01_PLANNING = 'on'
+# 规划智能体重构 V1(P5):本地开发允许导出决策审计记录。
+# **只在本地体验里开**;生产保持默认关闭(AGENT_AUDIT_EXPORT=false)。
+$env:AGENT_AUDIT_EXPORT = 'on'
 if ($resolved.Effective -eq 'Script') {
   $env:ZHITU_SCRIPTED_ACTIONS = $Fixture
 } else {

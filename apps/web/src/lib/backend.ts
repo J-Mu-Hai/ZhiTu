@@ -6,7 +6,7 @@
  * 注释,是硬边界 —— 前端对象不能整块丢进请求体,必须挑字段。
  */
 
-import { apiFetch } from './api';
+import { API_BASE, ApiError, apiFetch, getToken } from './api';
 
 // ---------------------------------------------------------------------------------
 // 身份
@@ -1907,6 +1907,8 @@ export interface GoalReasoningView {
   v1Status: string | null;
   /** 上一次 V1 模型回合失败的可读原因。 */
   v1Error: string | null;
+  /** P5:是否允许导出决策审计记录(后端 `AGENT_AUDIT_EXPORT`)。 */
+  v1AuditExportEnabled: boolean;
   /** 阶段 11:时间架构里的日期是否已校准。false = 只有相对周,不伪造日历日期。 */
   datesCalibrated: boolean;
   exploredAt: string | null;
@@ -1983,6 +1985,45 @@ export function generateV1Daily(workspaceId: string): Promise<AgentTurnResponse>
     `/api/workspaces/${workspaceId}/agent/v1/daily/generate`,
     { method: 'POST', body: {} },
   );
+}
+
+/**
+ * 规划智能体重构 V1(P5):下载决策审计记录(Markdown / JSON)。
+ *
+ * 直接取原始响应并触发浏览器下载 —— 不能用 `apiFetch`(它只解析 JSON,而 Markdown
+ * 不是 JSON,且我们要的是**文件**而不是内存对象)。
+ */
+export async function downloadV1Audit(
+  workspaceId: string,
+  format: 'markdown' | 'json',
+): Promise<void> {
+  const token = getToken();
+  const response = await fetch(
+    `${API_BASE}/api/workspaces/${workspaceId}/agent/v1/audit-export?format=${format}`,
+    { headers: token ? { Authorization: `Bearer ${token}` } : {} },
+  );
+  if (!response.ok) {
+    let message = `导出失败（${response.status}）。`;
+    try {
+      const body = (await response.json()) as { error?: { message?: string } };
+      message = body.error?.message ?? message;
+    } catch {
+      /* 响应不是 JSON:用上面的默认文案。 */
+    }
+    throw new ApiError(response.status, 'AUDIT_EXPORT_FAILED', message);
+  }
+  const blob = await response.blob();
+  const disposition = response.headers.get('Content-Disposition') ?? '';
+  const matched = /filename="([^"]+)"/.exec(disposition);
+  const filename = matched?.[1] ?? `agent-audit.${format === 'json' ? 'json' : 'md'}`;
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
 }
 
 /** 规划智能体重构 V1(P4):周末回顾入口 —— 汇总完成度并准备未来重规划草案。 */
