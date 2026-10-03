@@ -78,8 +78,9 @@ const AGENT_ACTIVITY_LABELS: Record<string, string> = {
 
 /** 步骤 -> 文案。与服务端 `current_step` 一一对应。 */
 const AGENT_STEP_TEXT: Record<string, string> = {
-  queued: '正在准备上下文…',
-  resolving_context: '正在准备上下文…',
+  // 它说的是“我还在处理”,**不是“准备好了”**。用“正在思考”避免歧义。
+  queued: '正在思考…',
+  resolving_context: '正在思考…',
   waiting_model: '正在等待模型响应',
   running_tool: '正在执行工具…',
   retrying: '正在校验路线结构…',

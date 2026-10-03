@@ -784,17 +784,6 @@ function Canvas() {
    * 空间;点“思考层”才展开。它是纯 UI 状态,不进任何存储、不影响主路线。
    */
   const [showThinking, setShowThinking] = useState(false);
-  /** P2.2:是否展开“其余维度”。默认只显示 focus + 可见分析维度。 */
-  const [v1ShowAll, setV1ShowAll] = useState(false);
-  /** 当前分组里被隐藏的分析维度数(用于“其余维度(N)”入口)。 */
-  const v1HiddenInGroup = reasoning?.v1Stage
-    ? questions.filter(
-        (item) =>
-          item.sourceNodeId === spaceId &&
-          item.presentation !== 'conversation_intake' &&
-          item.v1Visible === false,
-      ).length
-    : 0;
   const lastQuestionFocusNonce = useRef<number>(-1);
   //: 每个问题节点的输入草稿。放在这里而不是节点组件里 —— React Flow 重建节点时
   //: 组件局部 state 会被清空(点了选项按钮又变灰)。
@@ -1177,10 +1166,9 @@ function Canvas() {
     // 判据就是问题的 `sourceNodeId` 是否等于当前空间根。
     const v1Space = Boolean(reasoning?.v1Stage);
     // P2.2:内部十维默认只显示可见的;其余靠“其余维度(N)”显式展开。
+    // P2.3.1:不再用“其余维度”按钮收束 —— 进入分组就把该组所有分析节点整齐排出来。
     const shownQuestions = v1Space
-      ? orderedQuestions.filter(
-          (item) => item.sourceNodeId === spaceId && (v1ShowAll || item.v1Visible !== false),
-        )
+      ? orderedQuestions.filter((item) => item.sourceNodeId === spaceId)
       : roadmapExists
         ? orderedQuestions.filter((item) => item.id === primaryQuestionId)
         : [];
@@ -1196,13 +1184,11 @@ function Canvas() {
       // 保证同一锚点下多个问题不堆叠、刷新前后一致。
       // 放在锚点(根目标)的**留白侧**：根的直接子节点在它右侧 y≈30，
       // 主路线在它正下方。把问题卡放在“右侧偏下”那一块，既不压业务节点也不压路线。
-      // V1 的紫色问题节点**围绕分组根节点**匀开;非 V1 保持原来的右侧偏下位置。
+      // V1:分析节点在**根节点右侧整齐排成一列**(垂直居中于根节点),不来回绕圈。
+      // 非 V1 保持原来的右侧偏下位置。
       const count = Math.max(1, shownQuestions.length);
       const fallback = v1Space
-        ? {
-            x: anchor.x + Math.cos((index / count) * Math.PI * 2) * 330,
-            y: anchor.y + Math.sin((index / count) * Math.PI * 2) * 230,
-          }
+        ? { x: anchor.x + 360, y: anchor.y + (index - (count - 1) / 2) * 150 }
         : { x: anchor.x + 380, y: anchor.y + 200 };
       const placed = questionDragging[positionKey] ?? questionPositions[positionKey] ?? fallback;
       nextNodes.push({
@@ -1399,7 +1385,7 @@ function Canvas() {
       });
     });
     return { nodes: nextNodes, edges: nextEdges };
-  }, [growth, spaceId, isRootSpace, selectedId, selectedEdgeId, positions, dragging, questionPositions, questionDragging, files, measurements, handleMore, createdId, drawnEdgeId, clearCreated, clearDrawn, questions, focusedQuestionId, reasoning, showThinking, v1ShowAll]);
+  }, [growth, spaceId, isRootSpace, selectedId, selectedEdgeId, positions, dragging, questionPositions, questionDragging, files, measurements, handleMore, createdId, drawnEdgeId, clearCreated, clearDrawn, questions, focusedQuestionId, reasoning, showThinking]);
 
   /*
    * hover / 拖动的高亮**只作用在边对象上**。
@@ -1916,12 +1902,7 @@ function Canvas() {
         <button disabled={!canUndo} title={canUndo ? '撤销上一次移动节点（Ctrl+Z）' : '还没有可以撤销的移动'} aria-label="撤销" onClick={() => undoLayout()}><Undo2 size={15}/></button>
         <button disabled={!canRedo} title={canRedo ? '重做上一次移动（Ctrl+Shift+Z）' : '没有可以重做的移动'} aria-label="重做" onClick={() => redoLayout()}><Redo2 size={15}/></button>
         <button onClick={() => patchDraft({ dialog: 'files' })}><FolderOpen size={15}/>空间文件 <small>{files.filter(file => file.ownerId === spaceId).length || ''}</small></button>
-        {/* P2.2:进入分组后最多显示 focus + 少量相关维度;其余靠这个入口展开。 */}
-        {Boolean(reasoning?.v1Stage) && v1HiddenInGroup > 0 && (
-          <button onClick={() => setV1ShowAll((value) => !value)}>
-            {v1ShowAll ? '收起其余维度' : `其余维度 (${v1HiddenInGroup})`}
-          </button>
-        )}
+
         <details className="canvas-tools-menu"><summary aria-label="更多空间操作"><MoreHorizontal size={17}/>{archived.length ? <small>{archived.length}</small> : null}</summary><div className="canvas-tools-popover" onClick={event => { if ((event.target as HTMLElement).closest('button:not(:disabled)')) event.currentTarget.closest('details')?.removeAttribute('open'); }}>
           <p>双击空白处也可以新建节点，右键节点可以打开节点操作。</p>
           <button disabled={!canCreate} title={canCreate ? undefined : '正在读取计划…'} onClick={() => { setPlanError(null); patchDraft({ dialog: 'node' }); }}><Plus size={15}/>{createLabel}</button>
