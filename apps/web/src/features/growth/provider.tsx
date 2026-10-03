@@ -1163,6 +1163,18 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     [refreshPlan, refreshProposals, space.id],
   );
 
+  /** 规划智能体重构 V1(P2.2):确认目标定义,进入问题结构。 */
+  const confirmV1Goal = useCallback(async () => {
+    try {
+      const response = await backend.confirmV1Goal(space.id);
+      setReasoning(response.reasoning);
+      return response;
+    } catch (cause) {
+      setSendError(cause instanceof ApiError ? cause.message : '确认目标定义失败,请重试。');
+      return null;
+    }
+  }, [space.id]);
+
   /** 规划智能体重构 V1(P2.1):选择一个候选方向(用户纠正/选择 AI 的解释)。 */
   const selectV1Direction = useCallback(
     async (key: string) => {
@@ -2357,7 +2369,7 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     // `ensureStrategicIntake` 是显式目标空间的入口(阶段 12 P0);`ensureReasoningMap`
     // 保留给既有调用点,内部委托前者。
     reasoning, reasoningLoading, ensureStrategicIntake, ensureReasoningMap, refreshReasoning, agentTurn, editReasoningNode,
-    confirmV1Strategy, runV1PlanStep, selectV1Direction,
+    confirmV1Strategy, confirmV1Goal, runV1PlanStep, selectV1Direction,
     refineStrategy, refining, requestChat, chatRequestNonce,
     replan, replanState,
     // 上一轮是不是基于已经变过的输入(见 `inputChanged` 的注释),以及"重新分析"

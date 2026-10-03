@@ -216,9 +216,11 @@ function IntakeChips({
  * 被"截止时间/每周投入"干扰。`replan` 入口只在**已确认战略 + 存在执行计划**时才出现。
  */
 export function ConversationPanel() {
-  const { growth, selectedId, select, messages, remoteProposals, proposalErrors, inputChanged, deciding, confirmRemote, rejectRemote, replan, replanState, send, retry, sending, sendError, retryable, historyLoading, messagesTruncated, spaceId, questions, focusQuestion, openTrace, traceAvailability, reasoning, agentStatus, confirmV1Strategy, runV1PlanStep, selectV1Direction, requestChat } = useDemo();
+  const { growth, selectedId, select, messages, remoteProposals, proposalErrors, inputChanged, deciding, confirmRemote, rejectRemote, replan, replanState, send, retry, sending, sendError, retryable, historyLoading, messagesTruncated, spaceId, questions, focusQuestion, openTrace, traceAvailability, reasoning, agentStatus, confirmV1Strategy, confirmV1Goal, runV1PlanStep, selectV1Direction, requestChat } = useDemo();
   const [input, setInput] = useState('');
   const [showContexts, setShowContexts] = useState(false);
+  /** P2.2:候选方向选择中 —— 立刻禁用按钮,避免重复点击。 */
+  const [v1Selecting, setV1Selecting] = useState(false);
   /** 输入框的 DOM 元素。高度按内容算(见下面那个 effect)。 */
   const composer = useRef<HTMLTextAreaElement>(null);
   const bottom = useRef<HTMLDivElement>(null);
@@ -277,7 +279,9 @@ export function ConversationPanel() {
    */
   const v1Initial = reasoning?.v1Stage === 'initial_thinking';
   /** 规划智能体重构 V1(P2.1):当前战略判断 + 候选方向。**判断优先,不默认提问。** */
+  const isV1 = Boolean(reasoning?.v1Stage);
   const v1Thesis = reasoning?.v1StrategicThesis ?? null;
+  const v1GoalConfirmable = reasoning?.v1Stage === 'goal_reframe' && Boolean(reasoning?.v1StrategicThesis);
   const v1Directions = reasoning?.v1CandidateDirections ?? [];
   const v1SelectedDirection = reasoning?.v1SelectedDirection ?? null;
   /** 规划智能体重构 V1(P2):需要**在对话框回答**的问题(橙色),不是画布上的紫色问题节点。 */
@@ -379,7 +383,7 @@ export function ConversationPanel() {
        * 它取代了正文里那张大卡片 —— 同一件事只在一处说,而且不占正文空间。
        * 只在存在活动问题时出现;回答仍然只在画布的 Question Node 里完成。
        */}
-      {primaryQuestion && primaryQuestion.presentation !== 'conversation_intake' && (
+      {!isV1 && primaryQuestion && primaryQuestion.presentation !== 'conversation_intake' && (
         <QuestionStatusBar
           count={questions.length}
           processing={primaryQuestion.status === 'answered' || primaryQuestion.status === 'investigating'}
@@ -699,13 +703,38 @@ export function ConversationPanel() {
                 key={direction.key}
                 type="button"
                 className={direction.key === v1SelectedDirection ? 'is-selected' : ''}
-                onClick={() => void selectV1Direction(direction.key)}
+                disabled={v1Selecting}
+                onClick={() => {
+                  setV1Selecting(true);
+                  void selectV1Direction(direction.key).finally(() => setV1Selecting(false));
+                }}
               >
                 <strong>{direction.title}</strong>
                 {direction.reason && <span>{direction.reason}</span>}
                 {direction.path && <em>{direction.path}</em>}
               </button>
             ))}
+          </div>
+        )}
+
+        {/* 规划智能体重构 V1(P2.2):确认目标定义后,才进入“问题结构”。不跳时间线。 */}
+        {v1GoalConfirmable && (
+          <div className="v1-goal-confirm">
+            <button
+              type="button"
+              disabled={sending || v1Selecting}
+              onClick={() => void confirmV1Goal()}
+            >
+              确认这个目标定义
+            </button>
+            <button
+              type="button"
+              className="text-button"
+              disabled={sending || v1Selecting}
+              onClick={requestChat}
+            >
+              继续修改理解
+            </button>
           </div>
         )}
 

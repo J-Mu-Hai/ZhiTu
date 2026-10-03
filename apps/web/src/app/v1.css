@@ -109,6 +109,29 @@
   color: var(--blue-ink, #2f6da3);
 }
 
+/* ---- V1(P2.2):分析节点标题 + 确认目标定义 ---- */
+.canvas-question-node .cq-v1-title {
+  display: block;
+  margin: 6px 0 2px;
+  font-size: 12.5px;
+  color: var(--text, #304b62);
+}
+.v1-goal-confirm {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+.v1-goal-confirm > button:first-child {
+  padding: 6px 12px;
+  border-radius: 8px;
+  background: var(--blue-ink, #2f6da3);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+}
+
 /* ---- V1(P2.1):未聚焦的分析节点不显示答题控件 ---- */
 .canvas-question-node .cq-open-hint {
   font-size: 10px;

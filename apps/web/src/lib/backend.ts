@@ -403,6 +403,12 @@ export interface QuestionView {
   v1Key: string | null;
   /** 模型对该问题的可审阅判断。null = 还没有判断。 */
   v1Analysis: V1NodeAnalysis | null;
+  /** P2.2:固定分析维度的展示标题。 */
+  v1Title: string | null;
+  /** P2.2:当前是否在画布默认可见。 */
+  v1Visible: boolean;
+  /** P2.2:是否真的是需要用户回答的问题(分析维度恒为 false)。 */
+  v1RequiresResponse: boolean;
   createdAt: string;
   updatedAt: string;
   answeredAt: string | null;
@@ -671,6 +677,15 @@ export interface V1NodeAnalysis {
   status: 'unexplored' | 'discussing' | 'resolved' | 'deferred';
   impactedNodeKeys: string[];
   discussionCount: number;
+}
+
+/** 规划智能体重构 V1(P2.2):一个内部分析维度的可见性投影。 */
+export interface V1DimensionView {
+  key: string;
+  title: string;
+  visible: boolean;
+  isFocus: boolean;
+  requiresResponse: boolean;
 }
 
 /** 规划智能体重构 V1(P2.1):一个候选方向(可被用户选择/修正/否定)。 */
@@ -1921,6 +1936,14 @@ export interface GoalReasoningView {
   v1CandidateDirections: V1CandidateDirection[] | null;
   /** P2.1:用户选择的候选方向键。 */
   v1SelectedDirection: string | null;
+  /** P2.2:当前画布默认可见的分析维度键(内部十维 ≠ 十个待回答问题)。 */
+  v1VisibleAnalysisKeys: string[];
+  /** P2.2:当前隐藏的分析维度数(通过“其余维度(N)”展开)。 */
+  v1HiddenAnalysisCount: number;
+  /** P2.2:真正需要用户回答的问题数(0 或 1)。 */
+  v1ActualPendingQuestionCount: number;
+  /** P2.2:分析维度投影。 */
+  v1Dimensions: V1DimensionView[];
   /** P5:是否允许导出决策审计记录(后端 `AGENT_AUDIT_EXPORT`)。 */
   v1AuditExportEnabled: boolean;
   /** 阶段 11:时间架构里的日期是否已校准。false = 只有相对周,不伪造日历日期。 */
@@ -2038,6 +2061,14 @@ export async function downloadV1Audit(
   anchor.click();
   anchor.remove();
   URL.revokeObjectURL(url);
+}
+
+/** 规划智能体重构 V1(P2.2):确认目标定义,进入问题结构。 */
+export function confirmV1Goal(workspaceId: string): Promise<AgentTurnResponse> {
+  return apiFetch<AgentTurnResponse>(`/api/workspaces/${workspaceId}/agent/v1/goal/confirm`, {
+    method: 'POST',
+    body: {},
+  });
 }
 
 /** 规划智能体重构 V1(P2.1):选择一个候选方向(用户纠正/选择 AI 的解释)。 */

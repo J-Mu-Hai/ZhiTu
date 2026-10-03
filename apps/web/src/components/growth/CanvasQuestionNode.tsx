@@ -205,7 +205,7 @@ export function CanvasQuestionNodeComponent({ data }: NodeProps<QuestionFlowNode
 
       {/* 规划智能体重构 V1(P2):已知事实与 AI 假设分开展示 —— 事实来自用户/系统,
           假设必须能被认出来是假设。 */}
-      {question.v1Analysis && question.v1Analysis.knownFacts.length > 0 && (
+      {question.v1Analysis && question.v1Analysis.knownFacts.length > 0 && data.isFocused && (
         <ul className="cq-known-facts">
           <li className="cq-label">已知事实</li>
           {question.v1Analysis.knownFacts.map((fact, index) => (
@@ -214,8 +214,16 @@ export function CanvasQuestionNodeComponent({ data }: NodeProps<QuestionFlowNode
         </ul>
       )}
 
-      <span className="cq-label cq-label-question">需要你确认的一点</span>
-      <p className="cq-question">{question.question}</p>
+      {/* P2.2:分析节点默认只显示标题 + 一句判断;长问题文本只在聚焦时出现。 */}
+      {question.v1Title ? (
+        <strong className="cq-v1-title">{question.v1Title}</strong>
+      ) : null}
+      {(!question.v1Title || data.isFocused || processing || resolved) && (
+        <>
+          <span className="cq-label cq-label-question">需要你确认的一点</span>
+          <p className="cq-question">{question.question}</p>
+        </>
+      )}
 
       {processing || resolved ? (
         <p className="cq-status" role="status">
