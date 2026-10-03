@@ -89,6 +89,14 @@ class ReasoningNodeView(ApiModel):
     source: str
     version: int
     updated_at: datetime
+    #: --- 规划智能体重构 V1(P1) ---
+    #: 画布角色:`group`(一级分组) / `analysis`(固定分析容器) / `strategy`(战略容器)。
+    #: None = 非 V1 节点。
+    v1_kind: str | None = None
+    #: V1 固定标识(`current_state` / `true_intent` / …)。**用标识定位,不用标题。**
+    v1_key: str | None = None
+    #: 该分析节点当前**唯一待确认的一件事**。None = 不再需要追问。
+    v1_question: str | None = None
 
 
 class ReasoningLinkView(ApiModel):
@@ -164,6 +172,14 @@ class GoalReasoningView(ApiModel):
     v01_timeline: list[V01TimelineItemView] = Field(default_factory=list)
     #: V0.1:待确认的时间线提案 id。None = 没有待确认草案。
     v01_timeline_proposal_id: uuid.UUID | None = None
+    #: --- 规划智能体重构 V1(P1:阶段一画布与节点讨论) ---
+    #: V1 阶段一档位:`initial_thinking` / `goal_reframe` / `factor_analysis` /
+    #: `strategy_draft`。None = 非 V1(老空间 / V0.1)。
+    v1_stage: str | None = None
+    #: 首轮回答后的整体判断(可审阅结论,不含隐藏思维链)。
+    v1_judgment: str | None = None
+    #: 当前唯一需要回答的全局关键问题。None = 不等待全局回答。
+    v1_question: str | None = None
     #: 阶段 11:时间架构里的日期是否已校准。False = 只有相对周,不伪造日历日期。
     dates_calibrated: bool = False
     input_version: str | None = None

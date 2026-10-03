@@ -1781,6 +1781,15 @@ export interface ReasoningNodeView {
   source: string;
   version: number;
   updatedAt: string;
+  /**
+   * 规划智能体重构 V1:画布角色(`group` / `analysis` / `strategy`)。
+   * null = 非 V1 节点(老地图 / V0.1)。
+   */
+  v1Kind: string | null;
+  /** V1 固定标识(`current_state` / `true_intent` / …)。null = 非 V1。 */
+  v1Key: string | null;
+  /** 该分析节点当前唯一待确认的一件事。null = 不再需要追问。 */
+  v1Question: string | null;
 }
 
 export interface ReasoningLinkView {
@@ -1843,6 +1852,15 @@ export interface GoalReasoningView {
   v01Timeline: V01TimelineItemView[];
   /** V0.1 待确认的时间线提案 id。null = 没有待确认草案。 */
   v01TimelineProposalId: string | null;
+  /**
+   * 规划智能体重构 V1(P1)阶段一档位:`initial_thinking` / `goal_reframe` /
+   * `factor_analysis` / `strategy_draft`。null = 非 V1(老空间 / V0.1)。
+   */
+  v1Stage: string | null;
+  /** 首轮回答后的整体判断(可审阅结论,不含隐藏思维链)。 */
+  v1Judgment: string | null;
+  /** 当前唯一需要回答的全局关键问题。null = 不等待全局回答。 */
+  v1Question: string | null;
   /** 阶段 11:时间架构里的日期是否已校准。false = 只有相对周,不伪造日历日期。 */
   datesCalibrated: boolean;
   exploredAt: string | null;

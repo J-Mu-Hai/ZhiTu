@@ -49,6 +49,12 @@ class Settings(BaseSettings):
     #: **默认关闭** —— 既有 workspace 与既有测试的行为完全不变(会话 `workflow_stage`
     #: 保持 NULL)。本地体验与 V0.1 Demo 通过 `.env` 的 `V01_PLANNING=on` 打开。
     v01_planning: bool = False
+    #: 规划智能体重构 V1(P1:阶段一画布与节点讨论)的开关。
+    #:
+    #: **默认关闭** —— 既有 workspace、V0.1 空间与既有测试完全不变。开启后,**新建**
+    #: 目标空间进入 "先想清楚" 的推理画布(三组固定分析容器),而不是旧的问卷/路线。
+    #: 老空间不迁移:它们的 `v1_stage` 为 NULL,行为与加列之前完全一样。
+    planning_v1: bool = False
     #: 公开研究工具的提供方。**默认 `none` = 不联网**。首期只支持 `tavily`。
     #:
     #: 这是一个**显式开关**:没有配置时如实返回“未配置”,不允许假装查过。

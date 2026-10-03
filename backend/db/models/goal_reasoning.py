@@ -135,6 +135,14 @@ class GoalReasoningSession(UuidPk, TimestampMixin, Base):
     #: 刻意不设外键 —— 与 `focus_reasoning_node_id` 同一取舍:避免 batch 迁移与
     #: 建表顺序上的循环,由服务层保证它指向本空间的提案。
     timeline_proposal_id: Mapped[uuid.UUID | None] = mapped_column()
+    # ---- 规划智能体重构 V1(P1:阶段一画布与节点讨论) ----
+    #: V1 阶段一工作流档位:`initial_thinking` / `goal_reframe` / `factor_analysis` /
+    #: `strategy_draft`。**None = 非 V1**(老空间 / V0.1),行为与加列之前完全一样。
+    v1_stage: Mapped[str | None] = mapped_column(String(32))
+    #: 首轮回答后给用户的**整体判断**(2–4 句,可审阅结论,不含隐藏思维链)。
+    v1_judgment: Mapped[str | None] = mapped_column(Text)
+    #: 当前唯一需要用户回答的**全局关键问题**。一轮最多一个;回答后清空。
+    v1_question: Mapped[str | None] = mapped_column(Text)
 
     nodes: Mapped[list[ReasoningNode]] = relationship(
         back_populates="session", cascade="all, delete-orphan"
@@ -219,6 +227,15 @@ class ReasoningNode(UuidPk, TimestampMixin, Base):
         nullable=False,
     )
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    # ---- 规划智能体重构 V1:画布层级标记(只对 V1 节点有意义) ----
+    #: V1 画布角色:`group`(一级分组) / `analysis`(固定分析容器) / `strategy`
+    #: (空的战略容器)。None = 非 V1 节点。
+    v1_kind: Mapped[str | None] = mapped_column(String(16))
+    #: V1 固定标识:`current_state` / `true_intent` / …。模型与前端都用它定位,
+    #: 不用会漂移的标题。None = 非 V1 节点。
+    v1_key: Mapped[str | None] = mapped_column(String(48))
+    #: 这个分析节点当前**唯一待确认的一件事**。回答后清空,不无限追问。
+    v1_question: Mapped[str | None] = mapped_column(Text)
 
     session: Mapped[GoalReasoningSession] = relationship(back_populates="nodes")
 

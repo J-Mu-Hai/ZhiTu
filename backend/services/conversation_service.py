@@ -347,11 +347,27 @@ async def submit_turn(
     if context_node_id is not None:
         await node_service.load_node(db, ctx, context_node_id)
 
+    # 规划智能体重构 V1(P1):阶段一“初步思考”与节点讨论**不走普通规划回合**,也不
+    # 触发模型。它只写 reasoning 层的分析节点,不生成任务 / 时间线 / 周计划。
+    from backend.services import (  # 延迟 import,避免循环依赖
+        reasoning_service,
+        v1_service,
+    )
+
+    v1_session = await reasoning_service.get_session(db, ctx)
+    if v1_service.is_v1(v1_session):
+        return await v1_service.answer_v1_in_conversation(
+            db,
+            ctx,
+            v1_session,
+            content=text,
+            client_message_id=client_message_id,
+            context_node_id=context_node_id,
+        )
+
     # 阶段 12:战略 intake 正在等回答时,用户这条消息**就是那轮回答**。
     # 交给推理服务在 `strategic_intake` 模式下处理 —— 它只问下一个关键问题,
     # 不创建任何 `agent_questions` / 画布问题节点,也不走普通规划回合。
-    from backend.services import reasoning_service  # 延迟 import,避免循环依赖
-
     if await reasoning_service.is_awaiting_intake_answer(db, ctx):
         return await reasoning_service.answer_intake_in_conversation(
             db,

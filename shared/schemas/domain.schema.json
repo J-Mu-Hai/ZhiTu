@@ -2183,6 +2183,42 @@
           "default": null,
           "title": "V01Timelineproposalid"
         },
+        "v1Judgment": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "V1Judgment"
+        },
+        "v1Question": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "V1Question"
+        },
+        "v1Stage": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "V1Stage"
+        },
         "workflowStage": {
           "anyOf": [
             {
@@ -3766,6 +3802,42 @@
           ],
           "default": null,
           "title": "Userdescription"
+        },
+        "v1Key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "V1Key"
+        },
+        "v1Kind": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "V1Kind"
+        },
+        "v1Question": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "V1Question"
         },
         "version": {
           "title": "Version",

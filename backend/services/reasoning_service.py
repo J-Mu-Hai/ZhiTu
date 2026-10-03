@@ -158,6 +158,14 @@ async def get_or_create_session(
     root = await root_plan_node(db, ctx)
     if root is None:
         return None
+    # 规划智能体重构 V1:开启时优先于 V0.1。新会话停在 `initial_thinking` ——
+    # 画布只有根目标,右侧是大号“初步思考”输入区;用户提交目标后才建分组。
+    # **`workflow_stage` 保持 NULL**,不走 V0.1 状态机。
+    v1_stage = None
+    if settings.planning_v1:
+        from backend.services.v1_service import V1_INITIAL_THINKING  # 延迟 import
+
+        v1_stage = V1_INITIAL_THINKING
     session = GoalReasoningSession(
         workspace_id=ctx.id,
         root_plan_node_id=root.id,
@@ -168,8 +176,11 @@ async def get_or_create_session(
         # 规划智能体 V0.1:新建目标空间走程序控制的三阶段工作流(需显式开启)。
         # 关闭时这一列为 NULL,行为与以前完全一样。
         workflow_stage=(
-            PlanningWorkflowStage.DISCOVERY if settings.v01_planning else None
+            None
+            if v1_stage is not None
+            else (PlanningWorkflowStage.DISCOVERY if settings.v01_planning else None)
         ),
+        v1_stage=v1_stage,
     )
     db.add(session)
     await db.flush()
@@ -277,6 +288,10 @@ def _node_view(node: ReasoningNode, parent_handle: str | None) -> ReasoningNodeV
         source=node.source.value,
         version=node.version,
         updated_at=node.updated_at,
+        #: 规划智能体重构 V1:非 V1 节点三列均为 None,老前端行为不变。
+        v1_kind=node.v1_kind,
+        v1_key=node.v1_key,
+        v1_question=node.v1_question,
     )
 
 
@@ -360,6 +375,10 @@ async def build_view(
             if isinstance(item, dict)
         ],
         v01_timeline_proposal_id=session.timeline_proposal_id,
+        #: 规划智能体重构 V1:非 V1 会话三列均为 None,老前端行为不变。
+        v1_stage=session.v1_stage,
+        v1_judgment=session.v1_judgment,
+        v1_question=session.v1_question,
         dates_calibrated=session.dates_calibrated,
         input_version=session.input_version,
         strategy_proposal_id=session.strategy_proposal_id,
@@ -875,6 +894,18 @@ async def run_space_entered(
     session = await get_or_create_session(db, ctx)
     assert session is not None  # root 存在时必然建得出来
     now = utcnow()
+
+    # 规划智能体重构 V1(P1):阶段一画布与节点讨论由 `v1_service.advance` 推进。
+    # `v1_stage is None` = 非 V1,继续走下面的 V0.1 / intake 逻辑。
+    if session.v1_stage is not None:
+        from backend.services import v1_service  # 延迟 import,避免循环
+
+        trace = agent_trace_service.start_map_trace(
+            ctx, trigger=payload.trigger, context_node_id=root.id
+        )
+        db.add(trace)
+        await db.commit()
+        return await v1_service.advance(db, ctx, root, session, trace=trace)
 
     # 规划智能体 V0.1:新建目标空间由 `v01_service.advance` 按状态机推进。
     # 老会话 `workflow_stage is None`,继续走下面的 intake / 架构逻辑。
@@ -1873,6 +1904,22 @@ async def run_turn(
         return await run_space_entered(
             db, ctx, reasoner, payload=payload, force=payload.trigger == "retry"
         )
+    # 规划智能体重构 V1(P1):节点局部讨论**不走模型、不重建地图**。
+    # 只更新被点开/被回答的 reasoning 节点。老空间 / V0.1 没有 `v1_stage`,不受影响。
+    session = await get_session(db, ctx)
+    if (
+        session is not None
+        and session.v1_stage is not None
+        and payload.reasoning_handle
+        and payload.trigger in ("node_selected", "user_message")
+    ):
+        from backend.services import v1_service  # 延迟 import,避免循环
+
+        return await v1_service.handle_node_turn(db, ctx, session, payload=payload)
+    if session is not None and session.v1_stage is not None:
+        # P1:V1 空间**不接受其它会自动写计划的 Agent turn**(战略确认 / 重新生成路线 /
+        # 进度更新……)。返回当前状态,由 P2/P3/P4 再分别接入。
+        return await _response(db, ctx, session, changed=False)
     if payload.trigger == "regenerate_roadmap":
         return await regenerate_roadmap(db, ctx, reasoner, payload=payload)
     if payload.trigger == "strategy_confirmation":
