@@ -488,8 +488,6 @@ function ReasoningDetail({
   const [title, setTitle] = useState(node.title);
   const [body, setBody] = useState(node.userDescription ?? '');
   const [discuss, setDiscuss] = useState('');
-  // V1 分析节点:详情里要分区展示“暂定判断 / 已知事实 / 尚未确认 / 为什么重要”。
-  const v1Analysis = node.v1Kind === 'analysis';
   useEffect(() => {
     setTitle(node.title);
     setBody(node.userDescription ?? '');
@@ -507,28 +505,9 @@ function ReasoningDetail({
       </label>
       {node.summary && (
         <p className="rd-summary">
-          <span className="rd-label">{v1Analysis ? 'AI 暂定判断' : 'AI 摘要'}</span>
+          <span className="rd-label">AI 摘要</span>
           {node.summary}
         </p>
-      )}
-      {v1Analysis && node.rationale && (
-        <p className="rd-summary">
-          <span className="rd-label">为什么影响整体战略</span>
-          {node.rationale}
-        </p>
-      )}
-      {v1Analysis && (
-        <div className="rd-v1">
-          <p className="rd-label">已知事实</p>
-          {node.evidence.length > 0
-            ? <ul>{node.evidence.map((item, index) => <li key={index}>{item}</li>)}</ul>
-            : <p className="rd-v1-empty">还没有来自你的确认信息。</p>}
-          <p className="rd-label">尚未确认之处</p>
-          {node.assumptions.length > 0
-            ? <ul>{node.assumptions.map((item, index) => <li key={index}>{item}</li>)}</ul>
-            : <p className="rd-v1-empty">没有额外假设。</p>}
-          {node.v1Question && <p className="rd-v1-question">需要你确认：{node.v1Question}</p>}
-        </div>
       )}
       <label className="rd-field">
         <span>你的说明（原文，AI 不会覆盖）</span>
@@ -539,14 +518,14 @@ function ReasoningDetail({
           placeholder="写下你对这个维度的想法…"
         />
       </label>
-      {!v1Analysis && node.evidence.length > 0 && (
+      {node.evidence.length > 0 && (
         <p className="rd-evidence"><span className="rd-label">依据</span>{node.evidence.join('；')}</p>
       )}
       <p className="rd-meta">优先级 {node.priority} · 状态 {node.status}</p>
       <div className="rd-actions">
         <button type="button" onClick={() => onEdit({ title, userDescription: body })}>保存</button>
-        {!v1Analysis && <button type="button" onClick={() => onAgentTurn({ trigger: 'node_selected', reasoningHandle: node.handle })}>自动分析</button>}
-        {!v1Analysis && <button type="button" onClick={() => onAgentTurn({ trigger: 'node_selected', reasoningHandle: node.handle, message: '展开这个维度' })}>展开</button>}
+        <button type="button" onClick={() => onAgentTurn({ trigger: 'node_selected', reasoningHandle: node.handle })}>自动分析</button>
+        <button type="button" onClick={() => onAgentTurn({ trigger: 'node_selected', reasoningHandle: node.handle, message: '展开这个维度' })}>展开</button>
         <button type="button" onClick={() => onEdit({ status: 'paused' })}>暂缓</button>
         <button type="button" onClick={() => onEdit({ status: 'resolved' })}>标记完成</button>
         {node.nodeType === 'route' && (
@@ -775,18 +754,6 @@ function Canvas() {
    * 空间;点“思考层”才展开。它是纯 UI 状态,不进任何存储、不影响主路线。
    */
   const [showThinking, setShowThinking] = useState(false);
-  /**
-   * 规划智能体重构 V1(P1):分组默认折叠。
-   *
-   * 画布仍然复用这一套 `ReactFlow` + `ReasoningNode` + 小地图(没有 Controls);
-   * 只是 V1 的“根 → 三个分组 → 分析节点”多了一层折叠 —— 默认只显示根与分组,
-   * 展开某个分组才在它下方排出它的分析节点,父子关系仍由既有锚定线表达。
-   */
-  const isV1 = Boolean(reasoning?.v1Stage);
-  const [v1OpenGroups, setV1OpenGroups] = useState<Record<string, boolean>>({});
-  const toggleV1Group = useCallback((key: string) => {
-    setV1OpenGroups((prev) => ({ ...prev, [key]: !prev[key] }));
-  }, []);
   const lastQuestionFocusNonce = useRef<number>(-1);
   //: 每个问题节点的输入草稿。放在这里而不是节点组件里 —— React Flow 重建节点时
   //: 组件局部 state 会被清空(点了选项按钮又变灰)。
@@ -1238,24 +1205,7 @@ function Canvas() {
       const byHandleOrder = (a: { handle: string }, b: { handle: string }) =>
         a.handle.localeCompare(b.handle, undefined, { numeric: true });
 
-      if (isV1) {
-        // 规划智能体重构 V1(P1):根 → 三个一级分组,分组**默认折叠**。展开后
-        // 在分组下方纵向排列它的分析节点;父子关系交给下面同一套锚定线。
-        const groups = reasoning.nodes.filter((item) => !item.parentHandle);
-        groups.forEach((group, index) => {
-          reasoningPos[group.handle] = { x: anchor.x + index * 300, y: anchor.y + 430 };
-        });
-        for (const group of groups) {
-          if (!v1OpenGroups[group.v1Key ?? group.handle]) continue;
-          const children = reasoning.nodes.filter((item) => item.parentHandle === group.handle);
-          children.forEach((child, index) => {
-            reasoningPos[child.handle] = {
-              x: reasoningPos[group.handle].x,
-              y: reasoningPos[group.handle].y + 170 + index * (heightOf(child.handle, 150) + 36),
-            };
-          });
-        }
-      } else if (roadmapRoute) {
+      if (roadmapRoute) {
         // 竖排主链:根目标(已由业务布局排好)→ 路线 → 阶段 1 → 阶段 2 …
         let cursor = anchor.y + (measurements[spaceId]?.height ?? 155) + 120;
         reasoningPos[roadmapRoute.handle] = { x: anchor.x, y: cursor };
@@ -1285,9 +1235,8 @@ function Canvas() {
         roadmapHandles.add(roadmapRoute.handle);
         for (const stage of stagesOf(roadmapRoute.handle)) roadmapHandles.add(stage.handle);
       }
-      if (showThinking && !isV1) {
+      if (showThinking) {
         // 思考材料**平铺**一列,不与主路线争位置;层级关系由图上的锚定线/链接表达。
-        // V1 的折叠已由上一条分支处理,不在这里重复排一遍。
         const thinking = reasoning.nodes.filter((item) => !roadmapHandles.has(item.handle));
         const originX = anchor.x + (roadmapRoute ? 460 : 0);
         let cursorY = anchor.y + 430;
@@ -1315,9 +1264,6 @@ function Canvas() {
           data: {
             node: item,
             isFocus: item.handle === reasoning.focusHandle,
-            // V1 分组:折叠态与子节点数(轻量层级提示)。非 V1 恒为 undefined。
-            v1Expanded: Boolean(v1OpenGroups[item.v1Key ?? item.handle]),
-            v1ChildCount: reasoning.nodes.filter((child) => child.parentHandle === item.handle).length,
           },
         });
       }
@@ -1393,7 +1339,7 @@ function Canvas() {
       });
     });
     return { nodes: nextNodes, edges: nextEdges };
-  }, [growth, spaceId, isRootSpace, selectedId, selectedEdgeId, positions, dragging, questionPositions, questionDragging, files, measurements, handleMore, createdId, drawnEdgeId, clearCreated, clearDrawn, questions, focusedQuestionId, reasoning, showThinking, isV1, v1OpenGroups]);
+  }, [growth, spaceId, isRootSpace, selectedId, selectedEdgeId, positions, dragging, questionPositions, questionDragging, files, measurements, handleMore, createdId, drawnEdgeId, clearCreated, clearDrawn, questions, focusedQuestionId, reasoning, showThinking]);
 
   /*
    * hover / 拖动的高亮**只作用在边对象上**。
@@ -1959,13 +1905,7 @@ function Canvas() {
             return;
           }
           if (node.type === 'reasoning') {
-            const reasoningNode = node.data.node;
-            // V1 的分组/战略容器:单击 = 展开/折叠,不打开节点详情。
-            if (reasoningNode.v1Kind === 'group' || reasoningNode.v1Kind === 'strategy') {
-              toggleV1Group(reasoningNode.v1Key ?? reasoningNode.handle);
-              return;
-            }
-            handleOpenReasoning(reasoningNode);
+            handleOpenReasoning(node.data.node);
             return;
           }
           openDetail(node.data.object);
@@ -2173,7 +2113,7 @@ function Canvas() {
           {refining ? '正在细化…' : '细化第一阶段'}
         </button>
       )}
-      {isLegacyMap && !isV1 && (
+      {isLegacyMap && (
         <button
           className="legacy-map-entry"
           type="button"

@@ -1904,21 +1904,10 @@ async def run_turn(
         return await run_space_entered(
             db, ctx, reasoner, payload=payload, force=payload.trigger == "retry"
         )
-    # 规划智能体重构 V1(P1):节点局部讨论**不走模型、不重建地图**。
-    # 只更新被点开/被回答的 reasoning 节点。老空间 / V0.1 没有 `v1_stage`,不受影响。
+    # 规划智能体重构 V1:阶段一不使用 reasoning-map 的 Agent turn(节点讨论走普通
+    # 对话面板)。返回当前状态,不让旧的问题地图被重新生成。老空间 / V0.1 不受影响。
     session = await get_session(db, ctx)
-    if (
-        session is not None
-        and session.v1_stage is not None
-        and payload.reasoning_handle
-        and payload.trigger in ("node_selected", "user_message")
-    ):
-        from backend.services import v1_service  # 延迟 import,避免循环
-
-        return await v1_service.handle_node_turn(db, ctx, session, payload=payload)
     if session is not None and session.v1_stage is not None:
-        # P1:V1 空间**不接受其它会自动写计划的 Agent turn**(战略确认 / 重新生成路线 /
-        # 进度更新……)。返回当前状态,由 P2/P3/P4 再分别接入。
         return await _response(db, ctx, session, changed=False)
     if payload.trigger == "regenerate_roadmap":
         return await regenerate_roadmap(db, ctx, reasoner, payload=payload)

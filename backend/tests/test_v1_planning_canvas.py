@@ -1,15 +1,16 @@
-"""规划智能体重构 V1 — P1:阶段一画布与节点讨论的确定性验收。
+"""规划智能体重构 V1 — P1:阶段一固定容器的确定性验收。
 
 固定案例:新建一个启用 V1 的空间,用户输入“我想学 Python”。
 
 覆盖:
 1. 初始:只有根目标与干净画布;`v1Stage=initial_thinking`;零 reasoning 节点;
-2. 提交目标:一段整体判断 + **一个**全局关键问题;画布出现 3 组 + 10 个固定分析容器;
-3. 前两组各挂 5 个固定节点,第三组是空的战略容器(显示“待形成战略路径”);
-4. 默认折叠(节点都挂在分组下,不散乱平铺);
-5. 点开“你真正想要什么”进入局部讨论;回答后**只更新该节点**;
-6. 全程 `plan_nodes` 始终只有根目标 —— 不写任务 / 时间线 / 周计划;
-7. 老空间 / 未开启 V1 时 `v1Stage` 为 None,行为与以前完全一样。
+2. 提交目标:一段整体判断 + **一个**全局关键问题;**不交代内部实现**;
+3. 固定容器是**真实 `PlanNode`**:根 + 3 组 + 10 个分析容器 = 14;
+4. 三组直接挂在根下、各带 5 个固定分析容器(第三组为空战略容器);
+5. 容器 `purpose=information`(不排期、不计完成度)、`origin=ai`;
+6. 容器是**可直接进入的真实节点**:能被既有节点接口读取 / 编辑;
+7. 全程不写时间线、不生成 proposal、不生成 reasoning 节点;
+8. 老空间 / 未开启 V1 时 `v1Stage` 为 None,行为与以前完全一样。
 """
 
 from __future__ import annotations
@@ -26,10 +27,10 @@ from backend.db.models import PlanNode, Proposal, ReasoningNode
 from backend.services import v1_service
 
 
-async def _turn(client: httpx.AsyncClient, account, key: str, **extra) -> dict:
+async def _turn(client: httpx.AsyncClient, account, key: str) -> dict:
     response = await client.post(
         f"/api/workspaces/{account.workspace_id}/agent/turn",
-        json={"trigger": "space_entered", "idempotencyKey": key, **extra},
+        json={"trigger": "space_entered", "idempotencyKey": key},
         headers=account.headers,
     )
     assert response.status_code == 200, response.text
@@ -54,19 +55,31 @@ async def _reasoning(client: httpx.AsyncClient, account) -> dict:
     return response.json()
 
 
-async def _plan_nodes(db: AsyncSession, account) -> list[PlanNode]:
-    rows = await db.execute(
-        select(PlanNode).where(PlanNode.workspace_id == uuid.UUID(account.workspace_id))
+async def _plan(client: httpx.AsyncClient, account) -> dict:
+    response = await client.get(
+        f"/api/workspaces/{account.workspace_id}/plan", headers=account.headers
     )
-    return list(rows.scalars())
+    assert response.status_code == 200, response.text
+    return response.json()
 
 
-def _by_key(view: dict) -> dict[str, dict]:
-    return {node["v1Key"]: node for node in view["nodes"] if node.get("v1Key")}
+async def _plan_node_count(db: AsyncSession, account) -> int:
+    return int(
+        await db.scalar(
+            select(func.count())
+            .select_from(PlanNode)
+            .where(PlanNode.workspace_id == uuid.UUID(account.workspace_id))
+        )
+        or 0
+    )
+
+
+def _root(nodes: list[dict]) -> dict:
+    return next(node for node in nodes if node.get("parentId") in (None, ""))
 
 
 @pytest.mark.asyncio
-async def test_v1_canvas_and_node_discussion(
+async def test_v1_fixed_containers_are_real_plan_nodes(
     app_client: httpx.AsyncClient, make_account, db: AsyncSession, monkeypatch
 ) -> None:
     # V1 默认关闭(既有空间不变);这条确定性 Demo 显式打开。
@@ -79,126 +92,81 @@ async def test_v1_canvas_and_node_discussion(
     view = body["reasoning"]
     assert view["v1Stage"] == "initial_thinking"
     assert view["nodes"] == [], "初始画布不能有任何 reasoning 节点"
-    assert view["v1Question"] is None and view["v1Judgment"] is None
-    assert len(await _plan_nodes(db, account)) == 1, "阶段一不能写业务计划"
+    assert await _plan_node_count(db, account) == 1, "阶段一初始不能写业务节点"
 
-    # ---- 2. 提交目标:整体判断 + 一个全局问题 + 三组固定画布 ----
+    # ---- 2. 提交目标:整体判断 + 一个全局问题,不交代内部实现 ----
     send = await _send(app_client, account, "我想学 Python", "v1-ans-1")
     reply = send["assistantMessage"]["content"]
     assert "Python" in reply
     assert v1_service.GLOBAL_QUESTION in reply, reply
-    # 只给一个问题:回复里不同时堆 5 个编号问题。
-    assert reply.count("\n1.") == 0 and reply.count("\n2.") == 0
+    assert "容器" not in reply and "三组" not in reply, reply
 
     view = await _reasoning(app_client, account)
     assert view["v1Stage"] == "goal_reframe"
     assert view["v1Question"] == v1_service.GLOBAL_QUESTION
     assert view["v1Judgment"]
-    # 不交代内部实现(几个分组 / 几个容器 / 不写什么)。
-    assert "容器" not in reply and "三组" not in reply, reply
+    # 没有旧的问题地图/时间线。
+    assert view["nodes"] == []
+    assert view["v01Timeline"] == []
 
-    nodes = _by_key(view)
-    # 三个一级分组,均连接根目标(parent_handle 为空)。
-    groups = [n for n in view["nodes"] if n["v1Kind"] in ("group", "strategy")]
-    assert len(groups) == 3, [n["title"] for n in groups]
-    assert all(node["parentHandle"] in (None, "") for node in groups)
-    assert {node["v1Key"] for node in groups} == {
-        "goal_reframe",
-        "problem_structure",
-        "strategy_path",
+    # ---- 3. 固定容器是真实 PlanNode:根 + 3 组 + 10 分析 = 14 ----
+    plan = await _plan(app_client, account)
+    nodes = plan["nodes"]
+    assert len(nodes) == 14, [node["title"] for node in nodes]
+    root = _root(nodes)
+    groups = [node for node in nodes if node["parentId"] == root["id"]]
+    assert {node["title"] for node in groups} == {"目标重构", "问题结构", "战略路径"}
+    by_title = {node["title"]: node for node in groups}
+    assert all(node["nodeType"] == "capability" for node in groups)
+    assert all(node["origin"] == "ai" for node in groups)
+    assert all(node["purpose"] == "information" for node in groups)
+
+    by_parent: dict[str | None, list[dict]] = {}
+    for node in nodes:
+        by_parent.setdefault(node["parentId"], []).append(node)
+
+    # 前两组各挂 5 个固定分析容器;第三组是空的战略容器。
+    assert len(by_parent[by_title["目标重构"]["id"]]) == 5
+    assert len(by_parent[by_title["问题结构"]["id"]]) == 5
+    assert by_title["战略路径"]["id"] not in by_parent
+    assert {node["title"] for node in by_parent[by_title["目标重构"]["id"]]} == {
+        "你现在在哪",
+        "你真正想要什么",
+        "这件事值得做吗",
+        "真正卡你的是什么",
+        "最后到底要做到什么",
     }
+    # 分析容器带“待验证”的暂定判断,且都是信息用途。
+    for node in by_parent[by_title["目标重构"]["id"]] + by_parent[by_title["问题结构"]["id"]]:
+        assert node["purpose"] == "information"
+        assert "（待验证）" in (node["description"] or "")
 
-    # 前两组各挂 5 个固定分析容器。
-    assert set(nodes) >= {
-        "current_state",
-        "true_intent",
-        "value_assessment",
-        "key_conflict",
-        "goal_definition",
-        "hard_constraints",
-        "controllable_factors",
-        "key_levers",
-        "major_risks",
-        "external_conditions",
-    }
-    goal_group = nodes["goal_reframe"]
-    problem_group = nodes["problem_structure"]
-    strategy_node = nodes["strategy_path"]
-    assert strategy_node["v1Kind"] == "strategy"
-    assert "待形成战略路径" in (strategy_node["summary"] or "")
-
-    children_of = {}
-    for node in view["nodes"]:
-        if node["v1Kind"] == "analysis":
-            children_of.setdefault(node["parentHandle"], []).append(node)
-    assert len(children_of[goal_group["handle"]]) == 5
-    assert len(children_of[problem_group["handle"]]) == 5
-    assert strategy_node["handle"] not in children_of, "战略容器在 P1 必须是空的"
-
-    # 分析节点初始是“待讨论”,判断明确标注“待验证”,不是用户事实。
-    for node in children_of[goal_group["handle"]] + children_of[problem_group["handle"]]:
-        assert node["status"] == "unexplored"
-        assert node["summary"].startswith("（待验证）")
-        assert node["v1Question"], node["v1Key"]
-
-    # 全程没有写业务计划或提案。
-    assert len(await _plan_nodes(db, account)) == 1
+    # ---- 4. 没有提案、没有 reasoning 节点 ----
     proposals = await db.scalar(
-        select(func.count()).select_from(Proposal).where(
-            Proposal.workspace_id == uuid.UUID(account.workspace_id)
-        )
+        select(func.count())
+        .select_from(Proposal)
+        .where(Proposal.workspace_id == uuid.UUID(account.workspace_id))
     )
     assert proposals == 0, "P1 不允许生成任何提案"
-
-    # ---- 3. 点开“你真正想要什么”进入局部讨论 ----
-    intent_node = nodes["true_intent"]
-    opened = await _turn(
-        app_client,
-        account,
-        "v1-open",
-        trigger="node_selected",
-        reasoningHandle=intent_node["handle"],
-    )
-    assert opened["reasoning"]["focusHandle"] == intent_node["handle"]
-
-    # ---- 4. 回答后只更新该节点 ----
-    before = await _reasoning(app_client, account)
-    before_current = _by_key(before)["current_state"]
-    answer = await _turn(
-        app_client,
-        account,
-        "v1-discuss",
-        trigger="user_message",
-        reasoningHandle=intent_node["handle"],
-        message="我想做出一个能展示的数据分析小项目。",
-    )
-    after = answer["reasoning"]
-    updated = _by_key(after)["true_intent"]
-    assert updated["status"] == "resolved"
-    assert any("数据分析小项目" in item for item in updated["evidence"])
-    assert updated["v1Question"] is None
-    assert updated["userDescription"] == "我想做出一个能展示的数据分析小项目。"
-    # 其它节点没有被重建或改动。
-    assert _by_key(after)["current_state"]["status"] == before_current["status"]
-    assert _by_key(after)["current_state"]["handle"] == before_current["handle"]
-    assert len(after["nodes"]) == len(before["nodes"])
-
-    # 讨论回复是简洁的确认,**不交代内部实现**(不出现“几个容器/不生成任务”这类说明)。
-    discuss_reply = answer["message"]["content"]
-    assert "已记下" in discuss_reply
-    assert "容器" not in discuss_reply and "三组框架" not in discuss_reply
-
-    # 讨论之后的计划里仍然只有根目标。
-    plan = await _plan_nodes(db, account)
-    assert len(plan) == 1 and plan[0].depth == 0
-
-    # 数据库里也只是 reasoning 节点,且都在根目标下。
+    assert view["sessionId"]
     reasoning_count = await db.scalar(
         select(func.count())
         .select_from(ReasoningNode)
-        .where(ReasoningNode.session_id == uuid.UUID(before["sessionId"]))
+        .where(ReasoningNode.session_id == uuid.UUID(view["sessionId"]))
     )
-    assert reasoning_count == 13
+    assert reasoning_count == 0, "V1 固定容器是 PlanNode,不是 reasoning 节点"
+
+    # ---- 5. 固定容器是**可直接进入**的真实节点:分组有子节点,且能像普通节点一样编辑 ----
+    group_id = by_title["目标重构"]["id"]
+    edit = await app_client.patch(
+        f"/api/workspaces/{account.workspace_id}/nodes/{group_id}",
+        json={"description": "（待验证）我把这条判断写进了这个节点的正文。"},
+        headers=account.headers,
+    )
+    assert edit.status_code == 200, edit.text
+    updated = await _plan(app_client, account)
+    edited = next(node for node in updated["nodes"] if node["id"] == group_id)
+    assert "写进了这个节点" in (edited["description"] or "")
 
 
 @pytest.mark.asyncio

@@ -1987,6 +1987,9 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
    * 换一个就等于告诉后端"这是一条新消息",网络超时重发就会变成两条。
    */
   async function sendReal(text: string, clientMessageId: string) {
+    // 规划智能体重构 V1:初步思考提交后,服务端会**直接**建好固定分析容器
+    // (不经提案 → 确认链路)。所以这一轮要重拉计划,否则画布上看不到它们。
+    const wasV1Initial = reasoning?.v1Stage === 'initial_thinking';
     setSending(true);
     setSendError(null);
     setRetryable(false);
@@ -2036,6 +2039,7 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
       await refreshQuestions();
       // 阶段 12:战略 intake 的下一问/架构状态在会话里,重新拉一次。
       await refreshReasoning().catch(() => undefined);
+      if (wasV1Initial) await refreshPlan().catch(() => undefined);
       finishAgentActivity(
         outcomeOfFailure('user_message', {
           failed: result.degraded,

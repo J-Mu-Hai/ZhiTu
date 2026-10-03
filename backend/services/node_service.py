@@ -322,8 +322,11 @@ async def create_node(
     estimate_minutes: int | None = None,
     deadline: date | None = None,
     planning_level: str | None = None,
+    #: 谁建的。用户手建是 `user`;规划智能体 V1 建立的固定分析容器是 `ai`
+    #: (画布据此自动画出它与父节点的结构线)。默认保持既有行为。
+    origin: NodeOrigin = NodeOrigin.USER,
 ) -> EditResult:
-    """在 `parent_id` 下面挂一个新节点。**用户自己建的,所以 `origin=user`。**"""
+    """在 `parent_id` 下面挂一个新节点。默认 `origin=user`(用户手建)。"""
     clean_title = title.strip()
     parsed_type = _parse_enum("node_type", node_type)
     parsed_purpose = _parse_enum("purpose", purpose)
@@ -390,7 +393,7 @@ async def create_node(
             order_index=int(sibling_count or 0),
             # depth 由父节点推出来,不接受调用方传 —— 传进来的话,它就是第二个真相。
             depth=parent.depth + 1,
-            origin=NodeOrigin.USER,
+            origin=origin,
         )
         db.add(node)
         await db.flush()

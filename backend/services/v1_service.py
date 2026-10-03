@@ -5,49 +5,53 @@
 一条**程序控制**的“先想清楚”最小体验,只做 P1 范围:
 
 ```
-INITIAL_THINKING   初始界面只有根目标 + 大号“初步思考”输入区
+INITIAL_THINKING   初始界面只有根目标 + 右侧大号“初步思考”输入区
         │  用户提交目标
         ▼
-GOAL_REFRAME       画布生成 3 个一级分组 + 10 个固定分析容器(推理层)
+GOAL_REFRAME       画布生成 3 个一级分组 + 10 个固定分析容器
         │          首轮给出整体判断 + **一个**全局关键问题
-        │  用户点开/回答某个分析节点
+        │  用户点节点右上角箭头进入 / 点开讨论
         ▼
-FACTOR_ANALYSIS / STRATEGY_DRAFT   只更新该节点,不重建地图
+FACTOR_ANALYSIS / STRATEGY_DRAFT   使用既有节点系统继续
 ```
 
-## 三条不可破坏的边界(P1)
+## 固定容器就是**真实节点**(PlanNode),不是问题节点
 
-1. **只写 reasoning 层。** 分组与分析节点都是 `ReasoningNode`,**绝不**创建或修改
-   `plan_nodes`、时间线、周/日任务。P1 不生成路线、阶段或时间线。
-2. **初始为占位判断,明确标注“待验证”。** 不把模型猜测写成用户事实;用户回答只
-   追加为“已知事实”,节点判断仍保留待验证语气。
-3. **不展示隐藏思维链。** 只保存可审阅的结论、假设、事实来源与下一步问题。
+这些容器是**预先设定好的固定节点** —— 目标重构 / 问题结构 / 战略路径三组,以及每组
+下面固定的分析容器。它们不是“问题节点”,也不需要用户逐项填空。所以这里把它们建成
+**真实 `PlanNode`**(`purpose=information`,不排期、不计完成度),沿用既有画布:
+
+- 根目标下挂三个分组;
+- 分组下挂各自的分析容器;
+- 每个节点右上角的箭头 = **直接进入**(既有 `node.space` 机制);
+- 打开节点详情 / 在右侧对话里讨论 = 既有交互。
+
+`purpose=information` 是关键:它是“信息主题”,不需要工时、完成勾选或截止日期,不进
+排期、不计完成度,也不能作为硬排期依赖的端点 —— 正合“思考容器”。
 
 ## 与老空间 / V0.1 的关系
 
 `v1_stage is None` = 非 V1,本模块所有入口直接返回/不介入。老会话不迁移、不重写。
-内容在 P1 由确定性模板产出(不依赖真实模型),但 UI、状态与数据边界已经支持这种交互。
+内容在 P1 由确定性模板产出(不依赖真实模型)。
 """
 
 from __future__ import annotations
-
-from dataclasses import dataclass, field
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.agent.runtime.base import ReasoningResult
 from backend.contracts.reasoning import AgentTurnResponse
-from backend.db.models import Conversation, GoalReasoningSession, Message, ReasoningNode
+from backend.db.models import Conversation, GoalReasoningSession, Message, PlanNode
 from backend.db.models.enums import (
     ModelSource,
-    ReasoningNodeStatus,
-    ReasoningNodeType,
+    NodeOrigin,
+    NodePurpose,
+    NodeType,
     ReasoningSessionPhase,
     ReasoningSessionStatus,
-    ReasoningSource,
 )
-from backend.services import conversation_service, reasoning_service
+from backend.services import conversation_service, node_service, reasoning_service
 from backend.services.context import WorkspaceContext
 
 # =================================================================================
@@ -62,14 +66,14 @@ V1_FACTOR_ANALYSIS = "factor_analysis"
 #: 目标与因素稳定后,形成战略路径草案。
 V1_STRATEGY_DRAFT = "strategy_draft"
 
-#: 三个一级分组。第三组是**空的战略容器** —— P1 不在这里生成路线。
-_GROUPS: tuple[tuple[str, str, str, str], ...] = (
-    ("g1", "goal_reframe", "目标重构", "把一句愿望变成可判断的定义。"),
-    ("g2", "problem_structure", "问题结构", "看清结果由什么决定、什么真正卡住你。"),
-    ("g3", "strategy_path", "战略路径", "待形成战略路径。"),
+#: 三个一级分组:(标识, 标题, 说明)。第三组是**空的战略容器**。
+_GROUPS: tuple[tuple[str, str, str], ...] = (
+    ("goal_reframe", "目标重构", "把一句愿望变成可判断的定义。"),
+    ("problem_structure", "问题结构", "看清结果由什么决定、什么真正卡住你。"),
+    ("strategy_path", "战略路径", "待形成战略路径。"),
 )
 
-#: 十个固定分析容器:(分组 key, 节点 key, 标题, 暂定判断, 为什么重要, 一个关键问题)。
+#: 十个固定分析容器:(分组标识, 节点标识, 标题, 暂定判断, 为什么重要, 一个关键问题)。
 _ANALYSIS: tuple[tuple[str, str, str, str, str, str], ...] = (
     (
         "goal_reframe",
@@ -153,20 +157,6 @@ _ANALYSIS: tuple[tuple[str, str, str, str, str, str], ...] = (
     ),
 )
 
-#: 分析节点初始的“已知事实”文案键。
-_FACT_SOURCE = "（已知事实 · 来自你写下的目标）"
-
-
-@dataclass(slots=True)
-class _CanvasResult:
-    """画布创建结果。"""
-
-    created: bool
-    node_count: int = 0
-    group_count: int = 0
-    analysis_count: int = 0
-    keys: list[str] = field(default_factory=list)
-
 
 def is_v1(session: GoalReasoningSession | None) -> bool:
     """这个会话是不是重构 V1。`v1_stage is None` = 非 V1。"""
@@ -174,10 +164,7 @@ def is_v1(session: GoalReasoningSession | None) -> bool:
 
 
 def build_judgment(goal: str) -> str:
-    """首轮整体判断(2–4 句,全是可审阅结论,不含隐藏思维链)。
-
-    P1 用确定性模板;**明确不排课程、不生成时间线**。
-    """
+    """首轮整体判断(2–4 句,全是可审阅结论,不含隐藏思维链)。"""
     subject = (goal or "这个目标").strip() or "这个目标"
     return (
         f"「{subject}」本身还不是结果,它可能服务于自动化、数据分析、AI 项目或求职"
@@ -188,104 +175,69 @@ def build_judgment(goal: str) -> str:
 
 
 GLOBAL_QUESTION = "你希望最后能拿出什么具体结果,证明它真正解决了你的问题?"
-#: 画布默认焦点(第一个目标重构节点)的说明。
-FOCUS_REASON = "先确认起点与真实意图,后面的问题结构与战略路径才有依据。"
+
+
+def _container_description(judgment: str, rationale: str, question: str) -> str:
+    """分析容器的正文:可审阅的暂定判断 + 为什么重要 + 唯一待确认的问题。"""
+    return (
+        f"（待验证）{judgment}\n\n"
+        f"为什么影响整体战略：{rationale}\n\n"
+        f"需要你确认：{question}"
+    )
 
 
 # =================================================================================
-# 画布创建(只写 reasoning 层)
+# 固定容器:建**真实 PlanNode**(purpose=information,不排期、不计完成度)
 # =================================================================================
-async def _ensure_canvas(
-    db: AsyncSession, session: GoalReasoningSession, goal_text: str
-) -> _CanvasResult:
-    """建立三组层级与十个固定分析容器。**幂等** —— 已有 V1 节点就不重复建。"""
-    existing = await _load_nodes(db, session.id)
-    if any(node.v1_key for node in existing):
-        analysis = [node for node in existing if node.v1_kind == "analysis"]
-        return _CanvasResult(
-            created=False,
-            node_count=len(existing),
-            group_count=len([n for n in existing if n.v1_kind in ("group", "strategy")]),
-            analysis_count=len(analysis),
-            keys=[str(node.v1_key) for node in existing if node.v1_key],
+async def _create_containers(
+    db: AsyncSession, ctx: WorkspaceContext, root: PlanNode
+) -> int:
+    """建立三组与十个固定分析容器。**幂等** —— 根下已有子节点就不重复建。
+
+    每个容器都是 `purpose=information` 的真实节点:它有既有的进入 / 详情 / 讨论交互,
+    但不进排期、不计完成度、不能作为硬依赖端点。
+    """
+    existing = await db.scalar(
+        select(PlanNode.id)
+        .where(
+            PlanNode.workspace_id == ctx.id,
+            PlanNode.parent_id == root.id,
+            PlanNode.deleted_at.is_(None),
         )
+        .limit(1)
+    )
+    if existing is not None:
+        return 0
 
-    groups: dict[str, ReasoningNode] = {}
-    for handle, key, title, summary in _GROUPS:
-        node = ReasoningNode(
-            session_id=session.id,
-            parent_id=None,
-            handle=handle,
+    groups: dict[str, PlanNode] = {}
+    for key, title, summary in _GROUPS:
+        result = await node_service.create_node(
+            db,
+            ctx,
+            parent_id=root.id,
             title=title,
-            summary=summary,
-            node_type=ReasoningNodeType.DIMENSION,
-            status=ReasoningNodeStatus.UNEXPLORED,
-            importance=5 if key == "goal_reframe" else 4,
-            uncertainty=3,
-            urgency=1,
-            impact=5 if key == "goal_reframe" else 4,
-            confidence=2,
-            rationale="它决定后面所有判断的方向。" if key == "goal_reframe" else "它决定路线的可行性。",
-            assumptions=[],
-            evidence=[],
-            source=ReasoningSource.AGENT,
-            v1_kind="strategy" if key == "strategy_path" else "group",
-            v1_key=key,
+            node_type=NodeType.CAPABILITY.value,
+            purpose=NodePurpose.INFORMATION.value,
+            description=summary,
+            origin=NodeOrigin.AI,
         )
-        db.add(node)
-        groups[key] = node
-    await db.flush()
+        groups[key] = result.node
 
-    counters: dict[str, int] = {}
-    analysis_count = 0
-    for group_key, node_key, title, judgment, rationale, question in _ANALYSIS:
+    created = 0
+    for group_key, _node_key, title, judgment, rationale, question in _ANALYSIS:
         parent = groups[group_key]
-        index = counters.get(group_key, 0) + 1
-        counters[group_key] = index
-        node = ReasoningNode(
-            session_id=session.id,
+        await node_service.create_node(
+            db,
+            ctx,
             parent_id=parent.id,
-            handle=f"{parent.handle}a{index}",
             title=title,
-            #: P1 的暂定判断 —— **明确标注待验证**,不是用户事实。
-            summary=f"（待验证）{judgment}",
-            node_type=ReasoningNodeType.DIMENSION,
-            status=ReasoningNodeStatus.UNEXPLORED,
-            importance=4,
-            uncertainty=4,
-            urgency=1,
-            impact=4,
-            confidence=1,
-            rationale=rationale,
-            assumptions=[f"（AI 假设）{judgment}"],
-            evidence=[f"{_FACT_SOURCE}{goal_text}"] if goal_text else [],
-            source=ReasoningSource.AGENT,
-            v1_kind="analysis",
-            v1_key=node_key,
-            v1_question=question,
+            node_type=NodeType.CAPABILITY.value,
+            purpose=NodePurpose.INFORMATION.value,
+            description=_container_description(judgment, rationale, question),
+            origin=NodeOrigin.AI,
         )
-        db.add(node)
-        analysis_count += 1
-    await db.flush()
-
-    total = len(_GROUPS) + analysis_count
-    return _CanvasResult(
-        created=True,
-        node_count=total,
-        group_count=len(_GROUPS),
-        analysis_count=analysis_count,
-        keys=[key for _, key, _, _ in _GROUPS]
-        + [node_key for _, node_key, *_ in _ANALYSIS],
-    )
-
-
-async def _load_nodes(db: AsyncSession, session_id) -> list[ReasoningNode]:
-    rows = await db.execute(
-        select(ReasoningNode)
-        .where(ReasoningNode.session_id == session_id)
-        .order_by(ReasoningNode.created_at.asc(), ReasoningNode.handle.asc())
-    )
-    return list(rows.scalars())
+        created += 1
+    return created
 
 
 async def _append_assistant(
@@ -344,12 +296,12 @@ async def advance(
     """按当前 V1 档位推进**一步**。P1 的推进只建立初始状态,不生成计划。
 
     - `initial_thinking` 之前:标记会话进入初始思考,画布保持干净;
-    - 其它档位:**返回当前状态**,不重建地图、不重复提问(供前端幂等重入)。
+    - 其它档位:**返回当前状态**,不重建、不重复提问(供前端幂等重入)。
     """
     if session.v1_stage is None:
         session.v1_stage = V1_INITIAL_THINKING
+        session.phase = ReasoningSessionPhase.INTAKE
     session.status = ReasoningSessionStatus.READY
-    session.phase = ReasoningSessionPhase.INTAKE
     return await _response(db, ctx, session, changed=False, trace=trace)
 
 
@@ -365,7 +317,7 @@ async def answer_v1_in_conversation(
     client_message_id: str | None,
     context_node_id,
 ):
-    """用户提交初步目标。**只写 reasoning 层**,然后给出判断 + 一个全局问题。"""
+    """用户提交初步目标。建立三组固定容器,给出判断 + 一个全局问题。"""
     conversation = await conversation_service.get_or_create_primary_conversation(db, ctx)
     user_message = await conversation_service.record_user_message(
         db,
@@ -378,23 +330,14 @@ async def answer_v1_in_conversation(
     root = await reasoning_service.root_plan_node(db, ctx)
     goal_text = (root.title if root is not None else "") or ""
     judgment = build_judgment(goal_text)
-    await _ensure_canvas(db, session, goal_text)
+    if root is not None:
+        await _create_containers(db, ctx, root)
     session.v1_judgment = judgment
     session.v1_question = GLOBAL_QUESTION
     if session.v1_stage == V1_INITIAL_THINKING:
         session.v1_stage = V1_GOAL_REFRAME
     session.phase = ReasoningSessionPhase.ROADMAP_DRAFT
     session.status = ReasoningSessionStatus.READY
-    if root is not None:
-        focus = await db.scalar(
-            select(ReasoningNode).where(
-                ReasoningNode.session_id == session.id,
-                ReasoningNode.v1_key == "current_state",
-            )
-        )
-        if focus is not None:
-            session.focus_reasoning_node_id = focus.id
-            session.focus_reason = FOCUS_REASON
     #: 只给判断 + 一个问题。**不向用户交代内部实现**(几个分组、几个容器、不写什么)。
     reply = f"{judgment}\n\n{GLOBAL_QUESTION}"
     message = await _append_assistant(db, ctx, reply=reply, conversation=conversation)
@@ -406,70 +349,6 @@ async def answer_v1_in_conversation(
     )
 
 
-# =================================================================================
-# 节点局部讨论(显式 Agent turn,不经过模型)
-# =================================================================================
-async def _find_node(
-    db: AsyncSession, session: GoalReasoningSession, handle: str
-) -> ReasoningNode | None:
-    return await db.scalar(
-        select(ReasoningNode).where(
-            ReasoningNode.session_id == session.id,
-            ReasoningNode.handle == handle,
-        )
-    )
-
-
-async def handle_node_turn(
-    db: AsyncSession,
-    ctx: WorkspaceContext,
-    session: GoalReasoningSession,
-    *,
-    payload,
-) -> AgentTurnResponse:
-    """节点局部讨论:打开或回答。
-
-    - `node_selected`:把焦点移到该节点(只改 reasoning 层指针);
-    - `user_message`:把用户补充记为**已知事实**,只更新该节点;不重建地图,
-      不生成任务/时间线/周计划。回答后清空该节点的“唯一待确认之事”。
-    """
-    from backend.services.errors import InvalidInput
-
-    handle = (payload.reasoning_handle or "").strip()
-    node = await _find_node(db, session, handle)
-    if node is None:
-        raise InvalidInput("没有找到这个分析节点。")
-
-    session.focus_reasoning_node_id = node.id
-    session.focus_reason = node.rationale or FOCUS_REASON
-    if node.status is ReasoningNodeStatus.UNEXPLORED:
-        node.status = ReasoningNodeStatus.EXPLORING
-
-    if payload.trigger == "node_selected":
-        await db.commit()
-        return await reasoning_service._response(db, ctx, session, changed=True)
-
-    text = (payload.message or "").strip()
-    if not text:
-        raise InvalidInput("讨论内容不能是空的。")
-
-    # 只更新这一个节点:已知事实 + 用户原文 + 状态。**不触碰其它节点、不重建地图。**
-    evidence = list(node.evidence or [])
-    evidence.append(f"（用户补充）{text}")
-    node.evidence = evidence
-    node.user_description = (
-        f"{node.user_description}\n{text}".strip() if node.user_description else text
-    )
-    node.status = ReasoningNodeStatus.RESOLVED
-    node.v1_question = None
-    node.version += 1
-
-    conversation = await conversation_service.get_or_create_primary_conversation(db, ctx)
-    reply = f"已记下你对「{node.title}」的补充,这条节点现在标记为已澄清。"
-    message = await _append_assistant(db, ctx, reply=reply, conversation=conversation)
-    return await _response(db, ctx, session, message=message, changed=True)
-
-
 __all__ = [
     "GLOBAL_QUESTION",
     "V1_FACTOR_ANALYSIS",
@@ -479,6 +358,5 @@ __all__ = [
     "advance",
     "answer_v1_in_conversation",
     "build_judgment",
-    "handle_node_turn",
     "is_v1",
 ]
