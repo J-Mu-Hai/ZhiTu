@@ -221,7 +221,10 @@ async def test_python_data_analysis_first_turn_is_roadmap_not_dimensions(
         question="先求能跑通的最小闭环,还是先补统计基础?",
         why_now="它决定阶段顺序",
         response_mode="single_select",
-        options=(QuestionOptionDraft(id="minimal", label="最小闭环"),),
+        options=(QuestionOptionDraft(id="minimal", label="最小闭环", recommended=True),),
+        analysis_summary="已知每周 150 分钟;先补语法会拉长见效时间。",
+        recommendation="先跑通一个最小分析闭环。",
+        decision_impact="不同选择会改变阶段 2 的项目素材与总时长。",
     )
     use_reasoner(
         MapReasoner(drafts=(_roadmap_draft(stages=4),), questions=(scheduling, strategic))

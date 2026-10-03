@@ -5,6 +5,7 @@ import { ArrowUp, Plus, X, CornerDownLeft, AlertCircle, RotateCcw, RefreshCw } f
 import { useDemo } from '@/features/growth/provider';
 import { degradedHint, sourceLabel } from '@/lib/backend';
 import type { ResearchView } from '@/lib/backend';
+import { StrategySummaryCard } from './StrategySummaryCard';
 
 /**
  * 提案落下之后,卡片上显示的状态。
@@ -292,6 +293,9 @@ export function ConversationPanel() {
           onLocate={() => focusQuestion(primaryQuestion.id)}
         />
       )}
+
+      {/* 阶段 10:对话区首屏的**当前战略判断摘要**。低干扰、可展开,不遮住画布。 */}
+      <StrategySummaryCard />
 
       <div className="conversation-history">
         {historyLoading && <p className="turn-loading">正在读取对话…</p>}

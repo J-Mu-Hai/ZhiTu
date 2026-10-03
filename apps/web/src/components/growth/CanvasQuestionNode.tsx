@@ -100,6 +100,15 @@ export function CanvasQuestionNodeComponent({ data }: NodeProps<QuestionFlowNode
   const multiple = question.responseMode === 'multi_select';
   const showCustom = question.allowCustomInput || question.responseMode === 'free_text';
   const hasInput = draft.selected.length > 0 || draft.custom.trim().length > 0;
+  /**
+   * 阶段 10:有没有可信的战略判断。没有就诚实说“不足以推荐”,**不伪造**。
+   * 旧行与部分对话路径的问题没有这些字段。
+   */
+  const hasJudgment = Boolean(
+    question.analysisSummary.trim() || question.recommendation.trim() || question.decisionImpact.trim(),
+  );
+  /** 不足推荐时要说清缺什么。模型没给结构化字段时,用 `whyNow` 兜底。 */
+  const missingStrategicInfo = question.whyNow.trim() || '目标的关键约束';
 
   function setDraft(next: CanvasQuestionDraft) {
     interaction.onDraftChange(question.id, next);
@@ -169,6 +178,30 @@ export function CanvasQuestionNodeComponent({ data }: NodeProps<QuestionFlowNode
         (`isConnectable={false}` + 节点 `connectable:false` 一起保证它拖不出新边)。
       */}
       <Handle type="target" position={Position.Left} isConnectable={false} />
+      {/*
+        阶段 10:先展示 **AI 已经判断了什么**,再问“需要你确认的一点”。问题节点默认
+        看得到判断、推荐与影响 —— 它不再像一张调查问卷。
+      */}
+      <div className="cq-judgment">
+        <span className="cq-label">AI 判断</span>
+        {hasJudgment ? (
+          <>
+            {question.analysisSummary && <p className="cq-analysis">{question.analysisSummary}</p>}
+            {question.recommendation && (
+              <p className="cq-recommendation">
+                <span className="cq-label">推荐</span>
+                {question.recommendation}
+              </p>
+            )}
+          </>
+        ) : (
+          <p className="cq-analysis cq-insufficient" data-testid="cq-insufficient">
+            当前还不足以给出推荐。需要先确认这条战略信息：{missingStrategicInfo}。
+          </p>
+        )}
+      </div>
+
+      <span className="cq-label cq-label-question">需要你确认的一点</span>
       <p className="cq-question">{question.question}</p>
 
       {processing || resolved ? (
@@ -185,11 +218,13 @@ export function CanvasQuestionNodeComponent({ data }: NodeProps<QuestionFlowNode
                   <button
                     type="button"
                     key={option.id}
-                    className={`cq-option nodrag${active ? ' is-active' : ''}`}
+                    className={`cq-option nodrag${active ? ' is-active' : ''}${option.recommended ? ' is-recommended' : ''}`}
                     aria-pressed={active}
                     disabled={busy}
+                    data-recommended={option.recommended ? 'true' : 'false'}
                     onPointerDown={press(() => toggle(option.id))}
                   >
+                    {option.recommended && <span className="cq-recommended-tag">推荐</span>}
                     {option.label}
                   </button>
                 );
@@ -218,6 +253,12 @@ export function CanvasQuestionNodeComponent({ data }: NodeProps<QuestionFlowNode
               {draft.error}
             </p>
           )}
+          {hasJudgment && question.decisionImpact && (
+            <p className="cq-impact">
+              <span className="cq-label">你的选择会影响</span>
+              {question.decisionImpact}
+            </p>
+          )}
           <div className="cq-actions">
             <button
               type="button"
@@ -228,8 +269,8 @@ export function CanvasQuestionNodeComponent({ data }: NodeProps<QuestionFlowNode
               {busy ? '提交中…' : draft.error ? '重试' : '提交回答'}
             </button>
             {/*
-             * 次要与解释性内容全部收进“更多”。默认只留一句问题与最多 3 个选项 ——
-             * 一张大号问卷卡会和路线/阶段争主画布。
+             * “更多”只放次要内容:来源、假设、补充输入、稍后回答。判断、推荐、
+             * 影响与选项默认可见 —— 不再是一张需要展开才能读懂的大问卷。
              */}
             <button
               type="button"
@@ -248,6 +289,9 @@ export function CanvasQuestionNodeComponent({ data }: NodeProps<QuestionFlowNode
                 {data.isPrimary && <span className="cq-primary">最主要</span>}
               </div>
               {question.whyNow && <p className="cq-why">{question.whyNow}</p>}
+              {question.confidenceNote && (
+                <p className="cq-assumption">仍需确认：{question.confidenceNote}</p>
+              )}
               {question.sourceNodeId && (
                 <button
                   type="button"

@@ -34,7 +34,7 @@
    状态不能只靠颜色表达:每张卡都有文字徽标与 aria-label。 */
 .react-flow__node-question { z-index: 4 !important; cursor: grab; }
 .react-flow__node-question:active { cursor: grabbing; }
-.canvas-question-node { width: 206px; padding: 10px 12px; border-radius: var(--radius-control); border: 1px dashed var(--line-strong); background: var(--surface-raised); color: var(--text); box-shadow: var(--shadow-card); font-size: 11px; }
+.canvas-question-node { width: 180px; padding: 10px 12px; border-radius: var(--radius-control); border: 1px dashed var(--line-strong); background: var(--surface-raised); color: var(--text); box-shadow: var(--shadow-card); font-size: 11px; }
 .canvas-question-node.is-primary { border-style: solid; border-color: var(--experience); box-shadow: 0 0 0 3px color-mix(in srgb, var(--experience) 20%, transparent), var(--shadow-card); }
 .canvas-question-node.is-focused { outline: 2px solid var(--line-selected); outline-offset: 2px; }
 .canvas-question-node.is-processing { border-color: var(--academic); background: var(--ink-2); }

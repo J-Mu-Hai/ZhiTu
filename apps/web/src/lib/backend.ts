@@ -355,6 +355,8 @@ export type QuestionStatus =
 export interface QuestionOption {
   id: string;
   label: string;
+  /** 阶段 10:AI 的推荐项。前端据此明确标“推荐”。 */
+  recommended: boolean;
 }
 
 export interface QuestionAnswer {
@@ -378,6 +380,15 @@ export interface QuestionView {
   reasoningNodeId: string | null;
   question: string;
   whyNow: string;
+  /**
+   * 阶段 10:提问前的**战略判断**。都是可审阅的结论,不是隐藏思维链。
+   * 旧行 / 无法可信判断时为空字符串 —— 界面会显示“当前还不足以给出推荐”。
+   */
+  analysisSummary: string;
+  recommendation: string;
+  decisionImpact: string;
+  /** 可选:哪些是假设、还需确认。 */
+  confidenceNote: string | null;
   responseMode: QuestionResponseMode;
   options: QuestionOption[];
   allowCustomInput: boolean;

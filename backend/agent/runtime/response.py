@@ -70,11 +70,16 @@ MAX_ACTIONS = 80
 
 #: 一轮最多问几个问题。产品规则:默认 1 个,仅两个高度相关时最多 2 个。
 MAX_QUESTIONS = 2
-#: 一个问题最多几个选项。
-MAX_QUESTION_OPTIONS = 5
+#: 一个问题最多几个选项。阶段 10 收到 3 —— 选项是加速器,不是问卷。
+MAX_QUESTION_OPTIONS = 3
 #: 一句问题 / 一句"为什么现在问"最多多长。
 MAX_QUESTION_CHARS = 500
 MAX_WHY_NOW_CHARS = 500
+#: 战略判断字段的长度上限。
+MAX_ANALYSIS_CHARS = 800
+MAX_RECOMMENDATION_CHARS = 500
+MAX_DECISION_IMPACT_CHARS = 800
+MAX_CONFIDENCE_NOTE_CHARS = 500
 #: 选项 id 与标签的长度上限。
 MAX_OPTION_ID_CHARS = 40
 MAX_OPTION_LABEL_CHARS = 120
@@ -418,6 +423,32 @@ def _parse_question(entry: Any) -> QuestionDraft | None:
         why_now.strip()[:MAX_WHY_NOW_CHARS] if isinstance(why_now, str) else ""
     )
 
+    # 阶段 10:提问前的战略判断。**先判断,后提问。**
+    analysis_summary = entry.get("analysisSummary", entry.get("analysis_summary"))
+    analysis_summary = (
+        analysis_summary.strip()[:MAX_ANALYSIS_CHARS]
+        if isinstance(analysis_summary, str)
+        else ""
+    )
+    recommendation = entry.get("recommendation")
+    recommendation = (
+        recommendation.strip()[:MAX_RECOMMENDATION_CHARS]
+        if isinstance(recommendation, str)
+        else ""
+    )
+    decision_impact = entry.get("decisionImpact", entry.get("decision_impact"))
+    decision_impact = (
+        decision_impact.strip()[:MAX_DECISION_IMPACT_CHARS]
+        if isinstance(decision_impact, str)
+        else ""
+    )
+    confidence_note = entry.get("confidenceNote", entry.get("confidence_note"))
+    confidence_note = (
+        confidence_note.strip()[:MAX_CONFIDENCE_NOTE_CHARS]
+        if isinstance(confidence_note, str) and confidence_note.strip()
+        else None
+    )
+
     mode = entry.get("responseMode", entry.get("response_mode"))
     if mode not in QUESTION_RESPONSE_MODES:
         return None
@@ -439,9 +470,12 @@ def _parse_question(entry: Any) -> QuestionDraft | None:
             if option_id in seen:
                 continue
             seen.add(option_id)
+            recommended = option.get("recommended", option.get("isRecommended"))
             options.append(
                 QuestionOptionDraft(
-                    id=option_id, label=label.strip()[:MAX_OPTION_LABEL_CHARS]
+                    id=option_id,
+                    label=label.strip()[:MAX_OPTION_LABEL_CHARS],
+                    recommended=bool(recommended) if isinstance(recommended, bool) else False,
                 )
             )
 
@@ -466,6 +500,10 @@ def _parse_question(entry: Any) -> QuestionDraft | None:
         response_mode=mode,
         options=tuple(options),
         allow_custom_input=allow_custom,
+        analysis_summary=analysis_summary,
+        recommendation=recommendation,
+        decision_impact=decision_impact,
+        confidence_note=confidence_note,
     )
 
 

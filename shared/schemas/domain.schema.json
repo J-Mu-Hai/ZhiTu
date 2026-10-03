@@ -3174,6 +3174,11 @@
           "minLength": 1,
           "title": "Label",
           "type": "string"
+        },
+        "recommended": {
+          "default": false,
+          "title": "Recommended",
+          "type": "boolean"
         }
       },
       "required": [
@@ -3190,6 +3195,11 @@
           "default": false,
           "title": "Allowcustominput",
           "type": "boolean"
+        },
+        "analysisSummary": {
+          "default": "",
+          "title": "Analysissummary",
+          "type": "string"
         },
         "answer": {
           "anyOf": [
@@ -3215,9 +3225,26 @@
           "default": null,
           "title": "Answeredat"
         },
+        "confidenceNote": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Confidencenote"
+        },
         "createdAt": {
           "format": "date-time",
           "title": "Createdat",
+          "type": "string"
+        },
+        "decisionImpact": {
+          "default": "",
+          "title": "Decisionimpact",
           "type": "string"
         },
         "id": {
@@ -3248,6 +3275,11 @@
           ],
           "default": null,
           "title": "Reasoningnodeid"
+        },
+        "recommendation": {
+          "default": "",
+          "title": "Recommendation",
+          "type": "string"
         },
         "responseMode": {
           "title": "Responsemode",

@@ -86,10 +86,14 @@
       "questions": [
         {
           "question": "你希望优先把精力放在哪条路线上？",
+          "analysisSummary": "你已经给了每周可投入时间；两条路线的阶段顺序与成果物不同，这是现在最该定的一点。",
+          "recommendation": "先把精力放在你更看重、也更想尽快见效的那条路线上。",
+          "decisionImpact": "不同选择会改变阶段 2 的展开顺序与阶段 3 的成果物。",
+          "confidenceNote": "“尽快见效”是从你的目标推断的，若不对请纠正。",
           "whyNow": "它决定我先展开哪几个维度",
           "responseMode": "single_select",
           "options": [
-            { "id": "english", "label": "英语" },
+            { "id": "english", "label": "英语", "recommended": true },
             { "id": "math", "label": "数学" }
           ],
           "allowCustomInput": true

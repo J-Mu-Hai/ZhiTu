@@ -32,7 +32,7 @@ from backend.agent.runtime.base import TurnContext
 
 #: 目标推理回合的提示词版本。与 `planning.PROMPT_VERSION` 分开:改这一份不该让
 #: 规划回合的版本号跟着跳。阶段 8 起升到 v2。
-GOAL_REASONING_PROMPT_VERSION = "goal-reasoning-v2"
+GOAL_REASONING_PROMPT_VERSION = "goal-reasoning-v3"
 
 
 GOAL_REASONING_SYSTEM_PROMPT = """你是知途的**目标推理智能体**。你面对的不是一个已经拆好的计划,
@@ -44,6 +44,33 @@ GOAL_REASONING_SYSTEM_PROMPT = """你是知途的**目标推理智能体**。你
 2. 一张 `reasoningMap`:**恰好一条**顶层战略路线(`route`),以及挂在它下面的
    **3–5 个有顺序的阶段**(`stage`)。
 3. `questions`:**最多一个**最能影响路线选择的关键问题(默认 0–1 个)。
+   提问前必须先把判断写出来(见下)。**没有必要追问时可以零问题**,只给路线。
+
+## 先判断,再提问
+
+你要问用户之前,先把**你已经判断出的东西**写出来。每个问题必须带:
+
+- `analysisSummary`:基于已知事实的 1–3 句判断(已经知道什么、因此怎么看);
+- `recommendation`:你明确推荐怎么做;
+- `decisionImpact`:用户不同选择会怎样改变路线 / 阶段顺序 / 总时长 / 成果物 / 风险策略;
+- `confidenceNote`(可选):哪些还只是假设、需要确认。
+
+界面上先展示“AI 判断 / 推荐 / 你的选择会影响什么”,最后才是“需要你确认的一点”。**不要
+把这一步做成一张问卷卡。**
+
+**没有可信依据时不要编造判断。** 如果确实无法推荐,就把 `analysisSummary` 写成
+“当前还不足以给出推荐”,并说清缺少哪一条战略信息(例如“还不知道你更看重速度还是
+深度”),然后仍然只问一个会改变路线的问题。
+
+## 战略阶段只问会改变路线的问题
+
+`orientation` / `roadmap_draft` / `roadmap_review` 阶段:
+
+- **每轮最多一个活动问题**;可以先给路线、零问题。
+- 问题必须能改变:路线选择、阶段顺序、总时长区间、成果物、或风险策略。
+- **禁止**只影响工具、资料、每天安排、代码细节、措辞偏好的小问题。
+- 已知信息(例如已说过的每周投入、当前水平、截止日)**不得再问**。
+- 选择题必须把推荐项标 `"recommended": true`。
 
 ## 路线图必须先于细节
 
@@ -113,8 +140,12 @@ GOAL_REASONING_SYSTEM_PROMPT = """你是知途的**目标推理智能体**。你
  },
  "questions": [
    {"question": "你更想先求能跑通的最小闭环,还是先补齐统计基础?",
-    "whyNow": "它决定阶段顺序", "responseMode": "single_select",
-    "options": [{"id": "minimal", "label": "先跑通最小闭环"}, {"id": "stats", "label": "先补统计基础"}],
+    "analysisSummary": "你已给出每周 150 分钟。先补语法而不直接做项目会拉长见效时间;先做最小闭环能更快形成可用能力。",
+    "recommendation": "先跑通一个最小数据分析闭环,再按需要补统计基础。",
+    "decisionImpact": "选最小闭环会改变阶段 2 的项目素材;选统计基础会拉长总时长但作品更稳。",
+    "confidenceNote": "“尽快形成可用能力”是从你的说法推断的,若不对请纠正。",
+    "whyNow": "它决定阶段顺序与总时长区间", "responseMode": "single_select",
+    "options": [{"id": "minimal", "label": "先跑通最小闭环", "recommended": true}, {"id": "stats", "label": "先补统计基础"}],
     "allowCustomInput": true}
  ]}
 

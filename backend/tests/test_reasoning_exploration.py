@@ -271,7 +271,10 @@ async def test_strategy_phase_drops_scheduling_questions(
         question="你更愿意把主要精力放在保研还是就业?",
         why_now="它决定路线",
         response_mode="single_select",
-        options=(QuestionOptionDraft(id="a", label="保研"),),
+        options=(QuestionOptionDraft(id="a", label="保研", recommended=True),),
+        analysis_summary="两边的准备周期与成果物不同,现在不清楚你的优先级。",
+        recommendation="先把精力放在你更看重的那一边。",
+        decision_impact="不同选择会改变阶段顺序与阶段 2 的成果物。",
     )
     reasoner = MapReasoner(drafts=(_roadmap_draft(stages=4),), questions=(scheduling, strategic))
     use_reasoner(reasoner)
@@ -366,6 +369,9 @@ async def test_answering_a_question_advances_the_map(
                 why_now="它决定路线",
                 response_mode="free_text",
                 allow_custom_input=True,
+                analysis_summary="用途不同会改变第一条路线的形状。",
+                recommendation="先按通用最小闭环走,再按用途收窄。",
+                decision_impact="不同用途会改变阶段 2 的项目素材。",
             ),
         ),
     )

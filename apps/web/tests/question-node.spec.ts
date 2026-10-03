@@ -73,6 +73,13 @@ test('问题投影为画布节点,在画布上回答,刷新后消失', async ({ 
   await expect(questionCard(page)).toContainText('这学期你希望把重心放在哪一边?');
   await expect(page.locator('.react-flow__edge.question-anchor-edge')).toHaveCount(1);
 
+  // 阶段 10:**提问前先展示 AI 判断、推荐与影响**,默认可见。
+  await expect(questionCard(page)).toContainText('AI 判断');
+  await expect(questionCard(page)).toContainText('推荐');
+  await expect(questionCard(page)).toContainText('你的选择会影响');
+  await expect(questionCard(page).locator('.cq-option.is-recommended')).toHaveCount(1);
+  await expect(questionCard(page).locator('.cq-option.is-recommended')).toContainText('推荐');
+
   // 紧凑卡:默认宽度约 190–220px,而且“稍后回答/跳过/补充输入”收进“更多”。
   const cardBox = await questionCard(page).boundingBox();
   expect(cardBox, '问题卡没有尺寸').not.toBeNull();
@@ -211,4 +218,71 @@ test('画布静止时问题节点位置稳定、不被反复重挂载', async ({
     ),
     '问题节点被卸载/重挂载了',
   ).toBe(true);
+});
+
+/**
+ * 阶段 10:没有可信判断时**不伪造**。
+ *
+ * 旧行或部分对话路径的问题没有 `analysisSummary` / `recommendation` / `decisionImpact`。
+ * 这时界面必须诚实地说“当前还不足以给出推荐”,并把缺的那条战略信息(用 `whyNow`)
+ * 说清楚,而不是编一个看起来像判断的句子。
+ */
+test('无法可靠推荐时不伪造判断,而是说明缺少什么', async ({ page }) => {
+  test.slow();
+  const { token } = await registerAccount(page, 'question-insufficient');
+  const workspaceId = await createWorkspace(page, token, '不足推荐空间', '我想提升一下');
+  const plan = await getPlan(page, token, workspaceId);
+  const root = plan.nodes.find(node => node.parentId === null)!;
+  const now = new Date().toISOString();
+
+  // 服务端返回一个**没有判断字段**的待回答问题(模拟旧行 / 未强制判断的路径)。
+  await page.route('**/api/workspaces/*/questions*', async route => {
+    if (route.request().method() !== 'GET') return route.continue();
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        questions: [
+          {
+            id: 'q-insufficient',
+            workspaceId,
+            sourceNodeId: root.id,
+            sourceMessageId: null,
+            reasoningNodeId: null,
+            question: '你更看重尽快见效,还是更看重基础扎实?',
+            whyNow: '它决定先做项目还是先补基础',
+            analysisSummary: '',
+            recommendation: '',
+            decisionImpact: '',
+            confidenceNote: null,
+            responseMode: 'single_select',
+            options: [
+              { id: 'fast', label: '尽快见效', recommended: false },
+              { id: 'solid', label: '基础扎实', recommended: false },
+            ],
+            allowCustomInput: true,
+            status: 'pending',
+            answer: null,
+            createdAt: now,
+            updatedAt: now,
+            answeredAt: null,
+          },
+        ],
+        truncated: false,
+      }),
+    });
+  });
+  // 让自动 `space_entered` 真的跑一轮(它会在之后重新拉一次 `/questions`,
+  // 于是命中上面那个“无判断”的 mock)。
+  await page.goto(`/workbench?workspace=${workspaceId}`);
+  await waitForRealPlan(page);
+
+  await expect(questionNode(page)).toHaveCount(1, { timeout: 20000 });
+  const insufficient = questionCard(page).getByTestId('cq-insufficient');
+  await expect(insufficient).toBeVisible();
+  await expect(insufficient).toContainText('当前还不足以给出推荐');
+  // 说清缺什么(用 whyNow)。
+  await expect(insufficient).toContainText('它决定先做项目还是先补基础');
+  // 没有推荐项标记。
+  await expect(questionCard(page).locator('.cq-option.is-recommended')).toHaveCount(0);
 });

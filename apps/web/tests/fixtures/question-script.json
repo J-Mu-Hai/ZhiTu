@@ -62,10 +62,14 @@
       "questions": [
         {
           "question": "这学期你希望把重心放在哪一边?",
+          "analysisSummary": "你已经立了目标;英语与数学两条路径的阶段顺序与成果物不同,这是现在最该定的一点。",
+          "recommendation": "先把重心放在你更想尽快见效、也更需要的那一边。",
+          "decisionImpact": "选英语会改变阶段 2 的练习素材;选数学会改变阶段 3 的成果形式。",
+          "confidenceNote": "“尽快见效”是从目标推断的,若不对请纠正。",
           "whyNow": "它决定我先拆英语还是先拆数学",
           "responseMode": "single_select",
           "options": [
-            { "id": "english", "label": "英语" },
+            { "id": "english", "label": "英语", "recommended": true },
             { "id": "math", "label": "数学" }
           ],
           "allowCustomInput": true

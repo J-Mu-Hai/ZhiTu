@@ -29,8 +29,8 @@ from backend.contracts.conversation import SendMessageResponse
 
 #: 一轮最多几个问题。与 agent/runtime/response.py 的 MAX_QUESTIONS 对齐。
 MAX_QUESTIONS_PER_TURN = 2
-#: 一个问题最多几个选项。
-MAX_QUESTION_OPTIONS = 5
+#: 一个问题最多几个选项。阶段 10 收到 3 —— 选项是加速器,不是问卷。
+MAX_QUESTION_OPTIONS = 3
 #: 自由输入 / 补充说明的长度上限。
 MAX_CUSTOM_INPUT_CHARS = 2000
 
@@ -38,6 +38,8 @@ MAX_CUSTOM_INPUT_CHARS = 2000
 class QuestionOption(ApiModel):
     id: str = Field(min_length=1, max_length=40)
     label: str = Field(min_length=1, max_length=120)
+    #: AI 的推荐项。前端据此明确标“推荐”。
+    recommended: bool = False
 
 
 class QuestionAnswer(ApiModel):
@@ -63,6 +65,13 @@ class QuestionView(ApiModel):
     reasoning_node_id: uuid.UUID | None = None
     question: str
     why_now: str
+    #: 阶段 10:提问前的战略判断。**可审阅的结论,不是隐藏思维链。**
+    #: 旧行 / 没有可信依据时为空字符串 —— 前端会显示“当前还不足以给出推荐”。
+    analysis_summary: str = ""
+    recommendation: str = ""
+    decision_impact: str = ""
+    #: 可选:哪些是假设、还需确认。
+    confidence_note: str | None = None
     response_mode: str
     options: list[QuestionOption] = Field(default_factory=list)
     allow_custom_input: bool = False

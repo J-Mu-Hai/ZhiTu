@@ -83,6 +83,9 @@ MAX_PRIMARY_NODES = 8
 MAX_MAP_NODES = 40
 #: 一次最多呈现几个高价值问题。规范:复杂目标最多 3 个相互独立的问题。
 MAX_QUESTIONS_PER_TURN = 3
+#: 阶段 10:战略阶段**每轮最多 1 个活动问题** —— 先给路线判断,再问一个真正会
+#: 改变方向的问题。
+MAX_STRATEGIC_QUESTIONS = 1
 #: 评分维度范围。
 SCORE_MIN = 0
 SCORE_MAX = 5
@@ -886,6 +889,8 @@ async def _explore_and_apply(
         source_node_id=root.id,
         reasoning_node_id=focus.id if focus is not None else None,
         strategy_phase=session.phase.is_strategic,
+        require_judgment=session.phase.is_strategic,
+        max_questions=MAX_STRATEGIC_QUESTIONS if session.phase.is_strategic else MAX_QUESTIONS_PER_TURN,
     )
 
     session.status = ReasoningSessionStatus.READY
@@ -1103,6 +1108,8 @@ async def _run_incremental(
         source_node_id=root.id,
         reasoning_node_id=focus_node.id if focus_node is not None else None,
         strategy_phase=strategy_phase,
+        require_judgment=strategy_phase,
+        max_questions=MAX_STRATEGIC_QUESTIONS if strategy_phase else MAX_QUESTIONS_PER_TURN,
     )
     session.status = ReasoningSessionStatus.READY
     session.last_evaluated_at = now

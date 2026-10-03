@@ -56,10 +56,19 @@ class AgentQuestion(UuidPk, TimestampMixin, Base):
     question: Mapped[str] = mapped_column(Text, nullable=False)
     #: "为什么现在问这个"。与 question 分开:一个是问什么,一个是问的理由。
     why_now: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    # ---- 阶段 10:提问前的**战略判断**。**闭集、可审阅,不是思维链。** ----
+    #: AI 基于已知事实做出的 1–3 句判断。没有可信依据时留空(前端会说不族以推荐)。
+    analysis_summary: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    #: 明确推荐。一句人能读的话。
+    recommendation: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    #: 不同选择会怎样改变路线/阶段/成果物。
+    decision_impact: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    #: 可选:哪些是假设、还需确认。为空表示没有特别要声明的。
+    confidence_note: Mapped[str | None] = mapped_column(Text)
     response_mode: Mapped[QuestionResponseMode] = mapped_column(
         enum_type(QuestionResponseMode, "question_response_mode"), nullable=False
     )
-    #: 0–5 个选项,每项 `{"id": ..., "label": ...}`。服务端校验过的形状。
+    #: 0–5 个选项,每项 `{"id": ..., "label": ..., "recommended": bool}`。服务端校验过的形状。
     options: Mapped[list] = mapped_column(JsonDict, default=list, nullable=False)
     allow_custom_input: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 

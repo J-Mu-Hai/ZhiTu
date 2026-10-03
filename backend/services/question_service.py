@@ -85,9 +85,46 @@ _STRATEGY_PHASE_FORBIDDEN: tuple[str, ...] = (
     "掌握程度",
 )
 
+#: 阶段 10:战略阶段**只问会改变路线/阶段/成果物/风险策略的问题**。
+#: 这些是“一问就掉进执行层”的琐碎题 —— 工具、资料、每天安排、代码细节、措辞偏好。
+#: 同样是**确定性关键词**,宁可漏过也不误杀合法的战略取舍。
+_STRATEGY_PHASE_TRIVIAL: tuple[str, ...] = (
+    "用哪个工具",
+    "哪个工具",
+    "什么工具",
+    "工具链",
+    "用什么软件",
+    "用哪个软件",
+    "ide",
+    "编辑器",
+    "代码编辑器",
+    "用哪本书",
+    "哪本书",
+    "什么教材",
+    "哪个教程",
+    "看什么资料",
+    "资料清单",
+    "每天学",
+    "每天花",
+    "每周几",
+    "周几",
+    "几点学",
+    "作息",
+    "变量名",
+    "函数名",
+    "类名",
+    "代码风格",
+    "代码细节",
+    "怎么命名",
+    "措辞",
+    "叫法",
+    "怎么称呼",
+    "偏好哪种说法",
+)
+
 
 def strategy_phase_question_conflict(question: str) -> str | None:
-    """战略阶段问了一个属于阶段/排期层的问题时,返回原因;否则 `None`。
+    """战略阶段问了一个属于阶段/排期层或执行细节的问题时,返回原因;否则 `None`。
 
     纯函数,便于测试。服务端用它过滤模型输出的问题 —— **不依赖提示词自觉**。
     """
@@ -95,6 +132,35 @@ def strategy_phase_question_conflict(question: str) -> str | None:
     for token in _STRATEGY_PHASE_FORBIDDEN:
         if token in text:
             return f"战略阶段不先问「{token}」这类阶段/排期信息"
+    for token in _STRATEGY_PHASE_TRIVIAL:
+        if token in text:
+            return f"战略阶段不问「{token}」这类执行细节"
+    return None
+
+
+#: 阶段 10:一个“战略判断卡”必须带的字段。缺了就不写半成品。
+_JUDGMENT_REQUIRED_FIELDS: tuple[str, ...] = (
+    "analysis_summary",
+    "recommendation",
+    "decision_impact",
+)
+
+
+def strategy_judgment_missing(draft: QuestionDraft) -> str | None:
+    """这个问题的战略判断是否完整。不完整时返回缺的那一项。
+
+    纯函数,便于测试。要求:
+    - `analysis_summary` / `recommendation` / `decision_impact` 都非空;
+    - 有选项时,至少有一个选项被标为推荐(前端据此明确标“推荐”)。
+
+    没有可信依据时**不要编造** —— 模型应该留空并说明缺少什么,由前端显示
+    “当前还不足以给出推荐”。本函数只负责“缺了就不落库”,不做内容判断。
+    """
+    for field in _JUDGMENT_REQUIRED_FIELDS:
+        if not str(getattr(draft, field, "") or "").strip():
+            return field
+    if draft.options and not any(option.recommended for option in draft.options):
+        return "recommended_option"
     return None
 
 
@@ -122,8 +188,11 @@ def _normalize(text: str) -> str:
     return " ".join(folded.split())
 
 
-def _options_to_rows(draft: QuestionDraft) -> list[dict[str, str]]:
-    return [{"id": option.id, "label": option.label} for option in draft.options]
+def _options_to_rows(draft: QuestionDraft) -> list[dict[str, object]]:
+    return [
+        {"id": option.id, "label": option.label, "recommended": bool(option.recommended)}
+        for option in draft.options
+    ]
 
 
 def _event(action: QuestionUserAction, *, client_id: str | None = None, reason: str | None = None, answer: dict | None = None) -> dict:
@@ -149,6 +218,8 @@ async def create_from_drafts(
     source_node_id: uuid.UUID | None,
     reasoning_node_id: uuid.UUID | None = None,
     strategy_phase: bool = False,
+    require_judgment: bool = False,
+    max_questions: int | None = None,
 ) -> list[AgentQuestion]:
     """把模型这一轮提的问题落库。**纯服务端校验在这里收口。**
 
@@ -177,9 +248,10 @@ async def create_from_drafts(
         seen.add((row.source_node_id, _normalize(row.question)))
 
     created: list[AgentQuestion] = []
+    limit = max_questions if max_questions is not None else MAX_QUESTIONS_PER_TURN
     for draft in drafts:
-        if len(created) >= MAX_QUESTIONS_PER_TURN:
-            logger.info("一轮的问题超过 %d 个,多余的丢弃", MAX_QUESTIONS_PER_TURN)
+        if len(created) >= limit:
+            logger.info("一轮的问题超过 %d 个,多余的丢弃", limit)
             break
         # 再次做形状校验。`parse_questions` 已经做过一遍,但这里是**服务端对写入的
         # 最终把关** —— 脚本化 reasoner 与将来的任何新 reasoner 都必须过这一关。
@@ -200,6 +272,13 @@ async def create_from_drafts(
             if phase_conflict is not None:
                 logger.info("战略阶段丢弃一个排期类问题(%s):%r", phase_conflict, draft.question[:40])
                 continue
+        # 阶段 10:**先有判断,再提问**。缺 analysis/recommendation/impact 的问题
+        # 整条丢弃,不写半成品 —— 服务端硬闸,不靠提示词自觉。
+        if require_judgment:
+            missing = strategy_judgment_missing(draft)
+            if missing is not None:
+                logger.info("战略判断不完整(%s),丢弃该问题:%r", missing, draft.question[:40])
+                continue
 
         key = (source_node_id, _normalize(draft.question))
         if key in seen:
@@ -215,6 +294,12 @@ async def create_from_drafts(
             reasoning_node_id=reasoning_node_id,
             question=draft.question.strip(),
             why_now=draft.why_now.strip(),
+            analysis_summary=draft.analysis_summary.strip(),
+            recommendation=draft.recommendation.strip(),
+            decision_impact=draft.decision_impact.strip(),
+            confidence_note=(
+                draft.confidence_note.strip() if draft.confidence_note else None
+            ),
             response_mode=QuestionResponseMode(mode),
             options=_options_to_rows(draft),
             allow_custom_input=bool(draft.allow_custom_input),
@@ -444,9 +529,17 @@ def to_view(question: AgentQuestion) -> QuestionView:
         reasoning_node_id=question.reasoning_node_id,
         question=question.question,
         why_now=question.why_now,
+        analysis_summary=question.analysis_summary,
+        recommendation=question.recommendation,
+        decision_impact=question.decision_impact,
+        confidence_note=question.confidence_note,
         response_mode=question.response_mode.value,
         options=[
-            {"id": str(option.get("id")), "label": str(option.get("label"))}
+            {
+                "id": str(option.get("id")),
+                "label": str(option.get("label")),
+                "recommended": bool(option.get("recommended", False)),
+            }
             for option in _as_list(question.options)
             if isinstance(option, dict)
         ],

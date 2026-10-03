@@ -476,3 +476,142 @@
   .trace-overlay { align-items: flex-end; }
   .trace-inspector { height: min(78dvh, 640px); border-left: 0; border-top: 1px solid var(--line-card); border-radius: var(--radius-panel) var(--radius-panel) 0 0; }
 }
+
+/* ------------------------------------------------------------------ */
+/* 阶段 10:问题节点 = 战略判断卡                                        */
+/*                                                                     */
+/* 默认先展示 AI 判断 / 推荐 / 你的选择会影响,再问“需要你确认的一点”。   */
+/* 保持紧凑:长判断最多占几行,不恢复旧的大号问卷卡。                     */
+/* ------------------------------------------------------------------ */
+.cq-judgment {
+  margin-bottom: 8px;
+  padding: 8px 9px;
+  border-radius: var(--radius-control, 9px);
+  background: color-mix(in srgb, var(--blue, #5e93c7) 6%, var(--surface-raised, #fff));
+  border: 1px solid color-mix(in srgb, var(--blue, #5e93c7) 16%, transparent);
+}
+.cq-label {
+  display: block;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  font-weight: 600;
+  color: var(--muted, #6f8293);
+  margin-bottom: 2px;
+}
+.cq-analysis {
+  font-size: 10.5px;
+  line-height: 1.55;
+  color: var(--text, #304b62);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.cq-recommendation {
+  margin-top: 5px;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--blue-ink, #2f6da3);
+}
+.cq-recommendation .cq-label { color: var(--blue-ink, #2f6da3); margin-bottom: 1px; }
+.cq-insufficient { color: #8a5a3c; }
+.cq-label-question { margin-top: 4px; }
+.cq-impact {
+  margin-top: 6px;
+  font-size: 10px;
+  line-height: 1.55;
+  color: var(--muted, #6f8293);
+}
+.cq-impact .cq-label { margin-bottom: 1px; }
+.cq-assumption {
+  font-size: 9px;
+  line-height: 1.5;
+  color: var(--muted, #6f8293);
+  margin-bottom: 6px;
+}
+.cq-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.cq-option.is-recommended {
+  border-color: color-mix(in srgb, var(--blue, #5e93c7) 55%, var(--line));
+  background: color-mix(in srgb, var(--blue, #5e93c7) 12%, transparent);
+  color: var(--blue-ink, #2f6da3);
+  font-weight: 600;
+}
+.cq-recommended-tag {
+  font-size: 8px;
+  line-height: 1.4;
+  padding: 0 4px;
+  border-radius: var(--radius-pill, 999px);
+  background: var(--blue-ink, #2f6da3);
+  color: #fff;
+  font-weight: 700;
+}
+
+/* ------------------------------------------------------------------ */
+/* 阶段 10:当前战略判断摘要(对话区首屏的低干扰块)                     */
+/* ------------------------------------------------------------------ */
+.strategy-summary {
+  flex-shrink: 0;
+  padding: 8px 14px 10px;
+  border-bottom: 1px solid var(--line-soft, #dfe9ee);
+  background: var(--surface-quiet, rgba(255, 255, 255, 0.72));
+  color: var(--text, #304b62);
+}
+.strategy-summary-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+}
+.strategy-summary-icon { color: var(--blue-ink, #2f6da3); display: inline-flex; }
+.strategy-summary-title { flex: 1; min-width: 0; }
+.strategy-summary-title strong {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: #254a68;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.strategy-summary-title .eyebrow { margin-bottom: 1px; }
+.strategy-summary-chevron { color: var(--muted, #6f8293); transition: transform 0.16s; flex-shrink: 0; }
+.strategy-summary-chevron.is-open { transform: rotate(180deg); }
+.strategy-summary-grid {
+  margin: 7px 0 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 12px;
+}
+.strategy-summary-grid > div { min-width: 0; }
+.strategy-summary-grid dt { font-size: 9px; letter-spacing: 0.05em; color: var(--muted, #6f8293); }
+.strategy-summary-grid dd {
+  margin: 0;
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--text, #304b62);
+  overflow-wrap: anywhere;
+}
+.strategy-summary-detail {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--line, #dfe9ee);
+}
+.strategy-summary-why { font-size: 10.5px; line-height: 1.6; color: var(--muted, #6f8293); }
+.strategy-summary-stages { margin: 8px 0 0; padding-left: 16px; display: grid; gap: 5px; }
+.strategy-summary-stages li { font-size: 10.5px; line-height: 1.5; color: var(--text, #304b62); }
+.strategy-summary-stages strong { font-weight: 600; }
+.strategy-summary-stages span { margin-left: 6px; color: var(--blue-ink, #2f6da3); }
+.strategy-summary-stages em { display: block; font-style: normal; font-size: 10px; color: var(--muted, #6f8293); }
+
+/* 阶段 10:判断卡不允许内容把节点撑宽(fitView 最大 1.2 倍)。 */
+.canvas-question-node { overflow: hidden; }
+.cq-analysis,
+.cq-recommendation,
+.cq-impact { overflow-wrap: anywhere; }
+.cq-options { min-width: 0; }
+.cq-option { max-width: 100%; min-width: 0; }

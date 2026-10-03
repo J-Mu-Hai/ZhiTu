@@ -6,7 +6,9 @@
         {
           "id": "t1",
           "name": "research_public",
-          "arguments": { "query": "{{userMessage}}" },
+          "arguments": {
+            "query": "{{userMessage}}"
+          },
           "reason": "公开、客观、可验证、时效性强的信息先查一次"
         }
       ]
@@ -19,10 +21,21 @@
           "whyNow": "它决定我先拆英语还是先拆数学",
           "responseMode": "single_select",
           "options": [
-            { "id": "english", "label": "英语" },
-            { "id": "math", "label": "数学" }
+            {
+              "id": "english",
+              "label": "英语",
+              "recommended": true
+            },
+            {
+              "id": "math",
+              "label": "数学"
+            }
           ],
-          "allowCustomInput": true
+          "allowCustomInput": true,
+          "analysisSummary": "已知道你的目标;两条路线的阶段顺序与成果物不同,这是现在最该定的一点。",
+          "recommendation": "先把重心放在你更想尽快见效、也更需要的那一边。",
+          "decisionImpact": "不同选择会改变阶段 2 的练习素材与阶段 3 的成果形式。",
+          "confidenceNote": "“尽快见效”是从你的目标推断的,若不对请纠正。"
         }
       ],
       "actions": []

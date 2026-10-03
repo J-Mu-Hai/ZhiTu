@@ -476,6 +476,9 @@ class QuestionOptionDraft:
 
     id: str
     label: str
+    #: 阶段 10:AI 的推荐项。前端据此明确标“推荐”——只靠 `recommendation` 文本
+    #: 无法可靠地知道推荐哪一个选项。
+    recommended: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -488,6 +491,13 @@ class QuestionDraft:
 
     `response_mode` 与 `allow_custom_input` 是**两个维度**:前者决定主体怎么答,
     后者决定能不能在选项之外补一句。选项是加速器,不是限制。
+
+    ## 阶段 10:先判断,再提问
+
+    `analysis_summary` / `recommendation` / `decision_impact` 是**提问前必须给出的
+    战略判断**:AI 已经知道什么、推荐怎么做、不同选择会改变什么。它们是一段段
+    可审阅的结论,不是隐藏思维链,也不是原始推理过程。`confidence_note` 说明哪些
+    还只是假设。
     """
 
     question: str
@@ -495,6 +505,14 @@ class QuestionDraft:
     response_mode: str
     options: tuple[QuestionOptionDraft, ...] = ()
     allow_custom_input: bool = False
+    #: AI 基于已知事实的判断(1–3 句)。没有可信依据时留空。
+    analysis_summary: str = ""
+    #: 明确推荐。
+    recommendation: str = ""
+    #: 不同选择会怎样改变战略路线/阶段/成果物。
+    decision_impact: str = ""
+    #: 可选:哪些是假设、还需用户确认。
+    confidence_note: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -76,9 +76,25 @@ test('进入目标自动生成路线图,重复进入不重复', async ({ page })
 
   // 战略阶段先问取舍 —— 不能先问每周投入(用户已经给了 150 分钟)。
   await expect(questionCard(page)).toHaveCount(1, { timeout: 20000 });
-  const questionText = await questionCard(page).innerText();
+  // **只查“需要你确认的一点”那一行**:判断里可以复述已知的每周投入,但不能再拿它当问题。
+  const questionText = await questionCard(page).locator('.cq-question').innerText();
   expect(questionText).toContain('哪条路线');
   expect(questionText, '战略层不该先问每周投入').not.toContain('每周');
+
+  // 阶段 10:**提问前先展示 AI 已经判断了什么**。判断 / 推荐 / 影响默认可见。
+  await expect(questionCard(page)).toContainText('AI 判断');
+  await expect(questionCard(page)).toContainText('推荐');
+  await expect(questionCard(page)).toContainText('你的选择会影响');
+  // 推荐项必须明确标记。
+  await expect(questionCard(page).locator('.cq-option.is-recommended')).toHaveCount(1);
+  await expect(questionCard(page).locator('.cq-option.is-recommended')).toContainText('推荐');
+
+  // 阶段 10:对话区首屏有**当前战略判断摘要**,内容来自已验证的路线/阶段。
+  const summary = page.getByTestId('strategy-summary');
+  await expect(summary).toBeVisible();
+  await expect(summary).toContainText('当前战略判断');
+  await expect(summary).toContainText('推荐路线：约 10 周');
+  await expect(summary).toContainText('总时长');
 
   // 标题栏下的紧凑状态条必须跟暖白主题一致，而且“定位到画布”要有足够对比度。
   const hint = page.locator('.question-status-bar');
