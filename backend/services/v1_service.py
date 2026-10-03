@@ -801,7 +801,11 @@ async def _run_assessment(
         session.v1_stage = V1_GOAL_REFRAME
     # P2.3:非终态阶段不允许“idle + 无问题 + 无 CTA + 无战略”。
     if session.v1_stage == V1_PROBLEM_STRUCTURE:
-        session.v1_next_action = None if synthesized else NEXT_CONTINUE_STRATEGY
+        # 已形成战略、或已抛出一个关键问题等待回答 -> 无需额外 CTA;
+        # 否则必须给“继续形成战略路径”。
+        session.v1_next_action = (
+            None if (synthesized or question_accepted) else NEXT_CONTINUE_STRATEGY
+        )
     else:
         session.v1_next_action = None
     session.phase = ReasoningSessionPhase.ROADMAP_DRAFT
@@ -1871,11 +1875,11 @@ async def confirm_goal_definition(
         session,
         user_message=(
             "目标定义已确认。请基于已有目标定义、已采用的起点与已知事实,"
-            "主动识别可控变量、主要风险与关键杠杆,形成第一版战略路径;不要再问新问题。"
+            "主动识别可控变量、主要风险与关键杠杆,形成第一版战略路径;"
+            "若确有缺口,最多问一个会改变路线的关键问题。"
         ),
         reasoner=reasoner,
         classification=INPUT_USER_PREFERENCE,
-        force_no_question=True,
         trigger="problem_structure_entered",
     )
     await _append_assistant(
@@ -1916,10 +1920,11 @@ async def continue_strategy(
         db,
         ctx,
         session,
-        user_message="请基于已有分析继续形成第一版战略路径;不要再问新问题。",
+        user_message=(
+            "请基于已有分析继续形成第一版战略路径;若确有缺口,最多问一个关键问题。"
+        ),
         reasoner=reasoner,
         classification=INPUT_USER_PREFERENCE,
-        force_no_question=True,
         trigger="strategy_continue",
     )
     await _append_assistant(
