@@ -116,6 +116,20 @@ MAX_V1_QUESTION_CHARS = 500
 #: `uncertainty` 与节点状态的闭集。不在里面的回落到默认值。
 V1_UNCERTAINTIES = frozenset({"low", "medium", "high"})
 V1_NODE_STATUSES = frozenset({"unexplored", "discussing", "resolved", "deferred"})
+#: 线上模型爱用的状态同义名。`explored`/`done` 视为已判断,`partial` 视为讨论中。
+V1_STATUS_ALIASES = {
+    "explored": "resolved",
+    "done": "resolved",
+    "complete": "resolved",
+    "completed": "resolved",
+    "partial": "discussing",
+    "in_progress": "discussing",
+    "inprogress": "discussing",
+    "open": "unexplored",
+    "pending": "unexplored",
+    "skip": "deferred",
+    "skipped": "deferred",
+}
 #: 规划智能体重构 V1(P2.1):战略判断优先。
 MAX_V1_KEY_DIMENSIONS = 3
 MAX_V1_CANDIDATE_DIRECTIONS = 3
@@ -813,7 +827,9 @@ def parse_v1_assessment(raw: Any) -> V1AssessmentDraft | None:
         key = _v1_pick(entry, "nodeKey", "node_key", "key", "dimensionKey")
         if not isinstance(key, str) or not key.strip():
             continue
-        judgment = _v1_pick(entry, "judgment", "analysis", "text", "conclusion", "summary")
+        judgment = _v1_pick(
+            entry, "judgment", "content", "analysis", "text", "conclusion", "summary"
+        )
         importance = _v1_pick(
             entry, "importanceReason", "importance_reason", "whyItMatters", "why"
         )
@@ -824,6 +840,7 @@ def parse_v1_assessment(raw: Any) -> V1AssessmentDraft | None:
             uncertainty = uncertainty.strip().lower()
         if isinstance(status, str):
             status = status.strip().lower()
+            status = V1_STATUS_ALIASES.get(status, status)
         updates.append(
             V1NodeUpdate(
                 node_key=key.strip()[:48],
@@ -869,7 +886,7 @@ def parse_v1_assessment(raw: Any) -> V1AssessmentDraft | None:
             V1KeyDimension(
                 key=key.strip()[:48],
                 judgment=_text(
-                    _v1_pick(entry, "judgment", "analysis", "text", "conclusion"),
+                    _v1_pick(entry, "judgment", "content", "analysis", "text", "conclusion"),
                     MAX_V1_TEXT_CHARS,
                 ),
                 why_it_matters=_text(
@@ -880,9 +897,29 @@ def parse_v1_assessment(raw: Any) -> V1AssessmentDraft | None:
         )
     directions: list[V1CandidateDirection] = []
     seen_direction_keys: set[str] = set()
-    for entry in (raw.get("candidateDirections") or raw.get("candidate_directions") or [])[
-        :MAX_V1_CANDIDATE_DIRECTIONS
-    ]:
+    for direction_index, entry in enumerate(
+        (raw.get("candidateDirections") or raw.get("candidate_directions") or [])[
+            :MAX_V1_CANDIDATE_DIRECTIONS
+        ],
+        start=1,
+    ):
+        if isinstance(entry, str):
+            # 线上模型有时把候选方向写成裸字符串(只有标题)。给它一个稳定短键,
+            # 不让整段内容因为“没写成对象”被丢掉。
+            text = entry.strip()
+            if not text:
+                continue
+            clean_key = f"d{direction_index}"
+            if clean_key in seen_direction_keys:
+                continue
+            seen_direction_keys.add(clean_key)
+            directions.append(
+                V1CandidateDirection(
+                    key=clean_key,
+                    title=text[:MAX_V1_TIMELINE_TITLE_CHARS],
+                )
+            )
+            continue
         if not isinstance(entry, dict):
             continue
         key = _v1_pick(entry, "key", "id", "value", "code")

@@ -85,6 +85,28 @@ def test_snake_case_and_generic_aliases() -> None:
     assert draft.strategy_ready is True
 
 
+def test_content_status_and_string_entries() -> None:
+    """实测第二种漂移:`nodeUpdates` 用 `content`,状态用 explored/partial,候选方向是裸字符串。"""
+    raw = {
+        "nodeUpdates": [
+            {
+                "key": "goal_definition",
+                "status": "explored",
+                "content": "30 天内做出一件可展示的作品。",
+            },
+            {"key": "key_conflict", "status": "partial", "content": "时间有限与要出作品相冲突。"},
+        ],
+        "candidateDirections": ["做一个工具", "复刻一个案例", "给自己跑通就行"],
+    }
+    draft = parse_v1_assessment(raw)
+    assert draft is not None
+    assert draft.node_updates[0].judgment == "30 天内做出一件可展示的作品。"
+    assert draft.node_updates[0].status == "resolved", "explored 应归一为 resolved"
+    assert draft.node_updates[1].status == "discussing", "partial 应归一为 discussing"
+    assert [d.title for d in draft.candidate_directions] == ["做一个工具", "复刻一个案例", "给自己跑通就行"]
+    assert all(d.key for d in draft.candidate_directions), "裸字符串也要有稳定短键"
+
+
 def test_unknown_response_mode_falls_back_to_none() -> None:
     draft = parse_v1_assessment({"responseMode": "totally_made_up"})
     assert draft is not None
