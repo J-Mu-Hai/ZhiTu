@@ -52,9 +52,12 @@ test('路线优先:先给推荐路线与阶段,确认战略后才允许细化', 
     '我想学习 Python 做数据分析，每周 150 分钟。',
   );
   await page.goto(`/workbench?workspace=${workspaceId}`);
+  // 阶段 12:时间架构生成后工作台会自动切到时间线;这条用例验的是路径画布,
+  // 所以等自动切换发生后切回路径页。
+  await expect(page).toHaveURL(/view=timeline/, { timeout: 25000 });
+  await page.getByRole('tab', { name: '路径', exact: true }).click();
+  await expect(page).toHaveURL(/view=path/);
   await waitForRealPlan(page);
-
-  // ---- 1. 第一轮就是路线图:一条路线 + 4 个阶段 ----
   await expect(routeCard(page), '没有出现推荐路线').toBeVisible({ timeout: 25000 });
   await expect(stageCards(page), '阶段数量不对').toHaveCount(4);
   // 每阶段有粗粒度时间带与成果物。

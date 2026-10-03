@@ -1791,6 +1791,15 @@ export interface ReasoningLinkView {
   note: string | null;
 }
 
+/** 阶段 12:对话式战略 intake 当前等回答的那一条。**不是问题实体。** */
+export interface PendingIntakeView {
+  messageId: string | null;
+  question: string;
+  decisionScope: string;
+  whyThisMatters: string;
+  quickReplies: string[];
+}
+
 /** 当前目标推理地图。读接口与 agent turn 都返回这一份。 */
 export interface GoalReasoningView {
   workspaceId: string;
@@ -1805,6 +1814,11 @@ export interface GoalReasoningView {
   focusReason: string | null;
   inputVersion: string | null;
   strategyProposalId: string | null;
+  /** 阶段 11:intake 进度(已问几个关键问题 / 上限)。 */
+  intakeQuestionsAsked: number;
+  intakeQuestionLimit: number;
+  /** 阶段 12:当前正在等回答的 intake 关键问题。null = 不在等回答。 */
+  pendingIntake: PendingIntakeView | null;
   /** 阶段 11:时间架构里的日期是否已校准。false = 只有相对周,不伪造日历日期。 */
   datesCalibrated: boolean;
   exploredAt: string | null;

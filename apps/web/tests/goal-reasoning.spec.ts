@@ -32,13 +32,32 @@ test.beforeEach(async ({ request }) => {
 
 const reasoningNode = (page: Page) => page.locator('.react-flow__node-reasoning');
 const reasoningCard = (page: Page) => page.locator('.reasoning-node');
-const questionCard = (page: Page) => page.locator('.canvas-question-node');
 const routeCard = (page: Page) => reasoningCard(page).filter({ hasText: '推荐路线' });
 
 async function waitForMap(page: Page): Promise<void> {
   // 路线图 = 1 条 route + 4 个 stage。
   await expect(reasoningNode(page)).toHaveCount(5, { timeout: 25000 });
   await expect(routeCard(page)).toBeVisible();
+}
+
+/**
+ * 回答对话式 intake 的关键问题。
+ *
+ * 选项 chip 就在最后一条助手消息下面 —— 点一下等价于把这句话发出去。
+ */
+async function answerIntake(page: Page, label: string): Promise<void> {
+  const inline = page.getByTestId('intake-inline');
+  await expect(inline).toBeVisible({ timeout: 25000 });
+  await inline.getByRole('button', { name: new RegExp(label) }).click();
+}
+
+/**
+ * 时间架构生成后工作台会自动切到时间线;这些用例验的是路径画布,所以切回去。
+ */
+async function backToPath(page: Page): Promise<void> {
+  await expect(page).toHaveURL(/view=timeline/, { timeout: 25000 });
+  await page.getByRole('tab', { name: '路径', exact: true }).click();
+  await expect(page).toHaveURL(/view=path/);
 }
 
 /** 节点投影 memo 跑了几次(见 `PathView` 里 `__zhituNodeProjectionBuilds` 的说明)。 */
@@ -60,34 +79,29 @@ async function viewportTransform(page: Page): Promise<string> {
   return (await page.locator('.react-flow__viewport').getAttribute('style')) ?? '';
 }
 
-test('进入目标自动生成路线图,重复进入不重复', async ({ page }) => {
+test('进入目标先问关键问题,回答后生成路线图,重复进入不重复', async ({ page }) => {
   test.slow();
   const { token } = await registerAccount(page, 'goal-reasoning-enter');
   const workspaceId = await createWorkspace(page, token, '目标推理空间', '我想系统学习 Python 做数据分析，每周 150 分钟。');
   await page.goto(`/workbench?workspace=${workspaceId}`);
   await waitForRealPlan(page);
 
+  // 阶段 11:首轮是对话式 intake —— 画布上没有路线、没有问题节点。
+  await expect(page.getByTestId('intake-inline')).toBeVisible({ timeout: 25000 });
+  await expect(page.getByTestId('intake-progress')).toContainText('正在梳理目标');
+  await expect(reasoningNode(page)).toHaveCount(0);
+  await expect(page.locator('.react-flow__node-question')).toHaveCount(0);
+
+  // 回答关键问题 -> 一次性生成路线图,并自动切到时间线。
+  await answerIntake(page, '英语');
+  await backToPath(page);
   await waitForMap(page);
+
   // 有路线图、但还没有任何**业务计划子节点** —— 空态必须完全不渲染。
   await expect(page.locator('.empty-space-note'), '有推理地图时不该再显示空态').toHaveCount(0);
   // 恰好一个焦点,而且焦点是第一个阶段。
   await expect(page.locator('.reasoning-node.is-focus')).toHaveCount(1, { timeout: 20000 });
   await expect(page.locator('.reasoning-node.is-focus')).toContainText('用途');
-
-  // 战略阶段先问取舍 —— 不能先问每周投入(用户已经给了 150 分钟)。
-  await expect(questionCard(page)).toHaveCount(1, { timeout: 20000 });
-  // **只查“需要你确认的一点”那一行**:判断里可以复述已知的每周投入,但不能再拿它当问题。
-  const questionText = await questionCard(page).locator('.cq-question').innerText();
-  expect(questionText).toContain('哪条路线');
-  expect(questionText, '战略层不该先问每周投入').not.toContain('每周');
-
-  // 阶段 10:**提问前先展示 AI 已经判断了什么**。判断 / 推荐 / 影响默认可见。
-  await expect(questionCard(page)).toContainText('AI 判断');
-  await expect(questionCard(page)).toContainText('推荐');
-  await expect(questionCard(page)).toContainText('你的选择会影响');
-  // 推荐项必须明确标记。
-  await expect(questionCard(page).locator('.cq-option.is-recommended')).toHaveCount(1);
-  await expect(questionCard(page).locator('.cq-option.is-recommended')).toContainText('推荐');
 
   // 阶段 10:对话区首屏有**当前战略判断摘要**,内容来自已验证的路线/阶段。
   const summary = page.getByTestId('strategy-summary');
@@ -96,83 +110,41 @@ test('进入目标自动生成路线图,重复进入不重复', async ({ page })
   await expect(summary).toContainText('推荐路线：约 10 周');
   await expect(summary).toContainText('总时长');
 
-  // 标题栏下的紧凑状态条必须跟暖白主题一致，而且“定位到画布”要有足够对比度。
-  const hint = page.locator('.question-status-bar');
-  await expect(hint).toBeVisible({ timeout: 20000 });
-  await expect(hint).toContainText('待回答问题');
-  // 旧版的正文大卡片已经移除。
-  await expect(page.locator('.question-hint')).toHaveCount(0);
-  const styles = await hint.evaluate((element) => {
-    const parse = (value: string) => {
-      const numbers = (value.match(/[\d.]+/g) ?? []).map(Number);
-      // Chrome 对 `color-mix(...)` 的结果返回 `color(srgb r g b)`(0–1),
-      // 不是 `rgb(r g b)`(0–255)。不归一化会把浅色读成近黑。
-      return value.trim().startsWith('color(srgb') ? numbers.map((n) => n * 255) : numbers;
-    };
-    const luminance = (rgb: number[]) => {
-      const [r, g, b] = rgb.slice(0, 3).map((channel) => {
-        const s = channel / 255;
-        return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
-      });
-      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-    };
-    const ratio = (a: number[], b: number[]) => {
-      const [lighter, darker] = [luminance(a), luminance(b)].sort((x, y) => y - x);
-      return (lighter + 0.05) / (darker + 0.05);
-    };
-    const computed = getComputedStyle(element);
-    const background = parse(computed.backgroundColor);
-    const button = element.querySelector('.question-locate');
-    const buttonColor = button ? parse(getComputedStyle(button).color) : [];
-    return {
-      background: computed.backgroundColor,
-      backgroundLuminance: luminance(background),
-      textContrast: ratio(parse(computed.color), background),
-      buttonContrast: buttonColor.length ? ratio(buttonColor, background) : 0,
-    };
-  });
-  expect(styles.background, '问题提示还在用旧的深色硬编码背景').not.toBe('rgb(26, 24, 16)');
-  expect(styles.backgroundLuminance, '问题提示背景不是浅色').toBeGreaterThan(0.6);
-  expect(styles.textContrast, '问题提示正文对比度不足').toBeGreaterThanOrEqual(4.5);
-  expect(styles.buttonContrast, '“定位到画布”对比度不足').toBeGreaterThanOrEqual(4.5);
-
-  // 重复进入(刷新)不重复建节点。
+  // 重复进入(刷新)不重复建节点;刷新后 architecture 会立刻把视图切到时间线,
+  // 所以**先等自动切视图、再切回路径页**,最后才谈得上等计划画出来。
   await page.reload();
+  await backToPath(page);
   await waitForRealPlan(page);
   await waitForMap(page);
   await expect(reasoningNode(page)).toHaveCount(5);
 });
 
-test('回答推进地图,战略确认走提案,确认后才写计划', async ({ page }) => {
+test('战略确认走提案,确认后才写计划', async ({ page }) => {
   test.slow();
   const { token } = await registerAccount(page, 'goal-reasoning-confirm');
   const workspaceId = await createWorkspace(page, token, '目标推理确认空间', '我想系统学习英语');
   await page.goto(`/workbench?workspace=${workspaceId}`);
   await waitForRealPlan(page);
+  await answerIntake(page, '英语');
+  await backToPath(page);
   await waitForMap(page);
 
-  // 在画布上回答问题 -> 地图节点应推进为已澄清,并收敛出路线。
-  await questionCard(page).getByRole('button', { name: '英语' }).click();
-  await questionCard(page).getByRole('button', { name: '提交回答' }).click();
-  await expect(reasoningCard(page).filter({ hasText: '战略:先英语' })).toBeVisible({ timeout: 25000 });
-  await expect(page.locator('.reasoning-node.reasoning-resolved')).toHaveCount(1, { timeout: 20000 });
-
   // 点开路线节点 -> 确认这条战略 -> 生成待确认提案。
-  await reasoningCard(page).filter({ hasText: '战略:先英语' }).click();
+  await routeCard(page).click();
   await expect(page.locator('.reasoning-detail')).toBeVisible();
   await page.locator('.reasoning-detail').getByRole('button', { name: '确认这条战略' }).click();
 
-  const proposal = page.locator('.proposal').filter({ hasText: '战略:先英语' }).first();
+  const proposal = page.locator('.proposal').filter({ hasText: '推荐路线' }).first();
   await expect(proposal).toBeVisible({ timeout: 20000 });
 
   // **未确认时业务计划里没有战略节点。**
   const beforeConfirm = await getPlan(page, token, workspaceId);
-  expect(beforeConfirm.nodes.some(node => node.title === '战略:先英语')).toBe(false);
+  expect(beforeConfirm.nodes.some(node => node.title.startsWith('推荐路线'))).toBe(false);
 
   // 确认提案 -> 战略节点真的写入计划。
   await proposal.getByRole('button', { name: '确认，写入计划' }).click();
   await expect
-    .poll(async () => (await getPlan(page, token, workspaceId)).nodes.some(node => node.title === '战略:先英语'), {
+    .poll(async () => (await getPlan(page, token, workspaceId)).nodes.some(node => node.title.startsWith('推荐路线')), {
       timeout: 20000,
     })
     .toBe(true);
@@ -194,6 +166,8 @@ test('路线锚定到目标根节点,悬停不重建画布、点击只开一次�
 
   await page.goto(`/workbench?workspace=${workspaceId}`);
   await waitForRealPlan(page);
+  await answerIntake(page, '英语');
+  await backToPath(page);
   await waitForMap(page);
 
   const plan = await getPlan(page, token, workspaceId);
@@ -371,6 +345,7 @@ test('旧地图可识别并重新生成战略路线，旧节点留在思考层',
   const regenerate = page.getByRole('button', { name: /重新生成战略路线/ });
   await expect(regenerate, '旧地图没有重生成入口').toBeVisible({ timeout: 20000 });
   await regenerate.click();
+  await backToPath(page);
 
   // 主画布切换成路线 + 阶段,入口消失。
   await expect(page.locator('.reasoning-node').filter({ hasText: '推荐路线' })).toBeVisible();

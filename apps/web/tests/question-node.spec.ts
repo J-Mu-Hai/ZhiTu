@@ -52,12 +52,35 @@ async function say(page: Page, text: string): Promise<void> {
 const questionNode = (page: Page) => page.locator('.react-flow__node-question');
 const questionCard = (page: Page) => page.locator('.canvas-question-node');
 
+/**
+ * 打开工作台的**路径页**。
+ *
+ * 阶段 11:新目标生成时间架构后会自动切到时间线;画布问题节点在路径页。
+ * 所以这里先等自动切换发生,再手动切回路径页并等计划到达。
+ */
+async function waitPathAfterArchitecture(page: Page): Promise<void> {
+  // 等自动切时间线(每个挂载一次),再切回路径页。
+  await expect(page).toHaveURL(/view=timeline/, { timeout: 25000 });
+  await page.getByRole('tab', { name: '路径', exact: true }).click();
+  await expect(page).toHaveURL(/view=path/);
+  await waitForRealPlan(page);
+}
+
+async function openPathWorkbench(page: Page, workspaceId: string): Promise<void> {
+  await page.goto(`/workbench?workspace=${workspaceId}`);
+  await waitPathAfterArchitecture(page);
+}
+
+async function reloadPathWorkbench(page: Page): Promise<void> {
+  await page.reload();
+  await waitPathAfterArchitecture(page);
+}
+
 test('问题投影为画布节点,在画布上回答,刷新后消失', async ({ page }) => {
   test.slow();
   const { token } = await registerAccount(page, 'canvas-question');
   const workspaceId = await createWorkspace(page, token, '画布问题空间', '提升英语和数学');
-  await page.goto(`/workbench?workspace=${workspaceId}`);
-  await waitForRealPlan(page);
+  await openPathWorkbench(page, workspaceId);
 
   // 选一个节点,让问题带上 source —— 画布节点应锚定在它旁边。
   const plan = await getPlan(page, token, workspaceId);
@@ -117,8 +140,7 @@ test('问题投影为画布节点,在画布上回答,刷新后消失', async ({ 
   expect(beforeConfirm.nodes.some(node => node.title === '这学期重心:英语')).toBe(false);
 
   // ---- 刷新:resolved 的问题不再出现在画布(状态由后端恢复) ----
-  await page.reload();
-  await waitForRealPlan(page);
+  await reloadPathWorkbench(page);
   await expect(questionNode(page)).toHaveCount(0);
 });
 
@@ -126,8 +148,7 @@ test('无 source 的问题仍稳定显示;稍后回答刷新后仍在', async ({
   test.slow();
   const { token } = await registerAccount(page, 'canvas-question-later');
   const workspaceId = await createWorkspace(page, token, '画布问题稍后空间', '提升英语');
-  await page.goto(`/workbench?workspace=${workspaceId}`);
-  await waitForRealPlan(page);
+  await openPathWorkbench(page, workspaceId);
 
   // 不选任何节点 -> 问题没有 source,应锚定到空间根,而不是丢失。
   await say(page, '我想提升一下。');
@@ -137,8 +158,7 @@ test('无 source 的问题仍稳定显示;稍后回答刷新后仍在', async ({
   await questionCard(page).getByRole('button', { name: '稍后回答' }).click();
   await expect(questionNode(page)).toHaveCount(1);
 
-  await page.reload();
-  await waitForRealPlan(page);
+  await reloadPathWorkbench(page);
   await expect(questionNode(page)).toHaveCount(1, { timeout: 20000 });
   await expect(questionCard(page)).toContainText('这学期你希望把重心放在哪一边?');
 });
@@ -152,8 +172,7 @@ test('问题节点可自由拖动,锚定虚线跟随,刷新后位置恢复', asy
   test.slow();
   const { token } = await registerAccount(page, 'canvas-question-drag');
   const workspaceId = await createWorkspace(page, token, '画布问题拖动空间', '提升英语');
-  await page.goto(`/workbench?workspace=${workspaceId}`);
-  await waitForRealPlan(page);
+  await openPathWorkbench(page, workspaceId);
 
   await say(page, '我想提升一下。');
   await expect(questionNode(page)).toHaveCount(1, { timeout: 20000 });
@@ -176,8 +195,7 @@ test('问题节点可自由拖动,锚定虚线跟随,刷新后位置恢复', asy
   expect(rel.relations).toHaveLength(0);
 
   // 刷新:位置由 UI-only 表恢复,状态与锚定边也回来。
-  await page.reload();
-  await waitForRealPlan(page);
+  await reloadPathWorkbench(page);
   await expect(questionNode(page)).toHaveCount(1, { timeout: 20000 });
   await expect(page.locator('.react-flow__edge.question-anchor-edge')).toHaveCount(1);
   await expect.poll(() => questionTransform(page)).toBe(draggedTo);
@@ -187,8 +205,7 @@ test('画布静止时问题节点位置稳定、不被反复重挂载', async ({
   test.slow();
   const { token } = await registerAccount(page, 'canvas-question-stable');
   const workspaceId = await createWorkspace(page, token, '画布问题稳定空间', '提升英语');
-  await page.goto(`/workbench?workspace=${workspaceId}`);
-  await waitForRealPlan(page);
+  await openPathWorkbench(page, workspaceId);
 
   await say(page, '我想提升一下。');
   await expect(questionNode(page)).toHaveCount(1, { timeout: 20000 });
@@ -274,8 +291,7 @@ test('无法可靠推荐时不伪造判断,而是说明缺少什么', async ({ p
   });
   // 让自动 `space_entered` 真的跑一轮(它会在之后重新拉一次 `/questions`,
   // 于是命中上面那个“无判断”的 mock)。
-  await page.goto(`/workbench?workspace=${workspaceId}`);
-  await waitForRealPlan(page);
+  await openPathWorkbench(page, workspaceId);
 
   await expect(questionNode(page)).toHaveCount(1, { timeout: 20000 });
   const insufficient = questionCard(page).getByTestId('cq-insufficient');

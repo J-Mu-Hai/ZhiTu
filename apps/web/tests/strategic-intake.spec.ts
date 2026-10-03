@@ -38,6 +38,9 @@ function reasoningView(workspaceId: string, rootId: string, overrides: Record<st
     focusHandle: null,
     focusReasoningNodeId: null,
     focusReason: null,
+    intakeQuestionsAsked: 0,
+    intakeQuestionLimit: 5,
+    pendingIntake: null,
     datesCalibrated: false,
     inputVersion: 'v1',
     strategyProposalId: null,
@@ -107,49 +110,55 @@ async function installReasoningMock(page: Page, body: Record<string, unknown>) {
 }
 
 async function installIntakeQuestionMock(page: Page, workspaceId: string, rootId: string) {
-  const question = {
-    id: 'q-intake',
-    workspaceId,
-    sourceNodeId: rootId,
-    sourceMessageId: null,
-    reasoningNodeId: null,
-    presentation: 'conversation_intake',
+  // 阶段 12:待回答问题只来自会话状态,不是 `agent_questions`。
+  const pendingIntake = {
+    messageId: 'm-intake',
     question: '你希望最终获得什么成果?',
-    whyNow: '它会改变总时长与阶段成果',
-    analysisSummary: '你已给出目标方向;不同成果会改变阶段顺序。',
-    recommendation: '先明确要交出的东西,再定阶段。',
-    decisionImpact: '不同成果会改变阶段 2 的素材与阶段 3 的形式。',
-    confidenceNote: '“尽快见效”是推断。',
-    responseMode: 'single_select',
-    options: [
-      { id: 'portfolio', label: '一个能展示的作品', recommended: true },
-      { id: 'automation', label: '自动化脚本', recommended: false },
-    ],
-    allowCustomInput: true,
-    status: 'pending',
-    answer: null,
+    decisionScope: 'deliverable',
+    whyThisMatters: '它决定阶段 2 的素材与阶段 3 的形式。',
+    quickReplies: ['一个能展示的作品', '自动化脚本'],
+  };
+  const view = reasoningView(workspaceId, rootId, {
+    sessionId: null,
+    status: 'idle',
+    intakeQuestionsAsked: 1,
+    pendingIntake,
+  });
+  const message = {
+    id: 'm-intake',
+    role: 'assistant',
+    content: '你已给出目标方向。你希望最终获得什么成果?',
+    seq: 1,
     createdAt: NOW,
-    updatedAt: NOW,
-    answeredAt: null,
+    contextNodeId: null,
+    proposalId: null,
+    modelSource: 'direct_llm',
+    degraded: false,
+    degradedReason: null,
+    research: null,
   };
   await page.route('**/api/workspaces/*/questions*', async route => {
     if (route.request().method() !== 'GET') return route.continue();
     return route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({ questions: [question], truncated: false }),
+      body: JSON.stringify({ questions: [], truncated: false }),
     });
   });
-  // `ensureReasoningMap` 只有在 turn 响应带 question 时才会重拉 `/questions`。
+  await page.route('**/api/workspaces/*/reasoning', async route => {
+    if (route.request().method() !== 'GET') return route.continue();
+    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(view) });
+  });
+  // `/agent/turn` 回一条“对话式提问”:只有助手消息 + 会话状态,没有问题实体。
   await page.route('**/api/workspaces/*/agent/turn', async route => {
     if (route.request().method() !== 'POST') return route.continue();
     return route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
-        reasoning: reasoningView(workspaceId, rootId, { sessionId: null, status: 'idle' }),
-        message: null,
-        question,
+        reasoning: view,
+        message,
+        question: null,
         replayed: false,
         degraded: false,
         degradedReason: null,
@@ -161,29 +170,34 @@ async function installIntakeQuestionMock(page: Page, workspaceId: string, rootId
   });
 }
 
-test('intake 关键问题只在对话区(橙色),不生成画布节点', async ({ page }) => {
+test('intake 关键问题只在对话流里,不生成画布节点', async ({ page }) => {
   const { token } = await registerAccount(page, 'intake-e2e');
   const workspaceId = await createWorkspace(page, token, 'intake 空间', '我想学习 Python');
   const rootId = (await getPlan(page, token, workspaceId)).nodes.find(node => node.parentId === null)!.id;
-  await installReasoningMock(page, reasoningView(workspaceId, rootId, { sessionId: null, status: 'idle' }));
   await installIntakeQuestionMock(page, workspaceId, rootId);
 
   await page.goto(`/workbench?workspace=${workspaceId}`);
   await waitForRealPlan(page);
 
-  const card = page.getByTestId('intake-card');
-  await expect(card).toBeVisible({ timeout: 20000 });
-  await expect(card).toContainText('战略校准');
-  await expect(card).toContainText('AI 判断');
-  await expect(card).toContainText('推荐');
-  await expect(card).toContainText('你的选择会影响');
-  // 推荐项明确标记。
-  await expect(card.locator('.intake-option.is-recommended')).toHaveCount(1);
-  // **不生成画布 Question Node。**
+  // 问题与快捷回复在**对话流里**那条助手消息下面,不是一张常驻表单卡片。
+  const inline = page.getByTestId('intake-inline');
+  await expect(inline).toBeVisible({ timeout: 20000 });
+  const article = page.locator('article.message.assistant').filter({ has: inline });
+  await expect(article).toContainText('你希望最终获得什么成果?');
+  const chips = page.getByTestId('intake-chips');
+  await expect(chips).toBeVisible();
+  await expect(chips.locator('.intake-chip')).toHaveCount(2);
+  // 极轻量进度文字(不是横幅、不遮内容)。
+  await expect(page.getByTestId('intake-progress')).toContainText('正在梳理目标');
+  // **旧的大卡片与画布状态已彻底移除。**
+  await expect(page.getByTestId('intake-card')).toHaveCount(0);
+  await expect(page.getByTestId('intake-canvas-note')).toHaveCount(0);
+  // 没有“待回答问题 / 定位到画布 / 选择画布节点”的串扰。
+  await expect(page.locator('.question-status-bar')).toHaveCount(0);
+  await expect(page.getByText('定位到画布')).toHaveCount(0);
+  // **不生成画布 Question Node,也不生成任何 reasoning 节点。**
   await expect(page.locator('.react-flow__node-question')).toHaveCount(0);
-  // 橙色边框(战略校准中)。
-  const border = await card.evaluate(element => getComputedStyle(element).borderLeftColor);
-  expect(border).not.toBe('rgba(0, 0, 0, 0)');
+  await expect(page.locator('.react-flow__node-reasoning')).toHaveCount(0);
 });
 
 test('时间架构生成后自动切到时间线,显示草案预览与相对周', async ({ page }) => {
@@ -211,6 +225,11 @@ test('时间架构生成后自动切到时间线,显示草案预览与相对周'
   await expect(preview).toContainText('第 1–2 周');
   // 无日期 -> 相对周 + 日期待校准。
   await expect(page.getByTestId('arch-dates-pending')).toBeVisible();
+  // **明确的“确认这条战略 / 调整战略”交互。**
+  await expect(page.getByTestId('strategy-confirm')).toBeVisible();
+  await expect(page.getByTestId('strategy-adjust')).toBeVisible();
+  // 确认前不得出现“细化第一阶段”。
+  await expect(page.getByTestId('strategy-confirm-bar')).toHaveCount(0);
 
   // 阶段卡点击回到路径页。
   await preview.locator('.arch-stage').first().click();

@@ -52,6 +52,13 @@ test.beforeEach(async ({ request }) => {
   );
 });
 
+/** 阶段 12:进入空间会先生成时间架构并自动切到时间线;这条用例验路径画布,切回来。 */
+async function backToPath(page: Page): Promise<void> {
+  await expect(page).toHaveURL(/view=timeline/, { timeout: 25000 });
+  await page.getByRole('tab', { name: '路径', exact: true }).click();
+  await expect(page).toHaveURL(/view=path/);
+}
+
 async function say(page: Page, text: string): Promise<void> {
   const replies = page.locator('.message.assistant');
   const before = await replies.count();
@@ -102,6 +109,7 @@ test('公开研究:对话显示可信来源,画布提出问题,拖动/刷新恢�
   const account = await registerAccount(page, 'research-flow');
   const workspaceId = await createWorkspace(page, account.token, '公开研究空间', '提升英语和数学');
   await page.goto(`/workbench?workspace=${workspaceId}`);
+  await backToPath(page);
   await waitForRealPlan(page);
 
   await say(page, QUERY_SUCCESS);
@@ -139,6 +147,7 @@ test('公开研究:对话显示可信来源,画布提出问题,拖动/刷新恢�
   await expect(page.locator('.react-flow__edge.question-anchor-edge')).toHaveCount(1);
 
   await page.reload();
+  await backToPath(page);
   await waitForRealPlan(page);
   await expect(questionNode(page)).toHaveCount(1, { timeout: 20000 });
   await expect(page.locator('.research-citations')).toContainText('公开政策说明(测试来源)');
@@ -164,6 +173,7 @@ test('同一研究再次触发命中缓存:显示缓存来源,provider 不再被
   const account = await registerAccount(page, 'research-cached');
   const workspaceId = await createWorkspace(page, account.token, '公开研究缓存空间', '提升英语');
   await page.goto(`/workbench?workspace=${workspaceId}`);
+  await backToPath(page);
   await waitForRealPlan(page);
 
   // 与场景 1 相同的查询 -> 命中上一条建立的持久化缓存(跨空间共享)。
@@ -181,6 +191,7 @@ test('含敏感信息的查询被拦下:不出网,UI 诚实说明未检索', asy
   const account = await registerAccount(page, 'research-private');
   const workspaceId = await createWorkspace(page, account.token, '公开研究隐私空间', '提升英语');
   await page.goto(`/workbench?workspace=${workspaceId}`);
+  await backToPath(page);
   await waitForRealPlan(page);
 
   await say(page, '帮我查 xiaoming@example.com 的保研政策');
@@ -202,6 +213,7 @@ test('每日额度耗尽后不出网:UI 显示额度限制', async ({ page }) =>
   const account = await registerAccount(page, 'research-limited');
   const workspaceId = await createWorkspace(page, account.token, '公开研究额度空间', '提升英语');
   await page.goto(`/workbench?workspace=${workspaceId}`);
+  await backToPath(page);
   await waitForRealPlan(page);
 
   // 额度已在场景 1 用尽;这是另一个查询,不会命中缓存,于是走到额度检查。
@@ -222,6 +234,7 @@ test('画布静止时问题节点位置稳定、不被反复重挂载', async ({
   const account = await registerAccount(page, 'research-stable');
   const workspaceId = await createWorkspace(page, account.token, '公开研究稳定空间', '提升英语');
   await page.goto(`/workbench?workspace=${workspaceId}`);
+  await backToPath(page);
   await waitForRealPlan(page);
 
   await say(page, QUERY_SUCCESS);

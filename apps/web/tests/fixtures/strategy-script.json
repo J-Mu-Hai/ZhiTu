@@ -35,7 +35,9 @@
             "timeframe": "约 2 周",
             "deliverable": "一组可运行的小练习",
             "passCriteria": "能独立读写文件、写函数与循环",
-            "evidence": ["公开来源：Python 官方教程（example.edu.cn）"]
+            "evidence": [
+              "公开来源：Python 官方教程（example.edu.cn）"
+            ]
           },
           {
             "handle": "r3",
@@ -86,10 +88,30 @@
           }
         ],
         "links": [
-          { "source": "r1", "target": "r2", "type": "influences", "note": "路线决定阶段顺序" },
-          { "source": "r2", "target": "r3", "type": "depends_on", "note": "基础之后才做数据处理" },
-          { "source": "r3", "target": "r4", "type": "depends_on", "note": "拿到数据结果再做可视化" },
-          { "source": "r4", "target": "r5", "type": "depends_on", "note": "表达清楚之后才做作品集" }
+          {
+            "source": "r1",
+            "target": "r2",
+            "type": "influences",
+            "note": "路线决定阶段顺序"
+          },
+          {
+            "source": "r2",
+            "target": "r3",
+            "type": "depends_on",
+            "note": "基础之后才做数据处理"
+          },
+          {
+            "source": "r3",
+            "target": "r4",
+            "type": "depends_on",
+            "note": "拿到数据结果再做可视化"
+          },
+          {
+            "source": "r4",
+            "target": "r5",
+            "type": "depends_on",
+            "note": "表达清楚之后才做作品集"
+          }
         ]
       },
       "questions": [
@@ -98,10 +120,21 @@
           "whyNow": "它决定阶段顺序",
           "responseMode": "single_select",
           "options": [
-            { "id": "minimal", "label": "先跑通最小闭环" },
-            { "id": "stats", "label": "先补统计基础" }
+            {
+              "id": "minimal",
+              "label": "先跑通最小闭环",
+              "recommended": true
+            },
+            {
+              "id": "stats",
+              "label": "先补统计基础"
+            }
           ],
-          "allowCustomInput": true
+          "allowCustomInput": true,
+          "analysisSummary": "你已经给出可投入的时间;两条路线的阶段顺序与成果物不同,这是现在最该定的一点。",
+          "recommendation": "先跑通一个最小闭环,再按需要补统计基础。",
+          "decisionImpact": "不同选择会改变阶段 2 的项目素材与总时长。",
+          "confidenceNote": "“尽快见效”是从你的目标推断的。"
         }
       ]
     },

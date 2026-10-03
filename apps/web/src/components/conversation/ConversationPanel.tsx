@@ -6,7 +6,6 @@ import { useDemo } from '@/features/growth/provider';
 import { degradedHint, sourceLabel } from '@/lib/backend';
 import type { ResearchView } from '@/lib/backend';
 import { StrategySummaryCard } from './StrategySummaryCard';
-import { ConversationIntakeCard } from './ConversationIntakeCard';
 
 /**
  * 提案落下之后,卡片上显示的状态。
@@ -156,6 +155,44 @@ function ProposalErrorNotice({ errors }: { errors: { code: string; message: stri
 }
 
 /**
+ * intake 关键问题下面的**轻量快捷回复 chips**。
+ *
+ * ## 它为什么不是一张卡片
+ *
+ * 快捷回复是加速器,不是限制。它看起来就该是 AI 那条消息下方的一排可点的短句,
+ * 点一下等价于把这句话作为回答发出去;用户也永远可以直接在输入框里自由作答。
+ *
+ * 它们**没有“推荐 / 分析 / 更多”这类问卷标签**,也**不是后端问题实体** —— 只是
+ * 模型这一轮给出的 0–3 句可点的话。
+ */
+function IntakeChips({
+  replies,
+  disabled,
+  onSend,
+}: {
+  replies: string[];
+  disabled: boolean;
+  onSend: (text: string) => void;
+}) {
+  if (replies.length === 0) return null;
+  return (
+    <div className="intake-chips" data-testid="intake-chips">
+      {replies.map(reply => (
+        <button
+          key={reply}
+          type="button"
+          className="intake-chip"
+          disabled={disabled}
+          onClick={() => onSend(reply)}
+        >
+          {reply}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/**
  * 与 AI 的对话面板。
  *
  * ## 这一版为什么长这样
@@ -179,7 +216,7 @@ function ProposalErrorNotice({ errors }: { errors: { code: string; message: stri
  * 被"截止时间/每周投入"干扰。`replan` 入口只在**已确认战略 + 存在执行计划**时才出现。
  */
 export function ConversationPanel() {
-  const { growth, selectedId, select, messages, remoteProposals, proposalErrors, inputChanged, deciding, confirmRemote, rejectRemote, replan, replanState, send, retry, sending, sendError, retryable, historyLoading, messagesTruncated, spaceId, questions, focusQuestion, openTrace, traceAvailability } = useDemo();
+  const { growth, selectedId, select, messages, remoteProposals, proposalErrors, inputChanged, deciding, confirmRemote, rejectRemote, replan, replanState, send, retry, sending, sendError, retryable, historyLoading, messagesTruncated, spaceId, questions, focusQuestion, openTrace, traceAvailability, reasoning, agentStatus } = useDemo();
   const [input, setInput] = useState('');
   const [showContexts, setShowContexts] = useState(false);
   /** 输入框的 DOM 元素。高度按内容算(见下面那个 effect)。 */
@@ -210,14 +247,41 @@ export function ConversationPanel() {
    * 优先一个还没答的;没有的话,正在处理的也要显示(用户刚答完,不能让它凭空消失,
    * 否则他会以为答案没提交上)。列表已由后端按时间排好,这里只做挑选,不再排序。
    */
+  /**
+   * 只有 `canvas_question` 才参与“待回答问题 / 定位到画布”。
+   *
+   * 阶段 12 起战略 intake **不再落问题实体**;但老数据里可能残留
+   * `conversation_intake` 行。它们必须在这里就被排除,不能重新变成 primaryQuestion、
+   * 不能显示定位按钮、不能劫持用户输入。
+   */
+  const canvasQuestions = questions.filter(
+    question => question.presentation !== 'conversation_intake',
+  );
   const primaryQuestion =
-    questions.find(question => question.status === 'pending') ??
-    questions.find(question => question.status === 'investigating' || question.status === 'answered') ??
+    canvasQuestions.find(question => question.status === 'pending') ??
+    canvasQuestions.find(question => question.status === 'investigating' || question.status === 'answered') ??
     null;
-  /** 阶段 11:战略澄清 intake 问题只在对话区显示,不用画布的紧凑状态条。 */
-  const intakeQuestion = primaryQuestion?.presentation === 'conversation_intake' ? primaryQuestion : null;
-  const intakeIndex = questions.filter(item => item.presentation === 'conversation_intake').length;
-
+  /**
+   * 阶段 12:战略澄清 intake 的问题**就在对话流里**,不是一张常驻表单。
+   *
+   * - `intakeActive` 决定要不要显示极轻量的进度文字“正在梳理目标 · 2/5”;
+   * - `primaryIntake` 来自会话状态 `reasoning.pendingIntake`(服务端一次只给一个);
+   * - 它**挂在产生它的那条助手消息下面** —— 判断在上、问题与快捷回复紧随其后。
+   */
+  const intakeActive = reasoning?.phase === 'intake';
+  // 阶段 12:待回答问题只来自会话状态(`reasoning.pendingIntake`),**不是问题实体**。
+  const primaryIntake = reasoning?.pendingIntake ?? null;
+  const intakeAsked = reasoning?.intakeQuestionsAsked ?? 0;
+  const intakeLimit = reasoning?.intakeQuestionLimit ?? 5;
+  const lastAssistantId = [...messages].reverse().find(message => message.role === 'assistant')?.id ?? null;
+  // 服务端给的消息 id 可能落在窗口外 —— 那样就退回最后一条助手消息,
+  // 绝不让“当前最该回答的问题”因为消息分页而消失。
+  const intakeMessageId = primaryIntake
+    ? (primaryIntake.messageId && messages.some(message => message.id === primaryIntake.messageId)
+        ? primaryIntake.messageId
+        : lastAssistantId)
+    : null;
+  const showLive = agentStatus !== null && (agentStatus.tone === 'starting' || agentStatus.tone === 'running' || agentStatus.tone === 'waiting_long');
   /** 这个空间里有没有**已确认的**战略节点。没有时,周/日安排没有依据。 */
   const hasStrategy = Object.values(growth.nodes).some(
     node => node.planningLevel === 'strategy',
@@ -303,6 +367,12 @@ export function ConversationPanel() {
 
       <div className="conversation-history">
         {historyLoading && <p className="turn-loading">正在读取对话…</p>}
+        {/* 阶段 12:极轻量的 intake 进度。不是卡片、不占节点空间。 */}
+        {primaryIntake && (
+          <p className="conversation-intake-progress" data-testid="intake-progress" role="status">
+            正在梳理目标 · {intakeAsked}/{intakeLimit}
+          </p>
+        )}
 
         {/* 空状态。它本来就锚在顶部(不是垂直居中),所以"下面一大片空白"的成因
             不是位置 —— 是**内容太薄**:一段小字加一句示例,撑不满下面那一大块。
@@ -359,6 +429,21 @@ export function ConversationPanel() {
               {m.role === 'assistant' && m.research && <ResearchCitations research={m.research} />}
               {m.failed && <div className="message-note failed">这一条没有发出去。</div>}
               {m.pending && <div className="message-note">已记录，正在等 AI 回复…</div>}
+
+              {/* 阶段 12:关键问题就在这条助手消息下面 —— 判断在上、问题与快捷回复
+                  紧随其后。它不是卡片,也不是后端问题实体。 */}
+              {m.role === 'assistant' && primaryIntake && m.id === intakeMessageId && (
+                <div className="intake-inline" data-testid="intake-inline">
+                  {!m.text.includes(primaryIntake.question) && (
+                    <p className="intake-question">{primaryIntake.question}</p>
+                  )}
+                  <IntakeChips
+                    replies={primaryIntake.quickReplies}
+                    disabled={sending}
+                    onSend={text => { void send(text); }}
+                  />
+                </div>
+              )}
 
               {/* 这里曾经还有一张"本地提案"卡片(`proposals` / `accept` /`previewProposal`)。
                   它和下面这张后端的提案卡片**不是同一个东西**,只是名字像:那个是示例
@@ -487,12 +572,19 @@ export function ConversationPanel() {
           </div>
         )}
 
+        {/* 阶段 11:模型请求进行中,在最后一条消息附近给一句克制的实时状态。
+            失败与重试由下面的 `sendError` 行负责,不在这里重复。 */}
+        {showLive && (
+          <p className="conversation-live" data-testid="conversation-live" role="status" aria-live="polite">
+            <span className="tiny-dot" aria-hidden="true" />
+            {intakeActive ? '正在形成整体判断…' : agentStatus.text}
+          </p>
+        )}
+
         <div ref={bottom} />
       </div>
 
       <div className="composer-area">
-        {/* 阶段 11:战略澄清 intake 的关键问题在对话区逐步显示(橙色)。 */}
-        {intakeQuestion && <ConversationIntakeCard question={intakeQuestion} index={intakeIndex} />}
         {/* 问题入口已经移到标题栏下方那条紧凑状态条(见 `QuestionStatusBar`)。
             这里不再重复渲染问题正文 —— 完整回答只在画布的 Question Node 里完成。 */}
         {/* 「按执行情况调整」的入口。

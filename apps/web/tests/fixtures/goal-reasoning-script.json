@@ -1,10 +1,24 @@
 {
   "turns": [
     {
-      "reply": "先给你一条推荐路线：约 10 周从基础到可展示项目，分四个阶段。",
+      "reply": "如果目标是尽快形成可展示成果，Python 的起步路线应优先围绕一个真实成果，而不是先堆课程。为了决定后续阶段的交付物：你更希望它首先解决工作自动化、数据分析，还是做一个小型应用？",
+      "intakeDecision": {
+        "action": "ask",
+        "question": "你希望优先把精力放在哪条路线上？",
+        "decisionScope": "deliverable",
+        "whyThisMatters": "它决定阶段 1 的交付物与阶段顺序",
+        "quickReplies": ["英语", "数学"]
+      }
+    },
+    {
+      "reply": "信息够了。我给你一条推荐路线：约 10 周从基础到可展示项目，分四个阶段。",
+      "intakeDecision": { "action": "ready_for_architecture" }
+    },
+    {
+      "reply": "信息够了。给你一条推荐路线：约 10 周从基础到可展示项目，分四个阶段。",
       "reasoningMap": {
         "phase": "roadmap_draft",
-        "turnAction": "ask_user",
+        "turnAction": "confirm",
         "focus": "r2",
         "focusReason": "先确定优先方向，再排阶段顺序",
         "nodes": [
@@ -38,7 +52,10 @@
             "impact": 5,
             "confidence": 2,
             "rationale": "它决定后面哪几条路线成立",
-            "timeframe": "约 1 周",
+            "timeframe": "第 1–1 周",
+            "timeframeKind": "relative",
+            "startWeek": 1,
+            "endWeek": 1,
             "deliverable": "一句用途说明",
             "passCriteria": "能说清主要用途"
           },
@@ -49,7 +66,10 @@
             "parent": "r1",
             "summary": "环境就绪，能独立写出可运行的小练习。",
             "status": "unexplored",
-            "timeframe": "约 3 周",
+            "timeframe": "第 2–4 周",
+            "timeframeKind": "relative",
+            "startWeek": 2,
+            "endWeek": 4,
             "deliverable": "一组可运行的小练习",
             "passCriteria": "能独立写函数与循环"
           },
@@ -60,7 +80,10 @@
             "parent": "r1",
             "summary": "完成一个公开数据集的端到端分析。",
             "status": "unexplored",
-            "timeframe": "约 3 周",
+            "timeframe": "第 5–7 周",
+            "timeframeKind": "relative",
+            "startWeek": 5,
+            "endWeek": 7,
             "deliverable": "一份公开数据集分析",
             "passCriteria": "能独立完成读取—清洗—聚合"
           },
@@ -71,7 +94,10 @@
             "parent": "r1",
             "summary": "把成果收成一个可展示项目。",
             "status": "unexplored",
-            "timeframe": "约 3 周",
+            "timeframe": "第 8–10 周",
+            "timeframeKind": "relative",
+            "startWeek": 8,
+            "endWeek": 10,
             "deliverable": "一个可展示的项目",
             "passCriteria": "能讲清项目与结论"
           }
@@ -82,55 +108,6 @@
           { "source": "r3", "target": "r4", "type": "depends_on", "note": "基础之后做数据处理" },
           { "source": "r4", "target": "r5", "type": "depends_on", "note": "分析之后做作品" }
         ]
-      },
-      "questions": [
-        {
-          "question": "你希望优先把精力放在哪条路线上？",
-          "analysisSummary": "你已经给了每周可投入时间；两条路线的阶段顺序与成果物不同，这是现在最该定的一点。",
-          "recommendation": "先把精力放在你更看重、也更想尽快见效的那条路线上。",
-          "decisionImpact": "不同选择会改变阶段 2 的展开顺序与阶段 3 的成果物。",
-          "confidenceNote": "“尽快见效”是从你的目标推断的，若不对请纠正。",
-          "whyNow": "它决定我先展开哪几个维度",
-          "responseMode": "single_select",
-          "options": [
-            { "id": "english", "label": "英语", "recommended": true },
-            { "id": "math", "label": "数学" }
-          ],
-          "allowCustomInput": true
-        }
-      ]
-    },
-    {
-      "reply": "记下了。我先把这个事实放到路线上，再继续看阶段。",
-      "actions": []
-    },
-    {
-      "reply": "用途确认了，我把它收敛成一条可确认的战略路线。",
-      "reasoningMap": {
-        "phase": "roadmap_review",
-        "turnAction": "confirm",
-        "focus": "r1",
-        "focusReason": "路线已经收敛，等你确认",
-        "nodes": [
-          {
-            "handle": "r1",
-            "title": "战略:先英语",
-            "nodeType": "route",
-            "parent": null,
-            "summary": "先形成英语的可用能力，用小项目暴露缺口。",
-            "status": "exploring",
-            "importance": 5,
-            "uncertainty": 1,
-            "urgency": 1,
-            "impact": 5,
-            "confidence": 4,
-            "rationale": "用途已确认",
-            "timeframe": "约 10 周",
-            "deliverable": "英语的可用能力",
-            "passCriteria": "能用英语完成一次真实任务"
-          }
-        ],
-        "links": []
       },
       "questions": []
     },

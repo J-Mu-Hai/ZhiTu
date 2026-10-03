@@ -928,6 +928,12 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
 
   /** 「细化第一阶段」:把已确认战略交给既有的对话工作流拆出阶段/里程碑提案。 */
   const [refining, setRefining] = useState(false);
+  /**
+   * 阶段 11:"调整战略"只是把对话区打开、把注意力带回输入框 —— 它**不替用户说话**。
+   * Workbench 监听这个 nonce 展开对话 Dock。
+   */
+  const [chatRequestNonce, setChatRequestNonce] = useState(0);
+  const requestChat = useCallback(() => setChatRequestNonce(value => value + 1), []);
   const refineStrategy = useCallback(async () => {
     if (refining) return;
     setRefining(true);
@@ -998,7 +1004,19 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     backend.getConversation(space.id)
       .then(view => {
         if (cancelled) return;
-        setMessages(view.messages.map(toMessage));
+        // **不要用旧快照覆盖读取期间新追加的消息。**
+        //
+        // 历史读取与"进入空间自动跑一轮"是并发的:模型回复可能先落地,
+        // 而这一份还没有包含它的历史随后返回。直接 `setMessages(...)` 会把
+        // 那条刚出现的回复从界面上抹掉 —— 用户看到的是“AI 没说话”,直到刷新。
+        // 按 id 去重后把抓到的放前面、本地独有的接在后面(它们是更新的)。
+        // Provider 按空间 remount,所以这里不会跨空间串消息。
+        setMessages(previous => {
+          const fetched = view.messages.map(toMessage);
+          const fetchedIds = new Set(fetched.map(message => message.id));
+          const localOnly = previous.filter(message => !fetchedIds.has(message.id));
+          return [...fetched, ...localOnly];
+        });
         setBrief(view.brief);
         setMessagesTruncated(view.truncated);
       })
@@ -1963,6 +1981,8 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
       await refreshProposals();
       // 也可能提了一个问题。与提案一样,从服务端重新拉。
       await refreshQuestions();
+      // 阶段 12:战略 intake 的下一问/架构状态在会话里,重新拉一次。
+      await refreshReasoning().catch(() => undefined);
       finishAgentActivity(
         outcomeOfFailure('user_message', {
           failed: result.degraded,
@@ -2209,7 +2229,7 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     agentStatus, dismissAgentStatus, retryAgentFailure,
     // 目标推理地图。与业务计划、问题都分开;进入空间会自动梳理一次(幂等)。
     reasoning, reasoningLoading, ensureReasoningMap, refreshReasoning, agentTurn, editReasoningNode,
-    refineStrategy, refining,
+    refineStrategy, refining, requestChat, chatRequestNonce,
     replan, replanState,
     // 上一轮是不是基于已经变过的输入(见 `inputChanged` 的注释),以及"重新分析"
     // 那个入口。**两者一起给出去**:只有这个字段而没有入口,用户知道出事了却没法

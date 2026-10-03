@@ -1,6 +1,64 @@
 {
   "turns": [
     {
+      "reply": "信息够了,给你一条约 8 周的推荐路线。",
+      "reasoningMap": {
+        "phase": "roadmap_draft",
+        "turnAction": "confirm",
+        "focus": "r2",
+        "focusReason": "先打基础",
+        "nodes": [
+          {
+            "handle": "r1",
+            "title": "推荐路线:约 8 周",
+            "nodeType": "route",
+            "parent": null,
+            "timeframe": "约 8 周",
+            "deliverable": "一份可展示成果",
+            "passCriteria": "能端到端完成"
+          },
+          {
+            "handle": "r2",
+            "title": "阶段 1:打基础",
+            "nodeType": "stage",
+            "parent": "r1",
+            "timeframe": "第 1–2 周",
+            "timeframeKind": "relative",
+            "startWeek": 1,
+            "endWeek": 2,
+            "deliverable": "一组基础练习",
+            "passCriteria": "能独立完成基础"
+          },
+          {
+            "handle": "r3",
+            "title": "阶段 2:做一次实战",
+            "nodeType": "stage",
+            "parent": "r1",
+            "timeframe": "第 3–5 周",
+            "timeframeKind": "relative",
+            "startWeek": 3,
+            "endWeek": 5,
+            "deliverable": "一份实战成果",
+            "passCriteria": "能独立交付"
+          },
+          {
+            "handle": "r4",
+            "title": "阶段 3:补齐与展示",
+            "nodeType": "stage",
+            "parent": "r1",
+            "timeframe": "第 6–8 周",
+            "timeframeKind": "relative",
+            "startWeek": 6,
+            "endWeek": 8,
+            "deliverable": "一次完整展示",
+            "passCriteria": "能讲清结论"
+          }
+        ],
+        "links": []
+      },
+      "questions": []
+    },
+    {
       "reply": "这件事分两种:查得到的公开信息我先查一次,只有你知道的方向取舍我会问你。",
       "toolRequests": [
         {

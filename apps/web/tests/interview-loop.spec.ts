@@ -73,6 +73,11 @@ test('访谈里的那句回答会变成一条信息主题，确认之后真的�
   const { token } = await registerAccount(page, 'interview');
   const workspaceId = await createWorkspace(page, token, '访谈验收空间', '三个月内把出国申请准备好');
   await page.goto(`/workbench?workspace=${workspaceId}`);
+  // 阶段 12:进入空间会自动生成时间架构并切到时间线;这条用例验的是路径画布与
+  // 业务提案,所以等自动切换完成后切回路径页。
+  await expect(page).toHaveURL(/view=timeline/, { timeout: 25000 });
+  await page.getByRole('tab', { name: '路径', exact: true }).click();
+  await expect(page).toHaveURL(/view=path/);
   await waitForRealPlan(page);
 
   // ---------------------------------------------------------------- 第一轮:只有追问

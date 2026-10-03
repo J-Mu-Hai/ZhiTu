@@ -28,7 +28,7 @@ export function Workbench() {
   const narrow = useMobileLayout();
   const [chatChoice, setChatChoice] = useState<boolean | null>(null);
   const chatOpen = chatChoice ?? !narrow;
-  const { growth, spaceId, canvasKey, enterSpace, workspaceId, reasoning } = useDemo();
+  const { growth, spaceId, canvasKey, enterSpace, workspaceId, reasoning, chatRequestNonce } = useDemo();
   // **根目标不叫 `'goal'`。** 那是 `emptyGrowth` 用的哨兵值,只有在计划还没从后端
   // 拿到的时候才存在;真实空间拿到计划之后,根节点的 id 是一个 UUID。所以拿
   // `spaceId !== 'goal'` 当"我是不是在根这一层"来判断,在真实空间里恒为真。
@@ -54,6 +54,10 @@ export function Workbench() {
       ? reasoning.mapVersion
       : 0;
   const switchedArchitectureRef = useRef(0);
+  // 阶段 11:“调整战略”把对话 Dock 展开 —— 只是把注意力带回对话,不替用户发言。
+  useEffect(() => {
+    if (chatRequestNonce > 0) setChatChoice(true);
+  }, [chatRequestNonce]);
   const urlWorkspace = params.get('workspace');
   useEffect(() => {
     if (architectureVersion <= 0) return;

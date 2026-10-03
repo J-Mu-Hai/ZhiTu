@@ -1,6 +1,10 @@
 {
   "turns": [
     {
+      "reply": "信息够了,我直接给你整体时间架构。",
+      "intakeDecision": { "action": "ready_for_architecture" }
+    },
+    {
       "reply": "先给你一条约 10 周的推荐路线，分三个阶段。",
       "reasoningMap": {
         "phase": "roadmap_draft",
@@ -59,6 +63,10 @@
           { "source": "r3", "target": "r4", "type": "depends_on", "note": "实战之后补齐" }
         ]
       },
+      "questions": []
+    },
+    {
+      "reply": "在动手之前，有一件事只有你能定：这学期你希望把重心放在哪一边？",
       "questions": [
         {
           "question": "这学期你希望把重心放在哪一边?",
@@ -74,14 +82,11 @@
           ],
           "allowCustomInput": true
         }
-      ]
-    },
-    {
-      "reply": "记下了，我先把这个事实放到路线上。",
+      ],
       "actions": []
     },
     {
-      "reply": "我刚才补充了一个小提醒，你看一下。",
+      "reply": "记下了，我先把这条信息放到计划里，你确认之后才会生效。",
       "actions": [
         {
           "op": "create_node",
