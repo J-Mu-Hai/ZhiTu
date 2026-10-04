@@ -90,6 +90,8 @@ export type V1NodeActions = {
   onReopenDirection: () => Promise<unknown> | void;
   onConfirmProposal: (id: string) => Promise<unknown> | void;
   onSend: (text: string) => Promise<unknown> | void;
+  /** 「做起来」阶段的三个生成入口。 */
+  onRunPlanStep: (step: 'weekly' | 'daily' | 'review') => Promise<unknown> | void;
 };
 
 export type QuestionInteraction = {
@@ -128,6 +130,7 @@ const NOOP_INTERACTION: QuestionInteraction = {
     onReopenDirection: () => undefined,
     onConfirmProposal: () => undefined,
     onSend: () => undefined,
+    onRunPlanStep: () => undefined,
   },
 };
 
@@ -155,7 +158,7 @@ const STATUS_TEXT: Record<string, string> = {
  *
  * 数据全部来自 `interaction` 本身;关闭节点只收起视图,不丢 provider 里的状态。
  */
-function V1InteractionControls({ interaction, v1 }: { interaction: V1CurrentInteraction; v1: V1NodeActions }) {
+export function V1InteractionControls({ interaction, v1 }: { interaction: V1CurrentInteraction; v1: V1NodeActions }) {
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState('');
   const kind = interaction.kind;
@@ -190,6 +193,28 @@ function V1InteractionControls({ interaction, v1 }: { interaction: V1CurrentInte
               {option.impact && <em className="cq-option-impact">选择后果：{option.impact}</em>}
             </button>
           ))}
+        </div>
+      )}
+
+      {kind === 'strategic_question' && (
+        <div className="cq-answer">
+          <textarea
+            className="cq-input nodrag"
+            aria-label="回答当前关键问题"
+            placeholder="写下你的回答…"
+            value={note}
+            disabled={busy}
+            onPointerDown={event => event.stopPropagation()}
+            onChange={event => setNote(event.target.value)}
+          />
+          <button
+            type="button"
+            className="cq-submit nodrag"
+            disabled={busy || !note.trim()}
+            onPointerDown={press(() => { const value = note.trim(); setNote(''); return v1.onSend(value); })}
+          >
+            回答
+          </button>
         </div>
       )}
 
@@ -608,7 +633,11 @@ export function CanvasQuestionNodeComponent({ data }: NodeProps<QuestionFlowNode
           {STATUS_TEXT[status] ?? STATUS_LABEL[status]}
         </p>
       ) : !data.isFocused ? (
-        <p className="cq-status cq-open-hint">点开这个节点,可以补充或纠正我的判断。</p>
+        <p className="cq-status cq-open-hint">
+          {question.v1Key != null
+            ? '待讨论：点开后可以补充或纠正我的判断。'
+            : '点开这个节点,可以补充或纠正我的判断。'}
+        </p>
       ) : question.v1Key == null ? (
         answerControls
       ) : (

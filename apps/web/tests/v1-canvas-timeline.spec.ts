@@ -266,22 +266,16 @@ test('时间架构共创:先对齐节奏,认可后才生成时间线', async ({ 
   });
 
   await page.goto(`/workbench?workspace=${workspaceId}&view=path`);
-  const card = page.getByTestId('v1-timeline-alignment');
-  await expect(card).toBeVisible({ timeout: 20000 });
-  await expect(card.getByTestId('v1-timeline-assumptions')).toContainText('你说过');
-  await expect(card.getByTestId('v1-timeline-assumptions')).toContainText('AI 暂定');
-  await expect(card).not.toContainText('更希望更快见成果');
-  // 对话区只有只读的共创说明,没有节奏选择按钮。
-  await expect(card.getByRole('button', { name: '认可默认节奏' })).toHaveCount(0);
+  // 对话区不再承载时间节奏共创卡片 —— 它只留聊天与定位。
+  await expect(page.getByTestId('v1-timeline-alignment')).toHaveCount(0);
+  await expect(page.getByTestId('chat-action-notice')).toContainText('排出来');
 
-  // 结构化动作只在 active 画布节点里。
-  const activeNode = page.locator('.canvas-question-node.is-active');
+  // 结构化动作只在 active 画布节点里(时间节奏绑在「排出来」阶段节点上)。
+  const activeNode = page.locator('.v1-phase-node.is-active');
   await expect(activeNode).toHaveCount(1);
   await activeNode.click();
   await expect(activeNode).toContainText('更希望更快见成果');
   await activeNode.getByRole('button', { name: '认可默认节奏' }).click();
-  // 对齐后共创卡片消失(provider 已换成粗时间线视图)。
-  await expect(page.getByTestId('v1-timeline-alignment')).toHaveCount(0, { timeout: 20000 });
   // 客户端切到时间线(不重载,保留新 reasoning):应出现 3 个阶段。
   await page.getByRole('tab', { name: '时间线' }).click();
   await expect(page.locator('[data-timeline-card]')).toHaveCount(3, { timeout: 20000 });

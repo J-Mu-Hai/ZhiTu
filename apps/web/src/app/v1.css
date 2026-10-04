@@ -89,70 +89,6 @@
   color: var(--muted, #8798ad);
 }
 
-/* ---- V1(P4):周/日计划与回顾入口 ---- */
-.v1-plan-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 10px;
-}
-.v1-plan-actions button {
-  padding: 6px 10px;
-  border: 1px solid var(--line, #d8e0e6);
-  border-radius: 8px;
-  background: var(--surface-panel, #fffefa);
-  color: var(--text, #304b62);
-  font-size: 11px;
-}
-.v1-plan-actions button:hover:not(:disabled) {
-  border-color: var(--blue-ink, #2f6da3);
-  color: var(--blue-ink, #2f6da3);
-}
-
-/* ================================================================== */
-/* P2.2.1:Stage 1“思考模式”的右侧面板空间策略                       */
-/*                                                                     */
-/* 战略判断 + 候选方向 + 节点详情 + 对话输入都挤在一个普通短对话面板里 */
-/* 会把输入框顶出屏幕。这里给它更宽、更高的一档,并保证:               */
-/*   头部固定、消息/行动区独立滚动、输入区始终固定在底部。             */
-/* 只作用于 `.v1-thinking`,普通非 V1 对话尺寸不变。                    */
-/* ================================================================== */
-
-/* 桌面端:明显更宽(560–640px);画布同步让出空间,不被遮挡到不可操作。 */
-.open-workbench .workbench-body.v1-thinking .workspace {
-  padding-right: clamp(560px, 46vw, 640px);
-}
-.workbench-body.v1-thinking .conversation-overlay {
-  width: clamp(560px, 46vw, 640px);
-  top: 0;
-  bottom: 0;
-}
-.workbench-body.v1-thinking .floating-conversation {
-  inset: 10px 16px 14px 12px;
-}
-
-/* flex column + min-height:0:内容再多也不能把输入框挤出去。 */
-.workbench-body.v1-thinking .floating-conversation .conversation-panel {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-/* 中间区独立滚动(消息 + Stage 1 行动区)。 */
-.workbench-body.v1-thinking .floating-conversation .conversation-history {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  padding-bottom: 14px;
-}
-/* 输入区固定在底部,始终可见;不因上方内容变高。 */
-.workbench-body.v1-thinking .floating-conversation .composer-area {
-  flex-shrink: 0;
-  position: static;
-  padding-top: 8px;
-}
-
-/* Stage 1 行动区:在滚动区里,卡片完整可见、可点。 */
 .v1-stage1 {
   display: grid;
   gap: 12px;
@@ -161,171 +97,19 @@
 .v1-stage1 > :first-child {
   margin-top: 0;
 }
-.workbench-body.v1-thinking .v1-thesis,
-.workbench-body.v1-thinking .v1-directions,
-.workbench-body.v1-thinking .v1-goal-confirm,
-.workbench-body.v1-thinking .v1-conversation-question,
-.workbench-body.v1-thinking .v1-plan-actions,
-.workbench-body.v1-thinking .v1-strategy-card,
-.workbench-body.v1-thinking .v1-status {
-  margin-left: 0;
-  margin-right: 0;
-}
 /* 候选卡:整张可点、状态清晰。 */
-.v1-stage1 .v1-directions > button {
-  width: 100%;
-  cursor: pointer;
-  pointer-events: auto;
-}
-.v1-stage1 .v1-directions > button:disabled {
-  cursor: progress;
-  opacity: 0.7;
-}
-.v1-directions-status {
-  font-size: 11px;
-  color: var(--muted, #6f8293);
-}
-/* P2.3:目标确认后,候选起点收起为“已采用的起点”。 */
-.v1-direction-adopted {
-  display: grid;
-  gap: 4px;
-  padding: 10px 12px;
-  border: 1px solid var(--line, #d8e0e6);
-  border-radius: 10px;
-  background: var(--surface-panel, #fffefa);
-}
-.v1-direction-adopted p {
-  font-size: 12.5px;
-  color: var(--text, #304b62);
-}
-.v1-direction-adopted .text-button {
-  justify-self: start;
-}
-
-/* 窄屏:思考模式改成覆盖画布的大抽屉,不压缩到不可读。 */
-@media (max-width: 720px) {
-  .open-workbench .workbench-body.v1-thinking .workspace {
-    padding-right: 0;
-  }
-  .workbench-body.v1-thinking .conversation-overlay {
-    left: 0;
-    right: 0;
-    top: auto;
-    bottom: 0;
-    width: auto;
-    height: min(80dvh, 720px);
-    background: #f6f9fced;
-    backdrop-filter: blur(10px);
-  }
-  .workbench-body.v1-thinking .floating-conversation {
-    inset: 0;
-  }
-}
-
-/* ---- V1(P2.2):分析节点标题 + 确认目标定义 ---- */
 .canvas-question-node .cq-v1-title {
   display: block;
   margin: 6px 0 2px;
   font-size: 12.5px;
   color: var(--text, #304b62);
 }
-.v1-goal-confirm {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 10px;
-  flex-wrap: wrap;
-}
-.v1-goal-confirm > button:first-child {
-  padding: 6px 12px;
-  border-radius: 8px;
-  background: var(--blue-ink, #2f6da3);
-  color: #fff;
-  font-size: 11px;
-  font-weight: 600;
-}
-
-/* ---- V1(P2.1):未聚焦的分析节点不显示答题控件 ---- */
 .canvas-question-node .cq-open-hint {
   font-size: 10px;
   color: var(--muted, #8798ad);
 }
 
-/* ---- V1(P2.1):当前战略判断 + 候选方向 ---- */
-.v1-thesis {
-  display: grid;
-  gap: 5px;
-  margin-bottom: 10px;
-  padding: 10px 12px;
-  border: 1px solid var(--line, #d8e0e6);
-  border-radius: 10px;
-  background: var(--surface-panel, #fffefa);
-}
-.v1-thesis p {
-  font-size: 12.5px;
-  line-height: 1.65;
-  color: var(--text, #304b62);
-}
-.v1-directions {
-  display: grid;
-  gap: 6px;
-  margin-bottom: 10px;
-}
-.v1-directions > button {
-  display: grid;
-  gap: 3px;
-  text-align: left;
-  padding: 9px 11px;
-  border: 1px solid var(--line, #d8e0e6);
-  border-radius: 10px;
-  background: var(--surface-panel, #fffefa);
-}
-.v1-directions > button strong {
-  font-size: 12px;
-  color: var(--text, #304b62);
-}
-.v1-directions > button span {
-  font-size: 11px;
-  line-height: 1.5;
-  color: var(--muted, #6f8293);
-}
-.v1-directions > button em {
-  font-size: 10px;
-  font-style: normal;
-  color: var(--muted, #8798ad);
-}
-.v1-directions > button.is-selected {
-  border-color: var(--blue-ink, #2f6da3);
-  box-shadow: 0 0 0 2px rgba(47, 109, 163, 0.14);
-}
 
-/* ---- V1(P2):需要**在对话框回答**的关键问题(橙色框) ---- */
-.v1-conversation-question {
-  display: grid;
-  gap: 5px;
-  margin-bottom: 10px;
-  padding: 10px 12px;
-  border: 1px solid var(--experience, #c7a06e);
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--experience, #c7a06e) 12%, transparent);
-}
-.v1-conversation-tag {
-  justify-self: start;
-  font-size: 9px;
-  letter-spacing: 0.4px;
-  padding: 1px 7px;
-  border-radius: 999px;
-  background: var(--experience, #c7a06e);
-  color: #fff;
-  font-weight: 700;
-}
-.v1-conversation-question p {
-  font-size: 12.5px;
-  line-height: 1.6;
-  color: var(--text, #304b62);
-}
-
-/* ---- V1(P2):右侧面板里的准确状态与战略路径草案 ---- */
 .v1-status {
   display: flex;
   align-items: center;
@@ -346,173 +130,6 @@
   color: #8a5344;
   font-size: 11px;
 }
-.v1-strategy-card {
-  margin: 0 16px 10px;
-  padding: 12px;
-  border: 1px solid var(--line, #d8e0e6);
-  border-radius: 12px;
-  background: var(--surface-panel, #fffefa);
-}
-.v1-strategy-card .eyebrow { display: block; font-size: 9px; }
-.v1-strategy-card ul {
-  margin: 7px 0 0;
-  padding: 0;
-  list-style: none;
-  display: grid;
-  gap: 5px;
-}
-.v1-strategy-card li {
-  font-size: 11.5px;
-  line-height: 1.6;
-  color: var(--text, #304b62);
-}
-.v1-strategy-card li strong {
-  display: inline-block;
-  min-width: 52px;
-  color: var(--muted, #6f8293);
-  font-weight: 600;
-}
-.v1-strategy-tradeoff {
-  margin-top: 8px;
-  padding-left: 9px;
-  border-left: 2px solid var(--blue-ink, #2f6da3);
-  font-size: 11px;
-  line-height: 1.65;
-  color: var(--muted, #6f8293);
-}
-.v1-strategy-confirmed {
-  margin-top: 8px;
-  font-size: 11px;
-  color: #3f7d63;
-}
-.v1-strategy-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 10px;
-  flex-wrap: wrap;
-}
-.v1-strategy-actions > button:first-child {
-  padding: 6px 12px;
-  border-radius: 8px;
-  background: var(--blue-ink, #2f6da3);
-  color: #fff;
-  font-size: 11px;
-  font-weight: 600;
-}
-
-/* ---- 深度战略对话 + 时间架构共创 ---- */
-.v1-focus-row {
-  display: flex;
-  justify-content: flex-end;
-  margin: 4px 0 8px;
-}
-.v1-understanding,
-.v1-alignment {
-  border: 1px solid #d7e2ea;
-  border-radius: 10px;
-  background: #f8fbfd;
-  padding: 10px 12px;
-  margin: 8px 0;
-}
-.v1-understanding ul,
-.v1-alignment ul {
-  margin: 6px 0 0;
-  padding-left: 16px;
-  font-size: 12px;
-  line-height: 1.55;
-  color: #33506a;
-}
-.v1-understanding li strong,
-.v1-alignment li strong {
-  margin-right: 6px;
-  color: #25486a;
-}
-.v1-understanding-ask {
-  margin: 8px 0 0;
-  font-size: 11px;
-  color: #5a738a;
-}
-.v1-assumptions li em {
-  display: inline-block;
-  margin-right: 6px;
-  padding: 0 5px;
-  border-radius: 4px;
-  background: #e8eff4;
-  font-style: normal;
-  font-size: 10px;
-  color: #4a6a85;
-}
-.v1-alignment-summary,
-.v1-alignment-question {
-  margin: 6px 0 0;
-  font-size: 12px;
-  color: #33506a;
-}
-.v1-alignment-question {
-  font-weight: 600;
-  color: #24486a;
-}
-.v1-alignment-options {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 8px;
-}
-.v1-alignment-options button {
-  padding: 5px 10px;
-  border: 1px solid #cbdae4;
-  border-radius: 8px;
-  background: #fffefa;
-  font-size: 11px;
-  color: #3c5771;
-  cursor: pointer;
-}
-.v1-adjust-row {
-  display: flex;
-  gap: 6px;
-  margin-top: 8px;
-}
-.v1-adjust-row input {
-  flex: 1;
-  min-width: 0;
-  padding: 5px 8px;
-  border: 1px solid #cbdae4;
-  border-radius: 8px;
-  font-size: 11px;
-  background: #fffefa;
-  color: #3c5771;
-}
-.v1-adjust-row button {
-  padding: 5px 10px;
-  border-radius: 8px;
-  border: 1px solid #7fa8c9;
-  background: #e9f2f9;
-  font-size: 11px;
-  color: #24486a;
-  cursor: pointer;
-}
-.v1-adjust-row button:disabled { opacity: .55; cursor: default; }
-.v1-understanding-hint {
-  border-left: 3px solid #9db8cf;
-  padding: 6px 10px;
-  margin: 8px 0;
-  background: #f7fafc;
-  font-size: 11px;
-  line-height: 1.5;
-  color: #3f5a72;
-}
-.v1-understanding-hint p { margin: 2px 0; }
-.v1-understanding-hint strong { color: #25486a; }
-
-/* ================================================================== */
-/* V1 交互职责分离                                                     */
-/*                                                                   */
-/* 结构化问答、候选方向与节点确认**只在画布节点里**。这一节是节点内交互  */
-/* 与对话区导航提示的专用样式,不碰其它页面、不改全局元素。              */
-/* ================================================================== */
-
-/* ---- 对话区:当前决定的位置提示(只有文字 + 定位,没有选项/输入框) ---- */
 .chat-action-notice {
   display: grid;
   gap: 6px;
@@ -571,3 +188,78 @@
 .cq-direction .cq-option-reason { font-size: 11px; line-height: 1.5; color: var(--muted, #52718b); }
 .cq-direction .cq-option-impact { font-size: 10px; font-style: normal; color: var(--muted, #6b8198); }
 .cq-answer { display: flex; flex-direction: column; gap: 6px; }
+
+/* ================================================================== */
+/* V1 三阶段画布骨架:想清楚 / 排出来 / 做起来                          */
+/*                                                                   */
+/* 阶段容器是纯投影(见 `features/growth/v1Workflow.ts`),不写 plan 表。 */
+/* 只作用于 `.v1-phase-*`,不碰其它页面。                              */
+/* ================================================================== */
+.v1-phase-node {
+  position: relative;
+  width: 214px;
+  padding: 11px 13px;
+  border: 1px solid var(--line-card, #d7e2ea);
+  border-left: 3px solid var(--line-selected, #b9c9d6);
+  border-radius: var(--radius-control, 10px);
+  background: var(--surface-raised, #ffffff);
+  box-shadow: var(--shadow-card, 0 1px 2px rgba(72, 99, 117, .05), 0 8px 22px rgba(72, 99, 117, .06));
+  color: var(--text, #304b62);
+  cursor: pointer;
+}
+.v1-phase-node.is-focused { outline: 2px solid var(--line-selected, #c9e2f4); outline-offset: 3px; }
+.v1-phase-node.is-active {
+  border-color: var(--blue-ink, #2f6da3);
+  border-left-color: var(--blue-ink, #2f6da3);
+  box-shadow: 0 0 0 3px rgba(47, 109, 163, .16), 0 10px 26px rgba(47, 109, 163, .14);
+}
+.v1-phase-head { display: flex; align-items: center; gap: 7px; }
+.v1-phase-index {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted, #8798ad);
+}
+.v1-phase-title { flex: 1; font-size: 14px; letter-spacing: .02em; color: var(--text, #24486a); }
+.v1-phase-badge {
+  padding: 1px 8px;
+  border: 1px solid var(--line, #d8e0e6);
+  border-radius: var(--radius-pill, 999px);
+  font-size: 10px;
+  color: var(--muted, #6f8293);
+  white-space: nowrap;
+}
+.v1-phase-subtitle { margin-top: 5px; font-size: 11px; line-height: 1.5; color: var(--muted, #72859e); }
+.v1-phase-note,
+.v1-phase-hint { margin-top: 7px; font-size: 10.5px; line-height: 1.5; color: var(--muted, #7a8b99); }
+.v1-phase-hint { color: var(--blue-ink, #2f6da3); }
+
+.v1-phase-node.is-discussing { border-left-color: var(--blue-ink, #2f6da3); }
+.v1-phase-node.is-awaiting_confirmation {
+  border-left-color: var(--experience, #c7a06e);
+  background: color-mix(in srgb, var(--experience, #c7a06e) 7%, var(--surface-raised, #fff));
+}
+.v1-phase-node.is-awaiting_confirmation .v1-phase-badge {
+  color: var(--experience-ink, #96652f);
+  border-color: #e6d2b4;
+  background: #fdf6e8;
+}
+.v1-phase-node.is-done { border-left-color: var(--research-ink, #477a6e); }
+.v1-phase-node.is-done .v1-phase-badge {
+  color: var(--research-ink, #477a6e);
+  border-color: #bcdccb;
+  background: #eef7f3;
+}
+.v1-phase-node.is-locked {
+  border-style: dashed;
+  border-left-style: solid;
+  background: var(--surface-quiet, #f4f7f8);
+  color: var(--muted, #7a8b99);
+  cursor: default;
+}
+.v1-phase-node.is-locked .v1-phase-title { color: var(--muted, #7a8b99); }
+
+.v1-phase-edge .react-flow__edge-path,
+.react-flow__edge.v1-phase-edge .react-flow__edge-path {
+  stroke: var(--line-strong, #a9c0cd);
+  stroke-width: 1.8;
+}

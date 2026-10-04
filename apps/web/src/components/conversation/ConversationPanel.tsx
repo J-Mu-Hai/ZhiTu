@@ -4,9 +4,9 @@ import { useEffect, useRef, useState, useCallback, useSyncExternalStore } from '
 import { ArrowUp, Plus, X, CornerDownLeft, AlertCircle, RotateCcw, RefreshCw } from 'lucide-react';
 import { useDemo } from '@/features/growth/provider';
 import { readConversationDraft, subscribeConversationDraft, writeConversationDraft } from '@/features/growth/drafts';
+import { V1_READY_PROMPT } from '@/features/growth/v1Workflow';
 import { degradedHint, sourceLabel } from '@/lib/backend';
 import type { ResearchView } from '@/lib/backend';
-import { StrategySummaryCard } from './StrategySummaryCard';
 
 /**
  * 提案落下之后,卡片上显示的状态。
@@ -218,7 +218,7 @@ function IntakeChips({
  */
 export function ConversationPanel() {
   const { growth, selectedId, select, messages, remoteProposals, proposalErrors, inputChanged, deciding, confirmRemote, rejectRemote, replan, replanState, send, retry, sending, sendError, retryable, historyLoading, messagesTruncated, spaceId, workspaceId, questions, focusQuestion, openTrace, traceAvailability, reasoning, agentStatus,
-  runV1PlanStep, currentInteraction } = useDemo();
+  currentInteraction } = useDemo();
   /*
    * 草稿住在组件外面(见 `features/growth/drafts.ts`)。
    *
@@ -292,29 +292,13 @@ export function ConversationPanel() {
    * 面板回到普通尺寸与普通对话布局(节点局部讨论就用普通面板 + 画布详情卡)。
    */
   const v1Initial = reasoning?.v1Stage === 'initial_thinking';
-  /** 规划智能体重构 V1(P2.1):当前战略判断 + 候选方向。**判断优先,不默认提问。** */
+  /** 规划智能体重构 V1(P2.1):是不是 V1 会话。 */
   const isV1 = Boolean(reasoning?.v1Stage);
-  const v1Thesis = reasoning?.v1StrategicThesis ?? null;
-  const v1CanReselect = reasoning?.v1CanReselectDirection ?? false;
-  const v1Directions = reasoning?.v1CandidateDirections ?? [];
-  const v1DecisionContext = reasoning?.v1DecisionContext ?? null;
-  const v1ProvisionalRecommendation = reasoning?.v1ProvisionalRecommendation ?? null;
-  const v1SelectedDirection = reasoning?.v1SelectedDirection ?? null;
-  /** 规划智能体重构 V1(P2):模型回合失败状态与战略路径草案。 */
+  /*
+   * 对话区**不再渲染战略仪表盘**:“我的理解 / 当前战略判断 / 已采用的起点 /
+   * 战略路径草案”都已删除。保留的只有失败状态与简短等待提示。
+   */
   const v1StatusFailed = reasoning?.v1Status === 'failed';
-  const v1Strategy = reasoning?.v1Strategy ?? null;
-  const v1StrategyConfirmed =
-    reasoning?.v1Stage === 'strategy_confirmed_for_timeline' || Boolean(v1Strategy?.confirmed);
-  const v1StrategyLines: [string, string][] = v1Strategy
-    ? ([['主线', v1Strategy.mainLine], ['并行线', v1Strategy.parallelLine], ['暂缓/放弃', v1Strategy.deferOrAvoid], ['风险控制', v1Strategy.riskControl]] as [string, string | undefined][])
-        .filter((entry): entry is [string, string] => Boolean(entry[1]))
-    : [];
-  /** 深度对话:战略理解 + 时间架构共创。 */
-  const v1Understanding = reasoning?.v1StrategyUnderstanding ?? null;
-  const v1TimelineAlignment = reasoning?.v1TimelineAlignment ?? null;
-  const v1InTimelineAlignment = reasoning?.v1Stage === 'timeline_alignment';
-  const v1UserUnderstanding = reasoning?.v1UserUnderstanding ?? null;
-  const v1QuestionExample = reasoning?.v1QuestionExample ?? null;
   // 阶段 12:待回答问题只来自会话状态(`reasoning.pendingIntake`),**不是问题实体**。
   const primaryIntake = reasoning?.pendingIntake ?? null;
   const intakeAsked = reasoning?.intakeQuestionsAsked ?? 0;
@@ -392,37 +376,53 @@ export function ConversationPanel() {
   const goalConfirmable =
     reasoning?.v1Stage === 'goal_reframe' && Boolean(reasoning?.v1StrategicThesis);
   const continueStrategy = reasoning?.v1NextAction === 'continue_strategy';
-  const goalQuestion = questions.find(question => question.v1Key === 'goal_definition') ?? null;
-  const noticeQuestionId = interactionQuestion?.id
-    ?? (goalConfirmable ? goalQuestion?.id ?? null : null);
-  const noticeTitle = interactionQuestion?.v1Title
-    ?? (goalConfirmable
-      ? '目标定义'
-      : continueStrategy
-        ? '战略路径'
-        : currentInteraction?.kind === 'strategy_review'
-          ? '战略路径'
-          : currentInteraction?.kind === 'timeline_review'
-            ? '时间架构草案'
-            : currentInteraction?.kind === 'weekly_review'
-              ? '未来重规划'
-              : currentInteraction?.title) ?? '画布';
-  const noticeImpact = goalConfirmable
-    ? '进入问题结构'
-    : continueStrategy
-      ? '继续形成战略路径'
-      : currentInteraction?.kind === 'strategy_review'
-        ? '收束战略'
-        : currentInteraction?.kind === 'timeline_review'
-          ? '生成时间架构'
-          : currentInteraction?.kind === 'timeline_alignment'
-            ? '对齐时间节奏'
-            : currentInteraction?.kind === 'candidate_selection'
-              ? '确定起点'
+  const activeInteraction = currentInteraction?.status === 'active' ? currentInteraction : null;
+  /*
+   * review 类动作绑在**阶段节点**上(战略 → 想清楚,时间 → 排出来,周回顾 → 做起来);
+   * 问答类动作绑在对应的分析子节点上。对话区只给一个「定位到节点」。
+   */
+  const reviewPhase: { key: 'think' | 'plan' | 'do'; title: string } | null = activeInteraction
+    ? activeInteraction.kind === 'strategy_review'
+      ? { key: 'think', title: '想清楚' }
+      : activeInteraction.kind === 'timeline_alignment' || activeInteraction.kind === 'timeline_review'
+        ? { key: 'plan', title: '排出来' }
+        : activeInteraction.kind === 'weekly_review'
+          ? { key: 'do', title: '做起来' }
+          : null
+    : null;
+  /*
+   * 有 active interaction 时以它为准(阶段/子节点);没有时再看“确认目标 / 继续战略”
+   * 这类流程动作。**不能让 goalConfirmable 盖过交互本身** —— 否则一个
+   * `strategic_question` 会被写成“想清楚”。
+   */
+  const noticeTarget = activeInteraction
+    ? reviewPhase
+      ? `v1phase:${reviewPhase.key}`
+      : interactionQuestion?.id ?? 'v1phase:think'
+    : goalConfirmable || continueStrategy
+      ? 'v1phase:think'
+      : null;
+  const noticeTitle = activeInteraction
+    ? reviewPhase
+      ? reviewPhase.title
+      : interactionQuestion?.v1Title ?? activeInteraction.title
+    : goalConfirmable || continueStrategy
+      ? '想清楚'
+      : '画布';
+  const noticeImpact = activeInteraction?.kind === 'strategy_review'
+    ? '收束战略'
+    : activeInteraction?.kind === 'timeline_review'
+      ? '生成时间架构'
+      : activeInteraction?.kind === 'timeline_alignment'
+        ? '对齐时间节奏'
+        : activeInteraction?.kind === 'candidate_selection'
+          ? '确定起点'
+          : goalConfirmable
+            ? '进入问题结构'
+            : continueStrategy
+              ? '继续形成战略路径'
               : '继续推进';
-  const noticeVisible = Boolean(
-    isV1 && (currentInteraction?.status === 'active' || goalConfirmable || continueStrategy),
-  );
+  const noticeVisible = Boolean(isV1 && (activeInteraction || goalConfirmable || continueStrategy));
 
   return (
     <aside className="conversation-panel" aria-label="与 AI 一起思考">
@@ -477,7 +477,7 @@ export function ConversationPanel() {
             type="button"
             className="text-button"
             onClick={() => {
-              if (noticeQuestionId) focusQuestion(noticeQuestionId);
+              if (noticeTarget) focusQuestion(noticeTarget);
               else select(spaceId);
             }}
           >
@@ -485,9 +485,6 @@ export function ConversationPanel() {
           </button>
         </div>
       )}
-
-      {/* 阶段 10:对话区首屏的**当前战略判断摘要**。低干扰、可展开,不遮住画布。 */}
-      <StrategySummaryCard />
 
       <div className="conversation-history" ref={history}>
         {historyLoading && <p className="turn-loading">正在读取对话…</p>}
@@ -731,44 +728,13 @@ export function ConversationPanel() {
          * 而且这一层在浮动面板里是 `pointer-events:none` 的兄弟区域,会吞掉点击。
          */}
         <div className="v1-stage1">
-          {/* 深度对话:战略理解只读展示,确认动作在「目标定义」画布节点里。 */}
-          {v1Understanding && !v1Understanding.confirmed && (
-            <div className="v1-understanding" data-testid="v1-strategy-understanding">
-              <span className="eyebrow">我据此形成的战略理解</span>
-              <ul>
-                {v1Understanding.goal && <li><strong>目标</strong>{v1Understanding.goal}</li>}
-                {v1Understanding.keyConflict && <li><strong>关键矛盾</strong>{v1Understanding.keyConflict}</li>}
-                {v1Understanding.mainLine && <li><strong>主线</strong>{v1Understanding.mainLine}</li>}
-                {v1Understanding.deferOrAvoid && <li><strong>暂缓项</strong>{v1Understanding.deferOrAvoid}</li>}
-                {v1Understanding.riskControl && <li><strong>风险</strong>{v1Understanding.riskControl}</li>}
-              </ul>
-              <p className="v1-understanding-ask">这份理解可以在画布节点里确认，或指出哪一句不对。</p>
-            </div>
-          )}
-
-          {/* 深度对话:时间架构共创只读展示,节奏选择在画布节点里。 */}
-          {v1InTimelineAlignment && v1TimelineAlignment && (
-            <div className="v1-alignment" data-testid="v1-timeline-alignment">
-              <span className="eyebrow">时间架构共创</span>
-              {v1TimelineAlignment.summary && <p className="v1-alignment-summary">{v1TimelineAlignment.summary}</p>}
-              <ul>
-                {v1TimelineAlignment.totalSpan && <li><strong>总周期</strong>{v1TimelineAlignment.totalSpan}</li>}
-                {v1TimelineAlignment.cadence && <li><strong>默认节奏</strong>{v1TimelineAlignment.cadence}</li>}
-                {v1TimelineAlignment.phaseCount ? <li><strong>预计阶段数</strong>{v1TimelineAlignment.phaseCount}</li> : null}
-                {v1TimelineAlignment.biggestRisk && <li><strong>最大风险</strong>{v1TimelineAlignment.biggestRisk}</li>}
-              </ul>
-              {Boolean(v1TimelineAlignment.assumptions?.length) && (
-                <ul className="v1-assumptions" data-testid="v1-timeline-assumptions">
-                  {v1TimelineAlignment.assumptions!.map((item, index) => (
-                    <li key={index}>
-                      <em>{item.source === 'user_fact' ? '你说过' : 'AI 暂定'}</em>{item.text}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          )}
-
+          {/*
+           * 对话区**不再承载战略仪表盘**。
+           *
+           * “我的理解 / 当前战略判断 / 已采用的起点 / 战略路径草案”这些常驻大卡片
+           * 已删除;判断与解释改由 AI 的聊天消息承担,结构化问答只在画布节点里。
+           * 这里只保留失败/等待这类**短状态**,以及执行阶段的三个生成入口。
+           */}
           {v1StatusFailed && (
             <div className="v1-status" role="status">
               <span>{reasoning?.v1Error ?? '这次战略判断没有完成。'}</span>
@@ -778,7 +744,6 @@ export function ConversationPanel() {
             </div>
           )}
 
-          {/* R2:已产出待确认产物 -> 明确说“等待你确认”,不说“正在思考”。 */}
           {reasoning?.v1Status === 'awaiting_user_confirmation' &&
             reasoning?.v1Stage === 'coarse_timeline_review' && (
               <div
@@ -786,84 +751,10 @@ export function ConversationPanel() {
                 data-testid="v1-awaiting-confirmation"
                 role="status"
               >
-                <span>已生成粗时间架构草案，等待你在画布节点里确认。</span>
+                <span>时间架构已准备好，请在「排出来」节点确认。</span>
               </div>
             )}
-
-          {/* 战略路径草案:只读。确认动作在画布节点里。 */}
-          {v1Strategy && v1StrategyLines.length > 0 && (
-            <div className="v1-strategy-card" data-testid="v1-strategy">
-              <span className="eyebrow">战略路径草案</span>
-              <ul>
-                {v1StrategyLines.map(([label, value]) => (
-                  <li key={label}>
-                    <strong>{label}</strong>
-                    {value}
-                  </li>
-                ))}
-              </ul>
-              {v1Strategy.tradeoff && (
-                <p className="v1-strategy-tradeoff">取舍：{v1Strategy.tradeoff}</p>
-              )}
-              {v1StrategyConfirmed && <p className="v1-strategy-confirmed">战略逻辑已确认。</p>}
-            </div>
-          )}
-
-          {v1Thesis && (
-            <div className="v1-thesis" data-testid="v1-thesis">
-              <span className="eyebrow">当前战略判断</span>
-              <p>{v1Thesis}</p>
-            </div>
-          )}
-
-          {/* 候选方向:只读展示“为什么现在要定”和 AI 的倾向,选择在画布节点里。 */}
-          {v1Directions.length > 0 && v1CanReselect && (
-            <div className="v1-directions" data-testid="v1-directions">
-              {v1DecisionContext && (
-                <p className="v1-decision-context" data-testid="v1-decision-context">
-                  <strong>为什么现在要定这件事：</strong>{v1DecisionContext}
-                </p>
-              )}
-              {v1ProvisionalRecommendation && (
-                <p className="v1-provisional-recommendation" data-testid="v1-provisional-recommendation">
-                  <strong>我的倾向：</strong>{v1ProvisionalRecommendation}
-                </p>
-              )}
-            </div>
-          )}
-
-          {/* P2.3:候选起点一旦随目标确认收起,只显示“已采用的起点”。 */}
-          {!v1CanReselect && v1SelectedDirection && (
-            <div className="v1-direction-adopted" data-testid="v1-direction-adopted">
-              <span className="eyebrow">已采用的起点</span>
-              <p>{v1Directions.find(item => item.key === v1SelectedDirection)?.title ?? v1SelectedDirection}</p>
-            </div>
-          )}
-
-          {(reasoning?.v1Stage === 'weekly_execution' || reasoning?.v1Stage === 'replanning') && (
-            <div className="v1-plan-actions">
-              <button type="button" disabled={sending} onClick={() => void runV1PlanStep('weekly')}>
-                生成本周计划
-              </button>
-              <button type="button" disabled={sending} onClick={() => void runV1PlanStep('daily')}>
-                生成日计划
-              </button>
-              <button type="button" disabled={sending} onClick={() => void runV1PlanStep('review')}>
-                本周回顾
-              </button>
-            </div>
-          )}
-
-          {/* 深度对话:问题之前先给理解 / 会改变什么 / 例子。 */}
-          {(v1UserUnderstanding || v1QuestionExample || reasoning?.v1DecisionContext) && (
-            <div className="v1-understanding-hint" data-testid="v1-user-understanding">
-              {v1UserUnderstanding && <p><strong>我的理解：</strong>{v1UserUnderstanding}</p>}
-              {reasoning?.v1DecisionContext && <p><strong>这个问题会改变：</strong>{reasoning.v1DecisionContext}</p>}
-              {v1QuestionExample && <p><strong>参考例子：</strong>{v1QuestionExample}</p>}
-            </div>
-          )}
         </div>
-
 
         <div ref={bottom} />
       </div>
@@ -913,12 +804,8 @@ export function ConversationPanel() {
         {v1Initial && (
           <div className="v1-initial-guide" data-testid="v1-initial-guide">
             <span className="eyebrow">先想清楚，再排出来</span>
-            <p>不用写成正式目标，把下面三点里你最清楚的先说给我：</p>
-            <ul>
-              <li><strong>为什么是现在</strong>——是什么让你此刻想开始？</li>
-              <li><strong>你真正希望得到什么</strong>——最后能拿出什么，才算解决了问题？</li>
-              <li><strong>你担心什么</strong>——最怕哪一步做不下去？</li>
-            </ul>
+            <p>{V1_READY_PROMPT}</p>
+            <p className="v1-initial-hint">回复「开始 / 准备好了」就行；想先补充背景也可以直接说。</p>
           </div>
         )}
 
