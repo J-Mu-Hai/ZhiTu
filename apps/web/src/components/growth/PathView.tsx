@@ -48,6 +48,7 @@ import {
   isDescriptionExempt,
 } from '@/lib/codepoints';
 import { useDemo } from '@/features/growth/provider';
+import { v1VisibleKeys } from '@/features/growth/v1Analysis';
 import { useMobileLayout } from '@/lib/media';
 import type { GrowthEdge, GrowthNode, GrowthRelationType } from '@/types/growth';
 import { SpaceFiles } from './SpaceFiles';
@@ -1165,16 +1166,31 @@ function Canvas() {
     // 归属它的紫色问题节点围绕这个根节点显示;在顶层(没进入分组)看不到它们 ——
     // 判据就是问题的 `sourceNodeId` 是否等于当前空间根。
     const v1Space = Boolean(reasoning?.v1Stage);
-    // P2.2:内部十维默认只显示可见的;其余靠“其余维度(N)”显式展开。
-    // P2.3.1:不再用“其余维度”按钮收束 —— 进入分组就把该组所有分析节点整齐排出来。
+    // R2 画布修复:**可见性只看服务端投影**。
+    // - 根目标下:显示 `v1Dimensions` 里 visible 的分析维度(core 3 + 当前 focus);
+    // - 进入某个分组(spaceId != 根):显示归属该分组的问题(其余内部维度从这里进入)。
+    // 前端**不再**用 `sourceNodeId === spaceId` 推断根空间可见性 —— 分析节点的
+    // sourceNodeId 是分组(目标重构/问题结构/战略路径),于是在根层永远匹配不到。
+    const v1Visible = v1VisibleKeys(reasoning);
+    const isRootSpace = spaceId === growth.goalId;
     const shownQuestions = v1Space
-      ? orderedQuestions.filter((item) => item.sourceNodeId === spaceId)
+      ? orderedQuestions.filter((item) =>
+          isRootSpace
+            ? item.v1Key != null && v1Visible.has(item.v1Key)
+            : item.sourceNodeId === spaceId,
+        )
       : roadmapExists
         ? orderedQuestions.filter((item) => item.id === primaryQuestionId)
         : [];
     const anchorCounts: Record<string, number> = {};
     shownQuestions.forEach((item) => {
-      const anchorId = item.sourceNodeId && positionById[item.sourceNodeId] ? item.sourceNodeId : spaceId;
+      // 根层可见的分析维度锚到**根目标**(不是 sourceNodeId 指向的分组)。
+      const anchorId =
+        v1Space && isRootSpace
+          ? spaceId
+          : item.sourceNodeId && positionById[item.sourceNodeId]
+            ? item.sourceNodeId
+            : spaceId;
       const anchor = positionById[anchorId] ?? { x: 0, y: 0 };
       const index = anchorCounts[anchorId] ?? 0;
       anchorCounts[anchorId] = index + 1;
@@ -1385,7 +1401,7 @@ function Canvas() {
       });
     });
     return { nodes: nextNodes, edges: nextEdges };
-  }, [growth, spaceId, isRootSpace, selectedId, selectedEdgeId, positions, dragging, questionPositions, questionDragging, files, measurements, handleMore, createdId, drawnEdgeId, clearCreated, clearDrawn, questions, focusedQuestionId, reasoning, showThinking]);
+  }, [growth, spaceId, selectedId, selectedEdgeId, positions, dragging, questionPositions, questionDragging, files, measurements, handleMore, createdId, drawnEdgeId, clearCreated, clearDrawn, questions, focusedQuestionId, reasoning, showThinking]);
 
   /*
    * hover / 拖动的高亮**只作用在边对象上**。

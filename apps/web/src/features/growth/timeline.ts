@@ -1,3 +1,4 @@
+import type { V01TimelineItemView } from '@/lib/backend';
 import type { GrowthNode, GrowthState } from '@/types/growth';
 import { isInSpace } from './selectors';
 
@@ -94,6 +95,84 @@ export function getVisibleItems(items: TimelineItem[], level: ZoomLevel) {
     return node.type === 'task' && detail === 'action';
   });
 }
+export type TimelineAxisMode = 'dated' | 'relative';
+
+export interface DraftTimeline {
+  items: TimelineItem[];
+  mode: TimelineAxisMode;
+}
+
+/**
+ * 把 V1/V0.1 的 `v01Timeline` 草案适配进**既有主轴**的 `TimelineItem[]`。
+ *
+ * 相对周不会伪造真实日期:第 N 周映射到合成日轴 `anchorDay + (N-1)*7`,刻度由
+ * `weekTicks` 显示“第 N 周”。有日期时才用真实日期。草案阶段卡片用合成 `GrowthNode`
+ * 承载标题/摘要/状态,布局仍走 `layoutItems`(碰撞避让、上下分轨)。
+ */
+export function draftTimelineItems(
+  draft: V01TimelineItemView[],
+  anchorDay: number,
+): DraftTimeline {
+  const dated = draft.some(item => Boolean(item.startDate && item.endDate));
+  const items: TimelineItem[] = [];
+  for (const item of draft) {
+    let start: number;
+    let end: number;
+    if (dated) {
+      if (!item.startDate || !item.endDate) continue;
+      start = dayNumber(item.startDate);
+      end = Math.max(start, dayNumber(item.endDate));
+    } else {
+      const startWeek = item.startWeek ?? 1;
+      const endWeek = item.endWeek ?? startWeek;
+      start = anchorDay + (startWeek - 1) * 7;
+      end = anchorDay + endWeek * 7; // 含端点
+    }
+    if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
+    const node: GrowthNode = {
+      id: item.id,
+      title: item.title,
+      type: 'stage',
+      status: item.status === 'planned' ? 'doing' : 'pending',
+      priority: 'medium',
+      planningLevel: 'phase',
+      timelineLevel: 'major',
+      startDate: dateString(Math.floor(start)),
+      endDate: dateString(Math.round(end)),
+      description: item.deliverable || item.goal,
+    };
+    items.push({ node, start, end, kind: 'duration', derived: false });
+  }
+  return { items, mode: dated ? 'dated' : 'relative' };
+}
+
+/**
+ * 相对周刻度。**按缩放稀疏显示**,不把 24 个周标签压在同一行重叠。
+ * 与 `draftTimelineItems` 共用 `anchorDay`:第 N 周落在 `anchorDay + (N-1)*7`。
+ */
+export function weekTicks(
+  anchorDay: number,
+  start: number,
+  end: number,
+  density: number,
+): Tick[] {
+  const ticks: Tick[] = [];
+  const startWeek = Math.max(1, Math.floor((start - anchorDay) / 7) + 1);
+  const endWeek = Math.max(startWeek, Math.ceil((end - anchorDay) / 7) + 1);
+  const pixelsPerWeek = 7 * density;
+  // 每 ~64px 才放一个标签;缩得越小,间隔越大。
+  const step = Math.max(1, Math.ceil(64 / Math.max(1, pixelsPerWeek)));
+  for (let week = startWeek; week <= endWeek; week += step) {
+    ticks.push({
+      day: anchorDay + (week - 1) * 7,
+      label: `第 ${week} 周`,
+      major: week === startWeek || week % 4 === 1,
+      year: 0,
+    });
+  }
+  return ticks;
+}
+
 export interface Tick { day: number; label: string; major: boolean; year: number }
 export function timelineTicks(start: number, end: number, level: ZoomLevel): Tick[] {
   const ticks: Tick[] = [];

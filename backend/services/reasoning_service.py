@@ -325,7 +325,9 @@ async def build_view(
     if session.v1_stage is not None:
         from backend.services import v1_service  # 延迟 import,避免循环
 
-        v1_dimensions = v1_service.dimension_projection(session)
+        #: R2 画布修复:**单一 V1 分析投影** —— 合并可见性与分析事实。
+        v1_questions = await v1_service._v1_questions(db, ctx)
+        v1_dimensions = v1_service.dimension_projection(session, v1_questions)
         v1_visible_keys = sorted(v1_service.visible_dimension_keys(session))
         v1_hidden_count = sum(1 for item in v1_dimensions if not item["visible"])
         v1_pending_questions = v1_service.actual_pending_question_count(session)

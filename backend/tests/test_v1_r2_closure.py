@@ -215,14 +215,20 @@ async def test_analysis_status_unified_and_projection(
     assert questions["goal_definition"]["status"] == "resolved"
     assert questions["key_conflict"]["status"] in ("investigating", "resolved")
     assert questions["true_intent"]["status"] in ("investigating", "resolved")
-    assert questions["major_risks"]["status"] == "archived", "非默认维度退出画布"
+
+    # R2:隐藏用 visibility/internal 投影表达,不把隐藏维度伪装成 archived。
+    dims = {d["key"]: d for d in view["v1Dimensions"]}
+    assert dims["major_risks"]["visible"] is False
+    assert dims["major_risks"]["internal"] is True
+    assert dims["goal_definition"]["visible"] is True
+    assert dims["goal_definition"]["judgment"] == "30 天做出可展示项目。"
+    assert dims["goal_definition"]["questionId"]
 
     # 分组状态由子节点汇总:已分析的 goal_reframe 分组不得停在 pending。
     r = await app_client.get(f"/api/workspaces/{account.workspace_id}/plan", headers=account.headers)
     groups = {n["title"]: n for n in r.json()["nodes"] if n.get("nodeType") == "capability"}
     assert groups, "应有三个分组"
     assert groups["目标重构"]["status"] in ("doing", "completed")
-    assert groups["问题结构"]["status"] != "pending", "隐藏维度的分组也要如实反映分析状态"
 
 
 # ---------------------------------------------------------------------------

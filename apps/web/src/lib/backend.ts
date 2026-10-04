@@ -683,8 +683,23 @@ export interface V1NodeAnalysis {
 export interface V1DimensionView {
   key: string;
   title: string;
+  /** 模型对该维度的可审阅判断(空 = 还没形成)。 */
+  judgment: string;
+  /** 分析事实状态(resolved / investigating / pending)。 */
+  status: string;
   visible: boolean;
   isFocus: boolean;
+  /** 当前是否真的在等用户回答这个焦点。 */
+  hasPendingQuestion: boolean;
+  /** 一句话讨论摘要。 */
+  discussionSummary: string;
+  /** 内部维度:保留在数据层/右侧详情,不默认上主画布。 */
+  internal: boolean;
+  /** 对应画布问题节点 id(可空)。 */
+  questionId: string | null;
+  knownFacts?: string[];
+  assumptions?: string[];
+  importanceReason?: string;
   requiresResponse: boolean;
 }
 

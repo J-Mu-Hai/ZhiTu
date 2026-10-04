@@ -423,23 +423,52 @@ def visible_dimension_keys(session: GoalReasoningSession) -> set[str]:
     战略子项一旦形成就显示(在 `list_questions` 里单独放行)。
     """
     keys: set[str] = set(_CORE_GOAL_KEYS)
-    if session.v1_focus_key:
+    # 焦点只接受**真实的分析维度键**:模型偶尔会返回分组键(如 `strategy_path`),
+    # 那不是画布上的分析节点,不能因此被当成“可见维度”。
+    if session.v1_focus_key in ANALYSIS_DIMENSION_KEYS:
         keys.add(session.v1_focus_key)
     return keys
 
 
-def dimension_projection(session: GoalReasoningSession) -> list[dict]:
-    """十维 + 四战略的分析维度投影(可见性、阶段、焦点、是否真需回答)。"""
+def dimension_projection(
+    session: GoalReasoningSession, questions: list[AgentQuestion] | None = None
+) -> list[dict]:
+    """**V1 画布的单一分析投影**。
+
+    每项包含:key / title / judgment / status / visible / isFocus /
+    hasPendingQuestion / discussionSummary / internal / questionId,以及详情所需的
+    knownFacts / assumptions / importanceReason。
+
+    `visible` 由服务端的 `visible_dimension_keys` 决定(根画布只显示三个核心维度 + 焦点);
+    `internal` 单独标识“内部维度”,**不**再把隐藏维度伪造成 `archived` 状态。
+    """
     visible = visible_dimension_keys(session)
+    by_key = {q.v1_key: q for q in (questions or []) if q.v1_key}
+    focus = session.v1_focus_key
+    pending_focus = focus if (session.v1_question or "").strip() else None
     projection: list[dict] = []
     for key in (k for _group, k, _title, _q in _ANALYSIS):
-        title = _DIMENSION_TITLES[key]
+        question = by_key.get(key)
+        analysis = (question.v1_analysis or {}) if question is not None else {}
+        discussion_count = int(analysis.get("discussionCount", 0) or 0)
         projection.append(
             {
                 "key": key,
-                "title": title,
+                "title": _DIMENSION_TITLES[key],
+                "judgment": str(analysis.get("judgment") or ""),
+                "status": question.status.value if question is not None else "pending",
                 "visible": key in visible,
-                "isFocus": key == session.v1_focus_key,
+                "isFocus": key == focus,
+                "hasPendingQuestion": key == pending_focus,
+                "discussionSummary": (
+                    str(analysis.get("summary") or "")
+                    or (f"已讨论 {discussion_count} 次" if discussion_count else "")
+                ),
+                "internal": key not in _CORE_GOAL_KEYS,
+                "questionId": str(question.id) if question is not None else None,
+                "knownFacts": [str(x) for x in (analysis.get("knownFacts") or [])],
+                "assumptions": [str(x) for x in (analysis.get("assumptions") or [])],
+                "importanceReason": str(analysis.get("importanceReason") or ""),
                 #: 分析维度**从不**是“待回答问题”;真正的问题只来自对话区那一个。
                 "requiresResponse": False,
             }
@@ -1054,9 +1083,9 @@ async def _sync_question_states(
 
     - 已写入判断 -> `resolved` / `investigating`;
     - 真正等待用户回答的那个焦点 -> `pending`;
-    - 默认可见但尚未判断 -> `investigating`(AI 正在形成判断);
-    - 其余内部维度 -> `archived`(仍在数据层与右侧详情/审计里可读)。
+    - 尚未判断 -> `pending`(由 visibility/internal 投影隐藏,不再伪造成 `archived`)。
 
+    **隐藏不用状态表达** —— 那是 `dimension_projection.visible/internal` 的职责。
     分组节点状态由子分析节点汇总,不再永远 `pending`。
     """
     questions = await _v1_questions(db, ctx)
@@ -1073,13 +1102,15 @@ async def _sync_question_states(
                 else QuestionStatus.INVESTIGATING
             )
         elif question.v1_key in visible:
+            # 默认可见但尚未写入判断:是 AI 正在形成的维度,不是待用户回答的问卷。
             question.status = (
                 QuestionStatus.PENDING
                 if question.v1_key == pending_key
                 else QuestionStatus.INVESTIGATING
             )
         else:
-            question.status = QuestionStatus.ARCHIVED
+            # 内部维度:状态照实为 pending,由 visibility/internal 投影隐藏(不用 archived)。
+            question.status = QuestionStatus.PENDING
 
     groups = await _v1_groups(db, ctx)
     by_group: dict = {}
@@ -1091,8 +1122,6 @@ async def _sync_question_states(
             continue
         if all(child.status is QuestionStatus.RESOLVED for child in children):
             group.status = NodeStatus.COMPLETED
-        elif all(child.status is QuestionStatus.ARCHIVED for child in children):
-            group.status = NodeStatus.ARCHIVED
         elif any(
             child.status in (QuestionStatus.RESOLVED, QuestionStatus.INVESTIGATING)
             for child in children

@@ -4,7 +4,7 @@ import { CalendarDays, CalendarClock, X, Flag, Circle, Target } from 'lucide-rea
 import { useRouter } from 'next/navigation';
 import type { GrowthNode } from '@/types/growth';
 import { useDemo } from '@/features/growth/provider';
-import { anchoredZoom, dateString, dateToX, dayNumber, getVisibleItems, layoutItems, timelineItems, timelineTicks, unscheduledNodes, zoomLevelFor, todayInTimeZone, type TimelineItem } from '@/features/growth/timeline';
+import { anchoredZoom, dateString, dateToX, dayNumber, draftTimelineItems, getVisibleItems, layoutItems, timelineItems, timelineTicks, unscheduledNodes, weekTicks, zoomLevelFor, todayInTimeZone, type TimelineItem } from '@/features/growth/timeline';
 import { StrategyArchitecturePreview } from './StrategyArchitecturePreview';
 import { V01TimelineAxis } from './V01TimelineAxis';
 import styles from './TimelineView.module.css';
@@ -97,6 +97,7 @@ export function TimelineView() {
   const [clusterOpen, setClusterOpen] = useState(false);
   const [unscheduledOpen, setUnscheduledOpen] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [draftSelectedId, setDraftSelectedId] = useState<string | null>(null);
   const [editingDeadline, setEditingDeadline] = useState(false);
   const [deadlineInput, setDeadlineInput] = useState('');
   const [startInput, setStartInput] = useState(''), [endInput, setEndInput] = useState('');
@@ -108,17 +109,37 @@ export function TimelineView() {
   const axisY = Math.max(150, size.height * .5);
   const layers = size.height >= 600 ? 2 : 1;
   const cardWidth = Math.min(164, Math.max(126, size.width * .23));
-  const all = useMemo(() => timelineItems(growth, spaceId), [growth, spaceId]);
+  // ---- V1 粗时间架构:走**同一条中央主轴**,不再另起一个小组件 ----
+  // V0.1(`v1Stage` 为空)仍保留原来的 V01TimelineAxis,避免既有时间线回归。
+  const v01Items = reasoning?.v01Timeline ?? [];
+  const v1DraftMode = Boolean(reasoning?.v1Stage) && v01Items.length > 0;
+  const draft = useMemo(
+    () => (v1DraftMode ? draftTimelineItems(v01Items, today) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [v1DraftMode, v01Items],
+  );
+  const draftIsPending = v1DraftMode && v01Items.some(item => item.status === 'draft');
+  const all = useMemo(
+    () => (draft ? draft.items : timelineItems(growth, spaceId)),
+    [draft, growth, spaceId],
+  );
   // 这段时间线上画不出来的节点。它们没有消失,只是没日期 —— 见 `unscheduledNodes`。
-  const unscheduled = useMemo(() => unscheduledNodes(growth, spaceId), [growth, spaceId]);
-  const displayItems = getVisibleItems(all, level);
-  const selectedSource = all.find(i => i.node.id === selectedId);
+  const unscheduled = useMemo(
+    () => (draft ? [] : unscheduledNodes(growth, spaceId)),
+    [draft, growth, spaceId],
+  );
+  // 草案阶段永远全部显示(3–6 个阶段,不受缩放层级过滤);正式计划仍按层级过滤。
+  const displayItems = draft ? [...all] : getVisibleItems(all, level);
+  const effectiveSelectedId = draft ? draftSelectedId : selectedId;
+  const selectedSource = all.find(i => i.node.id === effectiveSelectedId);
   // Keep a deliberately selected object discoverable across semantic levels.
-  if (selectedSource && !displayItems.some(i => i.node.id === selectedId)) displayItems.push(selectedSource);
-  const { placed, hidden } = layoutItems(displayItems, start, density, size.width, selectedId, cardWidth, layers);
-  const ticks = timelineTicks(start, end, level);
+  if (selectedSource && !displayItems.some(i => i.node.id === effectiveSelectedId)) displayItems.push(selectedSource);
+  const { placed, hidden } = layoutItems(displayItems, start, density, size.width, effectiveSelectedId, cardWidth, layers);
+  const relativeAxis = Boolean(draft && draft.mode === 'relative');
+  const ticks = relativeAxis ? weekTicks(today, start, end, density) : timelineTicks(start, end, level);
   const firstYear = new Date(start * 86400000).getUTCFullYear();
-  const years = Array.from({ length: new Date(end * 86400000).getUTCFullYear() - firstYear + 1 }, (_, i) => firstYear + i);
+  const years = relativeAxis ? [] : Array.from({ length: new Date(end * 86400000).getUTCFullYear() - firstYear + 1 }, (_, i) => firstYear + i);
+  const draftSelected = draft ? v01Items.find(item => item.id === draftSelectedId) ?? null : null;
   const x = (day: number) => dateToX(day, start, density);
   const selected = selectedId ? growth.nodes[selectedId] : null;
 
@@ -149,7 +170,10 @@ export function TimelineView() {
     setViewport(v => ({ start: anchoredZoom(v.start, v.density, next, size.width / 2), density: next }));
     setClusterOpen(false);
   }
-  function choose(id: string) { select(id); setEditing(false); }
+  function choose(id: string) {
+    if (draft) { setDraftSelectedId(id); return; }
+    select(id); setEditing(false);
+  }
   /**
    * 点在卡片上 —— **只选中,不开始拖动。**
    *
@@ -168,10 +192,9 @@ export function TimelineView() {
   }
   function finish() { gesture.current = null; }
   function reveal(item: TimelineItem) { choose(item.node.id); setClusterOpen(false); setViewport(v => ({ ...v, start: item.start - size.width / v.density * .35 })); }
-  const v01Items = reasoning?.v01Timeline ?? [];
-  // 规划智能体 V0.1:时间线**就是主轴本身** —— 不再在轴上再摆一块
-  // StrategyArchitecturePreview。确认前的草案是虚线,确认后是实线,结构一致。
-  if (v01Items.length > 0) {
+  // 规划智能体 V0.1(`v1Stage` 为空)保留原来的小组件,避免既有时间线回归。
+  // V1(`v1Stage` 非空)走下面同一条中央主轴 —— 见 `draftTimelineItems`。
+  if (!reasoning?.v1Stage && v01Items.length > 0) {
     return <div className={styles.view} data-testid="timeline-view" data-v01="true">
       <V01TimelineAxis
         items={v01Items}
@@ -185,35 +208,66 @@ export function TimelineView() {
   return <div className={styles.view} data-testid="timeline-view" data-zoom={level}>
     {/* 交互说明只说一次,而且是给读屏的;**不再用常驻说明条占空间**。 */}
     <p id="timeline-help" className={styles.srOnly}>拖动空白平移，Ctrl 或 Command 加滚轮缩放，方向键平移，加号减号缩放，Home 回到今天。改具体安排请用「排期」。</p>
-    {/* 阶段 11:战略时间架构预览(未确认前;与路径页同一份 reasoning 数据)。 */}
-    <StrategyArchitecturePreview
-      onOpenPath={() => router.replace(`/workbench?workspace=${workspaceId}&view=path`, { scroll: false })}
-    />
+    {/* R2:V1 粗时间架构草案走主轴;顶部只留一条状态 + 操作,不再另摆一块预览。 */}
+    {draft && (
+      <div className={styles.draftBar} data-testid="v1-timeline-draft-bar" data-draft={draftIsPending ? 'true' : 'false'}>
+        <span className={styles.draftStatus}>
+          {draftIsPending
+            ? `已生成粗时间架构草案，等待你确认${relativeAxis ? '（相对周，日期待校准）' : ''}`
+            : '时间架构已确认'}
+        </span>
+        {draftIsPending && reasoning?.v01TimelineProposalId && (
+          <div className={styles.draftActions}>
+            <button type="button" className={styles.draftConfirm} disabled={deciding} onClick={() => { void confirmRemote(reasoning.v01TimelineProposalId as string); }}>
+              {deciding ? '处理中…' : '确认时间架构'}
+            </button>
+            <button type="button" className={styles.draftAdjust} disabled={deciding} onClick={() => { void rejectRemote(reasoning.v01TimelineProposalId as string); }}>
+              调整时间架构
+            </button>
+          </div>
+        )}
+      </div>
+    )}
+    {/* 阶段 11:战略时间架构预览(仅在非 V1 草案时;V1 已改由主轴本身承载)。 */}
+    {!draft && (
+      <StrategyArchitecturePreview
+        onOpenPath={() => router.replace(`/workbench?workspace=${workspaceId}&view=path`, { scroll: false })}
+      />
+    )}
     {planError && <div className={styles.error} role="alert"><span>{planError}</span></div>}
     <div ref={canvas} className={styles.canvas} role="region" aria-label="成长时间线" aria-describedby="timeline-help" tabIndex={0} data-testid="timeline-canvas" data-ready={measured} data-start={start} data-density={density}
       onPointerDown={e => { if (e.button !== 0 || (e.target as HTMLElement).closest('button,input,[data-cluster-panel],[data-unscheduled-panel]')) return; e.currentTarget.setPointerCapture(e.pointerId); gesture.current = { x: e.clientX, start }; setClusterOpen(false); setUnscheduledOpen(false); }}
       onPointerMove={move} onPointerUp={finish} onPointerCancel={finish}
       onKeyDown={e => { if (e.target !== e.currentTarget) return; if (['ArrowLeft', 'ArrowRight', '+', '=', '-', 'Home'].includes(e.key)) e.preventDefault(); if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') setViewport(v => ({ ...v, start: v.start + (e.key === 'ArrowLeft' ? -1 : 1) * size.width / density * .2 })); if (e.key === '+' || e.key === '=') zoomTo(density * 1.5); if (e.key === '-') zoomTo(density / 1.5); if (e.key === 'Home') setViewport(v => ({ ...v, start: today - size.width / density * .28 })); }}>
       {/* 唯一的时间轴。年份、刻度、今天、任务锚点都围绕它。 */}
-      <div className={styles.axis} style={{ top: axisY }}/><div className={styles.past} style={{ top: axisY, width: Math.max(0, Math.min(size.width, x(today))) }}/><span className={styles.axisEnd} style={{ top: axisY }}>›</span>
+      <div className={styles.axis} style={{ top: axisY }}/>{!relativeAxis && <div className={styles.past} style={{ top: axisY, width: Math.max(0, Math.min(size.width, x(today))) }}/>}<span className={styles.axisEnd} style={{ top: axisY }}>›</span>
       {years.map(year => <span key={year} className={styles.year} style={{ left: Math.max(18, x(dayNumber(`${year}-01-01`)) + 6), top: axisY - 24 }}>{year}</span>)}
       {ticks.map(t => <div key={t.day} className={`${styles.tick} ${t.major ? styles.majorTick : ''}`} style={{ left: x(t.day), top: axisY }}>{t.major && <span className={styles.tickLabel}>{t.label}</span>}</div>)}
-      {x(today) >= 0 && x(today) <= size.width && <div className={styles.today} style={{ left: x(today), top: 6, bottom: 6 }} data-testid="today-marker"><span className={styles.todayLabel}>{shortDate(today)}<strong>今天</strong></span><span className={styles.todayDot} style={{ top: axisY - 9 }}/></div>}
+      {!relativeAxis && x(today) >= 0 && x(today) <= size.width && <div className={styles.today} style={{ left: x(today), top: 6, bottom: 6 }} data-testid="today-marker"><span className={styles.todayLabel}>{shortDate(today)}<strong>今天</strong></span><span className={styles.todayDot} style={{ top: axisY - 9 }}/></div>}
       {placed.map(({ item, x: anchorX, left, lane, rangeLane }) => {
         const id = item.node.id, upper = lane % 2 === 0;
+        const draftSource = draft ? v01Items.find(entry => entry.id === id) ?? null : null;
+        const cardRange = draftSource
+          ? draftSource.startDate && draftSource.endDate
+            ? `${shortDate(dayNumber(draftSource.startDate))} — ${shortDate(dayNumber(draftSource.endDate))}`
+            : `第 ${draftSource.startWeek ?? '?'}–${draftSource.endWeek ?? draftSource.startWeek ?? '?'} 周`
+          : rangeLabel(item);
+        const cardSub = draftSource
+          ? `${draftSource.deliverable || draftSource.goal || ''}${draftSource.status === 'draft' ? ' · 待确认' : ''}`
+          : cardNote(item, start);
         const cardY = upper ? axisY - 108 - Math.floor(lane / 2) * 86 : axisY + 40 + Math.floor(lane / 2) * 86;
         const color = item.node.category ? colors[item.node.category] : '#829dc5';
         const rangeY = axisY + 7 + rangeLane * 4;
         const Icon = item.kind === 'milestone' ? Flag : item.kind === 'goal' ? Target : Circle;
-        return <div key={id} data-timeline-item={id} data-start-date={dateString(item.start)} data-end-date={dateString(item.end)} className={`${styles.object} ${selectedId === id ? styles.selected : ''} ${hovered && hovered !== id ? styles.dim : ''}`} style={{ '--color': color } as CSSProperties} onMouseEnter={() => setHovered(id)} onMouseLeave={() => setHovered(null)}>
+        return <div key={id} data-timeline-item={id} data-draft={draftSource ? draftSource.status : undefined} data-start-date={dateString(item.start)} data-end-date={dateString(item.end)} className={`${styles.object} ${effectiveSelectedId === id ? styles.selected : ''} ${hovered && hovered !== id ? styles.dim : ''}`} style={{ '--color': color } as CSSProperties} onMouseEnter={() => setHovered(id)} onMouseLeave={() => setHovered(null)}>
           <svg className={styles.lines} aria-hidden="true"><path className={styles.connection} d={`M ${anchorX} ${axisY} V ${upper ? cardY + 84 : cardY - 12} L ${left + cardWidth / 2} ${upper ? cardY + 72 : cardY}`}/>
             {item.end > item.start && <><line className={styles.range} x1={Math.max(0, x(item.start))} x2={Math.min(size.width, x(item.end))} y1={rangeY} y2={rangeY}/>{[item.start,item.end].filter(d => x(d) >= 0 && x(d) <= size.width).map(d => <circle key={d} className={styles.endpoint} cx={x(d)} cy={rangeY} r="2.5"/>)}</>}
           </svg>
           <button className={`${styles.point} ${item.start < start ? styles.continuation : item.kind === 'milestone' ? styles.milestone : item.kind === 'goal' ? styles.goal : ''}`} style={{ left: anchorX, top: axisY }} aria-label={`${item.node.title}${item.start < start ? '从此前延续' : '时间点'}`} onClick={() => choose(id)} onPointerDown={e => beginItem(e, item)}/>
-          <button data-timeline-card className={`${styles.card} ${item.kind !== 'duration' ? styles.eventCard : ''}`} style={{ left, top: cardY, width: cardWidth }} aria-label={`${item.node.title}，${dateString(item.start)}至${dateString(item.end)}`} aria-pressed={selectedId === id} title={`${item.node.title} · ${dateString(item.start)} — ${dateString(item.end)}${item.derived ? '（根据子任务推导）' : ''}`} onClick={() => choose(id)} onPointerDown={e => beginItem(e, item)}>
-            <time><Icon size={11}/>{rangeLabel(item)}</time><strong>{item.node.title}</strong><small>{cardNote(item, start)}</small>
+          <button data-timeline-card data-draft={draftSource ? draftSource.status : undefined} className={`${styles.card} ${item.kind !== 'duration' ? styles.eventCard : ''} ${draftSource && draftSource.status === 'draft' ? styles.draftCard : ''}`} style={{ left, top: cardY, width: cardWidth }} aria-label={`${item.node.title}，${cardRange}`} aria-pressed={effectiveSelectedId === id} title={`${item.node.title} · ${cardRange}`} onClick={() => choose(id)} onPointerDown={e => beginItem(e, item)}>
+            <time><Icon size={11}/>{cardRange}</time><strong>{item.node.title}</strong><small>{cardSub}</small>
           </button>
-          {(hovered === id || selectedId === id) && item.start >= start && <div className={styles.hoverDate} style={{ left: anchorX, top: axisY - 21 }}><span>{shortDate(item.start)}</span></div>}
+          {(hovered === id || effectiveSelectedId === id) && item.start >= start && !draft && <div className={styles.hoverDate} style={{ left: anchorX, top: axisY - 21 }}><span>{shortDate(item.start)}</span></div>}
         </div>;
       })}
       {hidden.length > 0 && <button className={styles.cluster} style={{ left: size.width / 2, top: axisY + 19 }} aria-expanded={clusterOpen} onClick={() => setClusterOpen(!clusterOpen)}>另有 {hidden.length} 项 · 展开</button>}
@@ -241,7 +295,7 @@ export function TimelineView() {
         </div>
       )}
     </div>
-    {selectedSource && <div className={styles.inspector} data-testid="date-inspector">
+    {!draft && selectedSource && <div className={styles.inspector} data-testid="date-inspector">
       {/* 截止日说的是"截止 2026-10-23",不是一个区间。印成 `2026-10-23 → 2026-10-23`
           读起来像"这一天有安排",而那一天其实什么都没排。 */}
       <div><strong>{selectedSource.node.title}</strong><span>{isDeadlinePoint(selectedSource) ? `截止 ${dateString(selectedSource.start)}（还没排出具体安排）` : `${dateString(selectedSource.start)} → ${dateString(selectedSource.end)}${selectedSource.derived ? ' · 推导范围' : ''}`}</span></div>
@@ -253,5 +307,27 @@ export function TimelineView() {
       {editingDeadline && selected && isDeadlinePoint(selectedSource) && <form className={styles.editor} onSubmit={e => { e.preventDefault(); if (!deadlineInput) return; updateNode(selected.id, { deadline: deadlineInput }); setEditingDeadline(false); }}><label>截止<input aria-label="截止日期" type="date" required value={deadlineInput} onChange={e => setDeadlineInput(e.target.value)}/></label><button type="submit" disabled={!deadlineInput}>应用</button><button type="button" aria-label="取消编辑" onClick={() => setEditingDeadline(false)}><X size={15}/></button></form>}
       {editing && selected && <form className={styles.editor} onSubmit={e => { e.preventDefault(); if (startInput && endInput >= startInput) { apply({ type: 'UPDATE_TIME', nodeId: selected.id, startDate: startInput, endDate: endInput }); setEditing(false); } }}><label>开始<input aria-label="开始日期" type="date" required value={startInput} onChange={e => setStartInput(e.target.value)}/></label><label>结束<input aria-label="结束日期" type="date" min={startInput} required value={endInput} onChange={e => setEndInput(e.target.value)}/></label><button type="submit" disabled={!startInput || !endInput || endInput < startInput}>应用</button><button type="button" aria-label="取消编辑" onClick={() => setEditing(false)}><X size={15}/></button></form>}
     </div>}
+    {/* R2:点阶段卡片 -> 右侧显示完整的目标 / 成果 / 完成标准 / 依赖与风险。 */}
+    {draft && draftSelected && (
+      <div className={styles.inspector} data-testid="v1-timeline-detail">
+        <div>
+          <strong>{draftSelected.title}</strong>
+          <span>
+            {draftSelected.startDate && draftSelected.endDate
+              ? `${draftSelected.startDate} → ${draftSelected.endDate}`
+              : `第 ${draftSelected.startWeek ?? '?'}–${draftSelected.endWeek ?? draftSelected.startWeek ?? '?'} 周`}
+          </span>
+        </div>
+        {draftSelected.goal && <p>目标：{draftSelected.goal}</p>}
+        {draftSelected.deliverable && <p>成果：{draftSelected.deliverable}</p>}
+        {draftSelected.completionCriteria && <p>完成标准：{draftSelected.completionCriteria}</p>}
+        {(draftSelected as { dependsOn?: string }).dependsOn && (
+          <p>依赖：{(draftSelected as { dependsOn?: string }).dependsOn}</p>
+        )}
+        {reasoning?.v1Strategy?.riskControl && (
+          <p>风险控制：{reasoning.v1Strategy.riskControl}</p>
+        )}
+      </div>
+    )}
   </div>;
 }

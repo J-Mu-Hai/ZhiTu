@@ -10,6 +10,7 @@ import { FloatingConversation } from '@/components/conversation/FloatingConversa
 import { DiscoveryPrompt } from './DiscoveryPrompt';
 import { AgentTraceInspector } from '@/components/conversation/AgentTraceInspector';
 import { useDemo } from '@/features/growth/provider';
+import { v1TimelineReady } from '@/features/growth/v1Analysis';
 import { useMobileLayout } from '@/lib/media';
 export function Workbench() {
   const params = useSearchParams(); const router = useRouter();
@@ -91,16 +92,18 @@ export function Workbench() {
    * “一次”的边界是提案 id:同一个提案不再抢页面,新的提案(重新生成)才再切。
    */
   const v1TimelineProposalId = reasoning?.v01TimelineProposalId ?? null;
+  // R2:只有**合格**的粗时间架构(每阶段有时间范围/目标/成果/完成标准)才自动导航到时间线。
+  const v1TimelineIsReady = v1TimelineReady(reasoning);
   const switchedV1TimelineRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!v1TimelineProposalId) return;
+    if (!v1TimelineProposalId || !v1TimelineIsReady) return;
     if (switchedV1TimelineRef.current === v1TimelineProposalId) return;
     if (urlWorkspace !== workspaceId) return;
     switchedV1TimelineRef.current = v1TimelineProposalId;
     if (view !== 'timeline') {
       router.replace(`/workbench?${workspaceParam}&view=timeline`, { scroll: false });
     }
-  }, [v1TimelineProposalId, view, router, workspaceParam, urlWorkspace, workspaceId]);
+  }, [v1TimelineProposalId, v1TimelineIsReady, view, router, workspaceParam, urlWorkspace, workspaceId]);
   return <div className="workbench open-workbench"><div className={`workbench-body ${chatOpen ? '' : 'chat-hidden'} ${v1Thinking ? 'v1-thinking' : ''}`}><section className="workspace">
     <div className="space-topbar">{!isRootSpace && <button className="icon-button space-back" aria-label="返回上级空间" onClick={() => enterSpace(growth.nodes[spaceId]?.parentId ?? growth.goalId)}><ArrowLeft size={15}/></button>}{discovery ? null : <div className="view-tabs" role="tablist" aria-label="工作台视图">{tabs.map(({id,label,Icon}) => <button key={id} role="tab" aria-selected={view === id} aria-label={label} className={view === id ? 'selected' : ''} onClick={() => router.replace(`/workbench?${workspaceParam}&view=${id}`, { scroll: false })}><Icon size={15}/><span>{label}</span></button>)}</div>}{!chatOpen && <button className="icon-button reopen-chat" aria-label="展开对话" onClick={() => setChatChoice(true)}><PanelRightOpen size={18}/></button>}</div>
     {/* 视图是一个三元表达式,所以**切一下页签,整棵画布子树就被卸载了** —— 这是有意的:

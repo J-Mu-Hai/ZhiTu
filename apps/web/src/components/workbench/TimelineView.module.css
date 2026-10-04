@@ -349,3 +349,49 @@
   .clusterPanel { right: 10px; top: 64px; }
   .unscheduled { right: 10px; }
 }
+
+/* R2:粗时间架构草案。与正式计划**只允许视觉不同** —— 同一套布局引擎、同一条主轴,
+   草案是低饱和虚线,确认后回到 `.card` 的正式样式。 */
+.draftBar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 12px 20px 0;
+  padding: 8px 12px;
+  border: 1px dashed #b9c9d6;
+  border-radius: var(--radius-control, 9px);
+  background: #f7f9fb;
+}
+.draftBar[data-draft='false'] {
+  border-style: solid;
+  border-color: #cddbe4;
+}
+.draftStatus { font-size: 12px; color: #4b6479; }
+.draftActions { display: flex; gap: 8px; }
+.draftActions button {
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: var(--radius-control, 9px);
+  border: 1px solid #cbdae4;
+  background: #fffefa;
+  color: #3c5771;
+  cursor: pointer;
+}
+.draftActions button:disabled { opacity: .6; cursor: default; }
+.draftActions .draftConfirm {
+  border-color: #7fa8c9;
+  background: #e9f2f9;
+  color: #24486a;
+  font-weight: 500;
+}
+.draftCard {
+  border-style: dashed;
+  border-color: #b9c9d6;
+  border-left-color: #b9c9d6;
+  color: #52667a;
+  background-image: linear-gradient(135deg, rgba(252, 252, 251, .96), rgba(244, 247, 249, .96));
+  box-shadow: 0 8px 18px rgba(74, 105, 126, .08);
+}
+.inspector p { margin: 6px 0 0; font-size: 11px; color: #3f5a72; line-height: 1.5; }
