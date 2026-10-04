@@ -1172,7 +1172,9 @@ function Canvas() {
     // 前端**不再**用 `sourceNodeId === spaceId` 推断根空间可见性 —— 分析节点的
     // sourceNodeId 是分组(目标重构/问题结构/战略路径),于是在根层永远匹配不到。
     const v1Visible = v1VisibleKeys(reasoning);
-    const isRootSpace = spaceId === growth.goalId;
+    // `isRootSpace` 在组件体上方已声明(line 917),这里直接复用 —— 不能在本回调里
+    // 再声明一次:同作用域更早处已经用了它,`const` 会造成 TDZ
+    // (“Cannot access 'isRootSpace' before initialization”,整页白屏)。
     const shownQuestions = v1Space
       ? orderedQuestions.filter((item) =>
           isRootSpace
@@ -1401,7 +1403,7 @@ function Canvas() {
       });
     });
     return { nodes: nextNodes, edges: nextEdges };
-  }, [growth, spaceId, selectedId, selectedEdgeId, positions, dragging, questionPositions, questionDragging, files, measurements, handleMore, createdId, drawnEdgeId, clearCreated, clearDrawn, questions, focusedQuestionId, reasoning, showThinking]);
+  }, [growth, spaceId, isRootSpace, selectedId, selectedEdgeId, positions, dragging, questionPositions, questionDragging, files, measurements, handleMore, createdId, drawnEdgeId, clearCreated, clearDrawn, questions, focusedQuestionId, reasoning, showThinking]);
 
   /*
    * hover / 拖动的高亮**只作用在边对象上**。
