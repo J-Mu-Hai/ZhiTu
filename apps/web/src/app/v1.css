@@ -505,190 +505,32 @@
 .v1-understanding-hint p { margin: 2px 0; }
 .v1-understanding-hint strong { color: #25486a; }
 
-/* ---- 当前关键行动固定卡(输入框正上方,不随历史滚动) ---- */
-.current-interaction-card {
-  flex-shrink: 0;
-  max-height: 42%;
-  overflow: auto;
-  margin: 0 0 8px;
-  padding: 10px 12px;
+/* ================================================================== */
+/* V1 交互职责分离                                                     */
+/*                                                                   */
+/* 结构化问答、候选方向与节点确认**只在画布节点里**。这一节是节点内交互  */
+/* 与对话区导航提示的专用样式,不碰其它页面、不改全局元素。              */
+/* ================================================================== */
+
+/* ---- 对话区:当前决定的位置提示(只有文字 + 定位,没有选项/输入框) ---- */
+.chat-action-notice {
+  display: grid;
+  gap: 6px;
+  margin: 4px 0 12px;
+  padding: 11px 13px;
   border: 1px solid #cfe0ec;
   border-left: 3px solid #5b93c4;
   border-radius: 10px;
   background: #f6fafd;
-  box-shadow: 0 -2px 10px rgba(60, 100, 140, .06);
 }
-.cic-head { display: flex; align-items: center; margin-bottom: 4px; }
-.cic-tag { font-size: 11px; font-weight: 600; color: #2f6da3; letter-spacing: .02em; }
-.cic-context, .cic-why, .cic-prompt { margin: 4px 0 0; font-size: 12px; line-height: 1.5; color: #33506a; }
-.cic-context strong, .cic-why strong { color: #25486a; }
-.cic-why { color: #5a738a; font-size: 11px; }
-.cic-prompt { font-weight: 600; color: #1f405e; }
-.cic-options { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
-.cic-options button {
-  position: relative;
-  text-align: left;
-  padding: 7px 10px;
-  border: 1px solid #cbdae4;
-  border-radius: 8px;
-  background: #fffefa;
+.chat-action-notice p {
+  font-size: 12.5px;
+  line-height: 1.65;
   color: #33506a;
-  cursor: pointer;
 }
-.cic-options button strong { display: block; font-size: 12px; color: #24486a; }
-.cic-options button span { display: block; font-size: 11px; color: #52718b; margin-top: 2px; }
-.cic-options button em { display: block; font-size: 10px; color: #6b8198; margin-top: 2px; font-style: normal; }
-.cic-options button.is-recommended { border-color: #7fa8c9; background: #eef6fb; }
-.cic-recommended {
-  position: absolute; top: 6px; right: 8px;
-  font-size: 10px; font-style: normal; color: #2f6da3;
-  background: #dceaf6; border-radius: 4px; padding: 0 5px;
-}
-.cic-actions { display: flex; gap: 8px; margin-top: 8px; }
-.cic-primary {
-  margin-top: 8px;
-  padding: 6px 12px;
-  border-radius: 8px;
-  border: 1px solid #7fa8c9;
-  background: #e9f2f9;
-  color: #24486a;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-}
-.cic-primary:disabled { opacity: .55; cursor: default; }
-.cic-answer { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
-.cic-answer textarea {
-  width: 100%;
-  min-height: 52px;
-  max-height: 120px;
-  resize: vertical;
-  padding: 7px 9px;
-  border: 1px solid #cbdae4;
-  border-radius: 8px;
-  font-size: 12px;
-  color: #33506a;
-  background: #fffefa;
-}
-.cic-answer .cic-primary { align-self: flex-end; margin-top: 0; }
+.chat-action-notice .text-button { justify-self: start; }
 
-/* ================================================================== */
-/* 专注思考 Focus Modal                                              */
-/*                                                                   */
-/* 它 Portal 到 `document.body`,所以这一整块是**独立于工作台的**。    */
-/* 所有选择器都挂在 `.focus-modal*` 上,不碰任何全局元素。             */
-/* ================================================================== */
-.focus-modal-root {
-  position: fixed;
-  inset: 0;
-  z-index: var(--z-focus-modal, 55);
-  display: grid;
-  place-items: center;
-  /* 顶部导航(56px)+ 呼吸。弹层内容从导航下面开始,不盖住它。 */
-  padding-top: 68px;
-}
-.focus-modal-backdrop {
-  position: absolute;
-  inset: 0;
-  background: rgba(24, 40, 56, .3);
-  backdrop-filter: blur(1px);
-}
-.focus-modal {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  width: min(860px, calc(100vw - 48px));
-  /* 短屏(1366×768)上让出导航高度,所以这里比基础公式再矮一档 —— 否则弹层
-     顶边会压到顶部导航上。长屏上仍是 780px 封顶,和基础公式一致。 */
-  max-height: min(780px, calc(100vh - 92px));
-  overflow: hidden;
-  border: 1px solid var(--line-card, #dbe5ec);
-  border-radius: var(--radius-panel, 14px);
-  background: var(--surface-panel, #fffefa);
-  box-shadow: 0 30px 80px rgba(30, 50, 70, .35);
-}
-.focus-modal-header {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 16px;
-  border-bottom: 1px solid #e2e9ee;
-}
-.focus-modal-title { font-size: 13px; color: #2c4a63; }
-.focus-modal-close {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 10px;
-  border: 1px solid #cbdae4;
-  border-radius: 8px;
-  background: #fffefa;
-  color: #3c5771;
-  font-size: 12px;
-}
-.focus-modal-body {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  overflow: hidden;
-}
-/* 面板铺满弹层:**是同一个 `ConversationPanel`**,这里只换它的容器尺寸,
-   不再让它被基础样式的 365px 定宽与深色底限制在半边。 */
-.focus-modal-body .conversation-panel {
-  width: 100%;
-  max-width: none;
-  flex: 1;
-  min-height: 0;
-  border-left: 0;
-  background: transparent;
-}
-/* 弹层自己有一行标题,面板自带的头部就不重复了。 */
-.focus-modal-body .conversation-header { display: none; }
-/* 已经在这个弹层里了,面板内那个「专注思考」入口不必再出现一次。 */
-.focus-modal-body .v1-focus-row { display: none; }
-.focus-modal-body .conversation-history { padding: 16px 22px 12px; }
-.focus-modal-body .composer-area {
-  padding: 10px 22px 14px;
-  border-top: 1px solid #e6edf1;
-  background: transparent;
-}
-.focus-modal-body .message {
-  width: 100%;
-  margin: 0 0 18px;
-  padding: 14px 16px;
-  border: 1px solid #e1e7ef;
-  border-radius: var(--radius-card, 14px);
-  background: #fffefa;
-  box-shadow: none;
-}
-.focus-modal-body .message.user {
-  width: fit-content;
-  max-width: 88%;
-  margin-left: auto;
-  background: #eef4fb;
-  border-color: #dce7f6;
-}
-.focus-modal-body .message-text { font-size: 13px; line-height: 1.8; }
-.focus-modal-body .context-chip,
-.focus-modal-body .context-hint {
-  width: max-content;
-  max-width: 100%;
-  padding: 5px 9px;
-  border: 1px solid #e0e7ef;
-  border-radius: var(--radius-pill, 999px);
-  background: #fffefa;
-  color: #58768e;
-}
-.focus-modal-body .context-options {
-  padding: 8px;
-  border: 1px solid #d7e5e9;
-  border-radius: var(--radius-control, 9px);
-  background: #fffefa;
-}
-/* 当前动作固定卡在弹层里不需要再限高 —— 弹层本身就是滚动容器。 */
-.focus-modal-body .current-interaction-card { max-height: none; }
-/* 历史里那条“已回答 / 已确认”的折叠摘要。 */
+/* ---- 回答 / 确认后的历史摘要 ---- */
 .conversation-interaction-note {
   margin: 4px 0 16px;
   padding: 7px 12px;
@@ -698,19 +540,34 @@
   color: #477a6e;
   font-size: 12px;
 }
-/* 专注弹层接管时,Dock 里的面板收成空壳:不渲染任何内容。 */
-.conversation-panel.is-suppressed { background: transparent; border: 0; }
 
-/* 窄屏:退化成整屏对话,不产生横向溢出。 */
-@media (max-width: 720px) {
-  .focus-modal-root { padding-top: 0; }
-  .focus-modal {
-    width: 100%;
-    max-height: 100dvh;
-    height: 100dvh;
-    border: 0;
-    border-radius: 0;
-  }
-  .focus-modal-body .conversation-history { padding: 12px 14px 8px; }
-  .focus-modal-body .composer-area { padding: 8px 14px 12px; }
+/* ---- 画布节点:当前 active 高亮。静态强调,不做动画,避免闪烁 ---- */
+.canvas-question-node.is-active {
+  border-style: solid;
+  border-color: var(--blue-ink, #2f6da3);
+  box-shadow: 0 0 0 3px rgba(47, 109, 163, 0.16), 0 10px 26px rgba(47, 109, 163, 0.14);
 }
+.canvas-question-node.is-active .cq-badge {
+  color: #fff;
+  background: var(--blue-ink, #2f6da3);
+  border-color: var(--blue-ink, #2f6da3);
+}
+.canvas-question-node .cq-active-hint { color: var(--blue-ink, #2f6da3); }
+
+/* ---- 节点内的 V1 结构化交互 ---- */
+.cq-interaction { display: grid; gap: 8px; margin-top: 8px; }
+.cq-context {
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: #5a738a;
+}
+.cq-option.cq-direction {
+  display: grid;
+  gap: 3px;
+  text-align: left;
+  padding: 9px 11px;
+}
+.cq-direction .cq-option-title { font-size: 12px; color: var(--text, #24486a); }
+.cq-direction .cq-option-reason { font-size: 11px; line-height: 1.5; color: var(--muted, #52718b); }
+.cq-direction .cq-option-impact { font-size: 10px; font-style: normal; color: var(--muted, #6b8198); }
+.cq-answer { display: flex; flex-direction: column; gap: 6px; }

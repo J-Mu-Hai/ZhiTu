@@ -52,9 +52,9 @@ import { v1VisibleKeys } from '@/features/growth/v1Analysis';
 import { useMobileLayout } from '@/lib/media';
 import type { GrowthEdge, GrowthNode, GrowthRelationType } from '@/types/growth';
 import { SpaceFiles } from './SpaceFiles';
-import { CanvasQuestionNodeComponent, QuestionInteractionContext, type CanvasQuestionDraft, type QuestionFlowNode, type QuestionInteraction } from './CanvasQuestionNode';
+import { CanvasQuestionNodeComponent, QuestionInteractionContext, type CanvasQuestionDraft, type QuestionFlowNode, type QuestionInteraction, type V1NodeActions } from './CanvasQuestionNode';
 import { ReasoningNodeComponent, type ReasoningFlowNode } from './ReasoningNode';
-import { downloadV1Audit, type ReasoningNodeView } from '@/lib/backend';
+import { downloadV1Audit, type ReasoningNodeView, type QuestionView } from '@/lib/backend';
 
 type GrowthFlowData = {
   object: GrowthNode;
@@ -588,6 +588,8 @@ function Canvas() {
     questions, submitAnswer, dismissQuestion, postponeQuestion, questionFocus,
     reasoning, reasoningLoading, ensureReasoningMap, agentTurn, editReasoningNode,
     refineStrategy, refining,
+    selectV1Direction, alignV1Strategy, alignV1Timeline, confirmV1Strategy,
+    confirmV1Goal, continueV1Strategy, reopenV1Direction, confirmRemote, remoteProposals, send,
   } = useDemo();
   const { fitView, setViewport, screenToFlowPosition } = useReactFlow();
   /*
@@ -1003,6 +1005,66 @@ function Canvas() {
     setQuestionDrafts((prev) => ({ ...prev, [questionId]: next }));
   }, []);
 
+  /*
+   * V1 结构化动作的稳定包装。理由同上面那一组:provider 每次渲染新建函数,
+   * 直接进 context 会让所有问题节点跟着重渲染。
+   */
+  const v1ActionsRef = useRef({
+    selectV1Direction, alignV1Strategy, alignV1Timeline, confirmV1Strategy,
+    confirmV1Goal, continueV1Strategy, reopenV1Direction, confirmRemote, send,
+  });
+  v1ActionsRef.current = {
+    selectV1Direction, alignV1Strategy, alignV1Timeline, confirmV1Strategy,
+    confirmV1Goal, continueV1Strategy, reopenV1Direction, confirmRemote, send,
+  };
+  const handleSelectDirection = useCallback((key: string) => v1ActionsRef.current.selectV1Direction(key), []);
+  const handleAlignTimeline = useCallback(
+    (options: { answer?: string; accepted?: boolean }) => v1ActionsRef.current.alignV1Timeline(options),
+    [],
+  );
+  const handleAlignStrategy = useCallback(() => v1ActionsRef.current.alignV1Strategy(), []);
+  const handleConfirmStrategy = useCallback(() => v1ActionsRef.current.confirmV1Strategy(), []);
+  const handleConfirmGoal = useCallback(() => v1ActionsRef.current.confirmV1Goal(), []);
+  const handleContinueStrategy = useCallback(() => v1ActionsRef.current.continueV1Strategy(), []);
+  const handleReopenDirection = useCallback(() => v1ActionsRef.current.reopenV1Direction(), []);
+  const handleConfirmProposal = useCallback((id: string) => v1ActionsRef.current.confirmRemote(id), []);
+  const handleSend = useCallback((text: string) => v1ActionsRef.current.send(text), []);
+
+  const currentInteraction = reasoning?.v1CurrentInteraction ?? null;
+  const strategyUnderstandingConfirmed = Boolean(reasoning?.v1StrategyUnderstanding?.confirmed);
+  /** 没有 interaction 的流程动作:确认目标定义 / 继续形成战略路径 —— 也只在节点里出现。 */
+  const goalConfirmable =
+    reasoning?.v1Stage === 'goal_reframe' && Boolean(reasoning?.v1StrategicThesis);
+  const continueStrategy = reasoning?.v1NextAction === 'continue_strategy';
+  const timelineProposalId = reasoning?.v01TimelineProposalId ?? null;
+  const openProposalId =
+    remoteProposals.find(proposal => proposal.status === 'validated' || proposal.status === 'pending_confirmation')?.id ?? null;
+  const v1InteractionValue = useMemo<V1NodeActions>(
+    () => ({
+      interaction: currentInteraction,
+      strategyUnderstandingConfirmed,
+      goalConfirmable,
+      continueStrategy,
+      timelineProposalId,
+      openProposalId,
+      onSelectDirection: handleSelectDirection,
+      onTimelineAlign: handleAlignTimeline,
+      onAlignStrategy: handleAlignStrategy,
+      onConfirmStrategy: handleConfirmStrategy,
+      onConfirmGoal: handleConfirmGoal,
+      onContinueStrategy: handleContinueStrategy,
+      onReopenDirection: handleReopenDirection,
+      onConfirmProposal: handleConfirmProposal,
+      onSend: handleSend,
+    }),
+    [
+      currentInteraction, strategyUnderstandingConfirmed, goalConfirmable, continueStrategy,
+      timelineProposalId, openProposalId,
+      handleSelectDirection, handleAlignTimeline, handleAlignStrategy, handleConfirmStrategy,
+      handleConfirmGoal, handleContinueStrategy, handleReopenDirection, handleConfirmProposal, handleSend,
+    ],
+  );
+
   /**
    * 问题交互的 context 值。**草稿变了只重渲染消费它的那几张问题卡**,不重建整张
    * 节点数组 —— 这是闪烁修复的一半(另一半是下面 memo 的稳定依赖与 `measured`)。
@@ -1015,6 +1077,7 @@ function Canvas() {
       onSkip: handleQuestionSkip,
       onLater: handleQuestionLater,
       onLocateSource: handleQuestionLocate,
+      v1: v1InteractionValue,
     }),
     [
       questionDrafts,
@@ -1023,6 +1086,7 @@ function Canvas() {
       handleQuestionSkip,
       handleQuestionLater,
       handleQuestionLocate,
+      v1InteractionValue,
     ],
   );
 
@@ -1176,31 +1240,39 @@ function Canvas() {
     // 再声明一次:同作用域更早处已经用了它,`const` 会造成 TDZ
     // (“Cannot access 'isRootSpace' before initialization”,整页白屏)。
     /*
-     * 专注弹层活跃时,画布上的**待处理问题卡**不再渲染。
+     * 当前唯一 active interaction 的落点。
      *
-     * 否则同一个问题会在两处完整出现:一次在画布的问题节点里,一次在弹层的固定卡
-     * 里。历史只该留一句折叠摘要 —— 当前动作只在当前主交互容器里展示。已澄清 /
-     * 已归档的**分析节点**保留:它们是"已经形成的判断",不是待处理动作。
+     * **结构化交互只走画布节点。** active interaction 按 `focusKey` 绑定到对应的
+     * 分析节点;若它不在默认可见集里,也把它拉进来显示。没有任何对应节点的
+     * (战略确认 / 时间架构确认)由下面那个合成节点承接 —— 保证“任何 active
+     * interaction 都有画布节点”。
      */
-    const focusModalActive = Boolean(
-      reasoning?.v1CurrentInteraction &&
-      reasoning.v1CurrentInteraction.status === 'active' &&
-      reasoning.v1CurrentInteraction.presentation === 'focus_modal',
-    );
-    const shownQuestions = (
-      v1Space
-        ? orderedQuestions.filter((item) =>
-            isRootSpace
-              ? item.v1Key != null && v1Visible.has(item.v1Key)
-              : item.sourceNodeId === spaceId,
-          )
-        : roadmapExists
-          ? orderedQuestions.filter((item) => item.id === primaryQuestionId)
-          : []
-    ).filter(
-      (item) =>
-        !focusModalActive || item.status === 'resolved' || item.status === 'archived',
-    );
+    const activeInteraction =
+      currentInteraction && currentInteraction.status === 'active' ? currentInteraction : null;
+    /*
+     * 没有 interaction 的流程动作也绑定到一个节点:确认目标定义绑到「目标定义」,
+     * 继续形成战略绑到一个合成节点。这样“确认按钮只在画布节点里”对它们也成立。
+     */
+    const flowQuestionKey = !activeInteraction && goalConfirmable ? 'goal_definition' : null;
+    const continueFlow = !activeInteraction && !flowQuestionKey && continueStrategy;
+    const activeNodeKey = activeInteraction?.focusKey ?? flowQuestionKey;
+    const activeQuestion =
+      activeNodeKey != null
+        ? orderedQuestions.find((item) => item.v1Key === activeNodeKey) ?? null
+        : null;
+    const baseShownQuestions = v1Space
+      ? orderedQuestions.filter((item) =>
+          isRootSpace
+            ? item.v1Key != null && v1Visible.has(item.v1Key)
+            : item.sourceNodeId === spaceId,
+        )
+      : roadmapExists
+        ? orderedQuestions.filter((item) => item.id === primaryQuestionId)
+        : [];
+    const shownQuestions =
+      activeQuestion && !baseShownQuestions.some((item) => item.id === activeQuestion.id)
+        ? [...baseShownQuestions, activeQuestion]
+        : baseShownQuestions;
     const anchorCounts: Record<string, number> = {};
     shownQuestions.forEach((item) => {
       // 根层可见的分析维度锚到**根目标**(不是 sourceNodeId 指向的分组)。
@@ -1243,6 +1315,9 @@ function Canvas() {
           question: item,
           isPrimary: item.id === primaryQuestionId,
           isFocused: focusedQuestionId === item.id,
+          interaction: activeInteraction && item.v1Key === activeNodeKey ? activeInteraction : null,
+          isActive: Boolean(activeNodeKey != null && item.v1Key === activeNodeKey),
+          goalConfirmable: Boolean(!activeInteraction && goalConfirmable && item.v1Key === 'goal_definition'),
         },
       });
       // 仅 UI 的锚定虚线:**不是 NodeRelation、不是 dependency**,不写任何表。
@@ -1260,6 +1335,101 @@ function Canvas() {
         zIndex: 0,
       });
     });
+
+    /*
+     * 没有对应分析节点的待办补一个画布节点:
+     * - review 类 interaction(战略确认 / 时间架构确认 / 周回顾);
+     * - 无 interaction 的流程动作(确认目标定义 / 继续形成战略路径)。
+     *
+     * 它是**纯投影**:数据来自服务端状态,不写任何表,刷新后按同一规则重建。
+     */
+    const activeHasQuestion =
+      activeNodeKey != null && shownQuestions.some((item) => item.v1Key === activeNodeKey);
+    const syntheticSource = activeInteraction
+      ? {
+          id: activeInteraction.id, key: activeNodeKey, title: activeInteraction.title,
+          prompt: activeInteraction.prompt, whyNow: activeInteraction.whyNow, context: activeInteraction.context,
+        }
+      : goalConfirmable && !activeHasQuestion
+        ? {
+            id: 'goal-confirm', key: 'goal_definition', title: '目标定义',
+            prompt: '确认这个目标定义。', whyNow: '确认后进入问题结构。', context: reasoning?.v1StrategicThesis ?? '',
+          }
+        : continueFlow
+          ? {
+              id: 'continue-strategy', key: null, title: '战略路径',
+              prompt: '继续形成战略路径。', whyNow: '这一步不能停在空白。', context: reasoning?.v1StrategicThesis ?? '',
+            }
+          : null;
+    if (syntheticSource && !activeHasQuestion) {
+      const nodeId = `interaction:${syntheticSource.id}`;
+      const anchor = positionById[spaceId] ?? { x: 0, y: 0 };
+      const positionKey = `${spaceId}:${nodeId}`;
+      const placed = questionDragging[positionKey] ?? questionPositions[positionKey]
+        ?? { x: anchor.x + 360, y: anchor.y - 150 };
+      const now = new Date().toISOString();
+      const synthetic: QuestionView = {
+        id: nodeId,
+        workspaceId,
+        sourceNodeId: spaceId,
+        sourceMessageId: null,
+        reasoningNodeId: null,
+        presentation: 'canvas_question',
+        question: syntheticSource.prompt,
+        whyNow: syntheticSource.whyNow,
+        analysisSummary: syntheticSource.context,
+        recommendation: '',
+        decisionImpact: '',
+        confidenceNote: null,
+        responseMode: 'free_text',
+        options: [],
+        allowCustomInput: true,
+        status: 'pending',
+        answer: null,
+        v1Key: syntheticSource.key,
+        v1Analysis: null,
+        v1Title: syntheticSource.title,
+        v1Visible: true,
+        v1RequiresResponse: true,
+        createdAt: now,
+        updatedAt: now,
+        answeredAt: null,
+      };
+      nextNodes.push({
+        id: nodeId,
+        type: 'question',
+        draggable: true,
+        connectable: false,
+        deletable: false,
+        selectable: true,
+        measured: measurements[nodeId],
+        ariaLabel: syntheticSource.title,
+        position: placed,
+        data: {
+          questionId: nodeId,
+          question: synthetic,
+          isPrimary: false,
+          isFocused: focusedQuestionId === nodeId,
+          interaction: activeInteraction,
+          isActive: true,
+          goalConfirmable: Boolean(!activeInteraction && goalConfirmable && syntheticSource.id === 'goal-confirm'),
+          continueStrategy: Boolean(continueFlow && syntheticSource.id === 'continue-strategy'),
+          synthetic: true,
+        },
+      });
+      nextEdges.push({
+        id: `interaction-anchor:${syntheticSource.id}`,
+        source: spaceId,
+        target: nodeId,
+        type: 'questionAnchor',
+        className: 'question-anchor-edge',
+        selectable: false,
+        deletable: false,
+        reconnectable: false,
+        focusable: false,
+        zIndex: 0,
+      });
+    }
 
     // ---- 目标推理地图(纯 UI 投影,不是业务节点) ----------------------------
     // 它和 `growth`、`question` 是三种不同的节点类型。位置是确定性算出来的 ——
@@ -1420,7 +1590,7 @@ function Canvas() {
       });
     });
     return { nodes: nextNodes, edges: nextEdges };
-  }, [growth, spaceId, isRootSpace, selectedId, selectedEdgeId, positions, dragging, questionPositions, questionDragging, files, measurements, handleMore, createdId, drawnEdgeId, clearCreated, clearDrawn, questions, focusedQuestionId, reasoning, showThinking]);
+  }, [growth, spaceId, isRootSpace, selectedId, selectedEdgeId, positions, dragging, questionPositions, questionDragging, files, measurements, handleMore, createdId, drawnEdgeId, clearCreated, clearDrawn, questions, focusedQuestionId, reasoning, showThinking, currentInteraction, workspaceId, goalConfirmable, continueStrategy]);
 
   /*
    * hover / 拖动的高亮**只作用在边对象上**。

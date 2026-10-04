@@ -991,9 +991,12 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
    */
   const confirmV1Strategy = useCallback(async () => {
     try {
-      const view = await backend.confirmV1Strategy(space.id);
-      setReasoning(view);
-      return view;
+      const response = await backend.confirmV1Strategy(space.id);
+      setReasoning(response.reasoning);
+      if (response.message) {
+        setMessages(old => [...old, toMessage(response.message as backend.MessageView)]);
+      }
+      return response.reasoning;
     } catch (cause) {
       setSendError(cause instanceof ApiError ? cause.message : '确认战略失败,请重试。');
       return null;
@@ -1003,9 +1006,12 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
   /** 深度对话:确认“战略理解”。 */
   const alignV1Strategy = useCallback(async () => {
     try {
-      const view = await backend.alignV1Strategy(space.id);
-      setReasoning(view);
-      return view;
+      const response = await backend.alignV1Strategy(space.id);
+      setReasoning(response.reasoning);
+      if (response.message) {
+        setMessages(old => [...old, toMessage(response.message as backend.MessageView)]);
+      }
+      return response.reasoning;
     } catch (cause) {
       setSendError(cause instanceof ApiError ? cause.message : '确认战略理解失败,请重试。');
       return null;
@@ -1016,9 +1022,12 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
   const alignV1Timeline = useCallback(
     async (options: { answer?: string; accepted?: boolean } = {}) => {
       try {
-        const view = await backend.alignV1Timeline(space.id, options);
-        setReasoning(view);
-        return view;
+        const response = await backend.alignV1Timeline(space.id, options);
+        setReasoning(response.reasoning);
+        if (response.message) {
+          setMessages(old => [...old, toMessage(response.message as backend.MessageView)]);
+        }
+        return response.reasoning;
       } catch (cause) {
         setSendError(cause instanceof ApiError ? cause.message : '对齐时间节奏失败,请重试。');
         return null;
@@ -1028,62 +1037,13 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
   );
 
   /**
-   * 对话交互收口:**当前唯一待处理动作** + 居中专注模式。
+   * 对话交互收口:**当前唯一待处理动作**。
    *
    * - `currentInteraction` 由服务端投影派生;前端不用阶段/`v1Thinking` 猜。
-   * - 居中只由 `presentation === 'focus_modal'` 且**用户没有收起过这个 id** 时触发。
-   * - 打开 / 收起写审计(`v1_interaction_focus_*`),不记草稿。
+   * - **它只用来定位画布上的 active node**。结构化问答、候选方向与节点确认的
+   *   控件不再进对话区 —— 对话区只解释“这个决定在哪、确认后会怎样”。
    */
   const currentInteraction = reasoning?.v1CurrentInteraction ?? null;
-  const [focusInteractionId, setFocusInteractionId] = useState<string | null>(null);
-  // 用户手动打开居中模式(即使当前没有待处理动作)。
-  const [manualFocus, setManualFocus] = useState(false);
-  const dismissedFocusRef = useRef<Set<string>>(new Set());
-  const auditFocus = useCallback(
-    (id: string, event: 'opened' | 'dismissed') => {
-      void backend.recordV1InteractionEvent(space.id, id, event).catch(() => undefined);
-    },
-    [space.id],
-  );
-  const focusThinking = manualFocus || focusInteractionId !== null;
-  const openFocusThinking = useCallback(() => {
-    setManualFocus(true);
-    const id = currentInteraction?.id ?? null;
-    if (!id) return;
-    dismissedFocusRef.current.delete(id);
-    setFocusInteractionId(id);
-    auditFocus(id, 'opened');
-  }, [currentInteraction?.id, auditFocus]);
-  const closeFocusThinking = useCallback(() => {
-    setManualFocus(false);
-    setFocusInteractionId(prev => {
-      if (prev) {
-        dismissedFocusRef.current.add(prev);
-        auditFocus(prev, 'dismissed');
-      }
-      return null;
-    });
-  }, [auditFocus]);
-  // 自动居中:只给声明了 focus_modal 的动作;用户收起过后不再自动弹出。
-  // **动作一旦不是 active(answered / confirmed / dismissed),自动弹层就关掉** ——
-  // 固定卡本来就不渲染了,弹层再留着就是一张挡住画布的空壳。用户手动打开的
-  // 「专注思考」(manualFocus)不受影响:那是另一个意图,由他自己关。
-  useEffect(() => {
-    if (
-      !currentInteraction ||
-      currentInteraction.presentation !== 'focus_modal' ||
-      currentInteraction.status !== 'active'
-    ) {
-      setFocusInteractionId(null);
-      return;
-    }
-    if (dismissedFocusRef.current.has(currentInteraction.id)) return;
-    setFocusInteractionId(prev => {
-      if (prev === currentInteraction.id) return prev;
-      auditFocus(currentInteraction.id, 'opened');
-      return currentInteraction.id;
-    });
-  }, [currentInteraction, auditFocus]);
 
   /** 「细化第一阶段」:把已确认战略交给既有的对话工作流拆出阶段/里程碑提案。 */
   const [refining, setRefining] = useState(false);
@@ -1271,6 +1231,9 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     try {
       const response = await backend.reopenV1Direction(space.id);
       setReasoning(response.reasoning);
+      if (response.message) {
+        setMessages(old => [...old, toMessage(response.message as backend.MessageView)]);
+      }
       return response;
     } catch (cause) {
       setSendError(cause instanceof ApiError ? cause.message : '重新选择起点失败,请重试。');
@@ -1283,6 +1246,9 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     try {
       const response = await backend.confirmV1Goal(space.id);
       setReasoning(response.reasoning);
+      if (response.message) {
+        setMessages(old => [...old, toMessage(response.message as backend.MessageView)]);
+      }
       return response;
     } catch (cause) {
       setSendError(cause instanceof ApiError ? cause.message : '确认目标定义失败,请重试。');
@@ -1296,6 +1262,9 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
       try {
         const response = await backend.selectV1Direction(space.id, key);
         setReasoning(response.reasoning);
+        if (response.message) {
+          setMessages(old => [...old, toMessage(response.message as backend.MessageView)]);
+        }
         return response;
       } catch (cause) {
         setSendError(cause instanceof ApiError ? cause.message : '选择失败,请重试。');
@@ -2488,7 +2457,6 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     runV1PlanStep, selectV1Direction,
     alignV1Strategy, alignV1Timeline,
     currentInteraction,
-    focusThinking, openFocusThinking, closeFocusThinking,
     refineStrategy, refining, requestChat, chatRequestNonce,
     replan, replanState,
     // 上一轮是不是基于已经变过的输入(见 `inputChanged` 的注释),以及"重新分析"

@@ -1920,7 +1920,10 @@ export interface V1CurrentInteractionOption {
 /**
  * **当前唯一待处理动作**(不是一条普通聊天消息)。
  *
- * 每个 V1 阶段同时最多一个 active;`presentation === 'focus_modal'` 时才居中专注。
+ * 每个 V1 阶段同时最多一个 active。它**不再由对话区承载**:前端按 `focusKey`
+ * 把它绑定到画布分析节点,结构化问答 / 候选方向 / 节点确认都只在该节点里完成;
+ * 对话区只说明位置并给「定位到节点」。`presentation` 仍是服务端的投影字段,
+ * 但不再驱动居中弹层。
  */
 export interface V1CurrentInteraction {
   id: string;
@@ -2223,20 +2226,21 @@ export function reviewV1(workspaceId: string): Promise<AgentTurnResponse> {
 
 /** 规划智能体重构 V1(P2):确认战略逻辑,并生成待确认的粗时间架构(P3)。
  *
- * 服务端返回的是 `AgentTurnResponse`(含消息与最新地图);这里只把地图交给调用方。 */
-export function confirmV1Strategy(workspaceId: string): Promise<GoalReasoningView> {
+ * 返回完整的 `AgentTurnResponse` —— 调用方需要它的 `message` 在对话区补一句
+ * “你刚确认了什么、这对战略有什么影响”。 */
+export function confirmV1Strategy(workspaceId: string): Promise<AgentTurnResponse> {
   return apiFetch<AgentTurnResponse>(`/api/workspaces/${workspaceId}/agent/v1/strategy/confirm`, {
     method: 'POST',
     body: {},
-  }).then(response => response.reasoning);
+  });
 }
 
 /** 深度对话:确认“战略理解”(进入正式战略确认前的中间确认)。 */
-export function alignV1Strategy(workspaceId: string): Promise<GoalReasoningView> {
+export function alignV1Strategy(workspaceId: string): Promise<AgentTurnResponse> {
   return apiFetch<AgentTurnResponse>(`/api/workspaces/${workspaceId}/agent/v1/strategy/align`, {
     method: 'POST',
     body: {},
-  }).then(response => response.reasoning);
+  });
 }
 
 /** 对话交互收口:记录居中专注模式的打开 / 收起(只记交互,不记草稿)。 */
@@ -2255,14 +2259,14 @@ export function recordV1InteractionEvent(
 export function alignV1Timeline(
   workspaceId: string,
   options: { answer?: string; accepted?: boolean } = {},
-): Promise<GoalReasoningView> {
+): Promise<AgentTurnResponse> {
   const params = new URLSearchParams();
   if (options.answer) params.set('answer', options.answer);
   params.set('accepted', options.accepted ? 'true' : 'false');
   return apiFetch<AgentTurnResponse>(
     `/api/workspaces/${workspaceId}/agent/v1/timeline/align?${params.toString()}`,
     { method: 'POST', body: {} },
-  ).then(response => response.reasoning);
+  );
 }
 
 /** 细化已确认战略。**只有已确认战略存在时**服务端才接受。 */

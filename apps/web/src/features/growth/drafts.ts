@@ -225,13 +225,13 @@ export function useCanvasDraft(workspaceId: string, scopeId: string) {
  *
  * ## 它为什么也要住在组件外面
  *
- * 专注弹层与右侧 Dock 是同一个 `ConversationPanel` 的两处挂载,而弹层打开时 Dock
- * 那一份会被收成空壳。用户在弹层里写了一半再关掉,那一份会随弹层卸载 —— 如果输入值
- * 只活在组件里,他就会看着自己的草稿凭空消失。所以它按**空间**存在组件外面,两处
- * 挂载通过 `useSyncExternalStore` 读同一份:在弹层里写的字,关掉之后原样落在 Dock。
+ * 对话输入框会在**切视图、离开工作台再回来**时随子树卸载;用户在框里写了一半的
+ * 话不该因此凭空消失。这和画布草稿是同一条边界。存到组件外之后,重挂载拿到的是
+ * 同一份输入。
  *
- * 键用空间 id,和画布草稿同理:同一个空间里的对话只有一条。提交成功后清空;一次
- * 整页刷新不保留 —— 与画布草稿同一条边界(见文件头)。
+ * 键用**工作区 id**:`spaceId` 在计划还没加载时会先落在哨兵值 `'goal'` 上,
+ * 加载完才换成真实节点 id;用它做键会把加载那一瞬间打的字丢掉。工作区 id 从头到尾
+ * 稳定。提交成功后清空;一次整页刷新不保留 —— 与画布草稿同一条边界(见文件头)。
  */
 const conversationDrafts = new Map<string, string>();
 const conversationDraftListeners = new Map<string, Set<() => void>>();

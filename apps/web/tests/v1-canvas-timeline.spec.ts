@@ -152,7 +152,7 @@ test.beforeAll(async ({ request }) => {
   await assertBackendRunning(request);
 });
 
-test('当前关键行动固定在输入框上方,不在历史里;Dock 默认紧凑', async ({ page }) => {
+test('当前 interaction 只在画布节点里,对话区只有位置提示', async ({ page }) => {
   const { token } = await registerAccount(page, 'v1-current-interaction');
   const workspaceId = await createWorkspace(page, token, '当前行动固定', '我想学 Python 用于自动化');
   const rootId = (await getPlan(page, token, workspaceId)).nodes.find(node => node.parentId === null)!.id;
@@ -179,69 +179,24 @@ test('当前关键行动固定在输入框上方,不在历史里;Dock 默认紧�
       v1VisibleAnalysisKeys: ['true_intent', 'key_conflict', 'goal_definition'],
       v1Dimensions: [dimension('true_intent', '真实意图', '想省时间。', true, true)],
     }),
-    [],
-  );
-  await page.route('**/agent/v1/interaction', async route =>
-    route.fulfill({ status: 204, body: '' }),
+    [question(workspaceId, rootId, 'true_intent', '真实意图', '想省时间。')],
   );
 
   await page.goto(`/workbench?workspace=${workspaceId}&view=path`);
-  // Dock 默认紧凑:不再有 v1-thinking 整体放大类。
-  await expect(page.locator('.workbench-body.v1-thinking')).toHaveCount(0);
-  // focus_modal 自动居中:完整动作**只**出现在弹层里,Dock 收成空壳。
-  // 同一件事不允许两处完整渲染 —— 这是布局不变量的落点。
-  await expect(page.getByTestId('focus-thinking')).toBeVisible({ timeout: 20000 });
-  await expect(page.locator('.floating-conversation [data-testid="current-interaction-card"]')).toHaveCount(0);
-  await expect(page.getByTestId('focus-thinking').getByTestId('current-interaction-card')).toContainText('你想自动化的具体是哪一件重复工作');
-  await expect(page.locator('.conversation-history [data-testid="current-interaction-card"]')).toHaveCount(0);
-  // 收起后回到小 Dock,固定卡仍在,且**不在**滚动历史里。
-  await page.getByTestId('focus-thinking-close').click();
+  // 对话区只有一句“决定放在哪个节点”的位置提示:没有固定交互卡、没有排队输入。
+  const notice = page.getByTestId('chat-action-notice');
+  await expect(notice).toBeVisible({ timeout: 20000 });
+  await expect(notice).toContainText('真实意图');
+  await expect(notice.getByRole('button', { name: '定位到节点' })).toBeVisible();
+  await expect(page.locator('[data-testid="current-interaction-card"]')).toHaveCount(0);
   await expect(page.getByTestId('focus-thinking')).toHaveCount(0);
-  const dockCard = page.locator('.floating-conversation [data-testid="current-interaction-card"]');
-  await expect(dockCard).toBeVisible();
-  await expect(dockCard).toContainText('你想自动化的具体是哪一件重复工作');
-  await expect(page.locator('.conversation-history [data-testid="current-interaction-card"]')).toHaveCount(0);
-});
+  await expect(page.locator('.floating-conversation .cq-direction')).toHaveCount(0);
 
-test('专注思考:居中放大,关闭后回到右侧,内容不丢', async ({ page }) => {
-  const { token } = await registerAccount(page, 'v1-focus-thinking');
-  const workspaceId = await createWorkspace(page, token, '专注思考', '我想学 Python 用于自动化');
-  const rootId = (await getPlan(page, token, workspaceId)).nodes.find(node => node.parentId === null)!.id;
-
-  await installMock(
-    page,
-    baseView(workspaceId, rootId, {
-      v1Stage: 'strategy_draft',
-      v1VisibleAnalysisKeys: ['true_intent', 'key_conflict', 'goal_definition'],
-      v1StrategyUnderstanding: {
-        goal: '用 Python 自动化一件重复小事',
-        keyConflict: '不确定值不值得投入',
-        mainLine: '先用最小脚本跑通',
-        deferOrAvoid: '暂不系统学语法',
-        riskControl: '每两周复盘',
-        confirmed: false,
-      },
-      v1Dimensions: [
-        dimension('true_intent', '真实意图', '想要自动化省时间。', true),
-        dimension('key_conflict', '核心矛盾', '怕学了用不上。', true),
-        dimension('goal_definition', '目标定义', '做出一个自动化小工具。', true, true),
-      ],
-    }),
-    [],
-  );
-
-  await page.goto(`/workbench?workspace=${workspaceId}&view=path`);
-  await expect(page.getByTestId('v1-strategy-understanding')).toBeVisible({ timeout: 20000 });
-  await expect(page.getByTestId('focus-thinking')).toHaveCount(0);
-
-  await page.getByTestId('focus-thinking-open').first().click();
-  const modal = page.getByTestId('focus-thinking');
-  await expect(modal).toBeVisible();
-  await expect(modal.getByTestId('v1-strategy-understanding')).toBeVisible();
-  await page.getByTestId('focus-thinking-close').click();
-  await expect(page.getByTestId('focus-thinking')).toHaveCount(0);
-  // 关闭后回到右侧 Dock,战略理解仍在。
-  await expect(page.getByTestId('v1-strategy-understanding').first()).toBeVisible();
+  // 结构化回答只在画布节点里:点开 active 节点才有输入。
+  const activeNode = page.locator('.canvas-question-node.is-active');
+  await expect(activeNode).toHaveCount(1);
+  await activeNode.click();
+  await expect(activeNode.getByLabel('补充你的回答')).toBeVisible();
 });
 
 test('时间架构共创:先对齐节奏,认可后才生成时间线', async ({ page }) => {
@@ -252,6 +207,24 @@ test('时间架构共创:先对齐节奏,认可后才生成时间线', async ({ 
   const alignmentView = baseView(workspaceId, rootId, {
     v1Stage: 'timeline_alignment',
     v1WorkflowNext: 'confirm_timeline_alignment',
+    v1CurrentInteraction: {
+      id: 'ci-timeline-alignment',
+      nonce: 'turn-1',
+      kind: 'timeline_alignment',
+      priority: 'high',
+      title: '对齐时间节奏',
+      context: '按每周一个可验收小闭环推进。',
+      whyNow: '先对齐节奏,才生成粗时间架构。',
+      prompt: '更希望更快见成果,还是更稳打基础?',
+      options: [
+        { key: '0', title: '先快后稳' },
+        { key: '1', title: '先稳后快' },
+      ],
+      recommendedOption: null,
+      focusKey: null,
+      status: 'active',
+      presentation: 'focus_modal',
+    },
     v1TimelineAlignment: {
       summary: '按每周一个可验收小闭环推进。',
       totalSpan: '约 6 周',
@@ -297,9 +270,16 @@ test('时间架构共创:先对齐节奏,认可后才生成时间线', async ({ 
   await expect(card).toBeVisible({ timeout: 20000 });
   await expect(card.getByTestId('v1-timeline-assumptions')).toContainText('你说过');
   await expect(card.getByTestId('v1-timeline-assumptions')).toContainText('AI 暂定');
-  await expect(card).toContainText('更希望更快见成果');
+  await expect(card).not.toContainText('更希望更快见成果');
+  // 对话区只有只读的共创说明,没有节奏选择按钮。
+  await expect(card.getByRole('button', { name: '认可默认节奏' })).toHaveCount(0);
 
-  await card.getByRole('button', { name: '认可默认节奏' }).click();
+  // 结构化动作只在 active 画布节点里。
+  const activeNode = page.locator('.canvas-question-node.is-active');
+  await expect(activeNode).toHaveCount(1);
+  await activeNode.click();
+  await expect(activeNode).toContainText('更希望更快见成果');
+  await activeNode.getByRole('button', { name: '认可默认节奏' }).click();
   // 对齐后共创卡片消失(provider 已换成粗时间线视图)。
   await expect(page.getByTestId('v1-timeline-alignment')).toHaveCount(0, { timeout: 20000 });
   // 客户端切到时间线(不重载,保留新 reasoning):应出现 3 个阶段。

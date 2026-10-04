@@ -7,7 +7,6 @@ import { TimelineView } from './TimelineView';
 import { TaskView } from './TaskView';
 import { ScheduleView } from './ScheduleView';
 import { FloatingConversation } from '@/components/conversation/FloatingConversation';
-import { FocusThinking } from '@/components/conversation/FocusThinking';
 import { DiscoveryPrompt } from './DiscoveryPrompt';
 import { AgentTraceInspector } from '@/components/conversation/AgentTraceInspector';
 import { useDemo } from '@/features/growth/provider';
@@ -60,8 +59,11 @@ export function Workbench() {
   // 规划智能体 V0.1:阶段一(DISCOVERY)用中央大输入框,画布保持干净。
   const discovery = reasoning?.workflowStage === 'discovery';
   /*
-   * 对话交互收口:**右侧 Dock 默认保持紧凑**,不再因为处于某个 V1 阶段就长期放大。
-   * 需要用户聚焦时改由居中「专注思考」Overlay 承载(见 `FocusThinking`),不挤压画布。
+   * 对话交互收口:**右侧 Dock 默认保持紧凑**。
+   *
+   * 结构化问答 / 候选方向 / 节点确认都只在**画布节点**里完成(见 `CanvasQuestionNode`);
+   * 对话区只做解释、自由输入与「定位到节点」。所以这里不再有会长期放大的对话形态,
+   * 也不再有居中弹层。
    */
   // 阶段 11:“调整战略”把对话 Dock 展开 —— 只是把注意力带回对话,不替用户发言。
   useEffect(() => {
@@ -105,5 +107,5 @@ export function Workbench() {
         `key` 用的是 `canvasKey` 而不是 `spaceId`,理由见 Provider 里 `canvasKey` 那段。 */}
     {discovery
       ? <DiscoveryPrompt questions={reasoning?.discoveryQuestions ?? []} busy={sending} onSend={text => { void send(text); }} />
-      : <div className="view-content">{view === 'path' ? <PathView key={canvasKey}/> : view === 'timeline' ? <TimelineView/> : view === 'schedule' ? <ScheduleView/> : <TaskView/>}</div>}</section><FloatingConversation open={chatOpen} onClose={() => setChatChoice(false)}/><FocusThinking/><AgentTraceInspector/></div></div>;
+      : <div className="view-content">{view === 'path' ? <PathView key={canvasKey}/> : view === 'timeline' ? <TimelineView/> : view === 'schedule' ? <ScheduleView/> : <TaskView/>}</div>}</section><FloatingConversation open={chatOpen} onClose={() => setChatChoice(false)}/><AgentTraceInspector/></div></div>;
 }

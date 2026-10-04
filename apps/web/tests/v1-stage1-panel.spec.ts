@@ -2,94 +2,27 @@ import { expect, test } from '@playwright/test';
 import { createWorkspace, openSpacePage, registerAccount } from './support/session';
 
 /**
- * P2.2.1:Stage 1“思考模式”的右侧面板可用性。
+ * V1 交互职责分离(真实后端)。
  *
- * 真实场景:战略判断 + 候选方向 + 输入框同时在场。要求面板更宽、消息/行动区独立
- * 滚动、候选项可点、输入框始终可见。
+ * 这一版把**结构化问答、候选方向与节点确认**全部收进画布节点;对话区只保留
+ * 判断 / 解释、自由输入与「定位到节点」。所以这里验的不是“候选方向长什么样”,
+ * 而是**同一个 interaction 不再出现在对话区**:
  *
- * 说明:本用例跑在**真实 V1 后端**上(候选方向由模型产生,非确定性)。因此对
- * “是否有候选方向”做容错:没有候选时仍验证布局与输入可用性,有候选时额外验证
- * 点击闭环。
+ * 1. 对话区没有选项按钮、没有第二个输入框、没有固定交互卡;
+ * 2. 至多一个画布 active node;
+ * 3. 输入框始终可用。
+ *
+ * 候选方向由真实模型产生,非确定性,因此对“有没有候选项”不做硬断言。
  */
-test.describe('V1 Stage 1 右侧面板', () => {
+test.describe('V1 交互职责分离', () => {
   test.setTimeout(240_000);
 
-  test('面板加宽、可滚动、候选方向可点、输入框始终可见', async ({ page }) => {
-    const account = await registerAccount(page, 'v1-panel');
+  test('对话区只对话,结构化控件不出现在对话区', async ({ page }) => {
+    const account = await registerAccount(page, 'v1-separation');
     const workspaceId = await createWorkspace(
       page,
       account.token,
-      'V1 面板验收',
-      '我想学 Python，但不确定用来做什么，担心学不了',
-    );
-    await openSpacePage(page, '/workbench', workspaceId);
-
-    const composer = page.getByLabel('给 AI 的消息');
-    await expect(composer).toBeVisible({ timeout: 30_000 });
-
-    // 首屏:输入框可见、可输入。
-    await composer.fill('我想学 Python，但不确定用来做什么，担心学不了');
-    await page.getByLabel('发送消息').click();
-
-    // 战略判断出现。
-    await expect(page.getByTestId('v1-thesis')).toBeVisible({ timeout: 120_000 });
-
-    // 面板加宽(桌面端 >= 560)。
-    const overlay = await page.locator('.conversation-overlay').boundingBox();
-    expect(overlay?.width ?? 0).toBeGreaterThanOrEqual(560);
-
-    // 消息 / 行动区是独立滚动容器。
-    const scrollable = await page
-      .locator('.conversation-history')
-      .evaluate((el) => getComputedStyle(el).overflowY);
-    expect(['auto', 'scroll']).toContain(scrollable);
-
-    // 输入框没有被内容顶出视口。
-    const composerBox = await composer.boundingBox();
-    const viewport = page.viewportSize();
-    expect(composerBox).not.toBeNull();
-    expect((composerBox?.y ?? 0) + (composerBox?.height ?? 0)).toBeLessThanOrEqual(
-      (viewport?.height ?? 0) + 1,
-    );
-
-    // 触发一次低信息回答,让服务端倾向给出候选方向。
-    await composer.fill('不知道');
-    await page.getByLabel('发送消息').click();
-
-    const directions = page.locator('[data-testid="v1-directions"] button');
-    const count = await directions.count().catch(() => 0);
-    if (count > 0) {
-      const target = directions.nth(Math.min(2, count - 1));
-      const before = (await page.getByTestId('v1-thesis').innerText()).trim();
-      await target.click();
-
-      // 点击不被遮挡:Playwright 的 click 本身会因拦截而失败。这里再确认输入框仍可用。
-      await composer.fill('补充一句：我更想做能展示的小工具');
-      await composer.fill('');
-      await expect(composer).toBeVisible();
-
-      // 选择后战略判断会更新(允许同文时退化为仍可见)。
-      await expect(page.getByTestId('v1-thesis')).toBeVisible();
-      const after = (await page.getByTestId('v1-thesis').innerText()).trim();
-      expect(after.length).toBeGreaterThan(0);
-      void before;
-
-      // 选择过程结束后候选按钮恢复可用。
-      await expect(directions.nth(0)).toBeEnabled({ timeout: 120_000 });
-    }
-
-    // 输入框始终可见且可继续发送。
-    await expect(composer).toBeVisible();
-    await composer.fill('我继续补充一点');
-    await expect(composer).toHaveValue('我继续补充一点');
-  });
-
-  test('确认目标定义后自动形成战略路径或给出显式 CTA', async ({ page }) => {
-    const account = await registerAccount(page, 'v1-advance');
-    const workspaceId = await createWorkspace(
-      page,
-      account.token,
-      'V1 自动推进验收',
+      'V1 职责分离验收',
       '我想学 Python，但不确定用来做什么，担心学不了',
     );
     await openSpacePage(page, '/workbench', workspaceId);
@@ -97,26 +30,67 @@ test.describe('V1 Stage 1 右侧面板', () => {
     const composer = page.getByLabel('给 AI 的消息');
     await expect(composer).toBeVisible({ timeout: 30_000 });
     await composer.fill('我想学 Python，但不确定用来做什么，担心学不了');
+    await expect(page.getByLabel('发送消息')).toBeEnabled();
     await page.getByLabel('发送消息').click();
-    await expect(page.getByTestId('v1-thesis')).toBeVisible({ timeout: 120_000 });
 
-    // 若有候选方向,先选一个(形成目标定义)。
-    const directions = page.locator('[data-testid="v1-directions"] button');
-    if ((await directions.count()) > 0) await directions.first().click();
-
-    const confirmBtn = page.getByRole('button', { name: '确认这个目标定义' });
-    await expect(confirmBtn).toBeVisible({ timeout: 120_000 });
-    await confirmBtn.click();
-
-    // 请求中显示“正在形成战略路径”。
-    await expect(page.getByText('正在形成战略路径…')).toBeVisible({ timeout: 8_000 });
-
-    // 关键:不会停在空白的 problem_structure —— 要么出战略草案,要么有显式 CTA。
+    // 有判断 / 有节点 / 有位置提示 —— 任一先到即可,不硬等某一个。
     await expect(
-      page.getByTestId('v1-strategy').or(page.getByRole('button', { name: '继续形成战略路径' })),
+      page.getByTestId('v1-thesis')
+        .or(page.locator('.canvas-question-node'))
+        .or(page.getByTestId('chat-action-notice')),
     ).toBeVisible({ timeout: 180_000 });
 
-    // 输入框仍然可用。
+    // 对话区**不允许**出现结构化交互。
+    await expect(page.locator('.floating-conversation [data-testid="current-interaction-card"]')).toHaveCount(0);
+    await expect(page.locator('.floating-conversation .cq-direction')).toHaveCount(0);
+    await expect(page.locator('.floating-conversation .v1-alignment-options')).toHaveCount(0);
+    await expect(page.locator('.floating-conversation [data-testid="cq-interaction"]')).toHaveCount(0);
+
+    // 位置提示只给文字 + 定位,没有选项 / 第二个输入框。
+    const notice = page.getByTestId('chat-action-notice');
+    if (await notice.count() > 0) {
+      await expect(notice).toContainText('节点');
+      await expect(notice.getByRole('button', { name: '定位到节点' })).toBeVisible();
+    }
+
+    // 任意时刻至多一个 active node。
+    const activeNodes = page.locator('.canvas-question-node.is-active');
+    expect(await activeNodes.count()).toBeLessThanOrEqual(1);
+
+    // 输入框始终可见、可继续自由输入。
+    await expect(composer).toBeVisible();
+    await composer.fill('我补充一点：我更想做能展示的小工具');
+    await expect(composer).toHaveValue('我补充一点：我更想做能展示的小工具');
+    await expect(page.getByLabel('发送消息')).toBeEnabled();
+  });
+
+  test('active 节点的结构化动作只在该节点里出现', async ({ page }) => {
+    const account = await registerAccount(page, 'v1-node-action');
+    const workspaceId = await createWorkspace(
+      page,
+      account.token,
+      'V1 节点动作验收',
+      '我想学 Python，但不确定用来做什么，担心学不了',
+    );
+    await openSpacePage(page, '/workbench', workspaceId);
+
+    const composer = page.getByLabel('给 AI 的消息');
+    await expect(composer).toBeVisible({ timeout: 30_000 });
+    await composer.fill('我想学 Python，但不确定用来做什么，担心学不了');
+    await page.getByLabel('发送消息').click();
+
+    const activeNode = page.locator('.canvas-question-node.is-active');
+    await expect(activeNode).toHaveCount(1, { timeout: 180_000 });
+
+    // 点开 active 节点后,结构化控件出现在节点里(而不是对话区)。
+    await activeNode.click();
+    const nodeControls = activeNode.locator('[data-testid="cq-interaction"], [data-testid="cq-flow-action"]');
+    if (await nodeControls.count() > 0) {
+      await expect(nodeControls.first()).toBeVisible();
+      await expect(page.locator('.floating-conversation [data-testid="cq-interaction"]')).toHaveCount(0);
+    }
+
+    // 对话区仍然可自由输入。
     await expect(composer).toBeVisible();
     await composer.fill('继续补充');
     await expect(composer).toHaveValue('继续补充');

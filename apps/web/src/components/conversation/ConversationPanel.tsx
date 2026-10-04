@@ -7,7 +7,6 @@ import { readConversationDraft, subscribeConversationDraft, writeConversationDra
 import { degradedHint, sourceLabel } from '@/lib/backend';
 import type { ResearchView } from '@/lib/backend';
 import { StrategySummaryCard } from './StrategySummaryCard';
-import { CurrentInteractionCard } from './CurrentInteractionCard';
 
 /**
  * 提案落下之后,卡片上显示的状态。
@@ -217,17 +216,17 @@ function IntakeChips({
  * 的战略方向……")不再渲染。右侧是对话与输入区,不是系统诊断面板;战略阶段也不该
  * 被"截止时间/每周投入"干扰。`replan` 入口只在**已确认战略 + 存在执行计划**时才出现。
  */
-export function ConversationPanel({ suppressed = false }: { suppressed?: boolean }) {
-  const { growth, selectedId, select, messages, remoteProposals, proposalErrors, inputChanged, deciding, confirmRemote, rejectRemote, replan, replanState, send, retry, sending, sendError, retryable, historyLoading, messagesTruncated, spaceId, questions, focusQuestion, openTrace, traceAvailability, reasoning, agentStatus, confirmV1Strategy, confirmV1Goal, continueV1Strategy, reopenV1Direction,
-  runV1PlanStep, selectV1Direction, requestChat, alignV1Strategy, alignV1Timeline, openFocusThinking, currentInteraction } = useDemo();
+export function ConversationPanel() {
+  const { growth, selectedId, select, messages, remoteProposals, proposalErrors, inputChanged, deciding, confirmRemote, rejectRemote, replan, replanState, send, retry, sending, sendError, retryable, historyLoading, messagesTruncated, spaceId, workspaceId, questions, focusQuestion, openTrace, traceAvailability, reasoning, agentStatus,
+  runV1PlanStep, currentInteraction } = useDemo();
   /*
    * 草稿住在组件外面(见 `features/growth/drafts.ts`)。
    *
-   * 这个面板在专注弹层与右侧 Dock 各挂载一次;用户在弹层里写了一半再关掉,那一份
-   * 会随弹层卸载。所以输入值按**空间**存在组件外面,两处挂载读同一份 —— 关掉弹层
-   * 之后那一句还留在 Dock 的输入框里,不用重新说一次。
+   * 键用**工作区 id**,不是 `spaceId` —— 后者在计划还没加载时会先落在哨兵值 `'goal'`
+   * 上,加载完之后才换成真实节点 id。用它做键的话,用户在加载那一瞬间打的字会
+   * 被当成另一份草稿丢掉(实测:发送按钮一直是灰的)。工作区 id 从一开始就是稳定的。
    */
-  const draftKey = spaceId;
+  const draftKey = workspaceId;
   const input = useSyncExternalStore(
     useCallback((onChange: () => void) => subscribeConversationDraft(draftKey, onChange), [draftKey]),
     () => readConversationDraft(draftKey),
@@ -235,14 +234,6 @@ export function ConversationPanel({ suppressed = false }: { suppressed?: boolean
   );
   const setInput = useCallback((value: string) => writeConversationDraft(draftKey, value), [draftKey]);
   const [showContexts, setShowContexts] = useState(false);
-  /** P2.2:候选方向选择中 —— 立刻禁用按钮,避免重复点击。 */
-  const [v1Selecting, setV1Selecting] = useState(false);
-  /** P2.3:确认目标定义后,面板显示“正在形成战略路径”。 */
-  const [v1GoalPending, setV1GoalPending] = useState(false);
-  /** 深度对话:战略理解确认 / 时间节奏对齐的进行态。 */
-  const [v1UnderstandingPending, setV1UnderstandingPending] = useState(false);
-  const [v1TimelineAlignPending, setV1TimelineAlignPending] = useState(false);
-  const [v1TimelineAdjust, setV1TimelineAdjust] = useState('');
   /** 输入框的 DOM 元素。高度按内容算(见下面那个 effect)。 */
   const composer = useRef<HTMLTextAreaElement>(null);
   const bottom = useRef<HTMLDivElement>(null);
@@ -304,18 +295,11 @@ export function ConversationPanel({ suppressed = false }: { suppressed?: boolean
   /** 规划智能体重构 V1(P2.1):当前战略判断 + 候选方向。**判断优先,不默认提问。** */
   const isV1 = Boolean(reasoning?.v1Stage);
   const v1Thesis = reasoning?.v1StrategicThesis ?? null;
-  const v1GoalConfirmable = reasoning?.v1Stage === 'goal_reframe' && Boolean(reasoning?.v1StrategicThesis);
   const v1CanReselect = reasoning?.v1CanReselectDirection ?? false;
-  const v1NextAction = reasoning?.v1NextAction ?? null;
   const v1Directions = reasoning?.v1CandidateDirections ?? [];
   const v1DecisionContext = reasoning?.v1DecisionContext ?? null;
   const v1ProvisionalRecommendation = reasoning?.v1ProvisionalRecommendation ?? null;
   const v1SelectedDirection = reasoning?.v1SelectedDirection ?? null;
-  /** 规划智能体重构 V1(P2):需要**在对话框回答**的问题(橙色),不是画布上的紫色问题节点。 */
-  const v1ConversationQuestion =
-    reasoning?.v1Stage && reasoning.v1Stage !== 'initial_thinking' && reasoning.v1Question
-      ? reasoning.v1Question
-      : null;
   /** 规划智能体重构 V1(P2):模型回合失败状态与战略路径草案。 */
   const v1StatusFailed = reasoning?.v1Status === 'failed';
   const v1Strategy = reasoning?.v1Strategy ?? null;
@@ -392,9 +376,53 @@ export function ConversationPanel({ suppressed = false }: { suppressed?: boolean
     setInput('');
   }
 
-  if (suppressed) {
-    return <aside className="conversation-panel is-suppressed" aria-hidden="true" />;
-  }
+  /*
+   * 当前唯一待处理动作在**画布节点**里的落点。
+   *
+   * 对话区只说明“这个决定放在哪个节点、确认后会怎样”,并给一个「定位到节点」。
+   * 选项、输入框与确认按钮一律不在对话区出现 —— 那是画布节点的职责。
+   */
+  const interactionQuestion = currentInteraction?.focusKey
+    ? questions.find(question => question.v1Key === currentInteraction.focusKey) ?? null
+    : null;
+  /*
+   * 没有 interaction 的流程动作(确认目标定义 / 继续形成战略路径)也把决定放在
+   * 画布节点里。对话区对它们同样只给一句位置说明 + 定位。
+   */
+  const goalConfirmable =
+    reasoning?.v1Stage === 'goal_reframe' && Boolean(reasoning?.v1StrategicThesis);
+  const continueStrategy = reasoning?.v1NextAction === 'continue_strategy';
+  const goalQuestion = questions.find(question => question.v1Key === 'goal_definition') ?? null;
+  const noticeQuestionId = interactionQuestion?.id
+    ?? (goalConfirmable ? goalQuestion?.id ?? null : null);
+  const noticeTitle = interactionQuestion?.v1Title
+    ?? (goalConfirmable
+      ? '目标定义'
+      : continueStrategy
+        ? '战略路径'
+        : currentInteraction?.kind === 'strategy_review'
+          ? '战略路径'
+          : currentInteraction?.kind === 'timeline_review'
+            ? '时间架构草案'
+            : currentInteraction?.kind === 'weekly_review'
+              ? '未来重规划'
+              : currentInteraction?.title) ?? '画布';
+  const noticeImpact = goalConfirmable
+    ? '进入问题结构'
+    : continueStrategy
+      ? '继续形成战略路径'
+      : currentInteraction?.kind === 'strategy_review'
+        ? '收束战略'
+        : currentInteraction?.kind === 'timeline_review'
+          ? '生成时间架构'
+          : currentInteraction?.kind === 'timeline_alignment'
+            ? '对齐时间节奏'
+            : currentInteraction?.kind === 'candidate_selection'
+              ? '确定起点'
+              : '继续推进';
+  const noticeVisible = Boolean(
+    isV1 && (currentInteraction?.status === 'active' || goalConfirmable || continueStrategy),
+  );
 
   return (
     <aside className="conversation-panel" aria-label="与 AI 一起思考">
@@ -432,6 +460,30 @@ export function ConversationPanel({ suppressed = false }: { suppressed?: boolean
           processing={primaryQuestion.status === 'answered' || primaryQuestion.status === 'investigating'}
           onLocate={() => focusQuestion(primaryQuestion.id)}
         />
+      )}
+
+      {/*
+       * **当前决定放在哪个画布节点。**
+       *
+       * 对话区只说明位置并给「定位到节点」——选项、输入框与确认按钮都在画布节点里
+       * (见 `CanvasQuestionNode`)。它固定在历史之上,不需要滚动就能看到。
+       */}
+      {noticeVisible && (
+        <div className="chat-action-notice" data-testid="chat-action-notice">
+          <p>
+            我把这个决定放在「{noticeTitle}」节点，确认后我会据此{noticeImpact}。
+          </p>
+          <button
+            type="button"
+            className="text-button"
+            onClick={() => {
+              if (noticeQuestionId) focusQuestion(noticeQuestionId);
+              else select(spaceId);
+            }}
+          >
+            定位到节点
+          </button>
+        </div>
       )}
 
       {/* 阶段 10:对话区首屏的**当前战略判断摘要**。低干扰、可展开,不遮住画布。 */}
@@ -679,14 +731,7 @@ export function ConversationPanel({ suppressed = false }: { suppressed?: boolean
          * 而且这一层在浮动面板里是 `pointer-events:none` 的兄弟区域,会吞掉点击。
          */}
         <div className="v1-stage1">
-          {isV1 && (
-            <div className="v1-focus-row">
-              <button type="button" className="text-button" data-testid="focus-thinking-open" onClick={openFocusThinking}>
-                专注思考
-              </button>
-            </div>
-          )}
-          {/* 深度对话:先给“战略理解”,再进入正式战略确认。 */}
+          {/* 深度对话:战略理解只读展示,确认动作在「目标定义」画布节点里。 */}
           {v1Understanding && !v1Understanding.confirmed && (
             <div className="v1-understanding" data-testid="v1-strategy-understanding">
               <span className="eyebrow">我据此形成的战略理解</span>
@@ -697,22 +742,12 @@ export function ConversationPanel({ suppressed = false }: { suppressed?: boolean
                 {v1Understanding.deferOrAvoid && <li><strong>暂缓项</strong>{v1Understanding.deferOrAvoid}</li>}
                 {v1Understanding.riskControl && <li><strong>风险</strong>{v1Understanding.riskControl}</li>}
               </ul>
-              <p className="v1-understanding-ask">请确认这份理解,或指出哪一句不对。</p>
-              <div className="v1-goal-confirm">
-                <button
-                  type="button"
-                  disabled={v1UnderstandingPending}
-                  onClick={() => { setV1UnderstandingPending(true); void alignV1Strategy().finally(() => setV1UnderstandingPending(false)); }}
-                >
-                  确认理解
-                </button>
-                <button type="button" className="text-button" onClick={openFocusThinking}>继续纠正</button>
-              </div>
+              <p className="v1-understanding-ask">这份理解可以在画布节点里确认，或指出哪一句不对。</p>
             </div>
           )}
-          {/* 深度对话:时间架构共创 —— 先对齐节奏,才生成粗时间线。 */}
-          {/* 交互收口:当前动作由输入框上方的固定卡承载,历史里不重复完整选项。 */}
-          {!currentInteraction && v1InTimelineAlignment && v1TimelineAlignment && (
+
+          {/* 深度对话:时间架构共创只读展示,节奏选择在画布节点里。 */}
+          {v1InTimelineAlignment && v1TimelineAlignment && (
             <div className="v1-alignment" data-testid="v1-timeline-alignment">
               <span className="eyebrow">时间架构共创</span>
               {v1TimelineAlignment.summary && <p className="v1-alignment-summary">{v1TimelineAlignment.summary}</p>}
@@ -731,49 +766,9 @@ export function ConversationPanel({ suppressed = false }: { suppressed?: boolean
                   ))}
                 </ul>
               )}
-              {v1TimelineAlignment.question && (
-                <p className="v1-alignment-question">{v1TimelineAlignment.question}</p>
-              )}
-              {Boolean(v1TimelineAlignment.options?.length) && (
-                <div className="v1-alignment-options">
-                  {v1TimelineAlignment.options!.map(option => (
-                    <button
-                      key={option}
-                      type="button"
-                      disabled={v1TimelineAlignPending}
-                      onClick={() => { setV1TimelineAlignPending(true); void alignV1Timeline({ answer: option }).finally(() => setV1TimelineAlignPending(false)); }}
-                    >
-                      {option}
-                    </button>
-                  ))}
-                </div>
-              )}
-              <div className="v1-goal-confirm">
-                <button
-                  type="button"
-                  disabled={v1TimelineAlignPending}
-                  onClick={() => { setV1TimelineAlignPending(true); void alignV1Timeline({ accepted: true }).finally(() => setV1TimelineAlignPending(false)); }}
-                >
-                  认可默认节奏
-                </button>
-              </div>
-              <div className="v1-adjust-row">
-                <input
-                  aria-label="调整时间节奏"
-                  value={v1TimelineAdjust}
-                  onChange={event => setV1TimelineAdjust(event.target.value)}
-                  placeholder="调整总周期 / 截止日期 / 不可用时间"
-                />
-                <button
-                  type="button"
-                  disabled={!v1TimelineAdjust.trim() || v1TimelineAlignPending}
-                  onClick={() => { const answer = v1TimelineAdjust.trim(); setV1TimelineAlignPending(true); void alignV1Timeline({ answer }).finally(() => { setV1TimelineAlignPending(false); setV1TimelineAdjust(''); }); }}
-                >
-                  提交调整
-                </button>
-              </div>
             </div>
           )}
+
           {v1StatusFailed && (
             <div className="v1-status" role="status">
               <span>{reasoning?.v1Error ?? '这次战略判断没有完成。'}</span>
@@ -782,6 +777,7 @@ export function ConversationPanel({ suppressed = false }: { suppressed?: boolean
               </button>
             </div>
           )}
+
           {/* R2:已产出待确认产物 -> 明确说“等待你确认”,不说“正在思考”。 */}
           {reasoning?.v1Status === 'awaiting_user_confirmation' &&
             reasoning?.v1Stage === 'coarse_timeline_review' && (
@@ -790,9 +786,11 @@ export function ConversationPanel({ suppressed = false }: { suppressed?: boolean
                 data-testid="v1-awaiting-confirmation"
                 role="status"
               >
-                <span>已生成粗时间架构草案，等待你确认。</span>
+                <span>已生成粗时间架构草案，等待你在画布节点里确认。</span>
               </div>
             )}
+
+          {/* 战略路径草案:只读。确认动作在画布节点里。 */}
           {v1Strategy && v1StrategyLines.length > 0 && (
             <div className="v1-strategy-card" data-testid="v1-strategy">
               <span className="eyebrow">战略路径草案</span>
@@ -807,27 +805,19 @@ export function ConversationPanel({ suppressed = false }: { suppressed?: boolean
               {v1Strategy.tradeoff && (
                 <p className="v1-strategy-tradeoff">取舍：{v1Strategy.tradeoff}</p>
               )}
-              {v1StrategyConfirmed ? (
-                <p className="v1-strategy-confirmed">战略逻辑已确认。</p>
-              ) : (
-                <div className="v1-strategy-actions">
-                  <button type="button" onClick={() => void confirmV1Strategy()}>
-                    确认这条战略逻辑，进入时间架构
-                  </button>
-                  <button type="button" className="text-button" onClick={requestChat}>
-                    继续调整战略
-                  </button>
-                </div>
-              )}
+              {v1StrategyConfirmed && <p className="v1-strategy-confirmed">战略逻辑已确认。</p>}
             </div>
           )}
+
           {v1Thesis && (
             <div className="v1-thesis" data-testid="v1-thesis">
               <span className="eyebrow">当前战略判断</span>
               <p>{v1Thesis}</p>
             </div>
           )}
-          {!currentInteraction && v1Directions.length > 0 && v1CanReselect && (
+
+          {/* 候选方向:只读展示“为什么现在要定”和 AI 的倾向,选择在画布节点里。 */}
+          {v1Directions.length > 0 && v1CanReselect && (
             <div className="v1-directions" data-testid="v1-directions">
               {v1DecisionContext && (
                 <p className="v1-decision-context" data-testid="v1-decision-context">
@@ -839,72 +829,17 @@ export function ConversationPanel({ suppressed = false }: { suppressed?: boolean
                   <strong>我的倾向：</strong>{v1ProvisionalRecommendation}
                 </p>
               )}
-              <span className="eyebrow">你可以选择、修改，或直接否定我</span>
-              {v1Directions.map(direction => (
-                <button
-                  key={direction.key}
-                  type="button"
-                  className={direction.key === v1SelectedDirection ? 'is-selected' : ''}
-                  disabled={v1Selecting}
-                  onClick={() => {
-                    setV1Selecting(true);
-                    void selectV1Direction(direction.key).finally(() => setV1Selecting(false));
-                  }}
-                >
-                  <strong>{direction.title}</strong>
-                  {direction.reason && <span>{direction.reason}</span>}
-                  {direction.impact && <span className="v1-option-impact">选择后果：{direction.impact}</span>}
-                  {direction.path && <em>{direction.path}</em>}
-                </button>
-              ))}
-              {v1Selecting && (
-                <p className="v1-directions-status" role="status">正在据此重新判断…</p>
-              )}
             </div>
           )}
-          {/* P2.3:候选起点一旦随目标确认收起,只显示“已采用的起点”,改方向需显式动作。 */}
+
+          {/* P2.3:候选起点一旦随目标确认收起,只显示“已采用的起点”。 */}
           {!v1CanReselect && v1SelectedDirection && (
             <div className="v1-direction-adopted" data-testid="v1-direction-adopted">
               <span className="eyebrow">已采用的起点</span>
               <p>{v1Directions.find(item => item.key === v1SelectedDirection)?.title ?? v1SelectedDirection}</p>
-              <button type="button" className="text-button" disabled={sending} onClick={() => void reopenV1Direction()}>
-                重新选择起点
-              </button>
             </div>
           )}
-          {!currentInteraction && v1GoalConfirmable && (
-            <div className="v1-goal-confirm">
-              <button
-                type="button"
-                disabled={sending || v1Selecting || v1GoalPending}
-                onClick={() => {
-                  setV1GoalPending(true);
-                  void confirmV1Goal().finally(() => setV1GoalPending(false));
-                }}
-              >
-                确认这个目标定义
-              </button>
-              <button
-                type="button"
-                className="text-button"
-                disabled={sending || v1Selecting || v1GoalPending}
-                onClick={requestChat}
-              >
-                继续修改理解
-              </button>
-            </div>
-          )}
-          {v1GoalPending && (
-            <p className="v1-directions-status" role="status">正在形成战略路径…</p>
-          )}
-          {/* P2.3:responseMode=none 时的显式下一步 CTA,避免 problem_structure 空转。 */}
-          {v1NextAction === 'continue_strategy' && (
-            <div className="v1-goal-confirm">
-              <button type="button" disabled={sending} onClick={() => void continueV1Strategy()}>
-                继续形成战略路径
-              </button>
-            </div>
-          )}
+
           {(reasoning?.v1Stage === 'weekly_execution' || reasoning?.v1Stage === 'replanning') && (
             <div className="v1-plan-actions">
               <button type="button" disabled={sending} onClick={() => void runV1PlanStep('weekly')}>
@@ -918,6 +853,7 @@ export function ConversationPanel({ suppressed = false }: { suppressed?: boolean
               </button>
             </div>
           )}
+
           {/* 深度对话:问题之前先给理解 / 会改变什么 / 例子。 */}
           {(v1UserUnderstanding || v1QuestionExample || reasoning?.v1DecisionContext) && (
             <div className="v1-understanding-hint" data-testid="v1-user-understanding">
@@ -926,19 +862,13 @@ export function ConversationPanel({ suppressed = false }: { suppressed?: boolean
               {v1QuestionExample && <p><strong>参考例子：</strong>{v1QuestionExample}</p>}
             </div>
           )}
-          {!currentInteraction && v1ConversationQuestion && (
-            <div className="v1-conversation-question" data-testid="v1-conversation-question" role="status">
-              <span className="v1-conversation-tag">对话中回答</span>
-              <p>{v1ConversationQuestion}</p>
-            </div>
-          )}
         </div>
+
 
         <div ref={bottom} />
       </div>
 
       <div className="composer-area">
-        <CurrentInteractionCard />
         {/* 问题入口已经移到标题栏下方那条紧凑状态条(见 `QuestionStatusBar`)。
             这里不再重复渲染问题正文 —— 完整回答只在画布的 Question Node 里完成。 */}
         {/* 「按执行情况调整」的入口。

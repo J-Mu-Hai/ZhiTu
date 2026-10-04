@@ -30,7 +30,7 @@ import { useDemo } from '@/features/growth/provider';
  */
 export function FloatingConversation({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [offset, setOffset] = useState({x:0,y:0});
-  const { sending, openTrace, traceAvailability, refreshTrace, focusThinking } = useDemo();
+  const { sending, openTrace, traceAvailability, refreshTrace } = useDemo();
   const traceView = traceAvailability.status === 'enabled' ? traceAvailability.view : null;
   const traceRunning = Boolean(traceView?.turns.some(turn => turn.status === 'running'));
   const traceFailed = Boolean(traceView?.turns.some(turn => turn.status === 'failed' || turn.status === 'timed_out'));
@@ -73,14 +73,7 @@ export function FloatingConversation({ open, onClose }: { open: boolean; onClose
         )}
         <button className="icon-button" aria-label="让对话内容消失" onClick={onClose}><X size={15}/></button></div>
       <AgentActivityBar/>
-      {/*
-       * 专注弹层打开时,Dock 里的对话面板收成空壳。
-       *
-       * **不卸载**,而是把完整内容关掉:面板的本地状态(草稿输入、展开的上下文)
-       * 因此留在这里,弹层关掉时原样回来。它不再渲染输入框 / CurrentInteractionCard /
-       * 消息 —— 那些只在当前唯一的主交互容器(弹层)里出现,同一件事不会说两遍。
-       */}
-      <ConversationPanel suppressed={focusThinking} />
+      <ConversationPanel/>
     </section>
   </div>;
 }
