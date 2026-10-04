@@ -137,8 +137,10 @@ test('单轴、键盘缩放/平移、卡片布局，以及改截止时间真的�
   await expect(canvas).toHaveAttribute('data-ready', 'true');
   await expect(page.getByTestId('today-marker')).toBeVisible();
 
-  // --- 阶段 9:只有一条中轴,没有尺度按钮 / 导航组 / overview / ruler ------------
-  await expect(page.getByRole('group', { name: '时间尺度' })).toHaveCount(0);
+  // --- 只有一条中轴:保留五档快捷尺度,但不再有导航组 / overview / ruler ----------
+  const scalePresets = page.getByRole('group', { name: '时间尺度' });
+  await expect(scalePresets).toHaveCount(1);
+  await expect(scalePresets.getByRole('button')).toHaveCount(5);
   await expect(page.getByRole('button', { name: '今天', exact: true })).toHaveCount(0);
   await expect(page.getByTestId('timeline-overview')).toHaveCount(0);
   await expect(page.getByRole('slider', { name: '概览视窗位置' })).toHaveCount(0);

@@ -1632,8 +1632,13 @@ async def _append_assistant(
 # =================================================================================
 # P3:粗时间架构(战略确认后才生成)
 # =================================================================================
-def _timeline_payload(phases) -> list[dict]:
-    """阶段草案 -> 前端时间轴的**唯一权威投影**(与 V0.1 同形)。"""
+def _timeline_payload(phases, *, include_dates: bool = True) -> list[dict]:
+    """阶段草案 -> 前端时间轴的**唯一权威投影**(与 V0.1 同形)。
+
+    `include_dates=False`(用户没有明确日期时)会把模型“估算出来的日期”清空,
+    只保留 `startWeek`/`endWeek` 作为规划真值 —— 前端用展示锚点自行推算预测日历,
+    但**不**把估算日期写进后端真值。
+    """
     payload: list[dict] = []
     for index, phase in enumerate(phases, start=1):
         payload.append(
@@ -1643,8 +1648,8 @@ def _timeline_payload(phases) -> list[dict]:
                 "kind": "phase",
                 "startWeek": phase.start_week,
                 "endWeek": phase.end_week,
-                "startDate": phase.start_date,
-                "endDate": phase.end_date,
+                "startDate": phase.start_date if include_dates else None,
+                "endDate": phase.end_date if include_dates else None,
                 "goal": phase.goal,
                 "deliverable": phase.deliverable,
                 "completionCriteria": phase.completion_criteria,
@@ -1912,7 +1917,7 @@ async def generate_coarse_timeline(
             )
         draft = repaired
 
-    session.v01_timeline = _timeline_payload(draft.phases)
+    session.v01_timeline = _timeline_payload(draft.phases, include_dates=not require_weeks)
     root_handle, handles = await _root_handle(db, ctx, root)
     actions: list[dict] = []
     for index, phase in enumerate(draft.phases, start=1):

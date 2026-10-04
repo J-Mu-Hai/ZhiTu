@@ -23,6 +23,7 @@
   flex-direction: column;
   min-width: 0;
   overflow: hidden;
+  position: relative;
   /* 让开工作台左上角的浮动视图切换条。删掉工具栏之后,交互画布从顶部开始 ——
      不留这条,顶边那一块会被浮动的 `.view-tabs` 接走,看起来像"拖不动"。 */
   padding-top: var(--float-clear, 68px);
@@ -395,3 +396,65 @@
   box-shadow: 0 8px 18px rgba(74, 105, 126, .08);
 }
 .inspector p { margin: 6px 0 0; font-size: 11px; color: #3f5a72; line-height: 1.5; }
+
+/* 统一的中央时间轴:五档快捷尺度。 */
+.presets {
+  position: absolute;
+  top: calc(var(--float-clear, 68px) + 8px);
+  right: 16px;
+  z-index: 4;
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid #d6e0e8;
+  border-radius: var(--radius-control, 9px);
+  background: rgba(255, 254, 250, .92);
+  backdrop-filter: blur(4px);
+}
+.presets button {
+  font-size: 11px;
+  padding: 4px 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #52667a;
+  cursor: pointer;
+}
+.presets button:hover { background: #eef4f8; }
+.presets .presetActive { background: #e3eef7; color: #24486a; font-weight: 500; }
+
+/* 预测起点选择器(只对相对周草案出现)。 */
+.draftAnchor {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #4b6479;
+}
+.draftAnchor input {
+  font-size: 11px;
+  padding: 3px 6px;
+  border: 1px solid #cbdae4;
+  border-radius: 6px;
+  background: #fffefa;
+  color: #3c5771;
+}
+
+/* 阶段轻量浮层:点卡片才出现,不占时间轴底部。 */
+.phasePopover {
+  position: absolute;
+  z-index: 6;
+  width: 264px;
+  max-height: 176px;
+  overflow: auto;
+  padding: 10px 12px;
+  border: 1px solid #cddbe4;
+  border-radius: var(--radius-control, 9px);
+  background: #fffefa;
+  box-shadow: 0 14px 30px rgba(74, 105, 126, .18);
+}
+.phasePopover header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.phasePopover header strong { font-size: 12px; color: #254a68; }
+.phasePopover header button { border: 0; background: transparent; color: #6b8198; cursor: pointer; }
+.phasePopover span { display: block; margin-top: 4px; font-size: 10px; color: #52718b; }
+.phasePopover p { margin: 6px 0 0; font-size: 11px; color: #3f5a72; line-height: 1.5; }

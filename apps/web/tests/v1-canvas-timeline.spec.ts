@@ -227,22 +227,41 @@ test('V1 粗时间架构走中央主轴,草案可确认,相对周刻度稀疏', 
   );
 
   await page.goto(`/workbench?workspace=${workspaceId}&view=timeline`);
-  await expect(page.getByTestId('timeline-view')).toBeVisible({ timeout: 20000 });
+  const view = page.getByTestId('timeline-view');
+  await expect(view).toBeVisible({ timeout: 20000 });
 
   // 不再是 V01TimelineAxis 小组件。
   await expect(page.getByTestId('v01-timeline')).toHaveCount(0);
-  // 草案状态条 + 正确的操作文案。
+  // 草案状态条:预测时间轴 + 起点可调整 + 正确的操作文案(压缩在顶部)。
   const bar = page.getByTestId('v1-timeline-draft-bar');
   await expect(bar).toBeVisible();
+  await expect(bar).toContainText('预测时间轴');
   await expect(bar).toContainText('等待你确认');
   await expect(bar.getByRole('button', { name: '确认时间架构' })).toBeVisible();
   await expect(bar.getByRole('button', { name: '调整时间架构' })).toBeVisible();
-  // 阶段卡片全部画在主轴上(不互相遮挡由布局引擎负责)。
+  await expect(bar.getByLabel('预测起点日期')).toBeVisible();
+  // 五档快捷尺度。
+  const presets = page.getByTestId('timeline-presets');
+  await expect(presets).toBeVisible();
+  await expect(presets.getByRole('button')).toHaveCount(5);
+  // 阶段卡片全部画在主轴上,且不出现“另有 N 项”。
   await expect(page.locator('[data-timeline-card]')).toHaveCount(3);
-  // 相对周刻度,且按缩放稀疏显示(不是 24 个标签挤一行)。
-  const weekLabels = page.locator('[data-testid="timeline-canvas"] span', { hasText: /^第 \d+ 周$/ });
-  expect(await weekLabels.count()).toBeGreaterThan(0);
-  expect(await weekLabels.count()).toBeLessThan(8);
+  await expect(page.getByText(/另有 \d+ 项/)).toHaveCount(0);
+  // 刻度随缩放稀疏显示(不把所有周标签塞一行)。
+  const ticks = page.getByTestId('timeline-tick');
+  expect(await ticks.count()).toBeGreaterThan(0);
+  expect(await ticks.count()).toBeLessThan(120);
+  // 切到“天”尺度后,刻度变成日期 + 星期。
+  await presets.getByRole('button', { name: '天' }).click();
+  await expect(view).toHaveAttribute('data-zoom', 'day');
+  // 底部不再有常驻阶段详情;点卡片才出现轻量浮层。
+  await expect(page.getByTestId('v1-timeline-detail')).toHaveCount(0);
+  await expect(page.getByTestId('v1-phase-detail')).toHaveCount(0);
+  await page.locator('[data-timeline-card]').first().click();
+  const popover = page.getByTestId('v1-phase-detail');
+  await expect(popover).toBeVisible();
+  await expect(popover).toContainText('目标：');
+  await expect(popover).toContainText('完成标准：');
   // 旧的顶部预览卡片不出现。
   await expect(page.getByTestId('strategy-architecture-preview')).toHaveCount(0);
 });

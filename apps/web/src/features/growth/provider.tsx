@@ -471,6 +471,9 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
   // 所以不塞进上面那个表。它的初始值以前算在 `TimelineView` 里,现在挪到这里 ——
   // 不然切一次视图回去,时间线就跳回今天。
   const [timelineViewport, setTimelineViewport] = useState(() => ({ start: dayNumber(todayInTimeZone()) - 25, density: 4 }));
+  // V1 相对周草案的**展示锚点**(默认今天)。它只是显示层的“预计开始日”,
+  // 不写进任何正式日期;用户可在时间线上调整。
+  const [timelineAnchor, setTimelineAnchor] = useState(() => todayInTimeZone());
 
   const [files, setFiles] = useState<FileAsset[]>([]);
   const objectUrls = useRef(new Set<string>());
@@ -2411,6 +2414,7 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     canvasKey,
     // 视口(用户偏好,不进版本账)。画布按层级存,时间线一份。
     viewports, setScopeViewport, timelineViewport, setTimelineViewport,
+    timelineAnchor, setTimelineAnchor,
     // 布局的撤销/重做。**`setPositions` 不再往外交了** —— 它是个不知道"之前在哪"的
     // 设置器,外面拿着它就能绕过历史写一次位置(表现是"撤销之后刷新,节点又跳回去")。
     // 现在外面只有两条路:`commitNodeMove`(一次拖拽 = 一步)和 `undoLayout`/`redoLayout`。

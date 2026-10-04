@@ -4,7 +4,7 @@ import { CalendarDays, CalendarClock, X, Flag, Circle, Target } from 'lucide-rea
 import { useRouter } from 'next/navigation';
 import type { GrowthNode } from '@/types/growth';
 import { useDemo } from '@/features/growth/provider';
-import { anchoredZoom, dateString, dateToX, dayNumber, draftTimelineItems, getVisibleItems, layoutItems, timelineItems, timelineTicks, unscheduledNodes, weekTicks, zoomLevelFor, todayInTimeZone, type TimelineItem } from '@/features/growth/timeline';
+import { anchoredZoom, dateString, dateToX, dayNumber, draftTimelineItems, getVisibleItems, layoutItems, timelineItems, timelineTicks, unscheduledNodes, zoomLevelFor, zoomLabels, zoomPresets, todayInTimeZone, type TimelineItem, type ZoomLevel } from '@/features/growth/timeline';
 import { StrategyArchitecturePreview } from './StrategyArchitecturePreview';
 import { V01TimelineAxis } from './V01TimelineAxis';
 import styles from './TimelineView.module.css';
@@ -70,12 +70,11 @@ type Gesture = { x: number; start: number };
 /**
  * 成长时间线(阶段 9:中央唯一时间轴)。
  *
- * ## 这一版删掉了什么、为什么
+ * ## 这一版的尺度控制
  *
- * 上一版有四组"第二套时间表达":左上尺度按钮、右上导航/缩放控制组、顶部独立 ruler、
- * 底部 overview 蓝色覆盖条。它们的共同问题是**同一条时间被画了两遍**,而且与工作台
- * 暖白主题不统一。这一版只留画布中央一条主轴,年/月/周刻度、今天标记、任务锚点
- * 全部围绕它排布。
+ * 画布中央只有一条主轴,年/季/月/周/天刻度按 density 自动切换。**五档快捷尺度**
+ * (年/季度/月/周/天)保留为一组轻量按钮 —— V1 粗时间线必须在同一条轴上自由缩放;
+ * 但不再有右上导航/缩放控制组、顶部独立 ruler、底部 overview。
  *
  * ## 删控件 ≠ 删能力
  *
@@ -85,7 +84,7 @@ type Gesture = { x: number; start: number };
  * 说一次,不再用一条常驻说明占空间。
  */
 export function TimelineView() {
-  const { growth, selectedId, select, apply, updateNode, spaceId, workspaceId, isRealSpace, planError, timelineViewport: viewport, setTimelineViewport: setViewport, reasoning, confirmRemote, rejectRemote, deciding } = useDemo();
+  const { growth, selectedId, select, apply, updateNode, spaceId, workspaceId, isRealSpace, planError, timelineViewport: viewport, setTimelineViewport: setViewport, timelineAnchor, setTimelineAnchor, reasoning, confirmRemote, rejectRemote, deciding } = useDemo();
   const router = useRouter();
   // 每次渲染重新算一次。它只在跨过午夜时才会变,而这个组件本来就会因为别的原因
   // 重渲染很多次 —— 为它加一个定时器是没必要的复杂度。
@@ -107,17 +106,22 @@ export function TimelineView() {
   const level = zoomLevelFor(density), end = start + size.width / density;
   // **中央唯一主轴**:卡片从中轴上下错开,引线连到轴上。
   const axisY = Math.max(150, size.height * .5);
-  const layers = size.height >= 600 ? 2 : 1;
   const cardWidth = Math.min(164, Math.max(126, size.width * .23));
   // ---- V1 粗时间架构:走**同一条中央主轴**,不再另起一个小组件 ----
   // V0.1(`v1Stage` 为空)仍保留原来的 V01TimelineAxis,避免既有时间线回归。
-  const v01Items = reasoning?.v01Timeline ?? [];
+  const v01Items = useMemo(() => reasoning?.v01Timeline ?? [], [reasoning?.v01Timeline]);
   const v1DraftMode = Boolean(reasoning?.v1Stage) && v01Items.length > 0;
+  // 展示锚点:相对周草案的“预计开始日”。用户没给日期时用它推算预测日历,
+  // **不**写进后端(后端仍是 startWeek/endWeek 真值)。
+  const anchorDay = dayNumber(timelineAnchor);
   const draft = useMemo(
-    () => (v1DraftMode ? draftTimelineItems(v01Items, today) : null),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [v1DraftMode, v01Items],
+    () => (v1DraftMode ? draftTimelineItems(v01Items, anchorDay) : null),
+    [v1DraftMode, v01Items, anchorDay],
   );
+  // 草案阶段全部铺开:按阶段数增加轨道,而不是把卡片藏进“另有 N 项”。
+  const layers = draft
+    ? Math.max(2, Math.ceil(v01Items.length / 2) + 1)
+    : size.height >= 600 ? 2 : 1;
   const draftIsPending = v1DraftMode && v01Items.some(item => item.status === 'draft');
   const all = useMemo(
     () => (draft ? draft.items : timelineItems(growth, spaceId)),
@@ -136,10 +140,12 @@ export function TimelineView() {
   if (selectedSource && !displayItems.some(i => i.node.id === effectiveSelectedId)) displayItems.push(selectedSource);
   const { placed, hidden } = layoutItems(displayItems, start, density, size.width, effectiveSelectedId, cardWidth, layers);
   const relativeAxis = Boolean(draft && draft.mode === 'relative');
-  const ticks = relativeAxis ? weekTicks(today, start, end, density) : timelineTicks(start, end, level);
+  // 预测日历轴与正式时间线共用同一套刻度:年/季/月/周/天随 density 自动切换。
+  const ticks = timelineTicks(start, end, level);
   const firstYear = new Date(start * 86400000).getUTCFullYear();
-  const years = relativeAxis ? [] : Array.from({ length: new Date(end * 86400000).getUTCFullYear() - firstYear + 1 }, (_, i) => firstYear + i);
+  const years = Array.from({ length: new Date(end * 86400000).getUTCFullYear() - firstYear + 1 }, (_, i) => firstYear + i);
   const draftSelected = draft ? v01Items.find(item => item.id === draftSelectedId) ?? null : null;
+  const selectedPlaced = draft ? placed.find(entry => entry.item.node.id === effectiveSelectedId) ?? null : null;
   const x = (day: number) => dateToX(day, start, density);
   const selected = selectedId ? growth.nodes[selectedId] : null;
 
@@ -164,6 +170,19 @@ export function TimelineView() {
     element.addEventListener('wheel', wheel, { passive: false });
     return () => element.removeEventListener('wheel', wheel);
   }, [setViewport]);
+  // 进入粗时间线时**聚焦全部阶段一次**,但不锁死后续缩放/平移。
+  const fittedDraftRef = useRef<TimelineItem[] | null>(null);
+  useEffect(() => {
+    if (!draft || !measured || size.width <= 0) return;
+    if (fittedDraftRef.current === draft.items) return;
+    fittedDraftRef.current = draft.items;
+    const first = Math.min(...draft.items.map(item => item.start));
+    const last = Math.max(...draft.items.map(item => item.end));
+    const span = Math.max(7, last - first + 14);
+    const nextDensity = Math.max(.25, Math.min(160, (size.width - 140) / span));
+    setViewport({ start: first - 20 / nextDensity, density: nextDensity });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft, measured, size.width]);
 
   function zoomTo(nextDensity: number) {
     const next = Math.max(.25, Math.min(160, nextDensity));
@@ -208,14 +227,30 @@ export function TimelineView() {
   return <div className={styles.view} data-testid="timeline-view" data-zoom={level}>
     {/* 交互说明只说一次,而且是给读屏的;**不再用常驻说明条占空间**。 */}
     <p id="timeline-help" className={styles.srOnly}>拖动空白平移，Ctrl 或 Command 加滚轮缩放，方向键平移，加号减号缩放，Home 回到今天。改具体安排请用「排期」。</p>
+    {/* 统一的中央时间轴:五档快捷尺度 + 滚轮/触控板缩放 + 拖拽平移。 */}
+    <div className={styles.presets} data-testid="timeline-presets" role="group" aria-label="时间尺度">
+      {(Object.keys(zoomPresets) as ZoomLevel[]).map(preset => (
+        <button key={preset} type="button" className={level === preset ? styles.presetActive : ''} aria-pressed={level === preset} onClick={() => zoomTo(zoomPresets[preset])}>
+          {zoomLabels[preset]}
+        </button>
+      ))}
+    </div>
     {/* R2:V1 粗时间架构草案走主轴;顶部只留一条状态 + 操作,不再另摆一块预览。 */}
     {draft && (
       <div className={styles.draftBar} data-testid="v1-timeline-draft-bar" data-draft={draftIsPending ? 'true' : 'false'}>
         <span className={styles.draftStatus}>
           {draftIsPending
-            ? `已生成粗时间架构草案，等待你确认${relativeAxis ? '（相对周，日期待校准）' : ''}`
+            ? relativeAxis
+              ? `预测时间轴，以 ${timelineAnchor} 为起点，可调整 · 相对周草案，等待你确认`
+              : '已生成粗时间架构草案，等待你确认'
             : '时间架构已确认'}
         </span>
+        {relativeAxis && (
+          <label className={styles.draftAnchor}>
+            起点
+            <input type="date" value={timelineAnchor} aria-label="预测起点日期" onChange={event => setTimelineAnchor(event.target.value)} />
+          </label>
+        )}
         {draftIsPending && reasoning?.v01TimelineProposalId && (
           <div className={styles.draftActions}>
             <button type="button" className={styles.draftConfirm} disabled={deciding} onClick={() => { void confirmRemote(reasoning.v01TimelineProposalId as string); }}>
@@ -240,17 +275,17 @@ export function TimelineView() {
       onPointerMove={move} onPointerUp={finish} onPointerCancel={finish}
       onKeyDown={e => { if (e.target !== e.currentTarget) return; if (['ArrowLeft', 'ArrowRight', '+', '=', '-', 'Home'].includes(e.key)) e.preventDefault(); if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') setViewport(v => ({ ...v, start: v.start + (e.key === 'ArrowLeft' ? -1 : 1) * size.width / density * .2 })); if (e.key === '+' || e.key === '=') zoomTo(density * 1.5); if (e.key === '-') zoomTo(density / 1.5); if (e.key === 'Home') setViewport(v => ({ ...v, start: today - size.width / density * .28 })); }}>
       {/* 唯一的时间轴。年份、刻度、今天、任务锚点都围绕它。 */}
-      <div className={styles.axis} style={{ top: axisY }}/>{!relativeAxis && <div className={styles.past} style={{ top: axisY, width: Math.max(0, Math.min(size.width, x(today))) }}/>}<span className={styles.axisEnd} style={{ top: axisY }}>›</span>
+      <div className={styles.axis} style={{ top: axisY }}/><div className={styles.past} style={{ top: axisY, width: Math.max(0, Math.min(size.width, x(today))) }}/><span className={styles.axisEnd} style={{ top: axisY }}>›</span>
       {years.map(year => <span key={year} className={styles.year} style={{ left: Math.max(18, x(dayNumber(`${year}-01-01`)) + 6), top: axisY - 24 }}>{year}</span>)}
-      {ticks.map(t => <div key={t.day} className={`${styles.tick} ${t.major ? styles.majorTick : ''}`} style={{ left: x(t.day), top: axisY }}>{t.major && <span className={styles.tickLabel}>{t.label}</span>}</div>)}
-      {!relativeAxis && x(today) >= 0 && x(today) <= size.width && <div className={styles.today} style={{ left: x(today), top: 6, bottom: 6 }} data-testid="today-marker"><span className={styles.todayLabel}>{shortDate(today)}<strong>今天</strong></span><span className={styles.todayDot} style={{ top: axisY - 9 }}/></div>}
+      {ticks.map(t => <div key={t.day} data-testid="timeline-tick" data-major={t.major ? 'true' : 'false'} className={`${styles.tick} ${t.major ? styles.majorTick : ''}`} style={{ left: x(t.day), top: axisY }}>{t.major && <span className={styles.tickLabel}>{t.label}</span>}</div>)}
+      {x(today) >= 0 && x(today) <= size.width && <div className={styles.today} style={{ left: x(today), top: 6, bottom: 6 }} data-testid="today-marker"><span className={styles.todayLabel}>{shortDate(today)}<strong>今天</strong></span><span className={styles.todayDot} style={{ top: axisY - 9 }}/></div>}
       {placed.map(({ item, x: anchorX, left, lane, rangeLane }) => {
         const id = item.node.id, upper = lane % 2 === 0;
         const draftSource = draft ? v01Items.find(entry => entry.id === id) ?? null : null;
         const cardRange = draftSource
           ? draftSource.startDate && draftSource.endDate
             ? `${shortDate(dayNumber(draftSource.startDate))} — ${shortDate(dayNumber(draftSource.endDate))}`
-            : `第 ${draftSource.startWeek ?? '?'}–${draftSource.endWeek ?? draftSource.startWeek ?? '?'} 周`
+            : `${shortDate(item.start)} — ${shortDate(item.end)}`
           : rangeLabel(item);
         const cardSub = draftSource
           ? `${draftSource.deliverable || draftSource.goal || ''}${draftSource.status === 'draft' ? ' · 待确认' : ''}`
@@ -270,8 +305,9 @@ export function TimelineView() {
           {(hovered === id || effectiveSelectedId === id) && item.start >= start && !draft && <div className={styles.hoverDate} style={{ left: anchorX, top: axisY - 21 }}><span>{shortDate(item.start)}</span></div>}
         </div>;
       })}
-      {hidden.length > 0 && <button className={styles.cluster} style={{ left: size.width / 2, top: axisY + 19 }} aria-expanded={clusterOpen} onClick={() => setClusterOpen(!clusterOpen)}>另有 {hidden.length} 项 · 展开</button>}
-      {clusterOpen && hidden.length > 0 && <div className={styles.clusterPanel} data-cluster-panel onPointerDown={e => e.stopPropagation()}><header>同一时段的其他安排<button aria-label="关闭其他安排" onClick={() => setClusterOpen(false)}><X size={14}/></button></header>{hidden.map(item => <button key={item.node.id} onClick={() => reveal(item)}>{item.node.title}<small>{dateString(item.start)} — {dateString(item.end)}</small></button>)}</div>}
+      {/* 草案阶段不允许被折进“另有 N 项”:3–6 个阶段必须全部在轴上可见。 */}
+      {!draft && hidden.length > 0 && <button className={styles.cluster} style={{ left: size.width / 2, top: axisY + 19 }} aria-expanded={clusterOpen} onClick={() => setClusterOpen(!clusterOpen)}>另有 {hidden.length} 项 · 展开</button>}
+      {!draft && clusterOpen && hidden.length > 0 && <div className={styles.clusterPanel} data-cluster-panel onPointerDown={e => e.stopPropagation()}><header>同一时段的其他安排<button aria-label="关闭其他安排" onClick={() => setClusterOpen(false)}><X size={14}/></button></header>{hidden.map(item => <button key={item.node.id} onClick={() => reveal(item)}>{item.node.title}<small>{dateString(item.start)} — {dateString(item.end)}</small></button>)}</div>}
       {!placed.length && <p className={`${styles.empty} ${unscheduled.length ? styles.emptyWithNotice : ''}`}>这段时间暂无{level === 'day' ? '执行事项' : '安排'}，可以平移查看其他时间。</p>}
       {/*
        * 画不出来的节点。**必须能发现,但不能占一整条底部横幅。**
@@ -294,6 +330,39 @@ export function TimelineView() {
           )}
         </div>
       )}
+      {/* 点阶段 → 轻量浮层(不再占时间轴底部一整块)。 */}
+      {draft && draftSelected && selectedPlaced && (
+        <div
+          className={styles.phasePopover}
+          data-testid="v1-phase-detail"
+          style={{
+            left: Math.max(8, Math.min(Math.max(8, size.width - 272), selectedPlaced.left - 40)),
+            top: Math.max(8, Math.min(size.height - 190, (selectedPlaced.lane % 2 === 0
+              ? axisY - 108 - Math.floor(selectedPlaced.lane / 2) * 86
+              : axisY + 40 + Math.floor(selectedPlaced.lane / 2) * 86) + 80)),
+          }}
+          onPointerDown={event => event.stopPropagation()}
+        >
+          <header>
+            <strong>{draftSelected.title}</strong>
+            <button type="button" aria-label="关闭阶段详情" onClick={() => setDraftSelectedId(null)}><X size={13} /></button>
+          </header>
+          <span>
+            {draftSelected.startDate && draftSelected.endDate
+              ? `${draftSelected.startDate} → ${draftSelected.endDate}`
+              : `${shortDate(anchorDay + ((draftSelected.startWeek ?? 1) - 1) * 7)} — ${shortDate(anchorDay + (draftSelected.endWeek ?? draftSelected.startWeek ?? 1) * 7)} · 第 ${draftSelected.startWeek ?? '?'}–${draftSelected.endWeek ?? draftSelected.startWeek ?? '?'} 周（预测）`}
+          </span>
+          {draftSelected.goal && <p>目标：{draftSelected.goal}</p>}
+          {draftSelected.deliverable && <p>成果：{draftSelected.deliverable}</p>}
+          {draftSelected.completionCriteria && <p>完成标准：{draftSelected.completionCriteria}</p>}
+          {(draftSelected as { dependsOn?: string }).dependsOn && (
+            <p>依赖：{(draftSelected as { dependsOn?: string }).dependsOn}</p>
+          )}
+          {reasoning?.v1Strategy?.riskControl && (
+            <p>风险控制：{reasoning.v1Strategy.riskControl}</p>
+          )}
+        </div>
+      )}
     </div>
     {!draft && selectedSource && <div className={styles.inspector} data-testid="date-inspector">
       {/* 截止日说的是"截止 2026-10-23",不是一个区间。印成 `2026-10-23 → 2026-10-23`
@@ -307,27 +376,5 @@ export function TimelineView() {
       {editingDeadline && selected && isDeadlinePoint(selectedSource) && <form className={styles.editor} onSubmit={e => { e.preventDefault(); if (!deadlineInput) return; updateNode(selected.id, { deadline: deadlineInput }); setEditingDeadline(false); }}><label>截止<input aria-label="截止日期" type="date" required value={deadlineInput} onChange={e => setDeadlineInput(e.target.value)}/></label><button type="submit" disabled={!deadlineInput}>应用</button><button type="button" aria-label="取消编辑" onClick={() => setEditingDeadline(false)}><X size={15}/></button></form>}
       {editing && selected && <form className={styles.editor} onSubmit={e => { e.preventDefault(); if (startInput && endInput >= startInput) { apply({ type: 'UPDATE_TIME', nodeId: selected.id, startDate: startInput, endDate: endInput }); setEditing(false); } }}><label>开始<input aria-label="开始日期" type="date" required value={startInput} onChange={e => setStartInput(e.target.value)}/></label><label>结束<input aria-label="结束日期" type="date" min={startInput} required value={endInput} onChange={e => setEndInput(e.target.value)}/></label><button type="submit" disabled={!startInput || !endInput || endInput < startInput}>应用</button><button type="button" aria-label="取消编辑" onClick={() => setEditing(false)}><X size={15}/></button></form>}
     </div>}
-    {/* R2:点阶段卡片 -> 右侧显示完整的目标 / 成果 / 完成标准 / 依赖与风险。 */}
-    {draft && draftSelected && (
-      <div className={styles.inspector} data-testid="v1-timeline-detail">
-        <div>
-          <strong>{draftSelected.title}</strong>
-          <span>
-            {draftSelected.startDate && draftSelected.endDate
-              ? `${draftSelected.startDate} → ${draftSelected.endDate}`
-              : `第 ${draftSelected.startWeek ?? '?'}–${draftSelected.endWeek ?? draftSelected.startWeek ?? '?'} 周`}
-          </span>
-        </div>
-        {draftSelected.goal && <p>目标：{draftSelected.goal}</p>}
-        {draftSelected.deliverable && <p>成果：{draftSelected.deliverable}</p>}
-        {draftSelected.completionCriteria && <p>完成标准：{draftSelected.completionCriteria}</p>}
-        {(draftSelected as { dependsOn?: string }).dependsOn && (
-          <p>依赖：{(draftSelected as { dependsOn?: string }).dependsOn}</p>
-        )}
-        {reasoning?.v1Strategy?.riskControl && (
-          <p>风险控制：{reasoning.v1Strategy.riskControl}</p>
-        )}
-      </div>
-    )}
   </div>;
 }
