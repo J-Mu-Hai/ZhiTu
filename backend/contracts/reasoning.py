@@ -214,8 +214,9 @@ class GoalReasoningView(ApiModel):
     v1_strategic_thesis: str | None = None
     #: P2.1:用户无法回答时 AI 给出的候选方向(最多 3 个)。R2 起每项带 `impact`。
     v1_candidate_directions: list[dict] | None = None
-    #: **当前唯一待处理动作**(不是普通聊天消息):id/nonce/kind/priority/title/
-    #: context/whyNow/prompt/options/recommendedOption/focusKey/status/presentation。
+    #: **当前唯一待处理动作**(不是普通聊天消息):id/nonce/kind/priority/title/context/
+    #: whyNow/prompt/options/recommendedOption/focusKey/status/presentation/answerChannel。
+    #: `answerChannel` = `conversation`(在对话里自由回答)或 `canvas_node`(在画布节点里确认)。
     v1_current_interaction: dict | None = None
     #: 深度对话:对用户已说内容的**具体理解**(问题之前必须先给)。
     v1_user_understanding: str | None = None

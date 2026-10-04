@@ -152,9 +152,43 @@ test.beforeAll(async ({ request }) => {
   await assertBackendRunning(request);
 });
 
-test('当前 interaction 只在画布节点里,对话区只有位置提示', async ({ page }) => {
-  const { token } = await registerAccount(page, 'v1-current-interaction');
-  const workspaceId = await createWorkspace(page, token, '当前行动固定', '我想学 Python 用于自动化');
+test('三阶段边:根 flow 节点直接分出 think / plan / do', async ({ page }) => {
+  const { token } = await registerAccount(page, 'v1-phase-edges');
+  const workspaceId = await createWorkspace(page, token, '三阶段边', '我想学 Python 用于自动化');
+  const rootId = (await getPlan(page, token, workspaceId)).nodes.find(node => node.parentId === null)!.id;
+  await installMock(
+    page,
+    baseView(workspaceId, rootId, {
+      v1Stage: 'strategy_draft',
+      v1VisibleAnalysisKeys: ['true_intent', 'key_conflict', 'goal_definition'],
+      v1Dimensions: [
+        dimension('true_intent', '真实意图', '想要能展示的成果。', true, true),
+        dimension('key_conflict', '关键矛盾', '目标太大、反馈太慢。', true),
+        dimension('goal_definition', '目标定义', '做出可展示的小工具。', true),
+      ],
+    }),
+    [],
+  );
+
+  await page.goto(`/workbench?workspace=${workspaceId}&view=path`);
+  await expect(page.locator('.v1-phase-node')).toHaveCount(3, { timeout: 20000 });
+  // 三条边必须**实际存在**于 ReactFlow edges 中,source 是真实根 flow 节点。
+  for (const key of ['think', 'plan', 'do'] as const) {
+    const edge = page.locator(`.react-flow__edge[data-id="v1phase-root:${key}"]`);
+    await expect(edge, `缺少根→${key}的边`).toHaveCount(1);
+    await expect(edge).toHaveAttribute('aria-label', `Edge from ${rootId} to v1phase:${key}`);
+    // 可见的实线:stroke 不是 transparent / 0。
+    const stroke = await edge.locator('.react-flow__edge-path').evaluate(el => getComputedStyle(el).stroke);
+    expect(stroke).not.toBe('none');
+    expect(stroke).not.toBe('rgba(0, 0, 0, 0)');
+  }
+  // 不允许再出现 think → plan → do 的视觉链条。
+  await expect(page.locator('.react-flow__edge[data-id^="v1phase-chain:"]')).toHaveCount(0);
+});
+
+test('conversation 型 interaction 只在右侧对话区,画布不建同一份控件', async ({ page }) => {
+  const { token } = await registerAccount(page, 'v1-conversation-channel');
+  const workspaceId = await createWorkspace(page, token, '对话渠道', '我想学 Python 用于自动化');
   const rootId = (await getPlan(page, token, workspaceId)).nodes.find(node => node.parentId === null)!.id;
 
   await installMock(
@@ -169,12 +203,13 @@ test('当前 interaction 只在画布节点里,对话区只有位置提示', asy
         title: '需要你回答一个关键问题',
         context: '你想要自动化省时间,但还没说清具体是哪件事。',
         whyNow: '它决定第一周先做什么。',
-        prompt: '你想自动化的具体是哪一件重复工作?',
+        prompt: '你真正担心的是什么?',
         options: [],
         recommendedOption: null,
         focusKey: 'true_intent',
         status: 'active',
         presentation: 'focus_modal',
+        answerChannel: 'conversation',
       },
       v1VisibleAnalysisKeys: ['true_intent', 'key_conflict', 'goal_definition'],
       v1Dimensions: [dimension('true_intent', '真实意图', '想省时间。', true, true)],
@@ -183,31 +218,68 @@ test('当前 interaction 只在画布节点里,对话区只有位置提示', asy
   );
 
   await page.goto(`/workbench?workspace=${workspaceId}&view=path`);
-  // ---- 真实 ReactFlow 边:根 flow 节点直接分出三阶段,不是串成一条链 ----
-  await expect(page.locator('.v1-phase-node')).toHaveCount(3, { timeout: 20000 });
-  for (const key of ['think', 'plan', 'do'] as const) {
-    const edge = page.locator(`.react-flow__edge[data-id="v1phase-root:${key}"]`);
-    await expect(edge, `缺少根→${key}的边`).toHaveCount(1);
-    // source 必须是**真实根 flow 节点**(rootId),不是猜的 spaceId。
-    await expect(edge).toHaveAttribute('aria-label', `Edge from ${rootId} to v1phase:${key}`);
-  }
-  // 不允许再出现 think → plan → do 的视觉链条。
-  await expect(page.locator('.react-flow__edge[data-id^="v1phase-chain:"]')).toHaveCount(0);
+  const chatQuestion = page.getByTestId('chat-conversation-question');
+  await expect(chatQuestion).toBeVisible({ timeout: 20000 });
+  await expect(chatQuestion).toContainText('在对话中回答');
+  await expect(chatQuestion).toContainText('你真正担心的是什么?');
+  // 对话区不给“定位到节点”,也没有结构化控件。
+  await expect(page.getByTestId('chat-action-notice')).toHaveCount(0);
+  await expect(page.locator('.floating-conversation .cq-direction')).toHaveCount(0);
+  // 画布上同一个问题**不**建 active 节点/控件。
+  await expect(page.locator('.canvas-question-node.is-active')).toHaveCount(0);
+  await expect(page.locator('[data-testid="v1interaction"]')).toHaveCount(0);
+  // 用户可以直接在输入框自由作答。
+  await page.getByLabel('给 AI 的消息').fill('我最担心的是坚持不下来');
+  await expect(page.getByLabel('发送消息')).toBeEnabled();
+});
 
-  // 对话区只有一句“决定放在哪个节点”的位置提示:没有固定交互卡、没有排队输入。
+test('canvas_node 型 interaction 只在画布节点,对话区只给定位', async ({ page }) => {
+  const { token } = await registerAccount(page, 'v1-canvas-channel');
+  const workspaceId = await createWorkspace(page, token, '画布渠道', '我想学 Python 用于自动化');
+  const rootId = (await getPlan(page, token, workspaceId)).nodes.find(node => node.parentId === null)!.id;
+
+  await installMock(
+    page,
+    baseView(workspaceId, rootId, {
+      v1Stage: 'goal_reframe',
+      v1CurrentInteraction: {
+        id: 'ci-candidate-1',
+        nonce: 'turn-1',
+        kind: 'candidate_selection',
+        priority: 'high',
+        title: '请选择一个起点',
+        context: '你想要自动化省时间。',
+        whyNow: '它决定第一周先做什么。',
+        prompt: '选一个候选方向。',
+        options: [
+          { key: 'tool', title: '做一个小工具', reason: '最快看到成果', impact: '先窄后宽' },
+          { key: 'system', title: '学一套体系', reason: '基础更牢', impact: '见效慢' },
+        ],
+        recommendedOption: 'tool',
+        focusKey: 'true_intent',
+        status: 'active',
+        presentation: 'focus_modal',
+        answerChannel: 'canvas_node',
+      },
+      v1VisibleAnalysisKeys: ['true_intent', 'key_conflict', 'goal_definition'],
+      v1Dimensions: [dimension('true_intent', '真实意图', '想省时间。', true, true)],
+    }),
+    [question(workspaceId, rootId, 'true_intent', '真实意图', '想省时间。')],
+  );
+
+  await page.goto(`/workbench?workspace=${workspaceId}&view=path`);
+  // 对话区:只有位置提示 + 定位,没有“在对话中回答”,没有选项。
   const notice = page.getByTestId('chat-action-notice');
   await expect(notice).toBeVisible({ timeout: 20000 });
   await expect(notice).toContainText('真实意图');
   await expect(notice.getByRole('button', { name: '定位到节点' })).toBeVisible();
-  await expect(page.locator('[data-testid="current-interaction-card"]')).toHaveCount(0);
-  await expect(page.getByTestId('focus-thinking')).toHaveCount(0);
+  await expect(page.getByTestId('chat-conversation-question')).toHaveCount(0);
   await expect(page.locator('.floating-conversation .cq-direction')).toHaveCount(0);
-
-  // 结构化回答只在画布节点里:点开 active 节点才有输入。
+  // 画布:唯一 active 节点,点开后才有候选方向。
   const activeNode = page.locator('.canvas-question-node.is-active');
   await expect(activeNode).toHaveCount(1);
   await activeNode.click();
-  await expect(activeNode.getByLabel('补充你的回答')).toBeVisible();
+  await expect(activeNode.locator('.cq-direction')).toHaveCount(2);
 });
 
 test('时间架构共创:先对齐节奏,认可后才生成时间线', async ({ page }) => {

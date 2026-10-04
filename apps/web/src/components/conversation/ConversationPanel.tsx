@@ -5,7 +5,7 @@ import { ArrowUp, Plus, X, CornerDownLeft, AlertCircle, RotateCcw, RefreshCw } f
 import { useDemo } from '@/features/growth/provider';
 import { readConversationDraft, subscribeConversationDraft, writeConversationDraft } from '@/features/growth/drafts';
 import { V1_READY_PROMPT } from '@/features/growth/v1Workflow';
-import { V1_CORE_GOAL_KEYS } from '@/features/growth/v1Analysis';
+import { V1_CORE_GOAL_KEYS, v1AnswerChannel } from '@/features/growth/v1Analysis';
 import { degradedHint, sourceLabel } from '@/lib/backend';
 import type { ResearchView } from '@/lib/backend';
 
@@ -362,15 +362,6 @@ export function ConversationPanel() {
   }
 
   /*
-   * 当前唯一待处理动作在**画布节点**里的落点。
-   *
-   * 对话区只说明“这个决定放在哪个节点、确认后会怎样”,并给一个「定位到节点」。
-   * 选项、输入框与确认按钮一律不在对话区出现 —— 那是画布节点的职责。
-   */
-  const interactionQuestion = currentInteraction?.focusKey && V1_CORE_GOAL_KEYS.includes(currentInteraction.focusKey)
-    ? questions.find(question => question.v1Key === currentInteraction.focusKey) ?? null
-    : null;
-  /*
    * 没有 interaction 的流程动作(确认目标定义 / 继续形成战略路径)也把决定放在
    * 画布节点里。对话区对它们同样只给一句位置说明 + 定位。
    */
@@ -379,51 +370,61 @@ export function ConversationPanel() {
   const continueStrategy = reasoning?.v1NextAction === 'continue_strategy';
   const activeInteraction = currentInteraction?.status === 'active' ? currentInteraction : null;
   /*
+   * **回答渠道分流**(服务端稳定字段):
+   * - `conversation`:自由叙述型问题,只在对话区以“在对话中回答”出现;
+   * - `canvas_node`:会改变流程状态的决策,对话区只说位置并给「定位到节点」。
+   * 同一个问题绝不会两边同时出现。
+   */
+  const activeChannel = activeInteraction ? v1AnswerChannel(activeInteraction) : null;
+  const conversationInteraction = activeInteraction && activeChannel === 'conversation' ? activeInteraction : null;
+  const canvasInteraction = activeInteraction && activeChannel === 'canvas_node' ? activeInteraction : null;
+  const canvasQuestion = canvasInteraction?.focusKey && V1_CORE_GOAL_KEYS.includes(canvasInteraction.focusKey)
+    ? questions.find(question => question.v1Key === canvasInteraction.focusKey) ?? null
+    : null;
+  /*
    * review 类动作绑在**阶段节点**上(战略 → 想清楚,时间 → 排出来,周回顾 → 做起来);
    * 问答类动作绑在对应的分析子节点上。对话区只给一个「定位到节点」。
    */
-  const reviewPhase: { key: 'think' | 'plan' | 'do'; title: string } | null = activeInteraction
-    ? activeInteraction.kind === 'strategy_review'
+  const reviewPhase: { key: 'think' | 'plan' | 'do'; title: string } | null = canvasInteraction
+    ? canvasInteraction.kind === 'strategy_review'
       ? { key: 'think', title: '想清楚' }
-      : activeInteraction.kind === 'timeline_alignment' || activeInteraction.kind === 'timeline_review'
+      : canvasInteraction.kind === 'timeline_alignment' || canvasInteraction.kind === 'timeline_review'
         ? { key: 'plan', title: '排出来' }
-        : activeInteraction.kind === 'weekly_review'
+        : canvasInteraction.kind === 'weekly_review'
           ? { key: 'do', title: '做起来' }
           : null
     : null;
-  /*
-   * 有 active interaction 时以它为准(阶段/子节点);没有时再看“确认目标 / 继续战略”
-   * 这类流程动作。**不能让 goalConfirmable 盖过交互本身** —— 否则一个
-   * `strategic_question` 会被写成“想清楚”。
-   */
-  const noticeTarget = activeInteraction
+  // 流程动作(确认目标 / 继续形成战略)只在**没有任何 active interaction** 时出现:
+  // 同一个时刻只有一个待办,不能和对话问题抢同一片区域。
+  const flowActionVisible = !activeInteraction && (goalConfirmable || continueStrategy);
+  const noticeTarget = canvasInteraction
     ? reviewPhase
       ? `v1phase:${reviewPhase.key}`
-      : interactionQuestion?.id ?? 'v1phase:think'
-    : goalConfirmable || continueStrategy
+      : canvasQuestion?.id ?? 'v1phase:think'
+    : flowActionVisible
       ? 'v1phase:think'
       : null;
-  const noticeTitle = activeInteraction
+  const noticeTitle = canvasInteraction
     ? reviewPhase
       ? reviewPhase.title
-      : interactionQuestion?.v1Title ?? activeInteraction.title
-    : goalConfirmable || continueStrategy
+      : canvasQuestion?.v1Title ?? canvasInteraction.title
+    : flowActionVisible
       ? '想清楚'
       : '画布';
-  const noticeImpact = activeInteraction?.kind === 'strategy_review'
+  const noticeImpact = canvasInteraction?.kind === 'strategy_review'
     ? '收束战略'
-    : activeInteraction?.kind === 'timeline_review'
+    : canvasInteraction?.kind === 'timeline_review'
       ? '生成时间架构'
-      : activeInteraction?.kind === 'timeline_alignment'
+      : canvasInteraction?.kind === 'timeline_alignment'
         ? '对齐时间节奏'
-        : activeInteraction?.kind === 'candidate_selection'
+        : canvasInteraction?.kind === 'candidate_selection'
           ? '确定起点'
           : goalConfirmable
             ? '进入问题结构'
             : continueStrategy
               ? '继续形成战略路径'
               : '继续推进';
-  const noticeVisible = Boolean(isV1 && (activeInteraction || goalConfirmable || continueStrategy));
+  const noticeVisible = Boolean(isV1 && (canvasInteraction || flowActionVisible));
 
   return (
     <aside className="conversation-panel" aria-label="与 AI 一起思考">
@@ -461,6 +462,22 @@ export function ConversationPanel() {
           processing={primaryQuestion.status === 'answered' || primaryQuestion.status === 'investigating'}
           onLocate={() => focusQuestion(primaryQuestion.id)}
         />
+      )}
+
+      {/*
+       * **在对话中回答**:自由叙述型问题只在对话区出现。
+       *
+       * 它**不**在画布上建同一份选项/输入框;用户直接用下面的输入框自由作答。
+       */}
+      {conversationInteraction && (
+        <div className="chat-conversation-question" data-testid="chat-conversation-question">
+          <span className="chat-conversation-tag">在对话中回答</span>
+          {conversationInteraction.context && (
+            <p className="chat-conversation-context">{conversationInteraction.context}</p>
+          )}
+          <p className="chat-conversation-prompt">{conversationInteraction.prompt}</p>
+          <p className="chat-conversation-hint">直接在下面的输入框里说就好，想到多少说多少。</p>
+        </div>
       )}
 
       {/*

@@ -48,7 +48,7 @@ import {
   isDescriptionExempt,
 } from '@/lib/codepoints';
 import { useDemo } from '@/features/growth/provider';
-import { V1_CORE_GOAL_KEYS, V1_LINKED_CORE, isLegacyV1GroupKey } from '@/features/growth/v1Analysis';
+import { V1_CORE_GOAL_KEYS, V1_LINKED_CORE, isLegacyV1GroupKey, v1AnswerChannel } from '@/features/growth/v1Analysis';
 import { v1Phases, type V1PhaseKey } from '@/features/growth/v1Workflow';
 import { useMobileLayout } from '@/lib/media';
 import type { GrowthEdge, GrowthNode, GrowthRelationType } from '@/types/growth';
@@ -1270,13 +1270,22 @@ function Canvas() {
      */
     const activeInteraction =
       currentInteraction && currentInteraction.status === 'active' ? currentInteraction : null;
-    const interactionPhaseKey: V1PhaseKey | null = !activeInteraction
+    /*
+     * **回答渠道分流**:只有 `canvas_node` 的 interaction 才落到画布节点/阶段。
+     * `conversation` 型(自由叙述问题,如“你真正担心什么”)只在右侧对话区回答,
+     * 绝不在画布上再建一份选项/输入控件。渠道用服务端稳定字段 `answerChannel`。
+     */
+    const canvasInteraction =
+      activeInteraction && v1AnswerChannel(activeInteraction) === 'canvas_node'
+        ? activeInteraction
+        : null;
+    const interactionPhaseKey: V1PhaseKey | null = !canvasInteraction
       ? null
-      : activeInteraction.kind === 'strategy_review'
+      : canvasInteraction.kind === 'strategy_review'
         ? 'think'
-        : activeInteraction.kind === 'timeline_alignment' || activeInteraction.kind === 'timeline_review'
+        : canvasInteraction.kind === 'timeline_alignment' || canvasInteraction.kind === 'timeline_review'
           ? 'plan'
-          : activeInteraction.kind === 'weekly_review'
+          : canvasInteraction.kind === 'weekly_review'
             ? 'do'
             : null;
     const phaseIds: Partial<Record<V1PhaseKey, string>> = {};
@@ -1360,8 +1369,8 @@ function Canvas() {
     const shownQuestions = baseShownQuestions;
     // active interaction 绑到**基石节点**:只有当 focusKey 本身就是基石键时才绑;
     // 内部维度(约束 / 风险等)不单独成卡,改由阶段子节点承接,避免把回答提交到错的 question id。
-    const questionBindsInteraction = Boolean(activeInteraction && interactionPhaseKey === null);
-    const activeFocusKey = activeInteraction?.focusKey ?? null;
+    const questionBindsInteraction = Boolean(canvasInteraction && interactionPhaseKey === null);
+    const activeFocusKey = canvasInteraction?.focusKey ?? null;
     const activeNodeKey = questionBindsInteraction && activeFocusKey && V1_CORE_GOAL_KEYS.includes(activeFocusKey)
       ? activeFocusKey
       : null;
@@ -1437,7 +1446,7 @@ function Canvas() {
           question: item,
           isPrimary: item.id === primaryQuestionId,
           isFocused: focusedQuestionId === item.id,
-          interaction: questionBindsInteraction && item.v1Key === activeNodeKey ? activeInteraction : null,
+          interaction: questionBindsInteraction && item.v1Key === activeNodeKey ? canvasInteraction : null,
           isActive: Boolean(questionBindsInteraction && activeNodeKey != null && item.v1Key === activeNodeKey),
           verticalAnchor: v1Space && isRootSpace,
           // 挂在这块基石上的内部维度(约束/风险等):不再单独成卡,作为“关联”显示。
@@ -1474,11 +1483,11 @@ function Canvas() {
         : !activeInteraction && continueStrategy
           ? { phaseKey: 'think' as const, title: '形成战略路径', prompt: '现有判断已经足以形成一条主线战略吗？', action: 'continue_strategy' as const }
           : !activeInteraction && (reasoning?.v1Stage === 'weekly_execution' || reasoning?.v1Stage === 'replanning')
-            ? { phaseKey: 'do' as const, title: '是否生成具体执行计划', prompt: '粗时间规划已经确认。要把当前阶段细化为本周任务和今日工作块吗？', action: 'generate_execution' as const }
+            ? { phaseKey: 'do' as const, title: '是否细化为具体执行计划？', prompt: '粗时间规划已经确认。要我把它细化为本周计划，再生成今天的工作块吗？', action: 'generate_execution' as const }
             : null;
       // review 类确认(战略 / 时间架构 / 周回顾)一定作为阶段子节点出现;
       // 问答类绑到对应分析问题,没有对应问题时退回「想清楚」阶段子节点。
-      const interactionStage = activeInteraction
+      const interactionStage = canvasInteraction
         ? interactionPhaseKey ?? (hasActiveQuestionNode ? null : 'think')
         : null;
 
@@ -1527,12 +1536,12 @@ function Canvas() {
         });
       });
 
-      const stageChild = activeInteraction && interactionStage
+      const stageChild = canvasInteraction && interactionStage
         ? {
             phaseKey: interactionStage,
-            title: activeInteraction.title || '需要共同确认的一点',
-            prompt: activeInteraction.prompt || '请确认这一项后继续。',
-            interaction: activeInteraction,
+            title: canvasInteraction.title || '需要共同确认的一点',
+            prompt: canvasInteraction.prompt || '请确认这一项后继续。',
+            interaction: canvasInteraction,
             action: null,
           }
         : pendingStageAction

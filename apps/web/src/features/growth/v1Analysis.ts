@@ -106,6 +106,20 @@ export function isLegacyV1GroupKey(key: string | null | undefined): boolean {
 }
 
 /**
+ * 当前 interaction 的**回答渠道**。服务端给了 `answerChannel` 就用它;
+ * 旧数据没有该字段时,按稳定的 `kind` 回退(`strategic_question` = 对话回答)。
+ */
+export function v1AnswerChannel(
+  interaction: { kind?: string | null; answerChannel?: string | null } | null | undefined,
+): 'conversation' | 'canvas_node' {
+  if (!interaction) return 'canvas_node';
+  if (interaction.answerChannel === 'conversation' || interaction.answerChannel === 'canvas_node') {
+    return interaction.answerChannel;
+  }
+  return interaction.kind === 'strategic_question' ? 'conversation' : 'canvas_node';
+}
+
+/**
  * 粗时间架构是否**完整到可以呈现/确认**。
  *
  * 只有每个阶段都有时间范围 + 目标 + 成果 + 完成标准时,才允许自动导航到时间线、

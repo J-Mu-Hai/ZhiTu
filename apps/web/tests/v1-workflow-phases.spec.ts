@@ -100,3 +100,24 @@ test('strategy confirmed: think done, plan unlocked and awaiting', async ({ page
   await expect(page.locator('.v1-phase-node.is-focused')).toHaveCount(1);
   await expect(page.locator('.v1-phase-node.is-focused')).toContainText('排出来');
 });
+
+test('粗时间线确认后:做起来阶段出现“是否细化为具体执行计划？”节点', async ({ page }) => {
+  const { token } = await registerAccount(page, 'v1-phase-do');
+  const workspaceId = await createWorkspace(page, token, '做起来', '我想学 Python 用于自动化');
+  const rootId = (await getPlan(page, token, workspaceId)).nodes.find(n => n.parentId === null)!.id;
+  await mock(page, baseView(workspaceId, rootId, {
+    v1Stage: 'weekly_execution',
+    v1Strategy: { mainLine: '先跑通最小闭环', confirmed: true },
+    v1VisibleAnalysisKeys: ['true_intent', 'key_conflict', 'goal_definition'],
+    v1Dimensions: dims,
+  }), []);
+  await page.goto(`/workbench?workspace=${workspaceId}&view=path`);
+  const phases = page.locator('.v1-phase-node');
+  await expect(phases).toHaveCount(3, { timeout: 20000 });
+  await expect(phases.nth(0)).toContainText('已完成');
+  await expect(phases.nth(2)).toContainText('讨论中');
+  // 做起来阶段下唯一的可操作节点。
+  await expect(page.locator('.v1-interaction-node')).toHaveCount(1);
+  await expect(page.getByTestId('v1-stage-question')).toContainText('是否细化为具体执行计划');
+  await expect(page.getByTestId('v1-stage-question')).toHaveAttribute('data-phase', 'do');
+});

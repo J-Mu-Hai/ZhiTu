@@ -1946,6 +1946,14 @@ export interface V1CurrentInteraction {
   focusKey: string | null;
   status: 'active' | 'answered' | 'confirmed' | 'dismissed';
   presentation: 'dock' | 'focus_modal';
+  /**
+   * **回答渠道**(服务端稳定字段,前端据此分流,不靠文案猜):
+   * - `conversation`:自由叙述型问题,只在对话区以“在对话中回答”出现;
+   * - `canvas_node`:会改变流程状态的决策,只在对应画布节点里确认。
+   *
+   * 旧数据可能没有这个字段 —— 读的地方用 `v1AnswerChannel()` 兼容回退。
+   */
+  answerChannel?: 'conversation' | 'canvas_node';
 }
 
 /** 深度对话:呈现给用户的“战略理解”。 */

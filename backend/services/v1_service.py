@@ -620,6 +620,9 @@ def current_interaction(session: GoalReasoningSession) -> dict | None:
         "recommendedOption": recommended,
         "focusKey": focus_key,
         "status": "active",
+        # **回答渠道**:自由叙述型问题在对话里回答;流程决策在画布节点里确认。
+        # 这是稳定字段,前端据此分流,**不靠文案猜**。新增字段不改状态机。
+        "answerChannel": "conversation" if kind == "strategic_question" else "canvas_node",
         # 高价值动作才居中专注;其余留 Dock(当前派生出的都是高价值动作)。
         "presentation": "focus_modal",
     }
