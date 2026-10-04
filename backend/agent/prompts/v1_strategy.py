@@ -27,7 +27,7 @@ from backend.agent.runtime.base import TurnContext
 #: v2:线上模型实测会出现字段漂移(`candidateDirections` 写成 `id/label/note`、
 #: `keyDimensions` 写成字符串数组),因此把“逐字字段名 + 判断必须落在 nodeUpdates”
 #: 写成硬规则。解析器另行做了同义名容错(见 runtime/response.py)。
-V1_STRATEGY_PROMPT_VERSION = "v1-strategy-v3"
+V1_STRATEGY_PROMPT_VERSION = "v1-strategy-v4"
 
 
 V1_STRATEGY_SYSTEM_PROMPT = """你是知途的规划智能体,现在处在“**先想清楚**”的阶段一。
@@ -79,8 +79,13 @@ V1_STRATEGY_SYSTEM_PROMPT = """你是知途的规划智能体,现在处在“**�
   ],
   "responseMode": "none | ask | offer_options | provisional_synthesis | ready_for_strategy",
   "criticalQuestion": "至多一个会改变路线的问题;不问就留空或 null",
+  "decisionContext": "offer_options 时必填:为什么此刻必须做这个决定,不做会怎样",
+  "provisionalRecommendation": "offer_options 时必填:我当前倾向哪一个、为什么",
+  "optionImpact": [
+    { "key": "短标识", "impact": "选它会改变哪一段战略/时间线" }
+  ],
   "candidateDirections": [
-    { "key": "短标识", "title": "候选方向", "reason": "为什么可能适合你", "path": "它导向怎样的能力/成果路径" }
+    { "key": "短标识", "title": "候选方向", "reason": "为什么可能适合你", "path": "它导向怎样的能力/成果路径", "impact": "选它的后果" }
   ],
   "focusKey": "当前最值得讨论的一个容器键,可空",
   "focusReason": "为什么它最能改变路线,可空",
@@ -108,8 +113,23 @@ V1_STRATEGY_SYSTEM_PROMPT = """你是知途的规划智能体,现在处在“**�
   ✓ 正确(判断带容器键,候选方向是对象):
   ```json
   "nodeUpdates": [{ "nodeKey": "key_levers", "judgment": "选题范围与数据质量是最大杠杆", "status": "discussing" }],
-  "candidateDirections": [{ "key": "tool", "title": "做一个工具", "reason": "最易展示", "path": "最小闭环" }]
+  "decisionContext": "数据从哪来会决定第一周是先找数据还是先学工具,现在不定就会空转",
+  "provisionalRecommendation": "我倾向“自找公开数据”:动力最强、报告最有话可说",
+  "optionImpact": [{ "key": "public", "impact": "第一周先进 pandas 闭环,报告主题受公开数据限制" }],
+  "candidateDirections": [{ "key": "public", "title": "公开数据集", "reason": "最易拿到", "path": "数据→结论", "impact": "第一周直接进闭环" }]
   ```
+
+## `offer_options` 的硬条件(不符合就不要用)
+
+只在**真正的有限战略分叉**上使用(两三个答案会通向明显不同的路线),而且:
+
+- **必须同时给出** `decisionContext`、`provisionalRecommendation`、`optionImpact`、
+  `candidateDirections`(≤ 3 个短标签);缺任一项就改用 `provisional_synthesis`;
+- 你的 `reply` 必须**先写判断与倾向**,再顺带提到“你可以选择、修改或直接否定”;
+  **不得**一上来就抛选项;
+- **不得连续两轮**都给“问题 + 选项”;上一轮刚给过,这一轮就改用
+  `provisional_synthesis`,直接给出暂定综合与推荐;
+- 用户已经选过起点后,**不再**给新的选择题,应直接推进到战略综合。
 - `strategicThesis` 必须是你自己的高层判断,**不是**复述用户输入、也不是“还缺哪些信息”;
 - `keyDimensions` 最多 **3** 个,只能指向已存在的容器键;
 - `criticalQuestion` **默认可为空**;不为“必须提问”而造问题。只有两个不同答案会显著改变

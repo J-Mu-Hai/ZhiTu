@@ -53,6 +53,8 @@ AUDIT_EVENT_TYPES = frozenset(
         "strategy_draft_generated",
         "strategy_confirmed",
         "coarse_timeline_draft_generated",
+        # R2:字段不全时自动修补一次(仍不合格才 failed_retryable)。
+        "timeline_repair_requested",
         "timeline_proposal_created",
         "timeline_confirmed",
         "weekly_plan_proposal_created",

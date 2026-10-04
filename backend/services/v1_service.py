@@ -32,6 +32,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import uuid
 from datetime import timedelta
@@ -101,6 +102,10 @@ V1_REPLANNING = "replanning"
 V1_STATUS_IDLE = "idle"
 V1_STATUS_RUNNING = "running"
 V1_STATUS_FAILED = "failed"
+#: R2:已产出待确认产物(战略 / 粗时间线),停止等待用户确认。**不是 idle。**
+V1_STATUS_AWAITING_CONFIRMATION = "awaiting_user_confirmation"
+#: R2:真的在等用户回答一个问题。
+V1_STATUS_AWAITING_ANSWER = "awaiting_user_answer"
 
 #: 真实模型来源。只有这两个值能通过 V1 的强制运行时校验:
 #: - `openjiuwen`:真实经过 OpenJiuwen Workflow 的调用;
@@ -411,16 +416,13 @@ def dimension_title(key: str | None) -> str | None:
 def visible_dimension_keys(session: GoalReasoningSession) -> set[str]:
     """当前**画布默认可见**的分析维度键。内部复杂,外部简单。
 
-    - goal_reframe / initial_thinking:只显示三个核心分析维度;
-    - problem_structure 及之后:显示五个因素维度(+ 焦点);
-    - 战略子项一旦形成就显示;
-    - 焦点始终可见。
+    R2 收口:主画布**只**投影三个核心分析维度 `true_intent` / `key_conflict` /
+    `goal_definition`,以及当前焦点(若不同)。其余内部分析维度保留在数据层与右侧
+    详情,**不**默认渲染为 canvas_question —— 不再让用户先点分组、再看十个待答。
+
+    战略子项一旦形成就显示(在 `list_questions` 里单独放行)。
     """
-    stage = session.v1_stage
-    if stage in (None, V1_INITIAL_THINKING, V1_GOAL_REFRAME):
-        keys: set[str] = set(_CORE_GOAL_KEYS)
-    else:
-        keys = set(_PROBLEM_KEYS)
+    keys: set[str] = set(_CORE_GOAL_KEYS)
     if session.v1_focus_key:
         keys.add(session.v1_focus_key)
     return keys
@@ -1044,6 +1046,62 @@ async def _maybe_synthesize_strategy(
     return result
 
 
+async def _sync_question_states(
+    db: AsyncSession, ctx: WorkspaceContext, session: GoalReasoningSession
+) -> None:
+    """把画布分析节点的状态统一到**分析事实**上,消除 `AgentQuestion.status`
+    与 `v1Analysis.status` 的双真相:
+
+    - 已写入判断 -> `resolved` / `investigating`;
+    - 真正等待用户回答的那个焦点 -> `pending`;
+    - 默认可见但尚未判断 -> `investigating`(AI 正在形成判断);
+    - 其余内部维度 -> `archived`(仍在数据层与右侧详情/审计里可读)。
+
+    分组节点状态由子分析节点汇总,不再永远 `pending`。
+    """
+    questions = await _v1_questions(db, ctx)
+    visible = visible_dimension_keys(session)
+    pending_key = session.v1_focus_key if (session.v1_question or "").strip() else None
+    for question in questions:
+        if not question.v1_key or question.v1_key in _STRATEGY_KEY_SET:
+            continue
+        analysis = question.v1_analysis or {}
+        if analysis.get("judgment"):
+            question.status = (
+                QuestionStatus.RESOLVED
+                if analysis.get("status") == "resolved"
+                else QuestionStatus.INVESTIGATING
+            )
+        elif question.v1_key in visible:
+            question.status = (
+                QuestionStatus.PENDING
+                if question.v1_key == pending_key
+                else QuestionStatus.INVESTIGATING
+            )
+        else:
+            question.status = QuestionStatus.ARCHIVED
+
+    groups = await _v1_groups(db, ctx)
+    by_group: dict = {}
+    for question in questions:
+        by_group.setdefault(question.source_node_id, []).append(question)
+    for group in groups:
+        children = by_group.get(group.id, [])
+        if not children:
+            continue
+        if all(child.status is QuestionStatus.RESOLVED for child in children):
+            group.status = NodeStatus.COMPLETED
+        elif all(child.status is QuestionStatus.ARCHIVED for child in children):
+            group.status = NodeStatus.ARCHIVED
+        elif any(
+            child.status in (QuestionStatus.RESOLVED, QuestionStatus.INVESTIGATING)
+            for child in children
+        ):
+            group.status = NodeStatus.DOING
+        else:
+            group.status = NodeStatus.PENDING
+
+
 # =================================================================================
 # 回合执行
 # =================================================================================
@@ -1174,17 +1232,54 @@ async def _run_assessment(
         same_focus_repeat or budget_exhausted or force_options or force_no_question
     )
 
+    # ---- R2:选项问卷 -> 有解释的战略对话 ----
+    # 候选方向是“选择题”;只允许在**真正的有限战略分叉**上、且**不连续重复**时出现,
+    # 且必须同时带 decisionContext / provisionalRecommendation / optionImpact。
+    direction_locked = bool(session.v1_selected_direction)
+    offered = () if direction_locked else assessment.candidate_directions
+    options_streak = int(session.v1_options_streak or 0)
+
     if force_options:
         # 用户连续两轮答不上来:不再问,强制给候选方向或退回暂定综合。
-        response_mode = "offer_options" if assessment.candidate_directions else "provisional_synthesis"
+        response_mode = "offer_options" if len(offered) >= 2 else "provisional_synthesis"
     else:
         response_mode = assessment.response_mode
 
-    if assessment.candidate_directions:
+    offer_allowed = bool(
+        response_mode == "offer_options"
+        and len(offered) >= 2
+        and options_streak < 1
+        and not direction_locked
+        and not question_accepted
+    )
+    if response_mode == "offer_options" and not offer_allowed:
+        # 不是真正的分叉 / 连续重复 / 用户已选过起点:退回“暂定综合”,
+        # 给出判断与推荐,不再抛选择题。
+        response_mode = "provisional_synthesis"
+
+    if offer_allowed:
         session.v1_candidate_directions = [
-            {"key": d.key, "title": d.title, "reason": d.reason, "path": d.path}
-            for d in assessment.candidate_directions
+            {
+                "key": d.key,
+                "title": d.title,
+                "reason": d.reason,
+                "path": d.path,
+                "impact": d.impact,
+            }
+            for d in offered
         ]
+        session.v1_decision_context = assessment.decision_context or None
+        session.v1_provisional_recommendation = (
+            assessment.provisional_recommendation or None
+        )
+        session.v1_options_streak = options_streak + 1
+    else:
+        session.v1_decision_context = None
+        session.v1_provisional_recommendation = None
+        session.v1_options_streak = 0
+        if not direction_locked and assessment.candidate_directions:
+            # 被守卫拒绝的一组裸选项不留在页面上继续当问卷。
+            session.v1_candidate_directions = None
 
     if assessment.focus_key:
         session.v1_focus_key = assessment.focus_key
@@ -1270,7 +1365,7 @@ async def _run_assessment(
                 "responseMode": response_mode,
             },
         )
-    if assessment.candidate_directions:
+    if offer_allowed:
         await _audit(
             db,
             ctx,
@@ -1281,10 +1376,12 @@ async def _run_assessment(
             focus_key=session.v1_focus_key,
             summary="给出候选方向,由用户选择、修正或否定。",
             payload={
-                "candidateDirections": [
-                    {"key": d.key, "title": d.title, "reason": d.reason, "path": d.path}
-                    for d in assessment.candidate_directions
-                ]
+                "decisionContext": session.v1_decision_context,
+                "provisionalRecommendation": session.v1_provisional_recommendation,
+                "optionImpact": [
+                    {"key": d.key, "impact": d.impact} for d in offered
+                ],
+                "candidateDirections": session.v1_candidate_directions,
             },
         )
     if response_mode == "provisional_synthesis":
@@ -1350,6 +1447,8 @@ async def _run_assessment(
             stage_after=session.v1_stage,
             summary="战略草案已就绪,等用户确认或调整。",
         )
+    # R2:把画布节点状态统一到分析事实(消除双真相 + 分组不再永远 pending)。
+    await _sync_question_states(db, ctx, session)
     await db.commit()
     return result
 
@@ -1527,6 +1626,37 @@ def _timeline_payload(phases) -> list[dict]:
     return payload
 
 
+def _timeline_gaps(draft, *, require_weeks: bool) -> list[str]:
+    """粗时间架构的**严格契约缺口**。空列表 = 合格。
+
+    每个阶段必须有:title / 时间范围(startWeek+endWeek,或 startDate+endDate)/
+    goal / deliverable / completionCriteria。用户未给截止日期时必须用相对周。
+    """
+    gaps: list[str] = []
+    if draft is None:
+        return ["缺少可解析的 v1Timeline"]
+    phases = list(draft.phases)
+    if not (3 <= len(phases) <= 6):
+        gaps.append(f"阶段数量必须是 3–6 个(现在是 {len(phases)})")
+    for index, phase in enumerate(phases, start=1):
+        label = f"阶段 {index}"
+        if not (phase.title or "").strip():
+            gaps.append(f"{label} 缺 title")
+        if not (phase.goal or "").strip():
+            gaps.append(f"{label} 缺 goal")
+        if not (phase.deliverable or "").strip():
+            gaps.append(f"{label} 缺 deliverable")
+        if not (phase.completion_criteria or "").strip():
+            gaps.append(f"{label} 缺 completionCriteria")
+        has_weeks = phase.start_week is not None and phase.end_week is not None
+        has_dates = bool(phase.start_date and phase.end_date)
+        if require_weeks and not has_weeks:
+            gaps.append(f"{label} 缺相对周 startWeek/endWeek")
+        elif not require_weeks and not (has_weeks or has_dates):
+            gaps.append(f"{label} 缺时间范围(startWeek/endWeek 或 startDate/endDate)")
+    return gaps
+
+
 async def _build_timeline_turn_context(
     db: AsyncSession, ctx: WorkspaceContext, session: GoalReasoningSession
 ) -> TurnContext:
@@ -1557,6 +1687,85 @@ async def _build_timeline_turn_context(
         purpose="v1_timeline",
         reasoning_section="\n".join(lines),
     )
+
+
+async def _build_timeline_repair_context(
+    db: AsyncSession,
+    ctx: WorkspaceContext,
+    session: GoalReasoningSession,
+    *,
+    partial,
+    gaps: list[str],
+    require_weeks: bool,
+) -> TurnContext:
+    """窄契约 repair 回合:只补全缺失的时间架构字段。"""
+    page = await conversation_service.list_messages(db, ctx, limit=HISTORY_TURNS)
+    history = tuple((m.role.value, m.content) for m in page.messages)[-HISTORY_TURNS:]
+    today = today_in(ctx.timezone)
+    partial_json = "(模型没有给出可解析的阶段)"
+    if partial is not None:
+        partial_json = json.dumps(
+            [
+                {
+                    "title": p.title,
+                    "goal": p.goal,
+                    "deliverable": p.deliverable,
+                    "completionCriteria": p.completion_criteria,
+                    "startWeek": p.start_week,
+                    "endWeek": p.end_week,
+                    "startDate": p.start_date,
+                    "endDate": p.end_date,
+                }
+                for p in partial.phases
+            ],
+            ensure_ascii=False,
+        )
+    lines = [
+        "上一版粗时间架构存在以下缺口,请**只补全这些字段**,不要重写已有内容:",
+        *[f"- {gap}" for gap in gaps],
+        "",
+        "时间范围要求:" + ("必须用相对周 startWeek/endWeek(用户没有截止日期)。" if require_weeks else "用 startDate/endDate 或 startWeek/endWeek。"),
+        "",
+        "上一版内容(JSON):",
+        partial_json,
+    ]
+    return TurnContext(
+        current_date=today.isoformat(),
+        weekday=today.strftime("%A"),
+        timezone=ctx.timezone,
+        workspace_title=ctx.workspace.title or "",
+        workspace_intent=ctx.workspace.intent or "",
+        known=KnownConditions(),
+        history=history,
+        user_message="补全粗时间架构缺失的字段。",
+        purpose="v1_timeline_repair",
+        reasoning_section="\n".join(lines),
+    )
+
+
+async def _repair_coarse_timeline(
+    db: AsyncSession,
+    ctx: WorkspaceContext,
+    session: GoalReasoningSession,
+    reasoner,
+    *,
+    partial,
+    gaps: list[str],
+    require_weeks: bool,
+) -> tuple[object | None, ReasoningResult]:
+    """走一次窄契约 repair 回合。仍不合格返回 (None, 最后一次结果)。"""
+    turn = await _build_timeline_repair_context(
+        db, ctx, session, partial=partial, gaps=gaps, require_weeks=require_weeks
+    )
+    _start_turn(
+        session, stage=session.v1_stage, trigger="timeline_repair", source=reasoner_source_kind(reasoner)
+    )
+    await db.commit()
+    result = await _reason_with_timeout(reasoner, turn)
+    repaired = result.v1_timeline
+    if result.degraded or repaired is None or _timeline_gaps(repaired, require_weeks=require_weeks):
+        return None, result
+    return repaired, result
 
 
 async def _root_handle(db: AsyncSession, ctx: WorkspaceContext, root: PlanNode):
@@ -1619,38 +1828,71 @@ async def generate_coarse_timeline(
         )
         await db.commit()
         return result
-    if draft is None or not draft.phases:
-        session.v1_status = V1_STATUS_FAILED
-        _finish_turn(session, status=V1_STATUS_FAILED)
-        session.v1_error = "模型这次没有给出合法的时间架构。"
+    # R2:严格时间架构 —— 每阶段必须有 title / 时间范围 / goal / deliverable /
+    # completionCriteria。用户未给截止日期时必须用相对周。缺字段先自动补全一次。
+    require_weeks = root.deadline is None
+    gaps = _timeline_gaps(draft, require_weeks=require_weeks)
+    if gaps:
         await _audit(
             db,
             ctx,
             session,
-            "model_output_invalid",
+            "timeline_repair_requested",
             trigger="strategy_confirmation",
-            source=result.source.value if result.source else None,
-            summary=session.v1_error,
-            validation_status="failed",
-            error_code="MODEL_OUTPUT_INVALID",
+            stage_before=V1_STRATEGY_CONFIRMED,
+            summary="粗时间架构字段不全,自动补全一次。",
+            payload={"missing": gaps, "requireWeeks": require_weeks},
         )
         await db.commit()
-        return ReasoningResult(
-            reply="模型这次没有给出合法的时间架构,可以再试一次。",
-            source=result.source,
-            degraded=True,
-            degraded_reason=DegradedReason.MODEL_OUTPUT_INVALID,
-            retryable=True,
-            request_id=result.request_id,
-            prompt_version=result.prompt_version,
+        repaired, repair_result = await _repair_coarse_timeline(
+            db,
+            ctx,
+            session,
+            reasoner,
+            partial=draft,
+            gaps=gaps,
+            require_weeks=require_weeks,
         )
+        if repaired is None:
+            session.v1_status = V1_STATUS_FAILED
+            _finish_turn(session, status=V1_STATUS_FAILED)
+            session.v1_error = "粗时间架构缺少时间范围或验收标准,可重试。"
+            await _audit(
+                db,
+                ctx,
+                session,
+                "model_output_invalid",
+                trigger="timeline_repair",
+                stage_before=V1_STRATEGY_CONFIRMED,
+                stage_after=session.v1_stage,
+                source=(repair_result.source.value if repair_result.source else None),
+                summary=session.v1_error,
+                validation_status="failed",
+                error_code="MODEL_OUTPUT_INVALID",
+                payload={"missing": gaps},
+            )
+            await db.commit()
+            return ReasoningResult(
+                reply=session.v1_error,
+                source=repair_result.source,
+                degraded=True,
+                degraded_reason=DegradedReason.MODEL_OUTPUT_INVALID,
+                retryable=True,
+                request_id=repair_result.request_id,
+                prompt_version=repair_result.prompt_version,
+            )
+        draft = repaired
 
     session.v01_timeline = _timeline_payload(draft.phases)
     root_handle, handles = await _root_handle(db, ctx, root)
     actions: list[dict] = []
     for index, phase in enumerate(draft.phases, start=1):
+        if phase.start_week is not None and phase.end_week is not None:
+            range_text = f"相对范围:第 {phase.start_week}–{phase.end_week} 周"
+        else:
+            range_text = f"时间范围:{phase.start_date} ~ {phase.end_date}"
         description = (
-            f"相对范围:第 {phase.start_week}–{phase.end_week} 周\n"
+            f"{range_text}\n"
             f"目标:{phase.goal}\n"
             f"成果:{phase.deliverable}"
         )
@@ -1704,7 +1946,8 @@ async def generate_coarse_timeline(
 
     session.timeline_proposal_id = outcome.proposal.id
     session.v1_stage = V1_COARSE_TIMELINE_REVIEW
-    _finish_turn(session, status=V1_STATUS_IDLE)
+    # R2:已产出待确认产物 -> awaiting_user_confirmation,不是 idle。
+    _finish_turn(session, status=V1_STATUS_AWAITING_CONFIRMATION)
     session.v1_error = None
     await _audit(
         db,
@@ -1715,14 +1958,20 @@ async def generate_coarse_timeline(
         stage_after=V1_COARSE_TIMELINE_REVIEW,
         summary="生成 3–6 个阶段的粗时间架构草案。",
         payload={
+            "requireWeeks": require_weeks,
             "phases": [
                 {
                     "title": phase.title,
+                    "goal": phase.goal,
+                    "deliverable": phase.deliverable,
+                    "completionCriteria": phase.completion_criteria,
                     "startWeek": phase.start_week,
                     "endWeek": phase.end_week,
+                    "startDate": phase.start_date,
+                    "endDate": phase.end_date,
                 }
                 for phase in draft.phases
-            ]
+            ],
         },
     )
     await _audit(
@@ -2262,6 +2511,9 @@ async def select_candidate_direction(
     """
     from backend.services.errors import InvalidInput
 
+    # 幂等优先:同一方向重复点击(选定后阶段可能已推进)不再写审计、不再跑模型。
+    if session.v1_selected_direction == key:
+        return await reasoning_service._response(db, ctx, session, changed=False)
     # P2.3:候选方向只属于 goal_reframe。目标定义确认后必须走“重新选择起点”。
     if session.v1_stage != V1_GOAL_REFRAME:
         await _guard_reject(db, ctx, session, reason="目标定义已确认,请先“重新选择起点”。")
@@ -2271,9 +2523,6 @@ async def select_candidate_direction(
     if key not in valid:
         await _guard_reject(db, ctx, session, reason="没有这个候选方向。")
         raise InvalidInput("没有这个候选方向。")
-    # 幂等:同一方向重复点击不再写审计、不再跑模型。
-    if session.v1_selected_direction == key:
-        return await reasoning_service._response(db, ctx, session, changed=False)
 
     direction = next(d for d in directions if str(d.get("key")) == key)
     session.v1_selected_direction = key
@@ -2313,6 +2562,8 @@ async def select_candidate_direction(
     conversation = await conversation_service.get_or_create_primary_conversation(db, ctx)
     await _append_assistant(db, ctx, reply=result.reply, conversation=conversation, result=result)
     await db.commit()
+    # R2:用户已选定起点 -> **自动综合**,不再抛下一道选择题。
+    await _maybe_synthesize_strategy(db, ctx, session, reasoner, trigger="direction_selected")
     return await reasoning_service._response(db, ctx, session, changed=True)
 
 

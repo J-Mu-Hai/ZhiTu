@@ -47,6 +47,7 @@ from backend.agent.prompts.planning import (
 from backend.agent.prompts.v1_strategy import render_v1_turn
 from backend.agent.prompts.v1_strategy_synthesis import render_v1_strategy_synthesis_turn
 from backend.agent.prompts.v1_timeline import render_v1_timeline_turn
+from backend.agent.prompts.v1_timeline_repair import render_v1_timeline_repair_turn
 from backend.agent.runtime.base import (
     AnalysisDraft,
     BriefClaim,
@@ -260,6 +261,9 @@ def render_turn(turn: TurnContext) -> str:
     if turn.purpose == "v1_strategy_synthesis":
         # 规划智能体重构 V1:窄契约战略合成 —— 只要四条结构 + 一句取舍。
         return render_v1_strategy_synthesis_turn(turn)
+    if turn.purpose == "v1_timeline_repair":
+        # 规划智能体重构 V1:窄契约时间架构修补 —— 只补缺失字段。
+        return render_v1_timeline_repair_turn(turn)
     if turn.purpose == "goal_reasoning":
         # 目标推理回合走另一份模板:它关心的是决策维度与取舍,不是任务拆解。
         return render_reasoning_turn(turn)
@@ -902,6 +906,24 @@ def parse_v1_assessment(raw: Any) -> V1AssessmentDraft | None:
                 ),
             )
         )
+    # R2:`optionImpact` 可以按 key 对齐,也可以是按顺序的字符串数组。两种都收。
+    impact_by_key: dict[str, str] = {}
+    impact_by_index: list[str] = []
+    for entry in raw.get("optionImpact") or raw.get("option_impact") or []:
+        if isinstance(entry, dict):
+            impact_key = _v1_pick(entry, "key", "id", "value", "direction")
+            impact_text = _text(
+                _v1_pick(
+                    entry, "impact", "changes", "effect", "description", "note", "whatChanges"
+                ),
+                MAX_V1_TEXT_CHARS,
+            )
+            impact_by_index.append(impact_text)
+            if isinstance(impact_key, str) and impact_key.strip() and impact_text:
+                impact_by_key[impact_key.strip()[:48]] = impact_text
+        else:
+            impact_by_index.append(_text(entry, MAX_V1_TEXT_CHARS))
+
     directions: list[V1CandidateDirection] = []
     seen_direction_keys: set[str] = set()
     for direction_index, entry in enumerate(
@@ -924,6 +946,11 @@ def parse_v1_assessment(raw: Any) -> V1AssessmentDraft | None:
                 V1CandidateDirection(
                     key=clean_key,
                     title=text[:MAX_V1_TIMELINE_TITLE_CHARS],
+                    impact=(
+                        impact_by_index[direction_index - 1]
+                        if direction_index - 1 < len(impact_by_index)
+                        else ""
+                    ),
                 )
             )
             continue
@@ -951,6 +978,15 @@ def parse_v1_assessment(raw: Any) -> V1AssessmentDraft | None:
                 ),
                 path=_text(
                     _v1_pick(entry, "path", "how", "detail", "action"), MAX_V1_TEXT_CHARS
+                ),
+                impact=(
+                    _text(_v1_pick(entry, "impact", "changes", "effect"), MAX_V1_TEXT_CHARS)
+                    or impact_by_key.get(clean_key, "")
+                    or (
+                        impact_by_index[direction_index - 1]
+                        if direction_index - 1 < len(impact_by_index)
+                        else ""
+                    )
                 ),
             )
         )
@@ -986,6 +1022,21 @@ def parse_v1_assessment(raw: Any) -> V1AssessmentDraft | None:
         response_mode=response_mode if response_mode in V1_RESPONSE_MODES else "none",
         critical_question=critical,
         question=critical,
+        decision_context=_text(
+            _v1_pick(raw, "decisionContext", "decision_context", "whyNow", "why_decide"),
+            MAX_V1_TEXT_CHARS,
+        ),
+        provisional_recommendation=_text(
+            _v1_pick(
+                raw,
+                "provisionalRecommendation",
+                "provisional_recommendation",
+                "recommendation",
+                "recommended",
+            ),
+            MAX_V1_TEXT_CHARS,
+        ),
+        option_impact=tuple(impact_by_key.items()),
         candidate_directions=tuple(directions),
         strategy_tradeoff=_text(
             _v1_pick(raw, "strategyTradeoff", "strategy_tradeoff", "tradeoff"),

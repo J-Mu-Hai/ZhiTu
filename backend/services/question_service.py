@@ -483,7 +483,11 @@ async def answer_question(
     await lock_workspace(db, ctx.id)
     question = await load_question(db, ctx, question_id)
 
-    if question.status is not QuestionStatus.PENDING:
+    # V1 分析节点(`v1_key != None`)是**可反复进入的局部讨论容器**:它写入分析后
+    # 状态不再是 pending,但用户仍应能补充/纠正(R2 要求保留局部讨论能力)。
+    # 普通问题仍然只能从 `pending` 答一次。
+    is_v1_analysis_node = question.v1_key is not None
+    if question.status is not QuestionStatus.PENDING and not is_v1_analysis_node:
         # 双击/重试:同一个幂等键就当"上次那一下",原样返回。
         if question.answer_client_id == client_answer_id and question.answer is not None:
             return AnswerOutcome(question=question, turn=None, replayed=True)
@@ -491,6 +495,13 @@ async def answer_question(
             "这个问题已经回答过或已经跳过了。",
             status=question.status.value,
         )
+    # V1 分析节点:同一个幂等键仍然只跑一次后续处理。
+    if (
+        is_v1_analysis_node
+        and question.answer_client_id == client_answer_id
+        and question.answer is not None
+    ):
+        return AnswerOutcome(question=question, turn=None, replayed=True)
 
     normalized = _validate_answer(question, selected_option_ids, custom_input)
     question.answer = normalized

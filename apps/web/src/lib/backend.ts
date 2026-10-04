@@ -694,6 +694,8 @@ export interface V1CandidateDirection {
   title: string;
   reason: string;
   path: string;
+  /** R2:选它会改变哪一段战略/时间线。 */
+  impact?: string;
 }
 
 /** 规划智能体重构 V1(P2):战略路径草案。 */
@@ -1942,8 +1944,12 @@ export interface GoalReasoningView {
   v1WorkflowNext: string | null;
   /** P2.1:当前战略判断(优先展示的 AI 暂定理解,可被用户纠正)。 */
   v1StrategicThesis: string | null;
-  /** P2.1:用户无法回答时 AI 给出的候选方向(最多 3 个)。 */
+  /** P2.1:用户无法回答时 AI 给出的候选方向(最多 3 个)。R2 起每项带 impact。 */
   v1CandidateDirections: V1CandidateDirection[] | null;
+  /** R2:为什么此刻需要这个决定(候选按钮之前先显示)。 */
+  v1DecisionContext: string | null;
+  /** R2:AI 当前倾向与理由。 */
+  v1ProvisionalRecommendation: string | null;
   /** P2.1:用户选择的候选方向键。 */
   v1SelectedDirection: string | null;
   /** P2.2:当前画布默认可见的分析维度键(内部十维 ≠ 十个待回答问题)。 */

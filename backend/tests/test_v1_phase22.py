@@ -22,6 +22,7 @@ from backend.agent.runtime.base import (
     V1CandidateDirection,
     V1KeyDimension,
     V1NodeUpdate,
+    V1StrategyDraft,
 )
 from backend.core.config import settings
 from backend.db.models import AgentAuditEvent, PlanNode
@@ -180,6 +181,14 @@ async def test_v1_candidate_selection_closed_loop_and_dedup(
         response_mode="none",
         focus_key="goal_definition",
     )
+    # R2:选定起点后直接自动综合(通用回合 + 窄契约战略合成),不再抛下一道选择题。
+    reasoner.v1_strategy = V1StrategyDraft(
+        main_line="先用最小项目闭环补齐 pandas",
+        parallel_line="并行看一点统计基础",
+        defer_or_avoid="暂不系统学算法",
+        risk_control="每两周复盘一次",
+        tradeoff="先要能展示的成果",
+    )
     calls_before = len(reasoner.calls)
     first = await app_client.post(
         f"/api/workspaces/{account.workspace_id}/agent/v1/direction/select?key=automation_tool",
@@ -192,7 +201,8 @@ async def test_v1_candidate_selection_closed_loop_and_dedup(
     questions = await _questions(app_client, account)
     assert questions["goal_definition"]["v1Analysis"]["judgment"] == "短周期内独立完成并使用一个自动化小工具。"
     assert body["v1Question"] is None, "选择方向后不再提问"
-    assert len(reasoner.calls) == calls_before + 1, "选择方向触发一次模型回合"
+    assert body["v1Stage"] == "strategy_draft", "选定后自动综合战略"
+    assert len(reasoner.calls) == calls_before + 2, "通用回合 + 窄契约战略合成"
 
     # 同一方向重复点击:幂等,不再审计、不再调模型。
     for _ in range(4):
@@ -201,7 +211,7 @@ async def test_v1_candidate_selection_closed_loop_and_dedup(
             headers=account.headers,
         )
         assert again.status_code == 200, again.text
-    assert len(reasoner.calls) == calls_before + 1, "重复选择不重复调用模型"
+    assert len(reasoner.calls) == calls_before + 2, "重复选择不重复调用模型"
     events = await _audit_events(db, account)
     selected = [event for event in events if event.event_type == "candidate_direction_selected"]
     assert len(selected) == 1, "同一方向最多一条选择审计"
@@ -253,7 +263,9 @@ async def test_v1_goal_confirmation_enters_problem_structure(
     assert confirm.status_code == 200, confirm.text
     after = confirm.json()["reasoning"]
     assert after["v1Stage"] == "problem_structure"
-    assert set(after["v1VisibleAnalysisKeys"]) >= PROBLEM_KEYS, "进入后展示五个因素维度"
+    # R2:主画布**只**投影三个核心维度(+当前焦点);其余内部维度留在数据层与右侧详情。
+    assert set(after["v1VisibleAnalysisKeys"]) == CORE_KEYS, "主画布默认只投影三个核心维度"
+    assert not (set(after["v1VisibleAnalysisKeys"]) & PROBLEM_KEYS), "不再默认铺开五个因素维度"
     assert after["v01Timeline"] == []
     # 只有三组 + 根,没有时间线阶段或任务。
     plan_nodes = list(

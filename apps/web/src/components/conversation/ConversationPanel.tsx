@@ -288,6 +288,8 @@ export function ConversationPanel() {
   const v1CanReselect = reasoning?.v1CanReselectDirection ?? false;
   const v1NextAction = reasoning?.v1NextAction ?? null;
   const v1Directions = reasoning?.v1CandidateDirections ?? [];
+  const v1DecisionContext = reasoning?.v1DecisionContext ?? null;
+  const v1ProvisionalRecommendation = reasoning?.v1ProvisionalRecommendation ?? null;
   const v1SelectedDirection = reasoning?.v1SelectedDirection ?? null;
   /** 规划智能体重构 V1(P2):需要**在对话框回答**的问题(橙色),不是画布上的紫色问题节点。 */
   const v1ConversationQuestion =
@@ -630,6 +632,17 @@ export function ConversationPanel() {
               </button>
             </div>
           )}
+          {/* R2:已产出待确认产物 -> 明确说“等待你确认”,不说“正在思考”。 */}
+          {reasoning?.v1Status === 'awaiting_user_confirmation' &&
+            reasoning?.v1Stage === 'coarse_timeline_review' && (
+              <div
+                className="v1-status v1-awaiting"
+                data-testid="v1-awaiting-confirmation"
+                role="status"
+              >
+                <span>已生成粗时间架构草案，等待你确认。</span>
+              </div>
+            )}
           {v1Strategy && v1StrategyLines.length > 0 && (
             <div className="v1-strategy-card" data-testid="v1-strategy">
               <span className="eyebrow">战略路径草案</span>
@@ -666,7 +679,17 @@ export function ConversationPanel() {
           )}
           {v1Directions.length > 0 && v1CanReselect && (
             <div className="v1-directions" data-testid="v1-directions">
-              <span className="eyebrow">你可以选一个起点，也可以直接否定我</span>
+              {v1DecisionContext && (
+                <p className="v1-decision-context" data-testid="v1-decision-context">
+                  <strong>为什么现在要定这件事：</strong>{v1DecisionContext}
+                </p>
+              )}
+              {v1ProvisionalRecommendation && (
+                <p className="v1-provisional-recommendation" data-testid="v1-provisional-recommendation">
+                  <strong>我的倾向：</strong>{v1ProvisionalRecommendation}
+                </p>
+              )}
+              <span className="eyebrow">你可以选择、修改，或直接否定我</span>
               {v1Directions.map(direction => (
                 <button
                   key={direction.key}
@@ -680,6 +703,7 @@ export function ConversationPanel() {
                 >
                   <strong>{direction.title}</strong>
                   {direction.reason && <span>{direction.reason}</span>}
+                  {direction.impact && <span className="v1-option-impact">选择后果：{direction.impact}</span>}
                   {direction.path && <em>{direction.path}</em>}
                 </button>
               ))}

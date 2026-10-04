@@ -2214,6 +2214,18 @@
           "default": null,
           "title": "V1Candidatedirections"
         },
+        "v1DecisionContext": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "V1Decisioncontext"
+        },
         "v1Dimensions": {
           "items": {
             "additionalProperties": true,
@@ -2286,6 +2298,18 @@
           ],
           "default": null,
           "title": "V1Nextaction"
+        },
+        "v1ProvisionalRecommendation": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "V1Provisionalrecommendation"
         },
         "v1Question": {
           "anyOf": [

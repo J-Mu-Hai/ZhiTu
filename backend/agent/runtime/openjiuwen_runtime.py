@@ -69,6 +69,10 @@ from backend.agent.prompts.v1_strategy_synthesis import (
     V1_STRATEGY_SYNTHESIS_PROMPT_VERSION,
     V1_STRATEGY_SYNTHESIS_SYSTEM_PROMPT,
 )
+from backend.agent.prompts.v1_timeline_repair import (
+    V1_TIMELINE_REPAIR_PROMPT_VERSION,
+    V1_TIMELINE_REPAIR_SYSTEM_PROMPT,
+)
 from backend.agent.runtime.base import ReasoningResult, TurnContext
 from backend.agent.runtime.response import (
     ANALYSIS_FIELD_ORDER,
@@ -262,6 +266,10 @@ OUTPUT_CONFIG: dict[str, Any] = {
             "nodeUpdates": {"type": "array"},
             "responseMode": {"type": "string"},
             "criticalQuestion": {"type": "string"},
+            # R2:候选方向必须带解释一起出现。
+            "decisionContext": {"type": "string"},
+            "provisionalRecommendation": {"type": "string"},
+            "optionImpact": {"type": "array"},
             "candidateDirections": {"type": "array"},
             "focusKey": {"type": "string"},
             "focusReason": {"type": "string"},
@@ -598,6 +606,8 @@ def _system_prompt(turn: TurnContext) -> str:
         return GOAL_REASONING_SYSTEM_PROMPT
     if turn.purpose == "v1_strategy_synthesis":
         return V1_STRATEGY_SYNTHESIS_SYSTEM_PROMPT
+    if turn.purpose == "v1_timeline_repair":
+        return V1_TIMELINE_REPAIR_SYSTEM_PROMPT
     return SYSTEM_PROMPT
 
 
@@ -608,6 +618,8 @@ def _prompt_version(turn: TurnContext) -> str:
         return GOAL_REASONING_PROMPT_VERSION
     if turn.purpose == "v1_strategy_synthesis":
         return V1_STRATEGY_SYNTHESIS_PROMPT_VERSION
+    if turn.purpose == "v1_timeline_repair":
+        return V1_TIMELINE_REPAIR_PROMPT_VERSION
     return PROMPT_VERSION
 
 

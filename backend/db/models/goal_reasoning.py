@@ -191,6 +191,13 @@ class GoalReasoningSession(UuidPk, TimestampMixin, Base):
     #: 最近一次自动周回顾所在的自然周(ISO `YYYY-Www`)。同一个周末只自动发起一次,
     #: 避免每次重进空间都重复生成回顾。
     v1_last_review_week: Mapped[str | None] = mapped_column(String(16))
+    # ---- R2 收口:把“选项问卷”改为有解释的战略对话 ----
+    #: 为什么此刻需要用户做这个决定(候选方向必须跟随它一起出现)。
+    v1_decision_context: Mapped[str | None] = mapped_column(Text)
+    #: AI 当前倾向与理由。候选按钮之前先给出推荐,不让用户面对三道裸选项。
+    v1_provisional_recommendation: Mapped[str | None] = mapped_column(Text)
+    #: 连续“问题 + 候选选项”的轮数。**最多连续 1 次**,避免退化成问卷。
+    v1_options_streak: Mapped[int | None] = mapped_column(Integer)
 
     nodes: Mapped[list[ReasoningNode]] = relationship(
         back_populates="session", cascade="all, delete-orphan"

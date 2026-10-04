@@ -411,6 +411,9 @@ async def build_view(
         #: P2.1:战略判断优先 + 候选方向与用户选择。
         v1_strategic_thesis=session.v1_strategic_thesis,
         v1_candidate_directions=session.v1_candidate_directions,
+        #: R2:候选方向必须跟随“为什么现在决定 + AI 倾向”一起出现。
+        v1_decision_context=session.v1_decision_context,
+        v1_provisional_recommendation=session.v1_provisional_recommendation,
         v1_selected_direction=session.v1_selected_direction,
         #: P2.2:可见性投影与真实待回答问题数。
         v1_visible_analysis_keys=v1_visible_keys,
@@ -418,8 +421,11 @@ async def build_view(
         v1_actual_pending_question_count=v1_pending_questions,
         v1_dimensions=v1_dimensions,
         v1_next_action=session.v1_next_action,
-        #: 候选起点只在 goal_reframe 可切换;一旦确认目标定义就收起。
-        v1_can_reselect_direction=session.v1_stage == "goal_reframe",
+        #: 候选起点只在 goal_reframe 且**尚未选定**时可切换;选定或确认后收起,
+        #: 不再把用户已做过的选择当成一张新问卷。
+        v1_can_reselect_direction=(
+            session.v1_stage == "goal_reframe" and not session.v1_selected_direction
+        ),
         #: P5:只有 V1 空间且开关打开时才允许导出审计记录。
         v1_audit_export_enabled=bool(settings.agent_audit_export and session.v1_stage is not None),
         dates_calibrated=session.dates_calibrated,

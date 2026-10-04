@@ -114,6 +114,14 @@ def _timeline_draft():
                 start_week=3,
                 end_week=4,
             ),
+            V1TimelinePhaseDraft(
+                title="展示",
+                goal="整理并暴露缺口",
+                deliverable="一次展示",
+                completion_criteria="能讲清下一步",
+                start_week=5,
+                end_week=6,
+            ),
         ),
     )
 

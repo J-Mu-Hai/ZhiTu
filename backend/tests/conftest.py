@@ -312,6 +312,8 @@ class FakeReasoner:
     v1_timeline: object | None = None
     #: 规划智能体重构 V1:战略合成回合的四条结构(`V1StrategyDraft`),None = 模型没给。
     v1_strategy: object | None = None
+    #: 粗时间架构(含 repair)按调用顺序取用的队列;非空时优先于 `v1_timeline`。
+    timeline_queue: list = field(default_factory=list)
     calls: list = field(default_factory=list)
 
     async def reason(self, turn):
@@ -345,7 +347,12 @@ class FakeReasoner:
             stop_reason=parse_stop_reason(self.stop_reason),
             analysis=self.analysis,
             v1_assessment=self.v1_assessment,
-            v1_timeline=self.v1_timeline,
+            v1_timeline=(
+                self.timeline_queue.pop(0)
+                if self.timeline_queue
+                and getattr(turn, "purpose", "") in ("v1_timeline", "v1_timeline_repair")
+                else self.v1_timeline
+            ),
             v1_strategy=self.v1_strategy,
             request_id="fake-request",
             prompt_version="fake-v1",

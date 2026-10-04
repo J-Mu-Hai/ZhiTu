@@ -204,8 +204,12 @@ class GoalReasoningView(ApiModel):
     v1_workflow_next: str | None = None
     #: P2.1:当前战略判断(优先展示的 AI 暂定理解,可被用户纠正)。
     v1_strategic_thesis: str | None = None
-    #: P2.1:用户无法回答时 AI 给出的候选方向(最多 3 个)。
+    #: P2.1:用户无法回答时 AI 给出的候选方向(最多 3 个)。R2 起每项带 `impact`。
     v1_candidate_directions: list[dict] | None = None
+    #: R2:为什么此刻需要用户做这个决定(候选按钮之前必须先显示它)。
+    v1_decision_context: str | None = None
+    #: R2:AI 当前倾向与理由。
+    v1_provisional_recommendation: str | None = None
     #: P2.1:用户选择的候选方向键。
     v1_selected_direction: str | None = None
     #: P2.2:当前**画布默认可见**的分析维度键(内部十维 ≠ 十个待回答问题)。

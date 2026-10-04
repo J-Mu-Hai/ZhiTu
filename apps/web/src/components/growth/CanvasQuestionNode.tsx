@@ -184,24 +184,31 @@ export function CanvasQuestionNodeComponent({ data }: NodeProps<QuestionFlowNode
         阶段 10:先展示 **AI 已经判断了什么**,再问“需要你确认的一点”。问题节点默认
         看得到判断、推荐与影响 —— 它不再像一张调查问卷。
       */}
+      {/*
+       * R2 收口:**节点卡默认只显示 标题 + 一句 AI judgment + 状态**。
+       * 推荐、长问题文本、已知事实、选项都只在用户**主动进入节点**(聚焦/展开)后出现 ——
+       * 默认画布不再是一张需要逐条回答的问卷,但仍然保留局部讨论能力。
+       */}
       <div className="cq-judgment">
-        <span className="cq-label">AI 判断</span>
+        <div className="cq-judgment-head">
+          {question.v1Title ? <strong className="cq-v1-title">{question.v1Title}</strong> : null}
+          <span className="cq-badge">{STATUS_LABEL[status] ?? '待澄清'}</span>
+        </div>
         {hasJudgment ? (
-          <>
-            {question.analysisSummary && <p className="cq-analysis">{question.analysisSummary}</p>}
-            {question.recommendation && (
-              <p className="cq-recommendation">
-                <span className="cq-label">推荐</span>
-                {question.recommendation}
-              </p>
-            )}
-          </>
+          <p className="cq-analysis">{question.analysisSummary || question.recommendation}</p>
         ) : (
           <p className="cq-analysis cq-insufficient" data-testid="cq-insufficient">
             当前还不足以给出推荐。需要先确认这条战略信息：{missingStrategicInfo}。
           </p>
         )}
       </div>
+
+      {data.isFocused && question.recommendation && (
+        <p className="cq-recommendation">
+          <span className="cq-label">推荐</span>
+          {question.recommendation}
+        </p>
+      )}
 
       {/* 规划智能体重构 V1(P2):已知事实与 AI 假设分开展示 —— 事实来自用户/系统,
           假设必须能被认出来是假设。 */}
@@ -214,11 +221,8 @@ export function CanvasQuestionNodeComponent({ data }: NodeProps<QuestionFlowNode
         </ul>
       )}
 
-      {/* P2.2:分析节点默认只显示标题 + 一句判断;长问题文本只在聚焦时出现。 */}
-      {question.v1Title ? (
-        <strong className="cq-v1-title">{question.v1Title}</strong>
-      ) : null}
-      {(!question.v1Title || data.isFocused || processing || resolved) && (
+      {/* 长问题文本只在用户主动进入节点、或该节点正在处理时出现。 */}
+      {(data.isFocused || expanded || processing) && (
         <>
           <span className="cq-label cq-label-question">需要你确认的一点</span>
           <p className="cq-question">{question.question}</p>

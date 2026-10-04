@@ -42,6 +42,10 @@ from backend.agent.prompts.v1_timeline import (
     V1_TIMELINE_PROMPT_VERSION,
     V1_TIMELINE_SYSTEM_PROMPT,
 )
+from backend.agent.prompts.v1_timeline_repair import (
+    V1_TIMELINE_REPAIR_PROMPT_VERSION,
+    V1_TIMELINE_REPAIR_SYSTEM_PROMPT,
+)
 from backend.agent.runtime.base import ReasoningResult, TurnContext
 from backend.agent.runtime.response import (
     PayloadInvalid,
@@ -231,6 +235,8 @@ def _prompt_for(turn: TurnContext) -> tuple[str, str]:
         return V1_TIMELINE_SYSTEM_PROMPT, V1_TIMELINE_PROMPT_VERSION
     if turn.purpose == "v1_strategy_synthesis":
         return V1_STRATEGY_SYNTHESIS_SYSTEM_PROMPT, V1_STRATEGY_SYNTHESIS_PROMPT_VERSION
+    if turn.purpose == "v1_timeline_repair":
+        return V1_TIMELINE_REPAIR_SYSTEM_PROMPT, V1_TIMELINE_REPAIR_PROMPT_VERSION
     return SYSTEM_PROMPT, PROMPT_VERSION
 
 

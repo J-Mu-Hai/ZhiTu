@@ -667,6 +667,8 @@ class V1CandidateDirection:
     title: str
     reason: str = ""
     path: str = ""
+    #: R2:选它会改变哪一段战略 / 时间线。让选项不是裸按钮。
+    impact: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -693,6 +695,12 @@ class V1AssessmentDraft:
     #: P2.1:最多 3 个关键分析维度的暂定判断。
     key_dimensions: tuple[V1KeyDimension, ...] = ()
     node_updates: tuple[V1NodeUpdate, ...] = ()
+    #: R2:为什么此刻需要用户做这个决定(候选方向必须跟随它一起出现)。
+    decision_context: str = ""
+    #: R2:AI 当前倾向与理由(候选方向之前先给推荐)。
+    provisional_recommendation: str = ""
+    #: R2:每个候选键 → “选它会改变哪一段”。与 `candidate_directions[].impact` 同义。
+    option_impact: tuple[tuple[str, str], ...] = ()
     focus_key: str | None = None
     focus_reason: str = ""
     #: P2.1:`none | ask | offer_options | provisional_synthesis | ready_for_strategy`。
