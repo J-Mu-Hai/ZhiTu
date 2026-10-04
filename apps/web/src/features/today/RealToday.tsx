@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { ArrowUpRight, Check, Clock3, Sparkles } from 'lucide-react';
 import type { ExecutionResult, TodayItemView } from '@/lib/backend';
 import { Reminders } from './Reminders';
+import { PlanFocus } from './PlanFocus';
 import { useToday } from './useToday';
 import { WeekOverview } from './WeekOverview';
 
@@ -190,6 +191,7 @@ export function RealToday() {
   return (
     <>
       <WeekOverview revision={data} />
+      <PlanFocus revision={data} />
       <Reminders />
 
       {error && (

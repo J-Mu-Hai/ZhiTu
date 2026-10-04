@@ -25,6 +25,34 @@ function daysOf(node: GrowthNode): string[] {
 const fallsWithin = (node: GrowthNode, from: string, to: string) =>
   daysOf(node).some((day) => day >= from && day <= to);
 
+/** 沿父链取祖先(不含自己),直到根。后端只有 `parentId`,层级关系要自己走。 */
+function ancestryOf(node: GrowthNode, nodes: Record<string, GrowthNode>): GrowthNode[] {
+  const chain: GrowthNode[] = [];
+  const seen = new Set<string>([node.id]);
+  let current = node.parentId ? nodes[node.parentId] : undefined;
+  while (current && !seen.has(current.id)) {
+    chain.push(current);
+    seen.add(current.id);
+    current = current.parentId ? nodes[current.parentId] : undefined;
+  }
+  return chain;
+}
+
+/**
+ * 任务归属的**最高阶段**(粗时间线阶段)。
+ *
+ * 确认时间线后,V1 的结构是 根目标 → 阶段(phase)→ 周计划(也是 stage)→ 任务。
+ * `planProjection` 的 `stageId` 是**最近的** stage 祖先 —— 对周任务来说它是“周计划”,
+ * 不是“阶段”。所以这里沿父链取最靠上的那一个 stage,那才是“本阶段”。
+ */
+function topStageOf(node: GrowthNode, nodes: Record<string, GrowthNode>): string | null {
+  let top: string | null = null;
+  for (const ancestor of ancestryOf(node, nodes)) {
+    if (ancestor.type === 'stage') top = ancestor.id;
+  }
+  return top;
+}
+
 export function TaskView() {
   const { growth, selectedId, select, apply, spaceId } = useDemo(); const [filter, setFilter] = useState('全部');
   // `purpose !== 'information'` 那一半不是可选的修饰:信息用途的节点**不进排期**
@@ -39,23 +67,43 @@ export function TaskView() {
   const today = todayInTimeZone(); const week = weekBounds(today);
 
   /*
-   * "本阶段"是哪一个阶段。
+   * “本阶段”是哪一个阶段 —— 追溯 根目标 → 阶段 → 周计划 → 任务。
    *
-   * 以前比的是 `growth.currentStageId`,而真实空间里它恒等于根目标 —— 于是所有挂在
-   * 阶段下面的任务 **全都不算"本阶段"**,进任何一个阶段空间,进度条都是 0%。
+   * - 用户进了某个阶段空间:用它的**最高阶段**(进周计划空间也回到所属阶段);
+   * - 在根这一层:用第一个未完成的粗时间线阶段(当前 V1 阶段)。
    *
-   * 现在的判据是"你现在看的是哪一层":进了一个阶段空间,本阶段就是它;在根这一层,
-   * 本阶段就是直接挂在根下面的那些任务。`stageId` 由投影层从父链上算出来
-   * (最近的 stage 祖先),后端没有这个字段。
+   * 后端没有 `currentStageId`(真实空间里它恒等于根目标),所以这里自己沿父链算。
    */
-  const currentStage = growth.nodes[spaceId]?.type === 'stage' ? spaceId : growth.goalId;
-  const stageTasks = tasks.filter(n => n.stageId === currentStage);
+  const directPhaseStages = Object.values(growth.nodes)
+    .filter(n => n.type === 'stage' && n.parentId === growth.goalId);
+  const spaceNode = growth.nodes[spaceId];
+  const currentPhase = spaceNode?.type === 'stage'
+    ? topStageOf(spaceNode, growth.nodes) ?? spaceNode.id
+    : directPhaseStages.find(n => n.status !== 'completed')?.id ?? directPhaseStages[0]?.id ?? growth.goalId;
+  const stageTasks = tasks.filter(n => topStageOf(n, growth.nodes) === currentPhase);
   const done = stageTasks.filter(n => n.status === 'completed').length;
   const progress = stageTasks.length ? Math.round(done / stageTasks.length * 100) : 0;
 
-  const filtered = tasks.filter(n => filter === '全部' || (filter === '本阶段' && n.stageId === currentStage)
+  /*
+   * 活跃的“本周计划”节点。
+   *
+   * 周计划自己也是 `stage`(见后端 `v01_service.generate_weekly_plan`),任务是它的
+   * 子节点。这些任务**没有具体日期**(`scheduledDate` 为空、也没有 session),单靠
+   * `fallsWithin` 会被“本周”筛掉 —— 而它们明明就属于本周。所以只要祖先里有活跃的
+   * 本周计划,也算“本周”。
+   */
+  const activeWeekPlanIds = new Set(
+    Object.values(growth.nodes)
+      .filter(n => n.type === 'stage' && /^本周计划[:：]/.test(n.title))
+      .map(n => n.id),
+  );
+  const belongsToActiveWeek = (node: GrowthNode) =>
+    ancestryOf(node, growth.nodes).some(ancestor => activeWeekPlanIds.has(ancestor.id));
+
+  const filtered = tasks.filter(n => filter === '全部'
+    || (filter === '本阶段' && topStageOf(n, growth.nodes) === currentPhase)
     || (filter === '今天' && fallsWithin(n, today, today))
-    || (filter === '本周' && fallsWithin(n, week.start, week.end)));
+    || (filter === '本周' && (fallsWithin(n, week.start, week.end) || belongsToActiveWeek(n))));
 
   // 这个空间里到底有没有排过期的任务。空列表的原因有两种,说错哪一种都会把人引向
   // 错误的下一步:"还没排"该去排期,"这几天恰好没有"什么也不用做。
@@ -104,12 +152,12 @@ export function TaskView() {
       .map(([, bucket], index) => ({ ...bucket, number: bucket.number || String(index + 1).padStart(2, '0') }));
   }, [filtered, growth]);
 
-  const stageNode = growth.nodes[currentStage];
+  const stageNode = growth.nodes[currentPhase];
   return <div className="task-view scroll-area"><div className="section-heading"><div><span className="eyebrow">MAKE IT HAPPEN</span><h2>让下一步，清晰一点。</h2></div><span className="muted">{filtered.length} 项任务</span></div>{filtered.length === 0 && <p className="empty-note">{filter === '今天' || filter === '本周'
     ? hasAnySession
       ? '这几天没有安排。计划里已经有排好的场次，切到别的时间范围看看。'
       : '这个范围里还没有安排到具体某天的任务。计划里的节点都带截止时间，但“哪天做”还没有排——打开「排期」预览一次，就能把它们落到具体日期上。'
-    : '当前范围没有任务。可以回到路径，在这个空间添加一个新节点。'}</p>}<div className="filter-row">{['全部','本阶段','本周','今天'].map(f => <button key={f} className={filter === f ? 'active' : ''} onClick={() => setFilter(f)}>{f}</button>)}</div><div className="stage-summary"><div><span className="eyebrow">{currentStage === growth.goalId ? '当前空间' : '当前阶段'}{stageNode?.deadline ? ` · 截止 ${stageNode.deadline}` : ''}</span><h3>{stageNode?.title ?? growth.title}</h3></div>{stageTasks.length > 0 && <><strong>{progress}<small>%</small></strong><div className="progress-track"><span style={{ width: `${progress}%` }}/></div></>}</div>
+    : '当前范围没有任务。可以回到路径，在这个空间添加一个新节点。'}</p>}<div className="filter-row">{['全部','本阶段','本周','今天'].map(f => <button key={f} className={filter === f ? 'active' : ''} onClick={() => setFilter(f)}>{f}</button>)}</div><div className="stage-summary"><div><span className="eyebrow">{currentPhase === growth.goalId ? '当前空间' : '当前阶段'}{stageNode?.deadline ? ` · 截止 ${stageNode.deadline}` : ''}</span><h3>{stageNode?.title ?? growth.title}</h3></div>{stageTasks.length > 0 && <><strong>{progress}<small>%</small></strong><div className="progress-track"><span style={{ width: `${progress}%` }}/></div></>}</div>
     {groups.map(group => <section className={`task-group ${group.className}`} key={group.id}><header><span>{group.number}</span><h3>{group.title}</h3><small>{group.tasks.filter(n => n.status === 'completed').length} / {group.tasks.length}</small></header>{group.tasks.map(n => <div className={`task-row ${selectedId === n.id ? 'selected-row' : ''} ${n.status === 'completed' ? 'completed-row' : ''}`} key={n.id}><button className="task-check" aria-label={`${n.status === 'completed' ? '取消完成' : '完成'}${n.title}`} aria-pressed={n.status === 'completed'} onClick={() => apply({ type: 'UPDATE_STATUS', nodeId: n.id, status: n.status === 'completed' ? 'pending' : 'completed' })}>{n.status === 'completed' && <Check size={13}/>}</button><button className="task-detail" onClick={() => select(n.id)}><span>{n.title}{n.estimatedHours && <small><Clock3 size={11}/>预计 {n.estimatedHours}h</small>}</span><time>{n.scheduledDate?.slice(5).replace('-', ' / ')}</time><ArrowUpRight size={14}/></button></div>)}</section>)}
   </div>;
 }

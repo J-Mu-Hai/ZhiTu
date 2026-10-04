@@ -347,3 +347,40 @@
   background: var(--ink-2);
   border-color: var(--line);
 }
+
+/* ---- 首页:已确认的规划(当前阶段 / 下一里程碑 / 本周重点) ---- */
+.plan-focus { margin: 0 0 26px; }
+.plan-focus-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.plan-focus-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px 16px;
+  border: 1px solid var(--line-card, rgba(87, 119, 143, 0.2));
+  border-radius: var(--radius-card, 14px);
+  background: var(--surface-panel, #fffefa);
+  box-shadow: var(--shadow-card, 0 1px 2px rgba(72, 99, 117, .04), 0 8px 22px rgba(72, 99, 117, .06));
+}
+.plan-focus-card .eyebrow { display: flex; align-items: center; gap: 6px; }
+.plan-focus-card h3 { margin: 0; font-size: 15px; line-height: 1.5; color: #254a68; }
+.plan-focus-card p { margin: 0; font-size: 12.5px; line-height: 1.7; color: #526f89; }
+.plan-focus-quiet { color: #7a8b99; }
+.plan-focus-row-actions { margin-top: auto; }
+.plan-focus-card .text-button, .plan-focus-note .text-button { align-self: flex-start; margin-top: 4px; }
+.plan-focus-note {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+  padding: 11px 14px;
+  border: 1px solid #e6d2b4;
+  border-radius: var(--radius-card, 14px);
+  background: #fdf6e8;
+  color: #8a6a2f;
+  font-size: 12.5px;
+}
+.plan-focus-note .text-button { margin: 0; color: var(--experience-ink, #96652f); }
+@media (max-width: 720px) {
+  .plan-focus-grid { grid-template-columns: 1fr; }
+}

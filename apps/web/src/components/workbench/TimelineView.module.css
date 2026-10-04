@@ -162,6 +162,40 @@
 .selected .connection, .object:hover .connection { opacity: .8; stroke-width: 1.5; }
 .range { stroke: var(--color); stroke-width: 1; opacity: .6; }
 .endpoint { fill: #fffefa; stroke: var(--color); stroke-width: 1; }
+/* --- 粗时间规划:有宽度的阶段覆盖条(不是一根线) --- */
+.phaseBar {
+  position: absolute;
+  height: 30px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+  padding: 3px 9px;
+  text-align: left;
+  border-radius: 7px;
+  overflow: hidden;
+  z-index: 3;
+  cursor: pointer;
+  touch-action: none;
+  color: #2c4a63;
+  background: color-mix(in srgb, var(--color) 22%, #fffefa);
+  border: 1px solid color-mix(in srgb, var(--color) 52%, #d8e5ea);
+  box-shadow: 0 3px 10px rgba(74, 105, 126, .08);
+}
+.phaseBar strong { display: block; font-size: 11px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.phaseBar small { display: block; font-size: 9px; color: #526f89; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.phaseBarDraft {
+  background: color-mix(in srgb, var(--color) 12%, #fffefa);
+  border-style: dashed;
+}
+.phaseBarPlanned {
+  background: color-mix(in srgb, var(--color) 26%, #fffefa);
+  border-style: solid;
+}
+.phaseBar:hover, .selected .phaseBar {
+  border-color: var(--color);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color) 18%, transparent), 0 5px 14px rgba(74, 105, 126, .12);
+}
 .point {
   position: absolute;
   width: 24px;

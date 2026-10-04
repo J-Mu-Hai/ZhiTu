@@ -132,3 +132,64 @@ test('两个阶段各一个任务:分组 id 唯一,无 duplicate key,切换范�
   const duplicateKeyErrors = consoleErrors.filter(text => /same key|duplicate key/i.test(text));
   expect(duplicateKeyErrors, duplicateKeyErrors.join('\n')).toHaveLength(0);
 });
+
+test('V1 结构:根 → 阶段 → 本周计划 → 任务,本阶段/本周/今天各自正确', async ({ page }) => {
+  const { token } = await registerAccount(page, 'task-groups-v1');
+  const workspaceId = await createWorkspace(page, token, 'V1 任务结构', '确认时间线后细化周任务');
+  const rootId = `root-${workspaceId}`;
+  const phaseId = `phase-${workspaceId}`;
+  const weekId = `week-${workspaceId}`;
+
+  const payload = {
+    workspaceId,
+    revisionVersion: 1,
+    nodes: [
+      node({ id: rootId, parentId: null, title: '根目标', nodeType: 'goal', depth: 0 }),
+      // 粗时间线确认后的阶段(stage),直接挂在根下。
+      node({ id: phaseId, parentId: rootId, title: '阶段一 · 打基础', nodeType: 'stage', depth: 1 }),
+      // 周计划也是 stage(后端就是这样),挂在阶段下。
+      node({ id: weekId, parentId: phaseId, title: '本周计划:阶段一 · 第 1 版', nodeType: 'stage', depth: 2 }),
+      // 一个没有日期、只在周计划里的任务 —— 必须出现在“本周”。
+      node({ id: `task-nodate-${workspaceId}`, parentId: weekId, title: '写第一版脚本', nodeType: 'task', depth: 3, status: 'completed' }),
+      // 一个排到今天、属于同一周的任务。
+      node({ id: `task-today-${workspaceId}`, parentId: weekId, title: '整理数据', nodeType: 'task', depth: 3 }),
+    ],
+    dependencies: [],
+    relations: [],
+    brief: { version: 1, goal: null, deadline: null, weeklyAvailableMinutes: null, currentLevel: null, successCriteria: null, constraints: [], missing: [] },
+    sessions: [session(`s-today-${workspaceId}`, `task-today-${workspaceId}`, '整理数据')],
+    totalNodes: 2,
+    completedNodes: 1,
+  };
+  await installPlanMock(page, workspaceId, rootId, payload);
+
+  const consoleErrors: string[] = [];
+  page.on('console', message => { if (message.type() === 'error') consoleErrors.push(message.text()); });
+
+  await page.goto(`/workbench?workspace=${workspaceId}&view=tasks`);
+  await expect(page.locator('.task-view')).toBeVisible({ timeout: 20000 });
+  await expect(page.locator('.task-group')).toHaveCount(1);
+
+  // 全部:两条都在。
+  await page.getByRole('button', { name: '全部', exact: true }).click();
+  await expect(page.locator('.task-row')).toHaveCount(2);
+
+  // 本阶段:阶段一的两个任务(含周计划里的)。进度 1/2。
+  await page.getByRole('button', { name: '本阶段', exact: true }).click();
+  await expect(page.locator('.task-row')).toHaveCount(2);
+  await expect(page.locator('.stage-summary')).toContainText('阶段一');
+  await expect(page.locator('.stage-summary strong')).toContainText('50');
+
+  // 本周:没有日期的那个也算本周(靠活跃周计划祖先)。
+  await page.getByRole('button', { name: '本周', exact: true }).click();
+  await expect(page.locator('.task-row')).toHaveCount(2);
+  await expect(page.getByText('写第一版脚本')).toBeVisible();
+
+  // 今天:只有排到今天的那一条。
+  await page.getByRole('button', { name: '今天', exact: true }).click();
+  await expect(page.locator('.task-row')).toHaveCount(1);
+  await expect(page.locator('.task-row')).toContainText('整理数据');
+
+  const duplicateKeyErrors = consoleErrors.filter(text => /same key|duplicate key/i.test(text));
+  expect(duplicateKeyErrors, duplicateKeyErrors.join('\n')).toHaveLength(0);
+});

@@ -570,3 +570,70 @@ test('V1 根画布不投影旧版固定分组容器(目标重构 / 问题结构 
   );
   expect(edgeIds.some(id => id.includes('group-'))).toBe(false);
 });
+
+test('时间线阶段:覆盖条宽度反映时长,点击开详情,点空白 / Esc 关闭', async ({ page }) => {
+  const { token } = await registerAccount(page, 'v1-timeline-bars');
+  const workspaceId = await createWorkspace(page, token, 'V1 阶段条', '30 天做出一个数据分析小工具');
+  const rootId = (await getPlan(page, token, workspaceId)).nodes.find(node => node.parentId === null)!.id;
+
+  // 三个阶段时长刻意不同:覆盖 1 周 / 4 周 / 2 周。宽度必须跟时长走。
+  const phase = (index: number, title: string, startWeek: number, endWeek: number) => ({
+    id: `phase-${index}`, title, kind: 'phase', startWeek, endWeek,
+    startDate: null, endDate: null, goal: `${title}的目标`, deliverable: `${title}的成果`,
+    completionCriteria: `${title}的完成标准`, status: 'draft', planNodeId: null,
+  });
+  await installMock(
+    page,
+    baseView(workspaceId, rootId, {
+      v1Stage: 'coarse_timeline_review',
+      v1Status: 'awaiting_user_confirmation',
+      v01Timeline: [phase(1, '阶段一:起步', 1, 2), phase(2, '阶段二:建设', 3, 6), phase(3, '阶段三:收尾', 7, 8)],
+      v01TimelineProposalId: 'p-bars',
+    }),
+    [],
+  );
+
+  await page.goto(`/workbench?workspace=${workspaceId}&view=timeline`);
+  const view = page.getByTestId('timeline-view');
+  await expect(view).toBeVisible({ timeout: 20000 });
+
+  // 每个阶段一条覆盖条:有宽度、有高度。
+  const bars = page.getByTestId('v1-phase-bar');
+  await expect(bars).toHaveCount(3);
+  const boxes = await bars.evaluateAll(els => els.map(el => {
+    const rect = el.getBoundingClientRect();
+    return { id: el.getAttribute('data-phase-id'), width: rect.width, height: rect.height };
+  }));
+  for (const box of boxes) {
+    expect(box.width, `${box.id} 太窄`).toBeGreaterThan(26);
+    expect(box.height, `${box.id} 不是有高度的条`).toBeGreaterThanOrEqual(28);
+  }
+  // 时长 4 周的那条比 1 周 / 2 周的宽。
+  const widthOf = (id: string) => boxes.find(b => b.id === id)!.width;
+  expect(widthOf('phase-2')).toBeGreaterThan(widthOf('phase-1'));
+  expect(widthOf('phase-2')).toBeGreaterThan(widthOf('phase-3'));
+
+  // 点击阶段条 → 详情出现。
+  await bars.first().click();
+  await expect(page.getByTestId('v1-phase-detail')).toBeVisible();
+  // 点击时间轴空白 → 详情关闭。
+  const canvasBox = (await page.getByTestId('timeline-canvas').boundingBox())!;
+  await page.mouse.click(canvasBox.x + 14, canvasBox.y + 14);
+  await expect(page.getByTestId('v1-phase-detail')).toHaveCount(0);
+  // 再次点击阶段条 → 正常打开。
+  await bars.first().click();
+  await expect(page.getByTestId('v1-phase-detail')).toBeVisible();
+  // Escape → 关闭。
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('v1-phase-detail')).toHaveCount(0);
+
+  // 缩放到月 / 周 / 日,条仍可见且宽度合理。
+  const presets = page.getByTestId('timeline-presets');
+  for (const label of ['月', '周', '天']) {
+    await presets.getByRole('button', { name: label }).click();
+    const visible = page.getByTestId('v1-phase-bar');
+    expect(await visible.count()).toBeGreaterThan(0);
+    const w = await visible.first().evaluate(el => el.getBoundingClientRect().width);
+    expect(w).toBeGreaterThan(0);
+  }
+});

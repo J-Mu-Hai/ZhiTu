@@ -178,6 +178,21 @@ export function TimelineView() {
     element.addEventListener('wheel', wheel, { passive: false });
     return () => element.removeEventListener('wheel', wheel);
   }, [setViewport]);
+  /*
+   * Escape 关详情。
+   *
+   * **不是** document click 那种“点哪里都关”。它只在真的有选中（草案阶段或正式节点）
+   * 时才动作，而且只监听 Escape —— 不会误伤右侧对话、日期控件、缩放按钮或任务卡。
+   */
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      if (draftSelectedId !== null) { setDraftSelectedId(null); return; }
+      if (selectedId !== null) select(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [draftSelectedId, selectedId, select]);
   // 进入粗时间线时**聚焦全部阶段一次**,但不锁死后续缩放/平移。
   const fittedDraftRef = useRef<TimelineItem[] | null>(null);
   useEffect(() => {
@@ -292,7 +307,11 @@ export function TimelineView() {
     )}
     {planError && <div className={styles.error} role="alert"><span>{planError}</span></div>}
     <div ref={canvas} className={styles.canvas} role="region" aria-label="成长时间线" aria-describedby="timeline-help" tabIndex={0} data-testid="timeline-canvas" data-ready={measured} data-start={start} data-density={density}
-      onPointerDown={e => { if (e.button !== 0 || (e.target as HTMLElement).closest('button,input,[data-cluster-panel],[data-unscheduled-panel]')) return; e.currentTarget.setPointerCapture(e.pointerId); gesture.current = { x: e.clientX, start }; setClusterOpen(false); setUnscheduledOpen(false); }}
+      onPointerDown={e => { if (e.button !== 0 || (e.target as HTMLElement).closest('button,input,[data-cluster-panel],[data-unscheduled-panel],[data-testid="v1-phase-detail"]')) return; e.currentTarget.setPointerCapture(e.pointerId); gesture.current = { x: e.clientX, start }; setClusterOpen(false); setUnscheduledOpen(false);
+        // 点主时间轴空白 / 背景 / 既不是卡也不是控件的地方 → 关闭详情。
+        if (draftSelectedId !== null) setDraftSelectedId(null);
+        if (selectedId !== null) select(null);
+      }}
       onPointerMove={move} onPointerUp={finish} onPointerCancel={finish}
       onKeyDown={e => { if (e.target !== e.currentTarget) return; if (['ArrowLeft', 'ArrowRight', '+', '=', '-', 'Home'].includes(e.key)) e.preventDefault(); if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') setViewport(v => ({ ...v, start: v.start + (e.key === 'ArrowLeft' ? -1 : 1) * size.width / density * .2 })); if (e.key === '+' || e.key === '=') zoomTo(density * 1.5); if (e.key === '-') zoomTo(density / 1.5); if (e.key === 'Home') setViewport(v => ({ ...v, start: today - size.width / density * .28 })); }}>
       {/* 唯一的时间轴。年份、刻度、今天、任务锚点都围绕它。 */}
@@ -311,18 +330,44 @@ export function TimelineView() {
         const cardSub = draftSource
           ? `${draftSource.category ? `${draftSource.category} · ` : ''}${draftSource.deliverable || draftSource.goal || ''}${draftSource.status === 'draft' ? ' · 待确认' : ''}`
           : cardNote(item, start);
-        const cardY = upper ? axisY - 108 - Math.floor(lane / 2) * 86 : axisY + 40 + Math.floor(lane / 2) * 86;
+        const cardY = upper ? axisY - 108 - Math.floor(lane / 2) * 86 : axisY + 116 + Math.floor(lane / 2) * 86;
         const color = draftSource?.category
           ? categoryColors[draftSource.category] ?? '#829dc5'
           : item.node.category
             ? colors[item.node.category]
             : '#829dc5';
-        const rangeY = axisY + 7 + rangeLane * 4;
+        // 粗时间规划的阶段条:按 rangeLane 分层,避免重叠。
+        const barY = axisY + 10 + rangeLane * 34;
+        const barDraft = draftSource ? draftSource.status === 'draft' : false;
         const Icon = item.kind === 'milestone' ? Flag : item.kind === 'goal' ? Target : Circle;
         return <div key={id} data-timeline-item={id} data-draft={draftSource ? draftSource.status : undefined} data-start-date={dateString(item.start)} data-end-date={dateString(item.end)} className={`${styles.object} ${effectiveSelectedId === id ? styles.selected : ''} ${hovered && hovered !== id ? styles.dim : ''}`} style={{ '--color': color } as CSSProperties} onMouseEnter={() => setHovered(id)} onMouseLeave={() => setHovered(null)}>
           <svg className={styles.lines} aria-hidden="true"><path className={styles.connection} d={`M ${anchorX} ${axisY} V ${upper ? cardY + 84 : cardY - 12} L ${left + cardWidth / 2} ${upper ? cardY + 72 : cardY}`}/>
-            {item.end > item.start && <><line className={styles.range} x1={Math.max(0, x(item.start))} x2={Math.min(size.width, x(item.end))} y1={rangeY} y2={rangeY}/>{[item.start,item.end].filter(d => x(d) >= 0 && x(d) <= size.width).map(d => <circle key={d} className={styles.endpoint} cx={x(d)} cy={rangeY} r="2.5"/>)}</>}
+            {!draft && item.end > item.start && <><line className={styles.range} x1={Math.max(0, x(item.start))} x2={Math.min(size.width, x(item.end))} y1={axisY + 7} y2={axisY + 7}/>{[item.start,item.end].filter(d => x(d) >= 0 && x(d) <= size.width).map(d => <circle key={d} className={styles.endpoint} cx={x(d)} cy={axisY + 7} r="2.5"/>)}</>}
           </svg>
+          {/*
+           * 阶段覆盖条:有高度、有宽度、可点击。宽度 = 真实区间长度(相对周映射后);
+           * 按 rangeLane 分层避让,不互相盖住。草案虚线低饱和,确认后实线填充。
+           */}
+          {draft && item.end > item.start && (() => {
+            const barLeft = Math.max(0, x(item.start));
+            const barWidth = Math.max(26, Math.min(size.width, x(item.end)) - barLeft);
+            return <button
+              type="button"
+              data-testid="v1-phase-bar"
+              data-phase-id={id}
+              data-draft={barDraft ? 'true' : 'false'}
+              className={`${styles.phaseBar} ${barDraft ? styles.phaseBarDraft : styles.phaseBarPlanned}`}
+              style={{ left: barLeft, width: barWidth, top: barY, '--color': color } as CSSProperties}
+              aria-label={`${item.node.title}，${cardRange}${barDraft ? '，草案' : ''}`}
+              aria-pressed={effectiveSelectedId === id}
+              title={`${item.node.title} · ${cardRange}`}
+              onClick={() => choose(id)}
+              onPointerDown={e => beginItem(e, item)}
+            >
+              <strong>{item.node.title}</strong>
+              {cardSub && <small>{cardSub}</small>}
+            </button>;
+          })()}
           <button className={`${styles.point} ${item.start < start ? styles.continuation : item.kind === 'milestone' ? styles.milestone : item.kind === 'goal' ? styles.goal : ''}`} style={{ left: anchorX, top: axisY }} aria-label={`${item.node.title}${item.start < start ? '从此前延续' : '时间点'}`} onClick={() => choose(id)} onPointerDown={e => beginItem(e, item)}/>
           <button data-timeline-card data-draft={draftSource ? draftSource.status : undefined} className={`${styles.card} ${item.kind !== 'duration' ? styles.eventCard : ''} ${draftSource && draftSource.status === 'draft' ? styles.draftCard : ''}`} style={{ left, top: cardY, width: cardWidth }} aria-label={`${item.node.title}，${cardRange}`} aria-pressed={effectiveSelectedId === id} title={`${item.node.title} · ${cardRange}`} onClick={() => choose(id)} onPointerDown={e => beginItem(e, item)}>
             <time><Icon size={11}/>{draftSource?.index ? `阶段 ${draftSource.index} · ` : ''}{cardRange}</time><strong>{item.node.title}</strong><small>{cardSub}</small>
@@ -364,7 +409,7 @@ export function TimelineView() {
             left: Math.max(8, Math.min(Math.max(8, size.width - 272), selectedPlaced.left - 40)),
             top: Math.max(8, Math.min(size.height - 190, (selectedPlaced.lane % 2 === 0
               ? axisY - 108 - Math.floor(selectedPlaced.lane / 2) * 86
-              : axisY + 40 + Math.floor(selectedPlaced.lane / 2) * 86) + 80)),
+              : axisY + 116 + Math.floor(selectedPlaced.lane / 2) * 86) + 80)),
           }}
           onPointerDown={event => event.stopPropagation()}
         >
