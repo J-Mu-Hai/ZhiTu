@@ -37,13 +37,16 @@ export function V1PhaseNodeComponent({ data }: NodeProps<V1PhaseFlowNode>) {
 
   return (
     <div className={classes} role="group" aria-label={`阶段：${phase.title}`}>
-      <Handle type="target" position={Position.Left} isConnectable={false} />
+      <Handle type="target" id="phase-in" position={Position.Top} isConnectable={false} />
       <div className="v1-phase-head">
         <span className="v1-phase-index">{INDEX[phase.key]}</span>
         <strong className="v1-phase-title">{phase.title}</strong>
         <span className="v1-phase-badge">{v1PhaseStateLabel(phase.state)}</span>
       </div>
-      <p className="v1-phase-subtitle">{phase.subtitle}</p>
+      <p className="v1-phase-subtitle">
+        {phase.subtitle}
+        {data.childCount > 0 ? ` · ${data.childCount} 个待办节点` : ' · 暂无待办节点'}
+      </p>
 
       {data.isFocused ? (
         <p className="v1-phase-note">
@@ -59,7 +62,7 @@ export function V1PhaseNodeComponent({ data }: NodeProps<V1PhaseFlowNode>) {
         <p className="v1-phase-hint">当前阶段，点开继续。</p>
       ) : null}
 
-      <Handle type="source" position={Position.Bottom} isConnectable={false} />
+      <Handle type="source" id="phase-out" position={Position.Bottom} isConnectable={false} />
     </div>
   );
 }

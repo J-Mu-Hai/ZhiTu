@@ -183,6 +183,17 @@ test('当前 interaction 只在画布节点里,对话区只有位置提示', asy
   );
 
   await page.goto(`/workbench?workspace=${workspaceId}&view=path`);
+  // ---- 真实 ReactFlow 边:根 flow 节点直接分出三阶段,不是串成一条链 ----
+  await expect(page.locator('.v1-phase-node')).toHaveCount(3, { timeout: 20000 });
+  for (const key of ['think', 'plan', 'do'] as const) {
+    const edge = page.locator(`.react-flow__edge[data-id="v1phase-root:${key}"]`);
+    await expect(edge, `缺少根→${key}的边`).toHaveCount(1);
+    // source 必须是**真实根 flow 节点**(rootId),不是猜的 spaceId。
+    await expect(edge).toHaveAttribute('aria-label', `Edge from ${rootId} to v1phase:${key}`);
+  }
+  // 不允许再出现 think → plan → do 的视觉链条。
+  await expect(page.locator('.react-flow__edge[data-id^="v1phase-chain:"]')).toHaveCount(0);
+
   // 对话区只有一句“决定放在哪个节点”的位置提示:没有固定交互卡、没有排队输入。
   const notice = page.getByTestId('chat-action-notice');
   await expect(notice).toBeVisible({ timeout: 20000 });

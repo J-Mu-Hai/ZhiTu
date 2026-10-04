@@ -260,6 +260,14 @@ function GrowthNodeComponent({ id, data, selected }: NodeProps<GrowthFlowNode>) 
         </span>
       )}
       <Handle type="source" position={sourcePosition} />
+      {/*
+       * V1 三阶段骨架的**分叉出口**。它专门给“根目标 → 想清楚/排出来/做起来”
+       * 三条直接子边用:出口在底部,三条边向下扇形展开,而不是从右侧穿过彼此。
+       * 不写成默认 source,免得非 V1 的父子连线改道。
+       */}
+      {data.root && (
+        <Handle type="source" id="v1phase-fork" position={Position.Bottom} isConnectable={false} />
+      )}
     </div>
   );
 }
@@ -945,6 +953,12 @@ function Canvas() {
   // 后端全是好的,接口也返回了 200,没有任何东西会报错。
   const direct = Object.values(growth.nodes).filter((node) => node.parentId === spaceId);
   const isRootSpace = spaceId === growth.goalId;
+  //: V1 根空间的投影节点用带版本号的布局 key(见 memo 里那段说明)。
+  const isV1RootSpace = isRootSpace && Boolean(reasoning?.v1Stage);
+  const projectionLayoutKey = useCallback(
+    (nodeId: string) => (isV1RootSpace ? `${spaceId}:v1layout2:${nodeId}` : `${spaceId}:${nodeId}`),
+    [isV1RootSpace, spaceId],
+  );
   /**
    * 画布上**到底有没有可见内容**。
    *
@@ -1255,12 +1269,23 @@ function Canvas() {
             ? 'do'
             : null;
     const phaseIds: Partial<Record<V1PhaseKey, string>> = {};
+    // 真实根 flow id:根 flow 节点就是 `root.id`(见上面的 `add(root, …, true)`)。
+    // 阶段边显式用它,不猜 `spaceId` 是否等于根 id。
+    const rootFlowId = root.id;
     const rootPosition = positionById[spaceId] ?? { x: 0, y: 0 };
-    const phaseX = rootPosition.x + 340;
-    const phaseTop = rootPosition.y;
-    const phaseGap = 350;
+    const rootWidth = width(root);
+    const rootHeight = height(root);
+    /*
+     * 三个阶段在根目标**下方**排成一条横向主轴:间距均匀、整行居中于根目标。
+     * 三条边从根底部扇形向下,而不是同一条横线上从右侧穿过彼此。
+     */
+    const PHASE_W = 220;
+    const PHASE_GAP = 320;
+    const phaseRowWidth = Math.max(0, phases.length - 1) * PHASE_GAP + PHASE_W;
+    const phaseStartX = rootPosition.x + rootWidth / 2 - phaseRowWidth / 2;
+    const phaseTop = rootPosition.y + rootHeight + 150;
     const phasePosition = (key: V1PhaseKey) => ({
-      x: phaseX + phases.findIndex((phase) => phase.key === key) * phaseGap,
+      x: phaseStartX + phases.findIndex((phase) => phase.key === key) * PHASE_GAP,
       y: phaseTop,
     });
     phases.forEach((phase) => { phaseIds[phase.key] = `v1phase:${phase.key}`; });
@@ -1329,8 +1354,11 @@ function Canvas() {
       activeQuestion && !cappedShownQuestions.some((item) => item.id === activeQuestion.id)
         ? [...cappedShownQuestions.slice(0, 2), activeQuestion]
         : cappedShownQuestions;
+    const questionBindsInteraction = Boolean(activeInteraction && interactionPhaseKey === null);
     const hasActiveQuestionNode =
-      activeNodeKey != null && shownQuestions.some((item) => item.v1Key === activeNodeKey);
+      questionBindsInteraction &&
+      activeNodeKey != null &&
+      shownQuestions.some((item) => item.v1Key === activeNodeKey);
     const phaseForQuestion = (item: (typeof shownQuestions)[number]): V1PhaseKey => {
       if (!v1Space || !isRootSpace) return 'think';
       // 第一阶段先问“为什么 / 想解决什么 / 成功意味着什么”。时间容量、约束、
@@ -1360,14 +1388,18 @@ function Canvas() {
       const index = anchorCounts[phaseKey] ?? 0;
       anchorCounts[phaseKey] = index + 1;
       const nodeId = `question:${item.id}`;
-      const positionKey = `${spaceId}:${nodeId}`;
+      /*
+       * V1 根空间的投影节点用**版本化**布局 key:旧的未版本化的 localStorage 坐标
+       * 不再生效,新的树布局不会被历史坐标拉回散落位置。非 V1 保持原 key。
+       */
+      const positionKey = v1Space && isRootSpace
+        ? `${spaceId}:v1layout2:${nodeId}`
+        : `${spaceId}:${nodeId}`;
       // 用户拖过就听用户的(UI-only 位置表);否则给一个确定性的扇出位置,
       // 保证同一锚点下多个问题不堆叠、刷新前后一致。
-      // V1:每张问题卡明确排在所属阶段的下方。左右只用于同阶段多个问题
-      // 的避让，根目标和三个阶段始终保持一眼可读的横向主干。
-      const count = Math.max(1, questionCounts[phaseKey] ?? 1);
+      // V1:每张问题卡**纵向**排在所属阶段的正下方,不横向跨到邻居阶段下面。
       const fallback = v1Space
-        ? { x: anchor.x + (index - (count - 1) / 2) * 266, y: anchor.y + 172 }
+        ? { x: anchor.x + 18, y: anchor.y + 176 + index * 168 }
         : { x: anchor.x + 380, y: anchor.y + 200 };
       const placed = questionDragging[positionKey] ?? questionPositions[positionKey] ?? fallback;
       nextNodes.push({
@@ -1387,8 +1419,8 @@ function Canvas() {
           question: item,
           isPrimary: item.id === primaryQuestionId,
           isFocused: focusedQuestionId === item.id,
-          interaction: activeInteraction && item.v1Key === activeNodeKey ? activeInteraction : null,
-          isActive: Boolean(activeNodeKey != null && item.v1Key === activeNodeKey),
+          interaction: questionBindsInteraction && item.v1Key === activeNodeKey ? activeInteraction : null,
+          isActive: Boolean(questionBindsInteraction && activeNodeKey != null && item.v1Key === activeNodeKey),
           verticalAnchor: v1Space && isRootSpace,
         },
       });
@@ -1396,6 +1428,8 @@ function Canvas() {
       nextEdges.push({
         id: `question-anchor:${item.id}`,
         source: anchorId,
+        // V1 根空间:从阶段节点**底部**出口向下引出,子问题长在阶段正下方。
+        ...(v1Space && isRootSpace ? { sourceHandle: 'phase-out' } : {}),
         target: nodeId,
         type: 'questionAnchor',
         className: 'question-anchor-edge',
@@ -1422,15 +1456,17 @@ function Canvas() {
           : !activeInteraction && (reasoning?.v1Stage === 'weekly_execution' || reasoning?.v1Stage === 'replanning')
             ? { phaseKey: 'do' as const, title: '是否生成具体执行计划', prompt: '粗时间规划已经确认。要把当前阶段细化为本周任务和今日工作块吗？', action: 'generate_execution' as const }
             : null;
-      const interactionStage = activeInteraction && !hasActiveQuestionNode
-        ? interactionPhaseKey ?? 'think'
+      // review 类确认(战略 / 时间架构 / 周回顾)一定作为阶段子节点出现;
+      // 问答类绑到对应分析问题,没有对应问题时退回「想清楚」阶段子节点。
+      const interactionStage = activeInteraction
+        ? interactionPhaseKey ?? (hasActiveQuestionNode ? null : 'think')
         : null;
 
       phases.forEach((phase) => {
         const nodeId = phaseIds[phase.key]!;
-        const positionKey = `${spaceId}:${nodeId}`;
-        const fallback = phasePosition(phase.key);
-        const placed = questionDragging[positionKey] ?? questionPositions[positionKey] ?? fallback;
+        // 骨架坐标**只看版本化的默认布局**:阶段不可拖,也不读旧 localStorage,
+        // 免得历史坐标把三阶段拉回散落位置。
+        const placed = phasePosition(phase.key);
         const hasStageInteraction = interactionStage === phase.key || pendingStageAction?.phaseKey === phase.key;
         const childCount = (questionCounts[phase.key] ?? 0) + (hasStageInteraction ? 1 : 0);
         nextNodes.push({
@@ -1452,16 +1488,21 @@ function Canvas() {
           },
         });
       });
-      // 三个阶段都是根目标的直接孩子，不再伪装成“想清楚做完才视觉上长出排出来”。
+      // 三个阶段都是根目标的**直接子节点**:三条边都从真实根 flow 节点的底部出口
+      // 扇形向下,而不是首尾相接成一条链。zIndex 高于 question-anchor 虚线。
       phases.forEach((phase) => {
         nextEdges.push({
           id: `v1phase-root:${phase.key}`,
-          source: spaceId,
+          source: rootFlowId,
+          sourceHandle: 'v1phase-fork',
           target: phaseIds[phase.key]!,
+          targetHandle: 'phase-in',
           type: 'branch',
           className: 'v1-phase-edge',
           selectable: false,
           deletable: false,
+          focusable: false,
+          zIndex: 2,
           data: { __baseWidth: 1.8 },
         });
       });
@@ -1481,8 +1522,8 @@ function Canvas() {
         const parentId = phaseIds[stageChild.phaseKey]!;
         const parentPosition = phasePosition(stageChild.phaseKey);
         const nodeId = `v1interaction:${stageChild.phaseKey}:${stageChild.interaction?.nonce ?? stageChild.action}`;
-        // 已有分析问题先占第一行；阶段确认/选择作为下一行，绝不盖在卡片上。
-        const childRow = (questionCounts[stageChild.phaseKey] ?? 0) > 0 ? 1 : 0;
+        // 阶段确认/选择接在该阶段已有分析问题的**下一行**,与它们纵向排齐。
+        const questionCount = questionCounts[stageChild.phaseKey] ?? 0;
         nextNodes.push({
           id: nodeId,
           type: 'v1interaction',
@@ -1492,7 +1533,7 @@ function Canvas() {
           selectable: true,
           measured: measurements[nodeId],
           ariaLabel: stageChild.title,
-          position: { x: parentPosition.x, y: parentPosition.y + 172 + childRow * 230 },
+          position: { x: parentPosition.x + 18, y: parentPosition.y + 176 + questionCount * 168 },
           data: {
             phaseKey: stageChild.phaseKey,
             title: stageChild.title,
@@ -1505,6 +1546,7 @@ function Canvas() {
         nextEdges.push({
           id: `v1phase-child:${nodeId}`,
           source: parentId,
+          sourceHandle: 'phase-out',
           target: nodeId,
           type: 'questionAnchor',
           className: 'question-anchor-edge',
@@ -2361,11 +2403,12 @@ function Canvas() {
         onNodesChange={(changes) => {
           for (const change of changes) {
             if (change.type === 'position' && change.position && change.dragging) {
-              const key = `${spaceId}:${change.id}`;
               // 问题节点是 UI-only:拖动只进它自己的预览表,不进业务那份。
               if (change.id.startsWith('question:')) {
+                const key = projectionLayoutKey(change.id);
                 setQuestionDragging((old) => ({ ...old, [key]: change.position! }));
               } else {
+                const key = `${spaceId}:${change.id}`;
                 setDragging((old) => ({ ...old, [key]: change.position! }));
               }
             }
@@ -2380,7 +2423,9 @@ function Canvas() {
           }
         }}
         onNodeDragStop={(_, node) => {
-          const key = `${spaceId}:${node.id}`;
+          const key = node.type === 'question'
+            ? projectionLayoutKey(node.id)
+            : `${spaceId}:${node.id}`;
           const started = dragStart.current;
           dragStart.current = null;
           if (node.type === 'question') {
