@@ -86,6 +86,26 @@ export function v1CoreKeyFor(key: string | null | undefined): string | null {
 }
 
 /**
+ * V1 旧版**固定分组容器**键:目标重构 / 问题结构 / 战略路径。
+ *
+ * 它们是 `plan_nodes`(`node_type=capability`, `purpose=information`,
+ * `origin=ai`, `v1_key=…`)。新版工作流用 `想清楚 / 排出来 / 做起来` 三阶段取代了
+ * 这三个容器,所以根画布**不再投影**它们(数据保留,不删库)。
+ *
+ * 键取自后端 `v1_service._GROUPS` —— 用**稳定字段**判断,绝不按中文标题过滤。
+ */
+export const V1_LEGACY_GROUP_KEYS: readonly string[] = [
+  'goal_reframe',
+  'problem_structure',
+  'strategy_path',
+];
+
+/** 一个 `v1_key` 是不是旧版固定分组容器。 */
+export function isLegacyV1GroupKey(key: string | null | undefined): boolean {
+  return Boolean(key) && V1_LEGACY_GROUP_KEYS.includes(key as string);
+}
+
+/**
  * 粗时间架构是否**完整到可以呈现/确认**。
  *
  * 只有每个阶段都有时间范围 + 目标 + 成果 + 完成标准时,才允许自动导航到时间线、

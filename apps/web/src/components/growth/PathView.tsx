@@ -48,7 +48,7 @@ import {
   isDescriptionExempt,
 } from '@/lib/codepoints';
 import { useDemo } from '@/features/growth/provider';
-import { V1_CORE_GOAL_KEYS, V1_LINKED_CORE } from '@/features/growth/v1Analysis';
+import { V1_CORE_GOAL_KEYS, V1_LINKED_CORE, isLegacyV1GroupKey } from '@/features/growth/v1Analysis';
 import { v1Phases, type V1PhaseKey } from '@/features/growth/v1Workflow';
 import { useMobileLayout } from '@/lib/media';
 import type { GrowthEdge, GrowthNode, GrowthRelationType } from '@/types/growth';
@@ -1155,7 +1155,18 @@ function Canvas() {
     }
     const nextNodes: FlowNode[] = [];
     const nextEdges: Edge[] = [];
-    const all = Object.values(growth.nodes);
+    /*
+     * V1 根画布**投影过滤**:旧版固定分组容器(目标重构 / 问题结构 / 战略路径)
+     * 不再出现在节点、边、缩略图与计数里。
+     *
+     * 按 `v1Key`(后端 `plan_nodes.v1_key` 的稳定值)判断,不按中文标题过滤。
+     * 只过滤**V1 根空间** —— 进入子空间、非 V1 / V0.1 空间行为完全不变。
+     * 这里只影响投影,不删任何 `plan_nodes` / `agent_questions`。
+     */
+    const hideLegacyV1Groups = Boolean(reasoning?.v1Stage) && isRootSpace;
+    const all = Object.values(growth.nodes).filter(
+      (node) => !(hideLegacyV1Groups && isLegacyV1GroupKey(node.v1Key)),
+    );
     const directChildren = all.filter((node) => node.parentId === spaceId);
     const vertical = false;
 

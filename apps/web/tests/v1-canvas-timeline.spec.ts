@@ -416,3 +416,85 @@ test('V1 粗时间架构走中央主轴,草案可确认,相对周刻度稀疏', 
   // 旧的顶部预览卡片不出现。
   await expect(page.getByTestId('strategy-architecture-preview')).toHaveCount(0);
 });
+
+test('V1 根画布不投影旧版固定分组容器(目标重构 / 问题结构 / 战略路径)', async ({ page }) => {
+  const { token } = await registerAccount(page, 'v1-hide-groups');
+  const workspaceId = await createWorkspace(page, token, '隐藏旧分组', '我想学 Python 用于自动化');
+  const plan = await getPlan(page, token, workspaceId);
+  const rootId = plan.nodes.find(node => node.parentId === null)!.id;
+
+  // 用**真实** plan 再叠加旧版三个分组容器(nodeType=capability / purpose=information / v1Key=…)。
+  const group = (key: string, title: string, orderIndex: number) => ({
+    id: `group-${key}`,
+    parentId: rootId,
+    title,
+    description: '',
+    acceptanceCriteria: null,
+    nodeType: 'capability',
+    purpose: 'information',
+    planningLevel: null,
+    status: 'pending',
+    priority: 'medium',
+    estimateMinutes: null,
+    deadline: null,
+    depth: 1,
+    orderIndex,
+    origin: 'ai',
+    completedAt: null,
+    createdAt: new Date().toISOString(),
+    contentVersion: 1,
+    v1Key: key,
+    v1Analysis: null,
+  });
+  const planWithGroups = {
+    ...plan,
+    nodes: [
+      ...plan.nodes,
+      group('goal_reframe', '目标重构', 0),
+      group('problem_structure', '问题结构', 1),
+      group('strategy_path', '战略路径', 2),
+    ],
+  };
+  await page.route('**/api/workspaces/*/plan', route =>
+    route.request().method() === 'GET'
+      ? route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(planWithGroups) })
+      : route.continue(),
+  );
+  await installMock(
+    page,
+    baseView(workspaceId, rootId, {
+      v1Stage: 'strategy_draft',
+      v1VisibleAnalysisKeys: ['true_intent', 'key_conflict', 'goal_definition'],
+      v1Dimensions: [
+        dimension('true_intent', '真实意图', '想要能展示的成果。', true, true),
+        dimension('key_conflict', '关键矛盾', '目标太大、反馈太慢。', true),
+        dimension('goal_definition', '目标定义', '做出可展示的小工具。', true),
+      ],
+    }),
+    [
+      question(workspaceId, rootId, 'true_intent', '真实意图', '想要能展示的成果。'),
+      question(workspaceId, rootId, 'key_conflict', '关键矛盾', '目标太大、反馈太慢。'),
+      question(workspaceId, rootId, 'goal_definition', '目标定义', '做出可展示的小工具。'),
+    ],
+  );
+
+  await page.goto(`/workbench?workspace=${workspaceId}&view=path`);
+  // 三阶段骨架与三个基石问题仍保留。
+  await expect(page.locator('.v1-phase-node')).toHaveCount(3, { timeout: 20000 });
+  await expect(page.locator('.react-flow__node-question')).toHaveCount(3);
+
+  // 旧分组容器不在画布里(节点、缩略图同源,都用这份投影)。
+  await expect(page.locator('.react-flow__node[data-id^="group-"]')).toHaveCount(0);
+  const growthTitles = await page
+    .locator('.react-flow__node-growth .node-title')
+    .evaluateAll(els => els.map(el => (el.textContent ?? '').trim()));
+  expect(growthTitles).not.toContain('目标重构');
+  expect(growthTitles).not.toContain('问题结构');
+  expect(growthTitles).not.toContain('战略路径');
+
+  // 没有悬空线:不存在指向/来自被隐藏分组的边。
+  const edgeIds = await page.locator('.react-flow__edge').evaluateAll(
+    els => els.map(el => el.getAttribute('data-id') ?? ''),
+  );
+  expect(edgeIds.some(id => id.includes('group-'))).toBe(false);
+});
