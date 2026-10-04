@@ -115,9 +115,9 @@ export function v1Phases(reasoning: GoalReasoningView | null): V1PhaseView[] {
   const doState: V1PhaseState = planDone ? 'discussing' : 'locked';
 
   const phases: V1PhaseView[] = [
-    { key: 'think', title: '想清楚', subtitle: '目标、关键矛盾与战略路径', state: thinkState, active: false },
-    { key: 'plan', title: '排出来', subtitle: '时间节奏与粗时间架构', state: planState, active: false },
-    { key: 'do', title: '做起来', subtitle: '周 / 日计划与复盘', state: doState, active: false },
+    { key: 'think', title: '想清楚', subtitle: '目的、关键矛盾与战略路径', state: thinkState, active: false },
+    { key: 'plan', title: '排出来', subtitle: '按月覆盖的粗时间规划', state: planState, active: false },
+    { key: 'do', title: '做起来', subtitle: '具体执行、今日计划与复盘', state: doState, active: false },
   ];
   // 当前主轴阶段 = 第一个“未完成且未锁定”的阶段。全完成后没有 active。
   const activePhase = phases.find(
@@ -133,4 +133,4 @@ export const V1_READY_PROMPT =
 
 /** 用户开始之后,对话里的简短说明。 */
 export const V1_STARTED_NOTE =
-  '我已经把第一阶段拆成几个需要共同判断的节点，你可以从画布开始。';
+  '我已在“想清楚”下面放好当前最重要的问题；先完成这一段，再生成按月覆盖的粗时间规划。';

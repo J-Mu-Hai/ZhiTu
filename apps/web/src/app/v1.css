@@ -263,3 +263,23 @@
   stroke: var(--line-strong, #a9c0cd);
   stroke-width: 1.8;
 }
+
+/* 阶段下的待办是真正可操作的画布节点；卡片不再被塞进右侧对话或阶段标题里。 */
+.v1-interaction-node {
+  width: 248px;
+  display: grid;
+  gap: 7px;
+  padding: 12px 14px;
+  border: 1px solid #b9d5e8;
+  border-left: 3px solid var(--blue-ink, #2f6da3);
+  border-radius: 12px;
+  background: var(--surface-raised, #fff);
+  box-shadow: 0 8px 22px rgba(72, 99, 117, .08);
+  color: var(--text, #304b62);
+}
+.v1-interaction-node.is-focused { outline: 2px solid #c9e2f4; outline-offset: 3px; }
+.v1-interaction-node > strong { font-size: 13px; color: var(--text, #24486a); }
+.v1-interaction-node > p { font-size: 11px; line-height: 1.6; color: #52718b; }
+.v1-interaction-kicker { font-size: 10px; color: var(--blue-ink, #2f6da3); }
+.v1-interaction-hint { font-size: 10px; color: var(--muted, #7a8b99); }
+.v1-interaction-controls { display: grid; gap: 8px; }

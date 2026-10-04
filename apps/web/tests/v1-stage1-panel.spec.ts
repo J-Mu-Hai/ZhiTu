@@ -79,15 +79,15 @@ test.describe('V1 交互职责分离', () => {
     await composer.fill('我想学 Python，但不确定用来做什么，担心学不了');
     await page.getByLabel('发送消息').click();
 
-    // 三阶段骨架出现,且任意时刻至多一个 active 节点(问答子节点或阶段节点)。
+    // 三阶段骨架出现；当前结构化动作只会落在一个阶段子节点或分析问题节点。
     await expect(page.locator('.v1-phase-node')).toHaveCount(3, { timeout: 180_000 });
-    const activeNode = page.locator('.canvas-question-node.is-active, .v1-phase-node.is-active');
+    const activeNode = page.locator('.canvas-question-node.is-active, .v1-interaction-node');
     await expect(activeNode).toHaveCount(1, { timeout: 180_000 });
 
     // 点开 active 节点后,结构化控件出现在节点里(而不是对话区)。
     await activeNode.click();
     const nodeControls = activeNode.locator(
-      '[data-testid="cq-interaction"], [data-testid="cq-flow-action"], [data-testid="v1-phase-interaction"], [data-testid="v1-phase-flow-action"]',
+      '[data-testid="cq-interaction"], [data-testid="cq-flow-action"], [data-testid="v1-stage-question"]',
     );
     if (await nodeControls.count() > 0) {
       await expect(nodeControls.first()).toBeVisible();

@@ -55,6 +55,7 @@ import type { GrowthEdge, GrowthNode, GrowthRelationType } from '@/types/growth'
 import { SpaceFiles } from './SpaceFiles';
 import { CanvasQuestionNodeComponent, QuestionInteractionContext, type CanvasQuestionDraft, type QuestionFlowNode, type QuestionInteraction, type V1NodeActions } from './CanvasQuestionNode';
 import { V1PhaseNodeComponent, type V1PhaseFlowNode } from './V1PhaseNode';
+import { V1InteractionNodeComponent, type V1InteractionFlowNode } from './V1InteractionNode';
 import { ReasoningNodeComponent, type ReasoningFlowNode } from './ReasoningNode';
 import { downloadV1Audit, type ReasoningNodeView } from '@/lib/backend';
 
@@ -89,7 +90,7 @@ type GrowthFlowData = {
   onCreatedEnd: (id: string) => void;
 };
 type GrowthFlowNode = Node<GrowthFlowData, 'growth'>;
-type FlowNode = GrowthFlowNode | QuestionFlowNode | ReasoningFlowNode | V1PhaseFlowNode;
+type FlowNode = GrowthFlowNode | QuestionFlowNode | ReasoningFlowNode | V1PhaseFlowNode | V1InteractionFlowNode;
 
 const colors = {
   academic: '#749ce1',
@@ -298,7 +299,13 @@ type BodyNote =
   /** 别处改过同一段正文。带上服务端那一份,由用户决定留哪一段。 */
   | { kind: 'conflict'; serverBody: string; message: string };
 
-const nodeTypes = { growth: GrowthNodeComponent, question: CanvasQuestionNodeComponent, reasoning: ReasoningNodeComponent, v1phase: V1PhaseNodeComponent };
+const nodeTypes = {
+  growth: GrowthNodeComponent,
+  question: CanvasQuestionNodeComponent,
+  reasoning: ReasoningNodeComponent,
+  v1phase: V1PhaseNodeComponent,
+  v1interaction: V1InteractionNodeComponent,
+};
 
 /** Siblings share an outgoing lane, without drawing extra junction dots. */
 function BranchEdge(props: EdgeProps) {
@@ -1238,7 +1245,7 @@ function Canvas() {
      */
     const activeInteraction =
       currentInteraction && currentInteraction.status === 'active' ? currentInteraction : null;
-    const reviewPhaseKey: V1PhaseKey | null = !activeInteraction
+    const interactionPhaseKey: V1PhaseKey | null = !activeInteraction
       ? null
       : activeInteraction.kind === 'strategy_review'
         ? 'think'
@@ -1248,8 +1255,14 @@ function Canvas() {
             ? 'do'
             : null;
     const phaseIds: Partial<Record<V1PhaseKey, string>> = {};
-    const phaseX = (positionById[spaceId]?.x ?? 0) + 340;
-    const phaseTop = (positionById[spaceId]?.y ?? 0) - 40;
+    const rootPosition = positionById[spaceId] ?? { x: 0, y: 0 };
+    const phaseX = rootPosition.x + 340;
+    const phaseTop = rootPosition.y;
+    const phaseGap = 350;
+    const phasePosition = (key: V1PhaseKey) => ({
+      x: phaseX + phases.findIndex((phase) => phase.key === key) * phaseGap,
+      y: phaseTop,
+    });
     phases.forEach((phase) => { phaseIds[phase.key] = `v1phase:${phase.key}`; });
 
     // ---- 问题节点(纯投影) --------------------------------------------------
@@ -1289,8 +1302,8 @@ function Canvas() {
     // `isRootSpace` 在组件体上方已声明(line 917),这里直接复用 —— 不能在本回调里
     // 再声明一次:同作用域更早处已经用了它,`const` 会造成 TDZ
     // (“Cannot access 'isRootSpace' before initialization”,整页白屏)。
-    // active interaction 绑到哪个**真实节点**:review 类绑阶段节点,问答类绑分析子节点;
-    // 子节点不存在时退回「想清楚」阶段节点 —— 不再有纯合成的 interaction 节点。
+    // active interaction 绑到哪张分析问题卡；没有真实问题承接的确认动作，会以
+    // 阶段的可操作子节点呈现，而不是塞回阶段标题或右侧对话框。
     const activeNodeKey = activeInteraction?.focusKey ?? null;
     const activeQuestion =
       activeNodeKey != null
@@ -1318,32 +1331,43 @@ function Canvas() {
         : cappedShownQuestions;
     const hasActiveQuestionNode =
       activeNodeKey != null && shownQuestions.some((item) => item.v1Key === activeNodeKey);
-    const phaseInteractionKey: V1PhaseKey | null = !activeInteraction
-      ? null
-      : reviewPhaseKey ?? (hasActiveQuestionNode ? null : 'think');
-    const anchorCounts: Record<string, number> = {};
+    const phaseForQuestion = (item: (typeof shownQuestions)[number]): V1PhaseKey => {
+      if (!v1Space || !isRootSpace) return 'think';
+      // 第一阶段先问“为什么 / 想解决什么 / 成功意味着什么”。时间容量、约束、
+      // 杠杆和风险在“排出来”阶段有了整体方向后再展开，避免一进来像问卷。
+      if (['hard_constraints', 'controllable_factors', 'key_levers', 'major_risks', 'external_conditions'].includes(item.v1Key ?? '')) return 'plan';
+      return 'think';
+    };
+    const questionCounts: Partial<Record<V1PhaseKey, number>> = {};
     shownQuestions.forEach((item) => {
-      // 根层可见的分析维度锚到**想清楚**阶段(没有骨架时退回根目标)。
+      const phaseKey = phaseForQuestion(item);
+      questionCounts[phaseKey] = (questionCounts[phaseKey] ?? 0) + 1;
+    });
+    const anchorCounts: Partial<Record<V1PhaseKey, number>> = {};
+    shownQuestions.forEach((item) => {
+      const phaseKey = phaseForQuestion(item);
+      // 根层的分析维度从所属阶段向下生长；进入某分组时仍沿用原来源节点。
       const anchorId =
         v1Space && isRootSpace
-          ? phaseIds.think ?? spaceId
+          ? phaseIds[phaseKey] ?? spaceId
           : item.sourceNodeId && positionById[item.sourceNodeId]
             ? item.sourceNodeId
             : phaseIds.think ?? spaceId;
       const anchor =
-        phaseIds.think && anchorId === phaseIds.think
-          ? { x: phaseX, y: phaseTop }
+        v1Space && isRootSpace
+          ? phasePosition(phaseKey)
           : positionById[anchorId] ?? { x: 0, y: 0 };
-      const index = anchorCounts[anchorId] ?? 0;
-      anchorCounts[anchorId] = index + 1;
+      const index = anchorCounts[phaseKey] ?? 0;
+      anchorCounts[phaseKey] = index + 1;
       const nodeId = `question:${item.id}`;
       const positionKey = `${spaceId}:${nodeId}`;
       // 用户拖过就听用户的(UI-only 位置表);否则给一个确定性的扇出位置,
       // 保证同一锚点下多个问题不堆叠、刷新前后一致。
-      // V1:分析节点排在**想清楚阶段节点的右侧**,不与纵向主链争位置。
-      const count = Math.max(1, shownQuestions.length);
+      // V1:每张问题卡明确排在所属阶段的下方。左右只用于同阶段多个问题
+      // 的避让，根目标和三个阶段始终保持一眼可读的横向主干。
+      const count = Math.max(1, questionCounts[phaseKey] ?? 1);
       const fallback = v1Space
-        ? { x: anchor.x + 300, y: anchor.y + (index - (count - 1) / 2) * 150 }
+        ? { x: anchor.x + (index - (count - 1) / 2) * 266, y: anchor.y + 172 }
         : { x: anchor.x + 380, y: anchor.y + 200 };
       const placed = questionDragging[positionKey] ?? questionPositions[positionKey] ?? fallback;
       nextNodes.push({
@@ -1365,6 +1389,7 @@ function Canvas() {
           isFocused: focusedQuestionId === item.id,
           interaction: activeInteraction && item.v1Key === activeNodeKey ? activeInteraction : null,
           isActive: Boolean(activeNodeKey != null && item.v1Key === activeNodeKey),
+          verticalAnchor: v1Space && isRootSpace,
         },
       });
       // 仅 UI 的锚定虚线:**不是 NodeRelation、不是 dependency**,不写任何表。
@@ -1386,19 +1411,28 @@ function Canvas() {
     /*
      * ---- V1 三阶段骨架节点 ----------------------------------------------
      *
-     * 真实、可点击、可展开的阶段容器;不写任何表(见 `features/growth/v1Workflow.ts`)。
-     * 战略确认 / 时间架构确认这类待办挂到对应阶段节点上,不再有合成的 interaction 节点。
+     * 根目标直接分出三个同级阶段。阶段是稳定骨架，问题 / 选择 / 确认作为
+     * 下方子节点出现；因此用户始终知道“当前问题属于哪个阶段”。
      */
     if (phases.length > 0) {
-      const phaseChildCount = shownQuestions.length;
-      phases.forEach((phase, index) => {
+      const pendingStageAction = !activeInteraction && goalConfirmable
+        ? { phaseKey: 'think' as const, title: '确认目标定义', prompt: '这是否准确描述了你真正想实现的结果？', action: 'confirm_goal' as const }
+        : !activeInteraction && continueStrategy
+          ? { phaseKey: 'think' as const, title: '形成战略路径', prompt: '现有判断已经足以形成一条主线战略吗？', action: 'continue_strategy' as const }
+          : !activeInteraction && (reasoning?.v1Stage === 'weekly_execution' || reasoning?.v1Stage === 'replanning')
+            ? { phaseKey: 'do' as const, title: '是否生成具体执行计划', prompt: '粗时间规划已经确认。要把当前阶段细化为本周任务和今日工作块吗？', action: 'generate_execution' as const }
+            : null;
+      const interactionStage = activeInteraction && !hasActiveQuestionNode
+        ? interactionPhaseKey ?? 'think'
+        : null;
+
+      phases.forEach((phase) => {
         const nodeId = phaseIds[phase.key]!;
         const positionKey = `${spaceId}:${nodeId}`;
-        const fallback = { x: phaseX, y: phaseTop + index * 264 };
+        const fallback = phasePosition(phase.key);
         const placed = questionDragging[positionKey] ?? questionPositions[positionKey] ?? fallback;
-        const carriesInteraction = phaseInteractionKey === phase.key;
-        const carriesFlowAction =
-          phase.key === 'think' && !activeInteraction && (goalConfirmable || continueStrategy);
+        const hasStageInteraction = interactionStage === phase.key || pendingStageAction?.phaseKey === phase.key;
+        const childCount = (questionCounts[phase.key] ?? 0) + (hasStageInteraction ? 1 : 0);
         nextNodes.push({
           id: nodeId,
           type: 'v1phase',
@@ -1412,38 +1446,73 @@ function Canvas() {
           position: placed,
           data: {
             phase,
-            childCount: phase.key === 'think' ? phaseChildCount : 0,
-            interaction: carriesInteraction ? activeInteraction : null,
-            isActive: carriesInteraction || carriesFlowAction || phase.active,
+            childCount,
+            isActive: hasStageInteraction || phase.active,
             isFocused: focusedPhaseKey === phase.key,
-            goalConfirmable: carriesFlowAction && goalConfirmable,
-            continueStrategy: carriesFlowAction && continueStrategy,
-            runPlanEnabled:
-              phase.key === 'do' &&
-              (reasoning?.v1Stage === 'weekly_execution' || reasoning?.v1Stage === 'replanning'),
           },
         });
       });
-      // 主链:根目标 → 想清楚 → 排出来 → 做起来。
-      nextEdges.push({
-        id: 'v1phase-chain:root',
-        source: spaceId,
-        target: phaseIds.think!,
-        type: 'branch',
-        className: 'v1-phase-edge',
-        selectable: false,
-        deletable: false,
-        data: { __baseWidth: 1.8 },
-      });
-      for (let index = 1; index < phases.length; index += 1) {
+      // 三个阶段都是根目标的直接孩子，不再伪装成“想清楚做完才视觉上长出排出来”。
+      phases.forEach((phase) => {
         nextEdges.push({
-          id: `v1phase-chain:${index}`,
-          source: phaseIds[phases[index - 1].key]!,
-          target: phaseIds[phases[index].key]!,
-          type: 'v1phase',
+          id: `v1phase-root:${phase.key}`,
+          source: spaceId,
+          target: phaseIds[phase.key]!,
+          type: 'branch',
           className: 'v1-phase-edge',
           selectable: false,
           deletable: false,
+          data: { __baseWidth: 1.8 },
+        });
+      });
+
+      const stageChild = activeInteraction && interactionStage
+        ? {
+            phaseKey: interactionStage,
+            title: activeInteraction.title || '需要共同确认的一点',
+            prompt: activeInteraction.prompt || '请确认这一项后继续。',
+            interaction: activeInteraction,
+            action: null,
+          }
+        : pendingStageAction
+          ? { ...pendingStageAction, interaction: null }
+          : null;
+      if (stageChild) {
+        const parentId = phaseIds[stageChild.phaseKey]!;
+        const parentPosition = phasePosition(stageChild.phaseKey);
+        const nodeId = `v1interaction:${stageChild.phaseKey}:${stageChild.interaction?.nonce ?? stageChild.action}`;
+        // 已有分析问题先占第一行；阶段确认/选择作为下一行，绝不盖在卡片上。
+        const childRow = (questionCounts[stageChild.phaseKey] ?? 0) > 0 ? 1 : 0;
+        nextNodes.push({
+          id: nodeId,
+          type: 'v1interaction',
+          draggable: false,
+          connectable: false,
+          deletable: false,
+          selectable: true,
+          measured: measurements[nodeId],
+          ariaLabel: stageChild.title,
+          position: { x: parentPosition.x, y: parentPosition.y + 172 + childRow * 230 },
+          data: {
+            phaseKey: stageChild.phaseKey,
+            title: stageChild.title,
+            prompt: stageChild.prompt,
+            interaction: stageChild.interaction,
+            action: stageChild.action,
+            isFocused: focusedPhaseKey === stageChild.phaseKey,
+          },
+        });
+        nextEdges.push({
+          id: `v1phase-child:${nodeId}`,
+          source: parentId,
+          target: nodeId,
+          type: 'questionAnchor',
+          className: 'question-anchor-edge',
+          selectable: false,
+          deletable: false,
+          reconnectable: false,
+          focusable: false,
+          zIndex: 0,
         });
       }
     }
@@ -2187,6 +2256,10 @@ function Canvas() {
         onNodeClick={(_, node) => {
           if (node.type === 'v1phase') {
             setFocusedPhaseKey(node.data.phase.key);
+            return;
+          }
+          if (node.type === 'v1interaction') {
+            setFocusedPhaseKey(node.data.phaseKey);
             return;
           }
           if (node.type === 'question') {

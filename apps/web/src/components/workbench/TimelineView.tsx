@@ -187,14 +187,27 @@ export function TimelineView() {
     const first = Math.min(...draft.items.map(item => item.start));
     const last = Math.max(...draft.items.map(item => item.end));
     const span = Math.max(7, last - first + 14);
-    const nextDensity = Math.max(.25, Math.min(160, (size.width - 140) / span));
+    // 粗时间架构的首屏先停在“月”尺度：它的职责是看见阶段覆盖的时间长度，
+    // 不是把 30 天方案一进来就放大成按周/按日的执行视图。用户仍可自由切换
+    // 年 / 季度 / 月 / 周 / 日，且后续平移缩放不受这一初始值影响。
+    const fittedDensity = (size.width - 140) / span;
+    const nextDensity = Math.max(.25, Math.min(zoomPresets.month, fittedDensity));
     setViewport({ start: first - 20 / nextDensity, density: nextDensity });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft, measured, size.width]);
 
   function zoomTo(nextDensity: number) {
     const next = Math.max(.25, Math.min(160, nextDensity));
-    setViewport(v => ({ start: anchoredZoom(v.start, v.density, next, size.width / 2), density: next }));
+    setViewport(v => {
+      // 粗时间架构在月级首屏时常只占视口左半边。若仍机械地围绕屏幕正中
+      // 缩放，切到“周 / 天”会把阶段甩到屏外，只剩一片空白。草案模式改为
+      // 围绕阶段区间中心；普通时间线仍沿用用户当前视口中心的直觉。
+      const focus = draft
+        ? (Math.min(...draft.items.map(item => item.start)) + Math.max(...draft.items.map(item => item.end))) / 2
+        : v.start + size.width / (2 * v.density);
+      const anchor = (focus - v.start) * v.density;
+      return { start: anchoredZoom(v.start, v.density, next, anchor), density: next };
+    });
     setClusterOpen(false);
   }
   function choose(id: string) {

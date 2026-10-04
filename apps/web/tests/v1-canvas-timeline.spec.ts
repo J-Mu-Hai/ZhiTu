@@ -270,8 +270,8 @@ test('时间架构共创:先对齐节奏,认可后才生成时间线', async ({ 
   await expect(page.getByTestId('v1-timeline-alignment')).toHaveCount(0);
   await expect(page.getByTestId('chat-action-notice')).toContainText('排出来');
 
-  // 结构化动作只在 active 画布节点里(时间节奏绑在「排出来」阶段节点上)。
-  const activeNode = page.locator('.v1-phase-node.is-active');
+  // 结构化动作只在「排出来」下面的子问题节点里，阶段卡本身只做导航。
+  const activeNode = page.locator('.v1-interaction-node[data-phase="plan"]');
   await expect(activeNode).toHaveCount(1);
   await activeNode.click();
   await expect(activeNode).toContainText('更希望更快见成果');

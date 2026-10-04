@@ -48,6 +48,8 @@ export type CanvasQuestionData = {
   interaction?: V1CurrentInteraction | null;
   /** 这个节点是不是当前唯一 active 的那个(高亮用,不闪烁)。 */
   isActive?: boolean;
+  /** V1 三阶段树的子问题从父阶段向下连接，而不是横向漂浮。 */
+  verticalAnchor?: boolean;
   /** 目标定义节点:是否可以确认目标定义(无 interaction 的流程动作,也只在节点里)。 */
   goalConfirmable?: boolean;
   /** 继续形成战略路径(无 interaction 的流程动作)。 */
@@ -530,7 +532,7 @@ export function CanvasQuestionNodeComponent({ data }: NodeProps<QuestionFlowNode
         节点,不需要可连接的 source handle;这个 handle 只是给锚定边一个确定的落点
         (`isConnectable={false}` + 节点 `connectable:false` 一起保证它拖不出新边)。
       */}
-      <Handle type="target" position={Position.Left} isConnectable={false} />
+      <Handle type="target" position={data.verticalAnchor ? Position.Top : Position.Left} isConnectable={false} />
       {/*
         阶段 10:先展示 **AI 已经判断了什么**,再问“需要你确认的一点”。问题节点默认
         看得到判断、推荐与影响 —— 它不再像一张调查问卷。
