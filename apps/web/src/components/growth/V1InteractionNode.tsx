@@ -67,9 +67,12 @@ export function V1InteractionNodeComponent({ data }: NodeProps<V1InteractionFlow
         </button>
       ) : data.isFocused && data.action === 'generate_execution' && v1 ? (
         <div className="v1-interaction-controls">
-          <p className="cq-context">会先生成一份待确认的本周任务；确认写入后，任务面板与首页的今日计划会同步读取这份计划。</p>
+          <p className="cq-context">先生成待确认的本周任务；确认写入后，再生成今天的工作块。任务面板与首页只读取确认后的正式计划。</p>
           <button type="button" className="cq-submit nodrag" disabled={busy} onPointerDown={press(() => v1.onRunPlanStep('weekly'))}>
-            生成具体执行计划
+            生成本周任务草案
+          </button>
+          <button type="button" className="cq-more nodrag" disabled={busy} onPointerDown={press(() => v1.onRunPlanStep('daily'))}>
+            已确认周计划后，生成今天工作块
           </button>
         </div>
       ) : (
