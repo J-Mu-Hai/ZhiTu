@@ -482,6 +482,43 @@ class UpdateNodeRequest(ApiModel):
     content_version: int | None = None
 
 
+class CreateWeekPlanRequest(ApiModel):
+    """用户从时间线手工创建一份**本周计划**。
+
+    周计划是挂在某个正式阶段下面的 `stage` 节点,`planning_level` 固定为 `week`。
+    周次由 `week_start`(那周的周一,ISO 日期)唯一确定 —— 同一 `(阶段, 周次)`
+    任何时刻只允许一个活跃版本,服务端据此幂等:已存在就返回既有的那一个,不再新建。
+    """
+
+    parent_id: uuid.UUID
+    #: 该周的**周一**。它是 `(阶段, 周次)` 里的周次,不是随便一个落在周内的日期。
+    week_start: date
+
+
+class CreateSessionRequest(ApiModel):
+    """用户从时间线手工排一个**日工作块**。
+
+    写进 `scheduled_sessions` —— 和排期算法写的是**同一张表、同一条真相**,不是
+    另起一套「时间线任务」。所以它同时出现在日轨道和首页「今天」里。
+    """
+
+    node_id: uuid.UUID
+    scheduled_date: date
+    planned_minutes: int = Field(gt=0, le=24 * 60)
+    #: 当天第几分钟。**可空** —— 用户只说"这天做 30 分钟"时不要凭空造一个时钟时间。
+    start_minute: int | None = Field(default=None, ge=0, lt=24 * 60)
+    end_minute: int | None = Field(default=None, gt=0, le=24 * 60)
+
+
+class SessionEditResponse(ApiModel):
+    """一次手工排期写入的结果:那一行场次。
+
+    **不带 `revision_version`**:排期不推计划版本(见 `schedule_service`)。
+    """
+
+    session: SessionPayload
+
+
 class CreateDependencyRequest(ApiModel):
     predecessor_id: uuid.UUID
     successor_id: uuid.UUID
@@ -640,6 +677,8 @@ __all__ = [
     "CreateDependencyRequest",
     "CreateNodeRequest",
     "CreateRelationRequest",
+    "CreateSessionRequest",
+    "CreateWeekPlanRequest",
     "DependencyPayload",
     "LayoutPayload",
     "LayoutPositionPayload",
@@ -654,6 +693,7 @@ __all__ = [
     "RelationPayload",
     "RestoreResponse",
     "ScopeViewportPayload",
+    "SessionEditResponse",
     "SessionPayload",
     "UpdateNodeRequest",
     "UpdateRelationRequest",

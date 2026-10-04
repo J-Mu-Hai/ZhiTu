@@ -54,6 +54,9 @@ AUTHENTICATED_ROUTES = {
     ("POST", "/api/workspaces/{workspace_id}/messages"),
     ("GET", "/api/workspaces/{workspace_id}/plan"),
     ("POST", "/api/workspaces/{workspace_id}/nodes"),
+    # 时间线按尺度直接写入正式计划:周计划与手工工作块。都需要登录。
+    ("POST", "/api/workspaces/{workspace_id}/week-plans"),
+    ("POST", "/api/workspaces/{workspace_id}/sessions"),
     ("PATCH", "/api/workspaces/{workspace_id}/nodes/{node_id}"),
     ("DELETE", "/api/workspaces/{workspace_id}/nodes/{node_id}"),
     ("GET", "/api/workspaces/{workspace_id}/nodes/{node_id}/archive-impact"),

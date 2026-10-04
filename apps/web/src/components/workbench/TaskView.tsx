@@ -59,8 +59,12 @@ export function TaskView() {
   // (它在服务端的排期查询里就被排掉了,「今天」也不会给它安排时间),把它当任务列在
   // 这里,用户会对着一个既没有勾选框、又永远不会出现在日历上的条目反复找原因。
   // 后端那边 `totalNodes` / `completedNodes` 用的是同一条判据。
+  //
+  // **里程碑与任务一起列**。用户从时间线月尺度手工建的"月度里程碑"是一条正式
+  // `PlanNode`(nodeType=milestone),它同样是要做成的一件事 —— 只收 `task` 的话,
+  // 界面上会出现"时间线里刚建好,任务面板里 0 项"的错位。
   const tasks = Object.values(growth.nodes).filter(
-    n => n.type === 'task' && n.purpose !== 'information' && isInSpace(growth, n.id, spaceId),
+    n => (n.type === 'task' || n.type === 'milestone') && n.purpose !== 'information' && isInSpace(growth, n.id, spaceId),
   );
   // "今天"和"本周"以前连着 `DEMO_TODAY` 和两个写死的日期 —— 见 timeline.ts 里
   // `todayInTimeZone` 的注释。现在跟着用户所在时区的真实日期走。

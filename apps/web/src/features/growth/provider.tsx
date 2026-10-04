@@ -394,6 +394,14 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
   const [planLoading, setPlanLoading] = useState(space.kind === 'real');
   const [planError, setPlanError] = useState<string | null>(null);
   const [planSaving, setPlanSaving] = useState(false);
+  /**
+   * 计划之外的写入计数 —— 目前只有「手工排的日工作块」。
+   *
+   * 场次不推 `plan_revisions`,而 `/today` 是按人聚合的排期查询。时间线里排了一个
+   * 工作块之后,首页若要**立刻**一致,需要一个「今天的数据脏了」的信号;`useToday`
+   * 监听这个计数重新拉 `/api/today`。不引入 WebSocket:同一页与切页都以重新拉取为准。
+   */
+  const [todayRevision, setTodayRevision] = useState(0);
   const isReal = space.kind === 'real';
 
   /**
@@ -1816,12 +1824,18 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     purpose?: GrowthNode['purpose'];
     description?: string;
     estimateMinutes?: number | null;
+    /** 挂到哪个节点下面。不传就是当前空间(既有行为)。 */
+    parentId?: string;
+    /** 规划层级(`strategy` / `phase` / `month` / `week` / `day`)。可空。 */
+    planningLevel?: string | null;
+    /** 截止日。**注意它是「意图」不是「安排」** —— 见 `GrowthNode.deadline`。 */
+    deadline?: string | null;
     /** 流坐标。给了就把它写成这个节点在**归属层级**里的位置。 */
     position?: { x: number; y: number } | null;
   }): Promise<GrowthNode | null> {
     const title = options.title.trim();
     if (!title || !isReal) return null;
-    const parentId = currentSpaceId;
+    const parentId = options.parentId ?? currentSpaceId;
     const created = await mutatePlan(() => backend.createNode(space.id, {
       parentId,
       title,
@@ -1831,6 +1845,8 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
       // 建的时候就能填工时 —— 建完再去详情里补,是"先创建一份排不进去的东西,
       // 再回来修"的两步路,而排期读的正是这个字段。
       estimateMinutes: options.estimateMinutes ?? null,
+      deadline: options.deadline === undefined ? undefined : options.deadline || null,
+      planningLevel: options.planningLevel ?? null,
     }));
     if (!created) return null;
     // **从响应里投影,不读 `growthRef`。** 那面镜子是在**渲染时**才被赋值的
@@ -1849,6 +1865,36 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
       });
     }
     return node;
+  }
+
+  /**
+   * 手工创建某一周的「本周计划」。**服务端幂等** —— 同一 `(阶段, 周次)` 只会有一个
+   * 活跃版本,重复调用返回既有的那一个。
+   *
+   * 用户从时间线写的是正式计划,不经过提案;失败把错误留在 `planError` 上,并返回
+   * `null`,调用方的输入草稿因此不会被清掉。
+   */
+  async function createWeekPlan(parentId: string, weekStart: string): Promise<GrowthNode | null> {
+    if (!isReal) return null;
+    const result = await mutatePlan(() => backend.createWeekPlan(space.id, { parentId, weekStart }));
+    if (!result) return null;
+    return toGrowthNode(result.node);
+  }
+
+  /**
+   * 手工排一个日工作块。**写进 `scheduled_sessions`。**
+   *
+   * 成功后 `refreshPlan()`(由 `mutatePlan` 做)让日轨道与任务面板看到它;
+   * 同时把 `todayRevision` 推进一位,首页的 `useToday` 据此重拉 `/api/today`。
+   */
+  async function createSession(nodeId: string, scheduledDate: string, plannedMinutes: number): Promise<boolean> {
+    if (!isReal) return false;
+    const result = await mutatePlan(() => backend.createSession(space.id, {
+      nodeId, scheduledDate, plannedMinutes,
+    }));
+    if (!result) return false;
+    setTodayRevision(revision => revision + 1);
+    return true;
   }
 
   /**
@@ -2438,6 +2484,8 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     // 计划。`revisionVersion` 是"你眼前这份是第几版" —— 界面上比对提案的
     // `baseRevisionVersion` 用它,能在发请求**之前**发现"你看的那份已经旧了"。
     plan, planLoading, planError, planSaving, setPlanError, revisionVersion: plan?.revisionVersion ?? 0,
+    // 计划之外的写入计数(目前只有手工排的日工作块)。首页 `useToday` 靠它重拉 /today。
+    todayRevision,
     // `refreshPlan` 也对外给出去:排期应用之后要重拉计划,而那条路径在组件里
     // (它还要显示"这次动了多少场"),不该为了统一而塞进 `mutatePlan` 的通用错误处理。
     refreshPlan,
@@ -2484,7 +2532,7 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     // 布局落库的那三样。`layoutReady` 是"后端那份问过了",自动 fit 要等它;
     // `layoutError` 与 `retryLayoutSave` 是保存失败时界面上那一行和那个按钮。
     layoutReady, layoutError, retryLayoutSave,
-    enterSpace, updateNode, setNodeStatus, addNode, saveNodeBody,
+    enterSpace, updateNode, setNodeStatus, addNode, createWeekPlan, createSession, saveNodeBody,
     // 长正文(笔记)按需读、整份存。**与 `saveNodeBody` 是两条独立的账**:
     // 各带各的版本号,互不让对方的保存失败 —— 见 `saveNodeNote`。
     loadNodeNote, saveNodeNote,

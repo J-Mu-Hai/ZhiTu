@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import * as backend from '@/lib/backend';
 import { ApiError } from '@/lib/api';
+import { useDemo } from '@/features/growth/provider';
 
 /**
  * 「今天」的真实数据,以及往上报一次执行结果。
@@ -34,6 +35,9 @@ function describe(error: unknown): string {
 type RecordExtra = Partial<Omit<backend.RecordExecutionPayload, 'result' | 'idempotencyKey'>>;
 
 export function useToday(enabled: boolean) {
+  // 时间线里手工排的工作块不推计划版本,所以这里单独听一个计数 —— 它一变就重拉
+  // `/api/today`。不引入 WebSocket:同页与切页都以"重新拉取"为准。
+  const { todayRevision } = useDemo();
   const [data, setData] = useState<backend.TodayResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -85,7 +89,7 @@ export function useToday(enabled: boolean) {
       return;
     }
     void refresh();
-  }, [enabled, refresh]);
+  }, [enabled, refresh, todayRevision]);
 
   const record = useCallback(
     async (sessionId: string, result: backend.ExecutionResult, extra: RecordExtra = {}) => {

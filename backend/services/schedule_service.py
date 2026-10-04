@@ -47,7 +47,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import date, timedelta
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -75,7 +75,12 @@ from backend.db.models import (
     UserCapacityProfile,
     Workspace,
 )
-from backend.db.models.enums import NodePurpose, ScheduledSessionStatus, WorkspaceStatus
+from backend.db.models.enums import (
+    NodePurpose,
+    ScheduledSessionOrigin,
+    ScheduledSessionStatus,
+    WorkspaceStatus,
+)
 from backend.scheduler import diff as scheduler_diff
 from backend.scheduler.calendar import build_day_pools
 from backend.scheduler.schedule import recovery_options, simulate
@@ -114,6 +119,8 @@ from backend.services.context import WorkspaceContext
 from backend.services.errors import (
     ConcurrencyConflict,
     IdempotencyKeyReused,
+    InvalidInput,
+    NodeNotFound,
     StaleSchedulePreview,
 )
 from backend.services.timeutil import today_in
@@ -676,6 +683,92 @@ async def apply(
             # 的槽位)。那是真 bug,以原貌暴露,不把它伪装成一次幂等命中。
             raise
         return _replay(prior, request_hash)
+
+
+@dataclass(frozen=True, slots=True)
+class SessionEditOutcome:
+    """一次手工排期的结果:那一行场次,以及它挂着的节点标题。
+
+    `node_title` 冗余带上,是因为接口载荷 `SessionPayload` 要它,而写入路径手里
+    本来就有节点 —— 让路由再查一次表只为了拿一个已经在手里的字符串是不必要的。
+    """
+
+    session: ScheduledSession
+    node_title: str
+
+
+async def create_user_session(
+    db: AsyncSession,
+    ctx: WorkspaceContext,
+    *,
+    node_id: uuid.UUID,
+    scheduled_date: date,
+    planned_minutes: int,
+    start_minute: int | None = None,
+    end_minute: int | None = None,
+) -> SessionEditOutcome:
+    """用户从时间线手工排一个日工作块。**写进 `scheduled_sessions`。**
+
+    这是「哪天做」的唯一表示,与排期算法写的是同一张表 —— 不是另起一套时间线任务。
+    因此它天然出现在日轨道与首页「今天」里,不需要任何同步。
+
+    **不推 `plan_revisions`**:它改的是「哪天做」而不是「要做什么」,与
+    `schedule_service.apply` 同一条纪律(理由见本模块顶部)。
+    """
+    if start_minute is not None and end_minute is not None and start_minute >= end_minute:
+        raise InvalidInput("开始时间必须早于结束时间。")
+    node = await db.scalar(
+        select(PlanNode).where(
+            PlanNode.id == node_id,
+            PlanNode.workspace_id == ctx.id,
+            PlanNode.deleted_at.is_(None),
+        )
+    )
+    if node is None:
+        raise NodeNotFound("这个节点不在当前空间里。")
+    if node.purpose is not NodePurpose.PLANNING:
+        raise InvalidInput("信息主题不进排期,不能给它排工作块。")
+    # 同一天同一节点的序号从既有最大值往后排,避开 `uq_scheduled_sessions_slot`。
+    max_seq = await db.scalar(
+        select(func.max(ScheduledSession.seq)).where(
+            ScheduledSession.node_id == node.id,
+            ScheduledSession.scheduled_date == scheduled_date,
+            ScheduledSession.status.not_in(_NOT_CANCELABLE),
+        )
+    )
+    row = ScheduledSession(
+        user_id=ctx.user.user_id,
+        workspace_id=ctx.id,
+        node_id=node.id,
+        scheduled_date=scheduled_date,
+        start_minute=start_minute,
+        end_minute=end_minute,
+        planned_minutes=planned_minutes,
+        buffer_minutes=0,
+        seq=int(max_seq or 0) + 1,
+        status=ScheduledSessionStatus.PLANNED,
+        locked=False,
+        origin=ScheduledSessionOrigin.USER,
+    )
+    db.add(row)
+    await db.flush()
+    db.add(
+        DomainEvent(
+            user_id=ctx.user.user_id,
+            workspace_id=ctx.id,
+            kind="session_created_by_user",
+            ref_type="scheduled_session",
+            ref_id=row.id,
+            payload={
+                "nodeId": str(node.id),
+                "scheduledDate": scheduled_date.isoformat(),
+                "plannedMinutes": planned_minutes,
+            },
+            created_at=utcnow(),
+        )
+    )
+    await db.commit()
+    return SessionEditOutcome(session=row, node_title=node.title)
 
 
 async def _write_sessions(

@@ -4,9 +4,10 @@ import { CalendarDays, CalendarClock, X, Flag, Circle, Target } from 'lucide-rea
 import { useRouter } from 'next/navigation';
 import type { GrowthNode } from '@/types/growth';
 import { useDemo } from '@/features/growth/provider';
-import { anchoredZoom, dateString, dateToX, dayNumber, draftTimelineItems, getVisibleItems, layoutItems, timelineItems, timelineTicks, unscheduledNodes, zoomLevelFor, zoomLabels, zoomPresets, todayInTimeZone, type TimelineItem, type ZoomLevel } from '@/features/growth/timeline';
+import { anchoredZoom, dateString, dateToX, dayNumber, draftTimelineItems, getVisibleItems, layoutItems, timelineItems, timelineTicks, unscheduledNodes, weekBounds, xToDate, zoomLevelFor, zoomLabels, zoomPresets, todayInTimeZone, type TimelineItem, type ZoomLevel } from '@/features/growth/timeline';
 import { StrategyArchitecturePreview } from './StrategyArchitecturePreview';
 import { V01TimelineAxis } from './V01TimelineAxis';
+import { TimelineCreatePopover, type TimelineCreateSubmission, type TimelineCreateTarget } from './TimelineCreatePopover';
 import styles from './TimelineView.module.css';
 
 const colors = { academic: '#749ce1', research: '#61ad9e', experience: '#c7a06e', personal: '#a294ce' };
@@ -92,7 +93,7 @@ type Gesture = { x: number; start: number };
  * 说一次,不再用一条常驻说明占空间。
  */
 export function TimelineView() {
-  const { growth, selectedId, select, apply, updateNode, spaceId, workspaceId, isRealSpace, planError, timelineViewport: viewport, setTimelineViewport: setViewport, timelineAnchor, setTimelineAnchor, reasoning, confirmRemote, rejectRemote, deciding } = useDemo();
+  const { growth, selectedId, select, apply, updateNode, spaceId, workspaceId, isRealSpace, planError, planSaving, timelineViewport: viewport, setTimelineViewport: setViewport, timelineAnchor, setTimelineAnchor, reasoning, confirmRemote, rejectRemote, deciding, addNode, createWeekPlan, createSession } = useDemo();
   const router = useRouter();
   // 每次渲染重新算一次。它只在跨过午夜时才会变,而这个组件本来就会因为别的原因
   // 重渲染很多次 —— 为它加一个定时器是没必要的复杂度。
@@ -110,6 +111,11 @@ export function TimelineView() {
   const [startInput, setStartInput] = useState(''), [endInput, setEndInput] = useState('');
   const canvas = useRef<HTMLDivElement>(null);
   const gesture = useRef<Gesture | null>(null);
+  /** 这一次按下是否真的拖动了 —— 拖过就不是"点空白创建",不该弹创建浮层。 */
+  const dragMoved = useRef(false);
+  // 时间线上的轻量创建入口(月 / 周 / 日)。为 null 时不显示。
+  const [createTarget, setCreateTarget] = useState<TimelineCreateTarget | null>(null);
+  const [creating, setCreating] = useState(false);
   const { start, density } = viewport;
   const level = zoomLevelFor(density), end = start + size.width / density;
   /*
@@ -209,6 +215,17 @@ export function TimelineView() {
    * `/plan` 里(可恢复)。当前时间线**不能**把“第1版”和“第2版”并列展示,所以这里
    * 排除归档版本,并按 (阶段, 本周计划/下周预览) 去重:同一锚点只留一个活跃周计划。
    */
+  /*
+   * 用户手工创建的周计划把周次写进标题(`本周计划:阶段 · 2026-10-05`)。AI 建的
+   * 版本没有日期后缀,退回阶段区间。`(阶段, 周次)` 去重就用解析出来的周起始日:
+   * 同一周不会因为重规划而留下两条,不同周也不会被合并成一条。
+   */
+  const weekStartFromTitle = (title: string): number | null => {
+    const match = /·\s*(\d{4})-(\d{2})-(\d{2})$/.exec(title);
+    if (!match) return null;
+    const day = dayNumber(`${match[1]}-${match[2]}-${match[3]}`);
+    return Number.isFinite(day) ? day : null;
+  };
   const weekItems: TimelineItem[] = [];
   if (draft && (level === 'week' || level === 'day')) {
     const seen = new Set<string>();
@@ -218,10 +235,34 @@ export function TimelineView() {
       const parent = node.parentId ? growth.nodes[node.parentId] : undefined;
       const range = parent ? phaseRangeByTitle.get(parent.title) : undefined;
       if (!range) continue;
-      const slot = `${node.parentId ?? ''}:${node.title.startsWith('下周预览') ? 'next' : 'current'}`;
+      const label = node.title.startsWith('下周预览') ? 'next' : 'current';
+      const parsed = weekStartFromTitle(node.title);
+      const start = parsed ?? range.start;
+      const end = parsed !== null ? parsed + 6 : range.end;
+      // 同一周只留一个活跃版本;归档版本已在上面排除。
+      const slot = `${node.parentId ?? ''}:${label}:${dateString(start)}`;
       if (seen.has(slot)) continue;
       seen.add(slot);
-      weekItems.push({ node, start: range.start, end: range.end, kind: 'duration', derived: false, track: 'week', itemId: `week:${node.id}` });
+      weekItems.push({ node, start, end, kind: 'duration', derived: false, track: 'week', itemId: `week:${node.id}` });
+    }
+  }
+  /*
+   * 月尺度的正式里程碑 / 月度任务。
+   *
+   * V1 草案阶段条画的是 `v01Timeline` 里那几个阶段,用户从时间线手工建的里程碑
+   * **不在其中** —— 不单独画出来的话,"创建成功"在月尺度上什么也看不见。
+   */
+  const monthItems: TimelineItem[] = [];
+  if (draft && level === 'month') {
+    for (const node of Object.values(growth.nodes)) {
+      if (node.archived) continue;
+      const looksLikeMilestone = node.type === 'milestone' || node.title.startsWith('月度里程碑');
+      const isMonthTask = node.type === 'task' && node.planningLevel === 'month';
+      if (!looksLikeMilestone && !isMonthTask) continue;
+      const start = node.startDate ? dayNumber(node.startDate) : NaN;
+      if (!Number.isFinite(start)) continue;
+      const end = node.endDate && Number.isFinite(dayNumber(node.endDate)) ? Math.max(start, dayNumber(node.endDate)) : start;
+      monthItems.push({ node, start, end, kind: looksLikeMilestone ? 'milestone' : 'event', derived: false, track: 'week', itemId: `month:${node.id}` });
     }
   }
   const dayItems: TimelineItem[] = [];
@@ -251,6 +292,7 @@ export function TimelineView() {
   };
   const weekLanes = packLanes(weekItems, () => 168);
   const dayLanes = packLanes(dayItems, () => 96);
+  const monthLanes = packLanes(monthItems, () => 150);
 
   const selected = selectedId ? growth.nodes[selectedId] : null;
 
@@ -300,11 +342,20 @@ export function TimelineView() {
     return () => window.removeEventListener('keydown', onKey);
   }, [draftSelectedId, selectedId, select]);
   // 进入粗时间线时**聚焦全部阶段一次**,但不锁死后续缩放/平移。
-  const fittedDraftRef = useRef<TimelineItem[] | null>(null);
+  //
+  // 守卫用的是**内容的稳定指纹**,不是 `draft.items` 的数组引用:推理视图被任何
+  // 无关刷新重建时,`useMemo` 会给出一个新数组,拿引用比会误判成"换了一份草案"
+  // 而把用户刚缩到的周 / 天尺度打回月尺度。用户建完一份周计划,
+  // 时间线不该跳回月。
+  const fittedDraftKey = useMemo(
+    () => (draft ? draft.items.map(item => `${item.itemId ?? item.node.id}:${item.start}:${item.end}`).join('|') : ''),
+    [draft],
+  );
+  const fittedDraftRef = useRef<string | null>(null);
   useEffect(() => {
     if (!draft || !measured || size.width <= 0) return;
-    if (fittedDraftRef.current === draft.items) return;
-    fittedDraftRef.current = draft.items;
+    if (fittedDraftRef.current === fittedDraftKey) return;
+    fittedDraftRef.current = fittedDraftKey;
     const first = Math.min(...draft.items.map(item => item.start));
     const last = Math.max(...draft.items.map(item => item.end));
     const span = Math.max(7, last - first + 14);
@@ -318,7 +369,7 @@ export function TimelineView() {
     const nextDensity = Math.max(.25, Math.min(11, fittedDensity));
     setViewport({ start: first - 20 / nextDensity, density: nextDensity });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draft, measured, size.width]);
+  }, [draft, fittedDraftKey, measured, size.width]);
 
   function zoomTo(nextDensity: number) {
     const next = Math.max(.25, Math.min(160, nextDensity));
@@ -333,6 +384,130 @@ export function TimelineView() {
       return { start: anchoredZoom(v.start, v.density, next, anchor), density: next };
     });
     setClusterOpen(false);
+  }
+
+  /**
+   * 时间线上的第几天属于哪个**正式阶段**。
+   *
+   * `draft.items` 是 v01 时间线的投影,它们的 `planNodeId` 指向确认后写下的正式
+   * `stage` 节点。用户手工建的东西必须挂在这个真实节点下面 —— 挂到投影上等于又
+   * 造了一份没有落库的假数据。没有 `planNodeId`(时间线还没确认)时不提供创建入口。
+   */
+  function formalPhaseAt(day: number): { phaseId: string; phaseTitle: string } | null {
+    if (!draft || !draft.items.length) return null;
+    const distance = (item: TimelineItem) => day < item.start ? item.start - day : day > item.end ? day - item.end : 0;
+    const ranked = [...draft.items].sort((a, b) => distance(a) - distance(b) || (a.end - a.start) - (b.end - b.start));
+    const chosen = ranked[0];
+    if (!chosen) return null;
+    const source = v01Items.find(entry => entry.id === (chosen.itemId ?? chosen.node.id));
+    const formalId = source?.planNodeId
+      ?? Object.values(growth.nodes).find(node => node.type === 'stage' && !node.archived && node.title === chosen.node.title)?.id
+      ?? null;
+    if (!formalId) return null;
+    return { phaseId: formalId, phaseTitle: chosen.node.title };
+  }
+
+  /**
+   * 这个阶段在这周是否已经有一个活跃的本周计划。
+   *
+   * 用户手工建的在标题里带周起始日,精确匹配;AI 建的没有日期后缀,只在"这周就是
+   * 当前周"时把它当成活跃周计划 —— 否则用户会在同一阶段下凭空多出第二份"本周"。
+   */
+  function activeWeekPlanId(phaseId: string, weekStartDay: number): string | null {
+    const startStr = dateString(weekStartDay);
+    const candidates = Object.values(growth.nodes).filter(node =>
+      node.type === 'stage' && !node.archived && node.parentId === phaseId && /^本周计划[:：]/.test(node.title));
+    const exact = candidates.find(node => node.title.endsWith(startStr));
+    if (exact) return exact.id;
+    const isCurrentWeek = weekStartDay <= today && today <= weekStartDay + 6;
+    const legacy = candidates.find(node => !/·\s*\d{4}-\d{2}-\d{2}$/.test(node.title));
+    return isCurrentWeek ? legacy?.id ?? null : null;
+  }
+
+  /** 把某个日期带到视野中间 —— 新创建的节点"定位并选中"里的"定位"。 */
+  function centerOn(day: number) {
+    setViewport(v => ({ ...v, start: day - size.width / (2 * v.density) }));
+  }
+
+  /** 点空白 -> 在点击的月 / 周 / 日槽里打开轻量创建浮层。 */
+  function openCreateAt(clientX: number, clientY: number) {
+    const element = canvas.current;
+    if (!element || !draft || !isRealSpace) return;
+    if (level !== 'month' && level !== 'week' && level !== 'day') return;
+    const rect = element.getBoundingClientRect();
+    const clickX = clientX - rect.left;
+    const clickY = clientY - rect.top;
+    const rawDay = xToDate(clickX, start, density);
+    // 周尺度吸附到那一周的周一;月 / 日吸附到最近的一天。
+    const day = level === 'week' ? dayNumber(weekBounds(dateString(rawDay)).start) : Math.round(rawDay);
+    const phase = formalPhaseAt(day);
+    if (!phase) return;
+    const weekStart = dayNumber(weekBounds(dateString(day)).start);
+    const date = new Date(Math.round(day) * 86400000);
+    const label = level === 'month'
+      ? `${date.getUTCMonth() + 1}月`
+      : level === 'week'
+        ? `${date.getUTCMonth() + 1}月 · 第${Math.floor((date.getUTCDate() - 1) / 7) + 1}周`
+        : dateString(day);
+    setCreateTarget({
+      scale: level,
+      day,
+      dayLabel: label,
+      phaseId: phase.phaseId,
+      phaseTitle: phase.phaseTitle,
+      weekStart,
+      existingWeekId: activeWeekPlanId(phase.phaseId, weekStart),
+      x: Math.max(8, Math.min(clickX, Math.max(8, size.width - 236))),
+      y: Math.max(8, Math.min(clickY, Math.max(8, size.height - 190))),
+    });
+  }
+
+  /**
+   * 轻量创建浮层提交。**用户从时间线写的是正式计划,直接落库,不进提案。**
+   *
+   * 返回 `false` 时浮层留在原地、输入草稿不丢;`planError` 由 provider 设置并显示。
+   */
+  async function submitCreate(submission: TimelineCreateSubmission): Promise<boolean> {
+    const target = createTarget;
+    if (!target) return false;
+    setCreating(true);
+    try {
+      const dayStr = dateString(target.day);
+      const parentId = target.existingWeekId ?? target.phaseId;
+      if (target.scale === 'month') {
+        const created = await addNode({
+          parentId: target.phaseId,
+          title: submission.title,
+          nodeType: submission.kind === 'milestone' ? 'milestone' : 'task',
+          planningLevel: 'month',
+          deadline: dayStr,
+        });
+        if (!created) return false;
+        select(created.id); centerOn(target.day);
+      } else if (target.scale === 'week') {
+        if (submission.kind === 'week-plan') {
+          const created = await createWeekPlan(target.phaseId, dateString(target.weekStart));
+          if (!created) return false;
+          select(created.id); centerOn(target.weekStart);
+        } else {
+          const created = await addNode({ parentId, title: submission.title, nodeType: 'task', planningLevel: 'week' });
+          if (!created) return false;
+          select(created.id);
+        }
+      } else {
+        const created = await addNode({ parentId, title: submission.title, nodeType: 'task', planningLevel: 'day', deadline: dayStr });
+        if (!created) return false;
+        if (submission.kind === 'workblock') {
+          const ok = await createSession(created.id, dayStr, submission.minutes ?? 30);
+          if (!ok) return false;
+        }
+        select(created.id); centerOn(target.day);
+      }
+      setCreateTarget(null);
+      return true;
+    } finally {
+      setCreating(false);
+    }
   }
   function choose(id: string) {
     if (draft) { setDraftSelectedId(id); return; }
@@ -352,7 +527,10 @@ export function TimelineView() {
   }
   function move(event: PointerEvent) {
     const drag = gesture.current;
-    if (drag) setViewport(v => ({ ...v, start: drag.start - (event.clientX - drag.x) / v.density }));
+    if (drag) {
+      if (Math.abs(event.clientX - drag.x) > 3) dragMoved.current = true;
+      setViewport(v => ({ ...v, start: drag.start - (event.clientX - drag.x) / v.density }));
+    }
   }
   function finish() { gesture.current = null; }
   function reveal(item: TimelineItem) { choose(item.node.id); setClusterOpen(false); setViewport(v => ({ ...v, start: item.start - size.width / v.density * .35 })); }
@@ -417,12 +595,19 @@ export function TimelineView() {
     )}
     {planError && <div className={styles.error} role="alert"><span>{planError}</span></div>}
     <div ref={canvas} className={styles.canvas} role="region" aria-label="成长时间线" aria-describedby="timeline-help" tabIndex={0} data-testid="timeline-canvas" data-ready={measured} data-start={start} data-density={density}
-      onPointerDown={e => { if (e.button !== 0 || (e.target as HTMLElement).closest('button,input,[data-cluster-panel],[data-unscheduled-panel],[data-testid="v1-phase-detail"]')) return; e.currentTarget.setPointerCapture(e.pointerId); gesture.current = { x: e.clientX, start }; setClusterOpen(false); setUnscheduledOpen(false);
+      onPointerDown={e => { if (e.button !== 0 || (e.target as HTMLElement).closest('button,input,select,textarea,[data-timeline-item],[data-testid="v1-week-bar"],[data-testid="v1-day-block"],[data-testid="v1-month-node"],[data-cluster-panel],[data-unscheduled-panel],[data-testid="v1-phase-detail"],[data-testid="timeline-create-popover"]')) return; dragMoved.current = false; e.currentTarget.setPointerCapture(e.pointerId); gesture.current = { x: e.clientX, start }; setClusterOpen(false); setUnscheduledOpen(false);
         // 点主时间轴空白 / 背景 / 既不是卡也不是控件的地方 → 关闭详情。
         if (draftSelectedId !== null) setDraftSelectedId(null);
         if (selectedId !== null) select(null);
+        if (createTarget !== null) setCreateTarget(null);
       }}
       onPointerMove={move} onPointerUp={finish} onPointerCancel={finish}
+      onClick={e => {
+        if ((e.target as HTMLElement).closest('button,input,select,textarea,[data-timeline-item],[data-testid="v1-week-bar"],[data-testid="v1-day-block"],[data-testid="v1-month-node"],[data-cluster-panel],[data-unscheduled-panel],[data-testid="v1-phase-detail"],[data-testid="timeline-create-popover"]')) return;
+        // 拖过空白是平移,不是"点空白创建";不弹创建浮层。
+        if (dragMoved.current) { dragMoved.current = false; return; }
+        openCreateAt(e.clientX, e.clientY);
+      }}
       onKeyDown={e => { if (e.target !== e.currentTarget) return; if (['ArrowLeft', 'ArrowRight', '+', '=', '-', 'Home'].includes(e.key)) e.preventDefault(); if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') setViewport(v => ({ ...v, start: v.start + (e.key === 'ArrowLeft' ? -1 : 1) * size.width / density * .2 })); if (e.key === '+' || e.key === '=') zoomTo(density * 1.5); if (e.key === '-') zoomTo(density / 1.5); if (e.key === 'Home') setViewport(v => ({ ...v, start: today - size.width / density * .28 })); }}>
       {/* 唯一的时间轴。年份、刻度、今天、任务锚点都围绕它。 */}
       <div className={styles.axis} style={{ top: axisY }}/><div className={styles.past} style={{ top: axisY, width: Math.max(0, Math.min(size.width, x(today))) }}/><span className={styles.axisEnd} style={{ top: axisY }}>›</span>
@@ -533,6 +718,30 @@ export function TimelineView() {
           </>)}
         </div>;
       })}
+      {/* 月尺度:用户手工建 / 已确认的正式里程碑与月度任务。 */}
+      {monthItems.map(item => {
+        const id = item.itemId ?? item.node.id;
+        const lane = monthLanes.get(id) ?? 0;
+        const left = Math.max(SAFE_EDGE, Math.min(size.width - 150 - SAFE_EDGE, x(item.start) - 52));
+        const isMilestone = item.node.type === 'milestone' || item.node.title.startsWith('月度里程碑');
+        const phaseTitle = item.node.parentId ? growth.nodes[item.node.parentId]?.title ?? '' : '';
+        const picked = selectedId === item.node.id;
+        return <div
+          key={id}
+          data-testid="v1-month-node"
+          data-node-id={item.node.id}
+          data-selected={picked ? 'true' : 'false'}
+          className={`${styles.monthNode} ${isMilestone ? styles.monthNodeMilestone : ''} ${picked ? styles.monthNodeSelected : ''}`}
+          style={{ left, top: laneY.dailyBase + lane * 28 }}
+          title={`${item.node.title} · ${dateString(item.start)}`}
+          onClick={() => select(item.node.id)}
+          onPointerDown={event => event.stopPropagation()}
+        >
+          <span className={styles.monthNodeTag}>{isMilestone ? '里程碑' : '任务'}</span>
+          <strong>{item.node.title}</strong>
+          <small>{phaseTitle || dateString(item.start)}</small>
+        </div>;
+      })}
       {/* 周尺度:当前**未归档**的“本周计划 / 下周预览”节点,放在周计划轨道。 */}
       {weekItems.map(item => {
         const id = item.itemId ?? item.node.id;
@@ -550,7 +759,8 @@ export function TimelineView() {
           data-week-id={item.node.id}
           data-preview={isPreview ? 'true' : 'false'}
           data-current={isCurrent ? 'true' : 'false'}
-          className={`${styles.weekBar} ${isPreview ? styles.weekBarPreview : ''} ${isCurrent ? styles.weekBarCurrent : ''}`}
+          data-selected={selectedId === item.node.id ? 'true' : 'false'}
+          className={`${styles.weekBar} ${isPreview ? styles.weekBarPreview : ''} ${isCurrent ? styles.weekBarCurrent : ''} ${selectedId === item.node.id ? styles.trackSelected : ''}`}
           style={{ left: nodeLeft, top: laneY.weeklyBase + lane * laneY.weeklyStep }}
           title={`${item.node.title} · ${tasks.length} 项`}
         >
@@ -568,7 +778,8 @@ export function TimelineView() {
           key={id}
           data-testid="v1-day-block"
           data-session-id={item.itemId}
-          className={styles.dayBlock}
+          data-selected={selectedId === item.node.id ? 'true' : 'false'}
+          className={`${styles.dayBlock} ${selectedId === item.node.id ? styles.trackSelected : ''}`}
           style={{ left, top: laneY.dailyBase + lane * laneY.dailyStep }}
           title={item.node.title}
         >
@@ -633,6 +844,16 @@ export function TimelineView() {
           )}
           {draftSelected.whyHere && <p>为何排在这里：{draftSelected.whyHere}</p>}
         </div>
+      )}
+      {/* 点月 / 周 / 日空白 -> 就地写正式计划。失败留在原地,草稿不丢。 */}
+      {createTarget && (
+        <TimelineCreatePopover
+          target={createTarget}
+          saving={creating || planSaving}
+          error={planError}
+          onSubmit={submitCreate}
+          onClose={() => setCreateTarget(null)}
+        />
       )}
     </div>
     {!draft && selectedSource && <div className={styles.inspector} data-testid="date-inspector">

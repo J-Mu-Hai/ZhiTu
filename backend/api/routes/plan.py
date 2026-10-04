@@ -35,6 +35,8 @@ from backend.contracts.plan import (
     CreateDependencyRequest,
     CreateNodeRequest,
     CreateRelationRequest,
+    CreateSessionRequest,
+    CreateWeekPlanRequest,
     DependencyPayload,
     LayoutPayload,
     NodeEditResponse,
@@ -47,6 +49,8 @@ from backend.contracts.plan import (
     PutNoteRequest,
     RelationPayload,
     RestoreResponse,
+    SessionEditResponse,
+    SessionPayload,
     UpdateNodeRequest,
     UpdateRelationRequest,
 )
@@ -65,6 +69,7 @@ from backend.services import (
     note_service,
     plan_service,
     proposal_service,
+    schedule_service,
 )
 from backend.services.context import WorkspaceContext
 
@@ -120,6 +125,61 @@ async def create_node(
         planning_level=payload.planning_level,
     )
     return _edit_response(result)
+
+
+@router.post(
+    "/{workspace_id}/week-plans",
+    response_model=NodeEditResponse,
+    status_code=201,
+    summary="新建本周计划",
+)
+async def create_week_plan(
+    payload: CreateWeekPlanRequest,
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+) -> NodeEditResponse:
+    """用户在时间线上为某个阶段手工创建**某一周**的周计划。
+
+    **幂等**:同一 `(阶段, 周次)` 已经有一个活跃周计划时,返回既有的那一个,
+    不再新建、也不写空版本。周次由 `weekStart`(那周的周一)唯一确定。
+    用户手工写的是正式计划,不经过提案。
+    """
+    result = await node_service.create_week_plan(
+        db, ctx, parent_id=payload.parent_id, week_start=payload.week_start
+    )
+    return _edit_response(result)
+
+
+@router.post(
+    "/{workspace_id}/sessions",
+    response_model=SessionEditResponse,
+    status_code=201,
+    summary="手工排一个日工作块",
+)
+async def create_session(
+    payload: CreateSessionRequest,
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+) -> SessionEditResponse:
+    """用户从时间线直接写一个工作块。
+
+    写进 `scheduled_sessions` —— 与排期算法同一张表、同一条真相,所以它同时出现在
+    日轨道和首页「今天」里。用户手工写入不进提案。
+    """
+    outcome = await schedule_service.create_user_session(
+        db,
+        ctx,
+        node_id=payload.node_id,
+        scheduled_date=payload.scheduled_date,
+        planned_minutes=payload.planned_minutes,
+        start_minute=payload.start_minute,
+        end_minute=payload.end_minute,
+    )
+    return SessionEditResponse(
+        session=SessionPayload.model_validate(
+            plan_service.session_to_dict(outcome.session, outcome.node_title)
+        )
+    )
 
 
 @router.patch(

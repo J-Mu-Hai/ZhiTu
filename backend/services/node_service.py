@@ -102,6 +102,7 @@ from backend.db.models.enums import (
     NodeRelationType,
     NodeStatus,
     NodeType,
+    PlanningLevel,
     Priority,
     RevisionActor,
     RevisionTrigger,
@@ -398,6 +399,85 @@ async def create_node(
             depth=parent.depth + 1,
             origin=origin,
             v1_key=v1_key,
+        )
+        db.add(node)
+        await db.flush()
+        node.plan_revision_id = change.revision_id
+        change.record(kind="node_created", node_id=node.id, payload={"title": node.title})
+        return EditResult(node=node, revision_version=change.version)
+
+
+async def create_week_plan(
+    db: AsyncSession,
+    ctx: WorkspaceContext,
+    *,
+    parent_id: uuid.UUID,
+    week_start: date,
+) -> EditResult:
+    """用户手工创建某个阶段下**某一周**的「本周计划」。**幂等。**
+
+    周次就是 `week_start`(那周的周一)。标题把它带上,于是
+    `(阶段, 周次)` 在库里唯一可判:同阶段同标题的活跃 `stage` 若已存在,
+    直接把既有的那一个返回 —— 用户在时间线同一格点第二次不该多出一个节点,
+    也不该在历史里留下一个空的版本。
+
+    周计划是 `stage`(`node_type=stage`)、`planning_level=week`,任务挂在它下面。
+    这与 `v01_service.generate_weekly_plan` 建的 AI 周计划是**同一种东西**,只是
+    一个由用户直接写、一个走提案确认 —— 两者在时间线与任务面板里长得一样。
+    """
+    parent = await load_node(db, ctx, parent_id)
+    if parent.node_type is not NodeType.STAGE:
+        raise InvalidInput("周计划只能挂在阶段下面。")
+    # 标题带上 ISO 周起始日。阶段名可能接近 200 字,先让出前后缀的宽度再截断。
+    prefix = "本周计划:"
+    suffix = f" · {week_start.isoformat()}"
+    room = max(1, 200 - len(prefix) - len(suffix))
+    title = f"{prefix}{parent.title[:room]}{suffix}"
+
+    async with _each_change(db, ctx, trigger_detail=f"创建了「{title}」") as change:
+        # 父节点在锁里重读 —— 与 `create_node` 同一个理由:锁外读到的层级可能已经过期。
+        parent = await load_node(db, ctx, parent_id)
+        existing = await db.scalar(
+            select(PlanNode)
+            .where(
+                PlanNode.workspace_id == ctx.id,
+                PlanNode.parent_id == parent.id,
+                PlanNode.title == title,
+                PlanNode.node_type == NodeType.STAGE,
+                PlanNode.status.in_((NodeStatus.PENDING, NodeStatus.DOING)),
+                PlanNode.deleted_at.is_(None),
+            )
+            .limit(1)
+        )
+        if existing is not None:
+            # 同一 (阶段, 周次) 的活跃周计划已经在 —— 幂等返回,不写第二份。
+            change.skip = True
+            return EditResult(node=existing, revision_version=change.version)
+
+        level_conflict = child_level_conflicts(parent.planning_level, PlanningLevel.WEEK)
+        if level_conflict is not None:
+            raise InvalidInput(level_conflict)
+        sibling_count = await db.scalar(
+            select(func.count(PlanNode.id)).where(
+                PlanNode.workspace_id == ctx.id,
+                PlanNode.parent_id == parent.id,
+                PlanNode.deleted_at.is_(None),
+            )
+        )
+        node = PlanNode(
+            id=uuid.uuid4(),
+            workspace_id=ctx.id,
+            parent_id=parent.id,
+            title=title,
+            description=f"由用户在时间线上创建的周计划 · 周起始 {week_start.isoformat()}",
+            node_type=NodeType.STAGE,
+            purpose=NodePurpose.PLANNING,
+            planning_level=PlanningLevel.WEEK,
+            status=NodeStatus.PENDING,
+            priority=Priority.MEDIUM,
+            order_index=int(sibling_count or 0),
+            depth=parent.depth + 1,
+            origin=NodeOrigin.USER,
         )
         db.add(node)
         await db.flush()
@@ -1339,6 +1419,10 @@ class _Change:
         #: 写进 `trigger_detail` 的那句话。可变,因为有些操作的描述要用到**锁里面**
         #: 才读得到的节点标题 —— 在进入事务之前根本写不出来。
         self.detail: str = detail
+        #: 这一次「变更」其实什么都没变(幂等命中),不要写版本记录。
+        #: 见 `create_week_plan`:重复创建同一周计划时必须返回既有的那一个,
+        #: 而不是在历史里留下一个空版本。
+        self.skip: bool = False
 
     def record(
         self, *, kind: str, node_id: uuid.UUID, payload: dict[str, object] | None = None
@@ -1367,6 +1451,11 @@ async def _each_change(
         yield change
 
         await db.flush()
+        # 幂等命中:什么都没写,也就没有版本可记。提交(而不是回滚)是为了让调用方
+        # 拿到的既有节点在 `_each_change` 之后仍然可用。
+        if change.skip:
+            await db.commit()
+            return
         # 快照必须在 flush 之后取:本会话是 autoflush=False(见 db/session.py),
         # 不显式 flush 的话刚写进去的那一行不在快照里 —— 于是最新版本的
         # `plan_revisions.snapshot` 恰好缺掉它要记录的那次改动。

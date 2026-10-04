@@ -1522,6 +1522,85 @@
       "title": "CreateRelationRequest",
       "type": "object"
     },
+    "CreateSessionRequest": {
+      "additionalProperties": false,
+      "description": "用户从时间线手工排一个**日工作块**。\n\n写进 `scheduled_sessions` —— 和排期算法写的是**同一张表、同一条真相**,不是\n另起一套「时间线任务」。所以它同时出现在日轨道和首页「今天」里。",
+      "properties": {
+        "endMinute": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 1440,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Endminute"
+        },
+        "nodeId": {
+          "format": "uuid",
+          "title": "Nodeid",
+          "type": "string"
+        },
+        "plannedMinutes": {
+          "exclusiveMinimum": 0,
+          "maximum": 1440,
+          "title": "Plannedminutes",
+          "type": "integer"
+        },
+        "scheduledDate": {
+          "format": "date",
+          "title": "Scheduleddate",
+          "type": "string"
+        },
+        "startMinute": {
+          "anyOf": [
+            {
+              "exclusiveMaximum": 1440,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Startminute"
+        }
+      },
+      "required": [
+        "nodeId",
+        "scheduledDate",
+        "plannedMinutes"
+      ],
+      "title": "CreateSessionRequest",
+      "type": "object"
+    },
+    "CreateWeekPlanRequest": {
+      "additionalProperties": false,
+      "description": "用户从时间线手工创建一份**本周计划**。\n\n周计划是挂在某个正式阶段下面的 `stage` 节点,`planning_level` 固定为 `week`。\n周次由 `week_start`(那周的周一,ISO 日期)唯一确定 —— 同一 `(阶段, 周次)`\n任何时刻只允许一个活跃版本,服务端据此幂等:已存在就返回既有的那一个,不再新建。",
+      "properties": {
+        "parentId": {
+          "format": "uuid",
+          "title": "Parentid",
+          "type": "string"
+        },
+        "weekStart": {
+          "format": "date",
+          "title": "Weekstart",
+          "type": "string"
+        }
+      },
+      "required": [
+        "parentId",
+        "weekStart"
+      ],
+      "title": "CreateWeekPlanRequest",
+      "type": "object"
+    },
     "CreateWorkspaceRequest": {
       "additionalProperties": false,
       "properties": {
@@ -5449,6 +5528,20 @@
         "brief"
       ],
       "title": "SendMessageResponse",
+      "type": "object"
+    },
+    "SessionEditResponse": {
+      "additionalProperties": false,
+      "description": "一次手工排期写入的结果:那一行场次。\n\n**不带 `revision_version`**:排期不推计划版本(见 `schedule_service`)。",
+      "properties": {
+        "session": {
+          "$ref": "#/$defs/SessionPayload"
+        }
+      },
+      "required": [
+        "session"
+      ],
+      "title": "SessionEditResponse",
       "type": "object"
     },
     "SessionInfo": {

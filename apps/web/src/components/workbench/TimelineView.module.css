@@ -583,3 +583,87 @@
   font-size: 10.5px;
   pointer-events: none;
 }
+
+/* --- 月尺度的正式里程碑 / 月度任务 --- */
+.monthNode {
+  position: absolute;
+  width: 150px;
+  min-height: 44px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 9px;
+  border-radius: 8px;
+  overflow: hidden;
+  z-index: 2;
+  background: #f4f1fa;
+  border: 1px solid #d8d2e8;
+  border-left: 3px solid #9a8fc0;
+  color: #4a4166;
+  box-shadow: 0 3px 10px rgba(74, 105, 126, .1);
+  cursor: pointer;
+}
+.monthNodeMilestone { background: #f6f2ea; border-color: #e2d6c2; border-left-color: #c7a06e; color: #6b5733; }
+.monthNodeTag { align-self: flex-start; font-size: 9px; font-weight: 600; letter-spacing: .04em; color: #6a5f92; background: #e7e2f4; border-radius: 999px; padding: 1px 7px; }
+.monthNodeMilestone .monthNodeTag { color: #8a6a2f; background: #f3e6cf; }
+.monthNode strong { font-size: 11.5px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.monthNode small { font-size: 10px; color: #6f7d90; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* 选中的轨道节点(新建之后\"定位并选中\")。 */
+.trackSelected { outline: 2px solid #3f7cae; outline-offset: 1px; }
+.monthNodeSelected { outline: 2px solid #7d6fb0; outline-offset: 1px; }
+
+/* --- 轻量创建浮层 --- */
+.createPopover {
+  position: absolute;
+  z-index: 8;
+  width: 228px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px 12px;
+  border: 1px solid #cddbe4;
+  border-radius: var(--radius-control, 9px);
+  background: #fffefa;
+  box-shadow: 0 16px 34px rgba(74, 105, 126, .2);
+}
+.createPopover header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.createPopover header strong { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: #254a68; }
+.createPopover header button { border: 0; background: transparent; color: #6b8198; cursor: pointer; }
+.createPhase { margin: 0; font-size: 10px; color: #71869b; }
+.createKinds { display: flex; gap: 6px; }
+.createKinds button {
+  flex: 1;
+  padding: 4px 6px;
+  font-size: 11px;
+  border: 1px solid #cddbe4;
+  border-radius: 7px;
+  background: #f7fafc;
+  color: #48627b;
+  cursor: pointer;
+}
+.createKinds .createKindActive { background: #e3eef7; border-color: #9fc2dd; color: #24486a; font-weight: 600; }
+.createField { display: flex; flex-direction: column; gap: 3px; font-size: 10.5px; color: #4b6479; }
+.createField input {
+  font-size: 12px;
+  padding: 5px 7px;
+  border: 1px solid #cbdae4;
+  border-radius: 6px;
+  background: #fffefa;
+  color: #2f4a63;
+}
+.createHint { display: flex; align-items: center; gap: 5px; margin: 0; font-size: 10.5px; color: #71869b; line-height: 1.45; }
+.createError { margin: 0; font-size: 10.5px; line-height: 1.45; color: #a8433d; }
+.createActions { display: flex; align-items: center; gap: 8px; }
+.createActions .createSubmit { flex: 1; }
+.createActions button {
+  padding: 5px 10px;
+  font-size: 11.5px;
+  border: 1px solid #cddbe4;
+  border-radius: 7px;
+  background: #f7fafc;
+  color: #48627b;
+  cursor: pointer;
+}
+.createActions .createSubmit { background: #2f6da3; border-color: #2f6da3; color: #fff; font-weight: 600; }
+.createActions button:disabled { opacity: .55; cursor: default; }

@@ -878,9 +878,55 @@ export function createNode(
     priority?: string;
     estimateMinutes?: number | null;
     deadline?: string | null;
+    /** 规划层级(`strategy` / `phase` / `month` / `week` / `day`)。可空。 */
+    planningLevel?: string | null;
   },
 ): Promise<NodeEditResult> {
   return apiFetch<NodeEditResult>(`/api/workspaces/${workspaceId}/nodes`, {
+    method: 'POST',
+    body: payload,
+  });
+}
+
+/**
+ * 用户手工创建某一周的「本周计划」。**服务端幂等。**
+ *
+ * 同一 `(阶段, 周次)` 已有一个活跃周计划时返回既有的那一个,不再新建。周次由
+ * `weekStart`(那周的周一)唯一确定。
+ */
+export interface CreateWeekPlanRequest {
+  parentId: string;
+  weekStart: string;
+}
+
+/** 用户手工排一个日工作块。写进 `scheduled_sessions`,与排期算法同一条真相。 */
+export interface CreateSessionRequest {
+  nodeId: string;
+  scheduledDate: string;
+  plannedMinutes: number;
+  startMinute?: number | null;
+  endMinute?: number | null;
+}
+
+export interface SessionEditResponse {
+  session: ScheduledSessionPayload;
+}
+
+export function createWeekPlan(
+  workspaceId: string,
+  payload: CreateWeekPlanRequest,
+): Promise<NodeEditResult> {
+  return apiFetch<NodeEditResult>(`/api/workspaces/${workspaceId}/week-plans`, {
+    method: 'POST',
+    body: payload,
+  });
+}
+
+export function createSession(
+  workspaceId: string,
+  payload: CreateSessionRequest,
+): Promise<SessionEditResponse> {
+  return apiFetch<SessionEditResponse>(`/api/workspaces/${workspaceId}/sessions`, {
     method: 'POST',
     body: payload,
   });
