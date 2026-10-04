@@ -10,7 +10,7 @@
 
 from __future__ import annotations
 
-from backend.agent.runtime.response import parse_v1_assessment
+from backend.agent.runtime.response import parse_v1_assessment, parse_v1_timeline
 
 
 def test_live_model_drift_is_normalized() -> None:
@@ -105,6 +105,33 @@ def test_content_status_and_string_entries() -> None:
     assert draft.node_updates[1].status == "discussing", "partial 应归一为 discussing"
     assert [d.title for d in draft.candidate_directions] == ["做一个工具", "复刻一个案例", "给自己跑通就行"]
     assert all(d.key for d in draft.candidate_directions), "裸字符串也要有稳定短键"
+
+
+def test_timeline_live_drift_is_normalized() -> None:
+    """实测漂移:`name`/`start`/`end`/`output`/`note` 替代 `title`/`startDate`/`deliverable`。"""
+    raw = {
+        "summary": "选数据 → 跑闭环 → 打磨",
+        "phases": [
+            {
+                "name": "阶段一:选题定向",
+                "start": "2026-10-04",
+                "end": "2026-10-05",
+                "goal": "选定数据集",
+                "output": "数据集链接 + 一句话问题",
+                "note": "只花 1–2 天",
+            },
+            {"name": "阶段二", "goal": "跑通闭环", "output": "一张图"},
+            {"name": "阶段三", "goal": "收口", "output": "README"},
+        ],
+    }
+    draft = parse_v1_timeline(raw)
+    assert draft is not None
+    assert [p.title for p in draft.phases] == ["阶段一:选题定向", "阶段二", "阶段三"]
+    first = draft.phases[0]
+    assert first.deliverable == "数据集链接 + 一句话问题"
+    assert first.completion_criteria == "只花 1–2 天"
+    assert first.start_date == "2026-10-04"
+    assert first.end_date == "2026-10-05"
 
 
 def test_unknown_response_mode_falls_back_to_none() -> None:

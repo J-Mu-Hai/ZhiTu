@@ -851,13 +851,6 @@ def _strategy_ready(analyses: dict[str, dict]) -> bool:
     )
 
 
-async def _persisted_strategy_ready(db: AsyncSession, ctx: WorkspaceContext) -> bool:
-    """库里已有的分析是否已经足够合成一版战略。"""
-    questions = await _v1_questions(db, ctx)
-    persisted = {q.v1_key: (q.v1_analysis or {}) for q in questions if q.v1_key}
-    return _strategy_ready(persisted)
-
-
 async def _build_strategy_synthesis_context(
     db: AsyncSession, ctx: WorkspaceContext, session: GoalReasoningSession
 ) -> TurnContext:
@@ -1017,15 +1010,14 @@ async def _maybe_synthesize_strategy(
     reasoner,
     *,
     trigger: str,
-    declared_ready: bool,
 ) -> ReasoningResult | None:
-    """分析足够、模型自认“战略已成熟”但仍无结构时,跑一次窄契约合成并上屏。
+    """通用回合没能合出战略时的**窄契约兜底回合**。
 
-    `declared_ready` 是模型当轮声明的 `strategyReady`:它说“成熟了”却只给白话,才是
-    这个窄契约回合要补的缺口。模型没声明成熟时仍走通用回合(保留既有 CTA 语义)。
+    真实模型(DeepSeek-chat 实测)会在 `problem_structure` 反复给白话、`nodeUpdates`
+    为空、`strategyReady` 甚至为 false。所以这里**不依赖**模型声明,也不依赖四个分析
+    维度是否齐全 —— 只要通用回合还没合出战略、没有待答问题,就让窄契约回合用现有
+    画布 + 历史合一次。四条齐全才接受,否则准确失败。
     """
-    if not declared_ready:
-        return None
     if session.v1_strategy:
         return None
     if session.v1_stage not in (
@@ -1039,8 +1031,6 @@ async def _maybe_synthesize_strategy(
         return None
     # 上一轮已经准确失败(来源/输出)时不再叠一次模型调用;重试由用户发起。
     if session.v1_status == V1_STATUS_FAILED:
-        return None
-    if not await _persisted_strategy_ready(db, ctx):
         return None
     result = await synthesize_strategy(db, ctx, session, reasoner, trigger=trigger)
     await _append_assistant(
@@ -2388,15 +2378,6 @@ async def confirm_goal_definition(
         result=result,
     )
     await db.commit()
-    # 通用判断已经写了一些维度;若模型自称成熟却未给结构,立刻用**窄契约**合成战略。
-    await _maybe_synthesize_strategy(
-        db,
-        ctx,
-        session,
-        reasoner,
-        trigger="problem_structure_entered",
-        declared_ready=bool(result.v1_assessment and result.v1_assessment.strategy_ready),
-    )
     return await reasoning_service._response(db, ctx, session, changed=True)
 
 
@@ -2442,15 +2423,8 @@ async def continue_strategy(
         result=result,
     )
     await db.commit()
-    # 通用回合只负责补维度;模型自称成熟却未给结构时,窄契约回合才出手。
-    await _maybe_synthesize_strategy(
-        db,
-        ctx,
-        session,
-        reasoner,
-        trigger="strategy_continue",
-        declared_ready=bool(result.v1_assessment and result.v1_assessment.strategy_ready),
-    )
+    # 通用回合没能合出战略 -> 窄契约回合兜底(四条齐全才接受)。
+    await _maybe_synthesize_strategy(db, ctx, session, reasoner, trigger="strategy_continue")
     return await reasoning_service._response(db, ctx, session, changed=True)
 
 

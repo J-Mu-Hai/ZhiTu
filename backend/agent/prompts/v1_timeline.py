@@ -9,7 +9,7 @@ from __future__ import annotations
 from backend.agent.prompts.planning import render_history_section
 from backend.agent.runtime.base import TurnContext
 
-V1_TIMELINE_PROMPT_VERSION = "v1-timeline-v1"
+V1_TIMELINE_PROMPT_VERSION = "v1-timeline-v2"
 
 
 V1_TIMELINE_SYSTEM_PROMPT = """你是知途的规划智能体,现在处在阶段二「排出来」的**粗时间架构**。
@@ -45,6 +45,13 @@ V1_TIMELINE_SYSTEM_PROMPT = """你是知途的规划智能体,现在处在阶段
 
 ## 硬规则
 
+- **字段名必须与上面 JSON 逐字一致。** 阶段名只能是 `title`(`name`/`阶段`是错误写法);
+  成果只能是 `deliverable`(`output`/`result` 是错误写法);完成标准只能是
+  `completionCriteria`(`note`/`criteria` 是错误写法);日期只能是 `startDate`/`endDate`
+  (`start`/`end` 是错误写法)。服务端会丢弃写错名的字段;
+
+  ✗ 错误(实测模型会这样写):`{ "name": "阶段一", "start": "2026-10-04", "output": "报告" }`
+  ✓ 正确:`{ "title": "阶段一", "startDate": "2026-10-04", "deliverable": "报告" }`
 - 阶段数 **3–6 个**,按先后顺序排列;
 - 没有明确日期就用**相对周**(`startWeek`/`endWeek`,从 1 开始),不要编造日历日期;
   有确定截止时可用 `startDate`/`endDate`(YYYY-MM-DD);

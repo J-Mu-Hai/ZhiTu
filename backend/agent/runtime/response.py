@@ -1006,10 +1006,12 @@ def parse_v1_timeline(raw: Any) -> V1TimelineDraft | None:
     if not isinstance(raw, dict):
         return None
     phases: list[V1TimelinePhaseDraft] = []
-    for entry in (raw.get("phases") or [])[:MAX_V1_TIMELINE_PHASES]:
+    for entry in (raw.get("phases") or raw.get("stages") or [])[:MAX_V1_TIMELINE_PHASES]:
         if not isinstance(entry, dict):
             continue
-        title = entry.get("title")
+        # 同义名容错:真实模型会用 `name`/`output`/`start`(ISO 日期)等。
+        # 只归一字段名,阶段数量与“标题必填”的硬校验不放松。
+        title = _v1_pick(entry, "title", "name", "phase", "label", "阶段")
         if not isinstance(title, str) or not title.strip():
             continue
 
@@ -1019,14 +1021,29 @@ def parse_v1_timeline(raw: Any) -> V1TimelineDraft | None:
         phases.append(
             V1TimelinePhaseDraft(
                 title=title.strip()[:MAX_V1_TIMELINE_TITLE_CHARS],
-                goal=_text(entry.get("goal")),
-                deliverable=_text(entry.get("deliverable")),
-                completion_criteria=_text(entry.get("completionCriteria")),
-                start_week=_clean_week(entry.get("startWeek")),
-                end_week=_clean_week(entry.get("endWeek")),
-                start_date=_clean_iso_date(entry.get("startDate")),
-                end_date=_clean_iso_date(entry.get("endDate")),
-                depends_on=_text(entry.get("dependsOn")),
+                goal=_text(_v1_pick(entry, "goal", "objective", "target")),
+                deliverable=_text(_v1_pick(entry, "deliverable", "output", "result")),
+                completion_criteria=_text(
+                    _v1_pick(
+                        entry,
+                        "completionCriteria",
+                        "completion_criteria",
+                        "criteria",
+                        "acceptance",
+                        "note",
+                    )
+                ),
+                start_week=_clean_week(_v1_pick(entry, "startWeek", "start_week")),
+                end_week=_clean_week(_v1_pick(entry, "endWeek", "end_week")),
+                start_date=_clean_iso_date(
+                    _v1_pick(entry, "startDate", "start_date", "start", "from")
+                ),
+                end_date=_clean_iso_date(
+                    _v1_pick(entry, "endDate", "end_date", "end", "to")
+                ),
+                depends_on=_text(
+                    _v1_pick(entry, "dependsOn", "depends_on", "depends", "after")
+                ),
             )
         )
     if not (MIN_V1_TIMELINE_PHASES <= len(phases) <= MAX_V1_TIMELINE_PHASES):

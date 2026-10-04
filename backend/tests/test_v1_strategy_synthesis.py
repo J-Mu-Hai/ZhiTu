@@ -119,8 +119,17 @@ async def test_goal_confirm_synthesizes_strategy_via_narrow_turn(
     reasoner = use_reasoner(FakeReasoner(reply="记下。", v1_source_kind="test"))
     await _establish_analyses(app_client, account, reasoner)
 
-    # 通用回合不再负责“猜战略”;窄契约回合给四条结构。
-    reasoner.v1_assessment = _assessment(strategy_ready=True)
+    # 目标确认:通用回合没给结构,只剩兜底 CTA。
+    reasoner.v1_assessment = _assessment()
+    confirm = await app_client.post(
+        f"/api/workspaces/{account.workspace_id}/agent/v1/goal/confirm",
+        headers=account.headers,
+    )
+    assert confirm.status_code == 200, confirm.text
+    assert confirm.json()["reasoning"]["v1Stage"] == "problem_structure"
+
+    # 兜底 CTA 触发窄契约战略合成回合。
+    reasoner.v1_assessment = _assessment()
     reasoner.v1_strategy = V1StrategyDraft(
         main_line="先用最小项目闭环补齐 pandas",
         parallel_line="并行看一点统计基础",
@@ -128,12 +137,12 @@ async def test_goal_confirm_synthesizes_strategy_via_narrow_turn(
         risk_control="每两周做一次复盘",
         tradeoff="先要能展示的成果",
     )
-    confirm = await app_client.post(
-        f"/api/workspaces/{account.workspace_id}/agent/v1/goal/confirm",
+    cont = await app_client.post(
+        f"/api/workspaces/{account.workspace_id}/agent/v1/strategy/continue",
         headers=account.headers,
     )
-    assert confirm.status_code == 200, confirm.text
-    view = confirm.json()["reasoning"]
+    assert cont.status_code == 200, cont.text
+    view = cont.json()["reasoning"]
     assert view["v1Stage"] == "strategy_draft"
     assert view["v1Strategy"]["mainLine"] == "先用最小项目闭环补齐 pandas"
     assert view["v1WorkflowNext"] == "confirm_strategy"
@@ -149,14 +158,19 @@ async def test_synthesis_contract_violation_is_retryable(
     reasoner = use_reasoner(FakeReasoner(reply="记下。", v1_source_kind="test"))
     await _establish_analyses(app_client, account, reasoner)
 
-    reasoner.v1_assessment = _assessment(strategy_ready=True)
-    reasoner.v1_strategy = None  # 模型只给白话、不给四条结构
-    confirm = await app_client.post(
+    reasoner.v1_assessment = _assessment()
+    await app_client.post(
         f"/api/workspaces/{account.workspace_id}/agent/v1/goal/confirm",
         headers=account.headers,
     )
-    assert confirm.status_code == 200, confirm.text
-    view = confirm.json()["reasoning"]
+    reasoner.v1_assessment = _assessment()
+    reasoner.v1_strategy = None  # 模型只给白话、不给四条结构
+    cont = await app_client.post(
+        f"/api/workspaces/{account.workspace_id}/agent/v1/strategy/continue",
+        headers=account.headers,
+    )
+    assert cont.status_code == 200, cont.text
+    view = cont.json()["reasoning"]
     assert view["v1Status"] == "failed"
     assert "四条战略结构" in (view["v1Error"] or "")
     assert not view["v1Strategy"], "不落半成品战略"
