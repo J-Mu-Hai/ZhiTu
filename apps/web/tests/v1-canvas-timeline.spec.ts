@@ -188,16 +188,19 @@ test('当前关键行动固定在输入框上方,不在历史里;Dock 默认紧�
   await page.goto(`/workbench?workspace=${workspaceId}&view=path`);
   // Dock 默认紧凑:不再有 v1-thinking 整体放大类。
   await expect(page.locator('.workbench-body.v1-thinking')).toHaveCount(0);
-  // 固定卡在输入框上方(右侧 Dock),且**不在**滚动历史里。
-  const dockCard = page.locator('.floating-conversation [data-testid="current-interaction-card"]');
-  await expect(dockCard).toBeVisible({ timeout: 20000 });
-  await expect(dockCard).toContainText('你想自动化的具体是哪一件重复工作');
-  await expect(page.locator('.conversation-history [data-testid="current-interaction-card"]')).toHaveCount(0);
-  // focus_modal 自动居中;收起后回到小 Dock,固定卡仍在。
+  // focus_modal 自动居中:完整动作**只**出现在弹层里,Dock 收成空壳。
+  // 同一件事不允许两处完整渲染 —— 这是布局不变量的落点。
   await expect(page.getByTestId('focus-thinking')).toBeVisible({ timeout: 20000 });
+  await expect(page.locator('.floating-conversation [data-testid="current-interaction-card"]')).toHaveCount(0);
+  await expect(page.getByTestId('focus-thinking').getByTestId('current-interaction-card')).toContainText('你想自动化的具体是哪一件重复工作');
+  await expect(page.locator('.conversation-history [data-testid="current-interaction-card"]')).toHaveCount(0);
+  // 收起后回到小 Dock,固定卡仍在,且**不在**滚动历史里。
   await page.getByTestId('focus-thinking-close').click();
   await expect(page.getByTestId('focus-thinking')).toHaveCount(0);
+  const dockCard = page.locator('.floating-conversation [data-testid="current-interaction-card"]');
   await expect(dockCard).toBeVisible();
+  await expect(dockCard).toContainText('你想自动化的具体是哪一件重复工作');
+  await expect(page.locator('.conversation-history [data-testid="current-interaction-card"]')).toHaveCount(0);
 });
 
 test('专注思考:居中放大,关闭后回到右侧,内容不丢', async ({ page }) => {

@@ -1,8 +1,9 @@
 'use client';
 import { BrandMark } from '@/components/ui/BrandMark';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback, useSyncExternalStore } from 'react';
 import { ArrowUp, Plus, X, CornerDownLeft, AlertCircle, RotateCcw, RefreshCw } from 'lucide-react';
 import { useDemo } from '@/features/growth/provider';
+import { readConversationDraft, subscribeConversationDraft, writeConversationDraft } from '@/features/growth/drafts';
 import { degradedHint, sourceLabel } from '@/lib/backend';
 import type { ResearchView } from '@/lib/backend';
 import { StrategySummaryCard } from './StrategySummaryCard';
@@ -216,10 +217,23 @@ function IntakeChips({
  * 的战略方向……")不再渲染。右侧是对话与输入区,不是系统诊断面板;战略阶段也不该
  * 被"截止时间/每周投入"干扰。`replan` 入口只在**已确认战略 + 存在执行计划**时才出现。
  */
-export function ConversationPanel() {
+export function ConversationPanel({ suppressed = false }: { suppressed?: boolean }) {
   const { growth, selectedId, select, messages, remoteProposals, proposalErrors, inputChanged, deciding, confirmRemote, rejectRemote, replan, replanState, send, retry, sending, sendError, retryable, historyLoading, messagesTruncated, spaceId, questions, focusQuestion, openTrace, traceAvailability, reasoning, agentStatus, confirmV1Strategy, confirmV1Goal, continueV1Strategy, reopenV1Direction,
   runV1PlanStep, selectV1Direction, requestChat, alignV1Strategy, alignV1Timeline, openFocusThinking, currentInteraction } = useDemo();
-  const [input, setInput] = useState('');
+  /*
+   * 草稿住在组件外面(见 `features/growth/drafts.ts`)。
+   *
+   * 这个面板在专注弹层与右侧 Dock 各挂载一次;用户在弹层里写了一半再关掉,那一份
+   * 会随弹层卸载。所以输入值按**空间**存在组件外面,两处挂载读同一份 —— 关掉弹层
+   * 之后那一句还留在 Dock 的输入框里,不用重新说一次。
+   */
+  const draftKey = spaceId;
+  const input = useSyncExternalStore(
+    useCallback((onChange: () => void) => subscribeConversationDraft(draftKey, onChange), [draftKey]),
+    () => readConversationDraft(draftKey),
+    () => '',
+  );
+  const setInput = useCallback((value: string) => writeConversationDraft(draftKey, value), [draftKey]);
   const [showContexts, setShowContexts] = useState(false);
   /** P2.2:候选方向选择中 —— 立刻禁用按钮,避免重复点击。 */
   const [v1Selecting, setV1Selecting] = useState(false);
@@ -376,6 +390,10 @@ export function ConversationPanel() {
     if (!input.trim() || sending) return;
     void send(input.trim());
     setInput('');
+  }
+
+  if (suppressed) {
+    return <aside className="conversation-panel is-suppressed" aria-hidden="true" />;
   }
 
   return (
@@ -544,6 +562,25 @@ export function ConversationPanel() {
             </article>
           );
         })}
+
+        {/*
+         * 当前动作处理完之后,历史里留一句短摘要。
+         *
+         * 它对应的是**同一个** `currentInteraction`:active 时由输入框上方的固定卡
+         * (或专注弹层)完整承载,answered / confirmed 之后固定卡整个不渲染(见
+         * `CurrentInteractionCard`),这里补一句可回看的结论 —— 既不把旧问题留在
+         * 页面上遮挡,也不让用户以为它从没存在过。
+         */}
+        {currentInteraction && currentInteraction.status !== 'active' && (
+          <p className="conversation-interaction-note" data-testid="current-interaction-resolved" role="status">
+            {currentInteraction.status === 'confirmed'
+              ? '已确认'
+              : currentInteraction.status === 'answered'
+                ? '已回答'
+                : '已处理'}
+            ：{currentInteraction.title}
+          </p>
+        )}
 
         {/* 这一轮是在一份**已经过去的输入**上回答的。
             它必须单独说一句,而且必须在"没有提案"那一片空白之前说:

@@ -1175,15 +1175,32 @@ function Canvas() {
     // `isRootSpace` 在组件体上方已声明(line 917),这里直接复用 —— 不能在本回调里
     // 再声明一次:同作用域更早处已经用了它,`const` 会造成 TDZ
     // (“Cannot access 'isRootSpace' before initialization”,整页白屏)。
-    const shownQuestions = v1Space
-      ? orderedQuestions.filter((item) =>
-          isRootSpace
-            ? item.v1Key != null && v1Visible.has(item.v1Key)
-            : item.sourceNodeId === spaceId,
-        )
-      : roadmapExists
-        ? orderedQuestions.filter((item) => item.id === primaryQuestionId)
-        : [];
+    /*
+     * 专注弹层活跃时,画布上的**待处理问题卡**不再渲染。
+     *
+     * 否则同一个问题会在两处完整出现:一次在画布的问题节点里,一次在弹层的固定卡
+     * 里。历史只该留一句折叠摘要 —— 当前动作只在当前主交互容器里展示。已澄清 /
+     * 已归档的**分析节点**保留:它们是"已经形成的判断",不是待处理动作。
+     */
+    const focusModalActive = Boolean(
+      reasoning?.v1CurrentInteraction &&
+      reasoning.v1CurrentInteraction.status === 'active' &&
+      reasoning.v1CurrentInteraction.presentation === 'focus_modal',
+    );
+    const shownQuestions = (
+      v1Space
+        ? orderedQuestions.filter((item) =>
+            isRootSpace
+              ? item.v1Key != null && v1Visible.has(item.v1Key)
+              : item.sourceNodeId === spaceId,
+          )
+        : roadmapExists
+          ? orderedQuestions.filter((item) => item.id === primaryQuestionId)
+          : []
+    ).filter(
+      (item) =>
+        !focusModalActive || item.status === 'resolved' || item.status === 'archived',
+    );
     const anchorCounts: Record<string, number> = {};
     shownQuestions.forEach((item) => {
       // 根层可见的分析维度锚到**根目标**(不是 sourceNodeId 指向的分组)。

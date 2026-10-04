@@ -1065,8 +1065,15 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     });
   }, [auditFocus]);
   // 自动居中:只给声明了 focus_modal 的动作;用户收起过后不再自动弹出。
+  // **动作一旦不是 active(answered / confirmed / dismissed),自动弹层就关掉** ——
+  // 固定卡本来就不渲染了,弹层再留着就是一张挡住画布的空壳。用户手动打开的
+  // 「专注思考」(manualFocus)不受影响:那是另一个意图,由他自己关。
   useEffect(() => {
-    if (!currentInteraction || currentInteraction.presentation !== 'focus_modal') {
+    if (
+      !currentInteraction ||
+      currentInteraction.presentation !== 'focus_modal' ||
+      currentInteraction.status !== 'active'
+    ) {
       setFocusInteractionId(null);
       return;
     }
