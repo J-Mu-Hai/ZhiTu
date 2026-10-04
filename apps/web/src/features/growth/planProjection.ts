@@ -99,6 +99,7 @@ export function toGrowthNode(node: PlanNodePayload, sessions: GrowthSession[] = 
     origin: node.origin,
     parentId: node.parentId ?? undefined,
     status: toStatus(node.status),
+    archived: node.status === 'archived',
     priority: node.priority,
     startDate: start,
     endDate: end,

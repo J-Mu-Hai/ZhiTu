@@ -112,8 +112,30 @@ export function TimelineView() {
   const gesture = useRef<Gesture | null>(null);
   const { start, density } = viewport;
   const level = zoomLevelFor(density), end = start + size.width / density;
-  // **中央唯一主轴**:卡片从中轴上下错开,引线连到轴上。
-  const axisY = Math.max(150, size.height * .5);
+  /*
+   * **纵向分层轨道。**
+   *
+   * 每条轨道有独立的 y 基准,从上到下依次是:
+   *   年份 / 刻度文本 → 主轴 + 今天 → 阶段覆盖条 → 阶段卡 / 周计划 → 日工作块
+   * 不再用散落的 `axisY + n` 各自猜高度 —— 那样条、卡、刻度会互相压。
+   */
+  const laneY = (() => {
+    const axis = Math.max(150, size.height * .5);
+    const barBase = axis + 26;              // 距主轴 26px,给刻度文字留白
+    const barStep = 20;
+    const barCount = 3;
+    const cardAboveBase = axis - 118;       // 上方阶段卡首行
+    const cardStep = 90;
+    const cardBelowBase = barBase + barCount * barStep + 24;
+    const weeklyBase = cardBelowBase;       // 周计划轨道(周/日尺度时阶段卡全在上方)
+    const weeklyStep = 30;
+    const dailyBase = weeklyBase + 3 * weeklyStep + 18;
+    const dailyStep = 28;
+    return { axis, barBase, barStep, barCount, cardAboveBase, cardStep, cardBelowBase, weeklyBase, weeklyStep, dailyBase, dailyStep };
+  })();
+  const axisY = laneY.axis;
+  // 阶段卡/覆盖条距离画布左右边缘的安全边距:卡片不裁切,引线仍指回真实条位置。
+  const SAFE_EDGE = 16;
   // ---- V1 粗时间架构:走**同一条中央主轴**,不再另起一个小组件 ----
   // V0.1(`v1Stage` 为空)仍保留原来的 V01TimelineAxis,避免既有时间线回归。
   const v01Items = useMemo(() => reasoning?.v01Timeline ?? [], [reasoning?.v01Timeline]);
@@ -155,16 +177,18 @@ export function TimelineView() {
   // V1 周尺度把标签换成“某月 · 第 N 周” —— 用户看的是已确认的周计划,不是 10/6。
   const ticks = useMemo(() => {
     const base = timelineTicks(start, end, level);
-    if (!draft || level !== 'week') return base;
     return base.map(tick => {
       const date = new Date(tick.day * 86400000);
       const month = date.getUTCMonth() + 1;
       const day = date.getUTCDate();
-      return { ...tick, label: `${month}月 · 第${Math.floor((day - 1) / 7) + 1}周` };
+      const year = date.getUTCFullYear();
+      // 周尺度:某月 · 第 N 周;月尺度的一月刻度带上年份。年份/月份/周文本都落在
+      // **同一条刻度车道**,不再有独立的年份浮标去和阶段卡抢位置。
+      if (draft && level === 'week') return { ...tick, label: `${month}月 · 第${Math.floor((day - 1) / 7) + 1}周` };
+      if (month === 1 && day === 1) return { ...tick, label: `${year}` };
+      return tick;
     });
   }, [start, end, level, draft]);
-  const firstYear = new Date(start * 86400000).getUTCFullYear();
-  const years = Array.from({ length: new Date(end * 86400000).getUTCFullYear() - firstYear + 1 }, (_, i) => firstYear + i);
   const draftSelected = draft ? v01Items.find(item => item.id === draftSelectedId) ?? null : null;
   const selectedPlaced = draft ? placed.find(entry => entry.item.node.id === effectiveSelectedId) ?? null : null;
   const x = (day: number) => dateToX(day, start, density);
@@ -178,13 +202,25 @@ export function TimelineView() {
    */
   const phaseRangeByTitle = new Map<string, { start: number; end: number }>();
   if (draft) draft.items.forEach(item => phaseRangeByTitle.set(item.node.title, { start: item.start, end: item.end }));
+  /*
+   * 当前周计划:只保留**未归档**的活跃版本。
+   *
+   * 重规划后后端会把旧版本置为 `archived`(“历史版本 · 已被重规划替代”),但它仍在
+   * `/plan` 里(可恢复)。当前时间线**不能**把“第1版”和“第2版”并列展示,所以这里
+   * 排除归档版本,并按 (阶段, 本周计划/下周预览) 去重:同一锚点只留一个活跃周计划。
+   */
   const weekItems: TimelineItem[] = [];
   if (draft && (level === 'week' || level === 'day')) {
+    const seen = new Set<string>();
     for (const node of Object.values(growth.nodes)) {
-      if (node.type !== 'stage' || !/^(本周计划|下周预览)[:：]/.test(node.title)) continue;
+      if (node.type !== 'stage' || node.archived) continue;
+      if (!/^(本周计划|下周预览)[:：]/.test(node.title)) continue;
       const parent = node.parentId ? growth.nodes[node.parentId] : undefined;
       const range = parent ? phaseRangeByTitle.get(parent.title) : undefined;
       if (!range) continue;
+      const slot = `${node.parentId ?? ''}:${node.title.startsWith('下周预览') ? 'next' : 'current'}`;
+      if (seen.has(slot)) continue;
+      seen.add(slot);
       weekItems.push({ node, start: range.start, end: range.end, kind: 'duration', derived: false, track: 'week', itemId: `week:${node.id}` });
     }
   }
@@ -213,7 +249,7 @@ export function TimelineView() {
     }
     return result;
   };
-  const weekLanes = packLanes(weekItems, item => Math.max(48, Math.min(size.width, x(item.end)) - Math.max(0, x(item.start))));
+  const weekLanes = packLanes(weekItems, () => 168);
   const dayLanes = packLanes(dayItems, () => 96);
 
   const selected = selectedId ? growth.nodes[selectedId] : null;
@@ -390,7 +426,6 @@ export function TimelineView() {
       onKeyDown={e => { if (e.target !== e.currentTarget) return; if (['ArrowLeft', 'ArrowRight', '+', '=', '-', 'Home'].includes(e.key)) e.preventDefault(); if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') setViewport(v => ({ ...v, start: v.start + (e.key === 'ArrowLeft' ? -1 : 1) * size.width / density * .2 })); if (e.key === '+' || e.key === '=') zoomTo(density * 1.5); if (e.key === '-') zoomTo(density / 1.5); if (e.key === 'Home') setViewport(v => ({ ...v, start: today - size.width / density * .28 })); }}>
       {/* 唯一的时间轴。年份、刻度、今天、任务锚点都围绕它。 */}
       <div className={styles.axis} style={{ top: axisY }}/><div className={styles.past} style={{ top: axisY, width: Math.max(0, Math.min(size.width, x(today))) }}/><span className={styles.axisEnd} style={{ top: axisY }}>›</span>
-      {years.map(year => <span key={year} className={styles.year} style={{ left: Math.max(18, x(dayNumber(`${year}-01-01`)) + 6), top: axisY - 24 }}>{year}</span>)}
       {ticks.map(t => <div key={t.day} data-testid="timeline-tick" data-major={t.major ? 'true' : 'false'} className={`${styles.tick} ${t.major ? styles.majorTick : ''}`} style={{ left: x(t.day), top: axisY }}>{t.major && <span className={styles.tickLabel}>{t.label}</span>}</div>)}
       {x(today) >= 0 && x(today) <= size.width && <div className={styles.today} style={{ left: x(today), top: 6, bottom: 6 }} data-testid="today-marker"><span className={styles.todayLabel}>{shortDate(today)}<strong>今天</strong></span><span className={styles.todayDot} style={{ top: axisY - 9 }}/></div>}
       {placed.map(({ item, x: anchorX, left, lane, rangeLane }) => {
@@ -407,7 +442,7 @@ export function TimelineView() {
         const lowerTracks = Boolean(draft) && (level === 'week' || level === 'day');
         const cardUpper = lowerTracks ? true : upper;
         const cardY = draft
-          ? (cardUpper ? axisY - 100 - Math.floor(lane / 2) * 92 : axisY + 92 + Math.floor(lane / 2) * 92)
+          ? (cardUpper ? laneY.cardAboveBase - Math.floor(lane / 2) * laneY.cardStep : laneY.cardBelowBase + Math.floor(lane / 2) * laneY.cardStep)
           : (upper ? axisY - 108 - Math.floor(lane / 2) * 86 : axisY + 116 + Math.floor(lane / 2) * 86);
         const color = draftSource?.category
           ? categoryColors[draftSource.category] ?? '#829dc5'
@@ -415,7 +450,7 @@ export function TimelineView() {
             ? colors[item.node.category]
             : '#829dc5';
         // 阶段覆盖条:干净的一条,按 rangeLane 分层避让。
-        const barY = axisY + 8 + rangeLane * 20;
+        const barY = laneY.barBase + rangeLane * laneY.barStep;
         const barDraft = draftSource ? draftSource.status === 'draft' : false;
         const Icon = item.kind === 'milestone' ? Flag : item.kind === 'goal' ? Target : Circle;
         return <div key={id} data-timeline-item={id} data-draft={draftSource ? draftSource.status : undefined} data-start-date={dateString(item.start)} data-end-date={dateString(item.end)} className={`${styles.object} ${effectiveSelectedId === id ? styles.selected : ''} ${hovered && hovered !== id ? styles.dim : ''}`} style={{ '--color': color } as CSSProperties} onMouseEnter={() => setHovered(id)} onMouseLeave={() => setHovered(null)}>
@@ -430,7 +465,9 @@ export function TimelineView() {
             const barLeft = Math.max(0, x(item.start));
             const barWidth = Math.max(26, Math.min(size.width, x(item.end)) - barLeft);
             const barCenterX = barLeft + barWidth / 2;
-            const cardCenterX = left + cardWidth / 2;
+            // 卡片以阶段区间中点居中,并夹在安全边距内 —— 首/尾阶段卡不被裁切。
+            const cardLeft = Math.max(SAFE_EDGE, Math.min(size.width - cardWidth - SAFE_EDGE, barCenterX - cardWidth / 2));
+            const cardCenterX = cardLeft + cardWidth / 2;
             const barEdgeY = cardUpper ? barY : barY + 12;
             const cardEdgeY = cardUpper ? cardY + 66 : cardY;
             const showSummary = level === 'year' || level === 'quarter' || level === 'month';
@@ -471,7 +508,7 @@ export function TimelineView() {
                 data-phase-id={id}
                 data-draft={barDraft ? 'true' : 'false'}
                 className={`${styles.phaseCard} ${barDraft ? styles.phaseCardDraft : styles.phaseCardPlanned}`}
-                style={{ left, top: cardY, width: cardWidth, '--color': color } as CSSProperties}
+                style={{ left: cardLeft, top: cardY, width: cardWidth, '--color': color } as CSSProperties}
                 aria-label={`阶段 ${phaseIndex}：${item.node.title}，${cardRange}`}
                 aria-pressed={effectiveSelectedId === id}
                 title={`${item.node.title} · ${cardRange}`}
@@ -496,27 +533,33 @@ export function TimelineView() {
           </>)}
         </div>;
       })}
-      {/* 周尺度:已确认的“本周计划 / 下周预览”条,放在所属阶段条下方。 */}
+      {/* 周尺度:当前**未归档**的“本周计划 / 下周预览”节点,放在周计划轨道。 */}
       {weekItems.map(item => {
         const id = item.itemId ?? item.node.id;
-        const barLeft = Math.max(0, x(item.start));
-        const barWidth = Math.max(48, Math.min(size.width, x(item.end)) - barLeft);
         const lane = weekLanes.get(id) ?? 0;
         const isPreview = item.node.title.startsWith('下周预览');
+        const nodeLeft = Math.max(SAFE_EDGE, Math.min(size.width - 168 - SAFE_EDGE, x(item.start)));
+        const tasks = Object.values(growth.nodes).filter(n => n.parentId === item.node.id && n.type === 'task' && !n.archived);
+        const unfinished = tasks.filter(n => n.status !== 'completed').length;
+        const topTask = tasks.find(n => n.priority === 'high') ?? tasks[0];
+        const isCurrent = !isPreview && today >= item.start && today <= item.end;
+        const phaseTitle = item.node.parentId ? growth.nodes[item.node.parentId]?.title ?? '' : '';
         return <div
           key={id}
           data-testid="v1-week-bar"
           data-week-id={item.node.id}
           data-preview={isPreview ? 'true' : 'false'}
-          className={`${styles.weekBar} ${isPreview ? styles.weekBarPreview : ''}`}
-          style={{ left: barLeft, width: barWidth, top: axisY + 122 + lane * 30 }}
-          title={item.node.title}
+          data-current={isCurrent ? 'true' : 'false'}
+          className={`${styles.weekBar} ${isPreview ? styles.weekBarPreview : ''} ${isCurrent ? styles.weekBarCurrent : ''}`}
+          style={{ left: nodeLeft, top: laneY.weeklyBase + lane * laneY.weeklyStep }}
+          title={`${item.node.title} · ${tasks.length} 项`}
         >
-          <strong>{item.node.title.replace(/^(本周计划|下周预览)[:：]\s*/, '')}</strong>
-          <small>{isPreview ? '下周预览' : '本周计划'}</small>
+          <span className={styles.weekBarTag}>{isPreview ? '下周预览' : '本周计划'}</span>
+          <strong>{phaseTitle}</strong>
+          <small>{tasks.length === 0 ? '暂无任务' : `${unfinished} 项待办${topTask ? ` · ${topTask.title}` : ''}`}</small>
         </div>;
       })}
-      {/* 日尺度:已确认的日工作块(排期场次),放在日轨道,不与阶段条重叠。 */}
+      {/* 日尺度:已确认的日工作块(排期场次),放在日轨道,不与阶段条/周计划重叠。 */}
       {dayItems.map(item => {
         const id = item.itemId ?? item.node.id;
         const lane = dayLanes.get(id) ?? 0;
@@ -526,7 +569,7 @@ export function TimelineView() {
           data-testid="v1-day-block"
           data-session-id={item.itemId}
           className={styles.dayBlock}
-          style={{ left, top: axisY + 198 + lane * 28 }}
+          style={{ left, top: laneY.dailyBase + lane * laneY.dailyStep }}
           title={item.node.title}
         >
           {item.node.title}
@@ -566,8 +609,8 @@ export function TimelineView() {
           style={{
             left: Math.max(8, Math.min(Math.max(8, size.width - 272), selectedPlaced.left - 40)),
             top: Math.max(8, Math.min(size.height - 190, (selectedPlaced.lane % 2 === 0
-              ? axisY - 108 - Math.floor(selectedPlaced.lane / 2) * 86
-              : axisY + 116 + Math.floor(selectedPlaced.lane / 2) * 86) + 80)),
+              ? laneY.cardAboveBase - Math.floor(selectedPlaced.lane / 2) * laneY.cardStep
+              : laneY.cardBelowBase + Math.floor(selectedPlaced.lane / 2) * laneY.cardStep) + 80)),
           }}
           onPointerDown={event => event.stopPropagation()}
         >

@@ -623,6 +623,24 @@ test('时间线阶段:细覆盖条 + 独立方框卡,点击开详情,点空白 /
   expect(widthOf('phase-2')).toBeGreaterThan(widthOf('phase-1'));
   expect(widthOf('phase-2')).toBeGreaterThan(widthOf('phase-3'));
 
+  // 轨道分离:刻度文字在主轴上方,覆盖条在主轴下方,中间留白。
+  const canvasRect = (await page.getByTestId('timeline-canvas').boundingBox())!;
+  const tickLabelBox = (await page.locator('[class*="tickLabel"]').first().boundingBox())!;
+  const firstBarBox = (await bars.first().boundingBox())!;
+  expect(firstBarBox.y - (tickLabelBox.y + tickLabelBox.height)).toBeGreaterThanOrEqual(20);
+  // 阶段卡与覆盖条在不同纵向带。
+  const firstCardBox = (await cards.first().boundingBox())!;
+  expect(Math.abs(firstCardBox.y - firstBarBox.y)).toBeGreaterThanOrEqual(40);
+  // 首/尾卡片都在可视绘制边界内,不横裁。
+  const cardRects = await cards.evaluateAll(els => els.map(el => {
+    const r = el.getBoundingClientRect();
+    return { left: r.left, right: r.right };
+  }));
+  for (const rect of cardRects) {
+    expect(rect.left, '阶段卡左裁切').toBeGreaterThanOrEqual(canvasRect.x - 1);
+    expect(rect.right, '阶段卡右裁切').toBeLessThanOrEqual(canvasRect.x + canvasRect.width + 1);
+  }
+
   // 方框卡:标题完整可读(>=13px,不被裁掉),时间范围与摘要各一行。
   const card2 = page.locator('[data-testid="v1-phase-card"][data-phase-id="phase-2"]');
   await expect(card2.locator('strong')).toHaveText('阶段二:建设');
@@ -727,16 +745,21 @@ test('时间线:滚轮直接缩放(无需 Ctrl),拖动空白平移', async ({ pa
   expect(Number(await canvas.getAttribute('data-density'))).toBe(densityAfterZoom);
 });
 
-test('时间线:周尺度显示 某月·第N周 与已确认周计划', async ({ page }) => {
+test('时间线:周尺度显示 某月·第N周,且只显示当前(未归档)周计划', async ({ page }) => {
   const { token } = await registerAccount(page, 'v1-week-level');
   const workspaceId = await createWorkspace(page, token, '周尺度', '30 天做出一个数据分析小工具');
   const rootId = (await getPlan(page, token, workspaceId)).nodes.find(node => node.parentId === null)!.id;
   const phaseId = `phase-${workspaceId}`;
-  const weekId = `week-${workspaceId}`;
+  const archivedWeek = `week-old-${workspaceId}`;
+  const activeWeek = `week-new-${workspaceId}`;
   await installPlan(page, workspaceId, rootId, [
     planNode({ id: rootId, parentId: null, title: '根目标', nodeType: 'goal', depth: 0 }),
     planNode({ id: phaseId, parentId: rootId, title: PHASE_TITLE, nodeType: 'stage', depth: 1 }),
-    planNode({ id: weekId, parentId: phaseId, title: '本周计划:阶段一 · 第 1 版', nodeType: 'stage', depth: 2 }),
+    // 旧版本:后端已归档(重规划替代),不得出现在当前时间线。
+    planNode({ id: archivedWeek, parentId: phaseId, title: '本周计划:阶段一 · 第 1 版', nodeType: 'stage', depth: 2, status: 'archived' }),
+    // 当前活跃版本。
+    planNode({ id: activeWeek, parentId: phaseId, title: '本周计划:阶段一 · 第 2 版', nodeType: 'stage', depth: 2 }),
+    planNode({ id: `task-${workspaceId}`, parentId: activeWeek, title: '写第一版脚本', nodeType: 'task', depth: 3, priority: 'high' }),
   ]);
   await installMock(page, baseView(workspaceId, rootId, {
     v1Stage: 'coarse_timeline_review',
@@ -749,13 +772,22 @@ test('时间线:周尺度显示 某月·第N周 与已确认周计划', async ({
   await expect(page.getByTestId('v1-phase-bar')).toHaveCount(1, { timeout: 20000 });
   await page.getByTestId('timeline-presets').getByRole('button', { name: '周' }).click();
   await expect(page.getByTestId('timeline-view')).toHaveAttribute('data-zoom', 'week', { timeout: 20000 });
-  // 已确认周计划:周条出现在所属阶段条下方。
+  // 只显示当前版本,归档的“第1版”不出现。
   const weekBar = page.getByTestId('v1-week-bar');
   await expect(weekBar).toHaveCount(1);
+  await expect(weekBar).toHaveAttribute('data-week-id', activeWeek);
+  await expect(page.locator(`[data-week-id="${archivedWeek}"]`)).toHaveCount(0);
+  // 周节点显示所属阶段与任务摘要。
+  await expect(weekBar).toContainText('本周计划');
   await expect(weekBar).toContainText('阶段一');
+  await expect(weekBar).toContainText('写第一版脚本');
   // 刻度是“某月 · 第 N 周”,不是 10/6。
   const labels = await page.getByTestId('timeline-tick').allTextContents();
   expect(labels.some(label => /月 · 第\d+周/.test(label))).toBe(true);
+  // 周计划轨道在阶段覆盖条下方(不重叠)。
+  const barBox = (await page.getByTestId('v1-phase-bar').first().boundingBox())!;
+  const weekBox = (await weekBar.boundingBox())!;
+  expect(weekBox.y).toBeGreaterThan(barBox.y + barBox.height);
 });
 
 test('时间线:日尺度显示已确认日工作块;没有日计划时不造假', async ({ page }) => {

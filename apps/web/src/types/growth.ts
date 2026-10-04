@@ -54,6 +54,14 @@ export interface GrowthNode {
   /** 它所属的阶段(最近的 stage 祖先,没有就是根目标)。任务视图按它分组。 */
   stageId?: string;
   status: 'pending' | 'doing' | 'completed';
+  /**
+   * 后端把它归档了(例如重规划后旧的“第 1 版”周计划)。
+   *
+   * 归档节点仍在 `/plan` 里(可恢复历史),但**不是当前计划** —— 时间线的当前计划投影
+   * 必须据此把它们排除,否则会出现“第 1 版”和“第 2 版”并列。`status` 保留原语义
+   * (归档不是 pending),这里单独给一个布尔,避免影响任务面板等既有消费者。
+   */
+  archived?: boolean;
   priority: 'low' | 'medium' | 'high';
   /**
    * 时间线上这个节点占的区间。
