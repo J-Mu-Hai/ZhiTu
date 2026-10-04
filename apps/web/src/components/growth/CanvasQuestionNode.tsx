@@ -1,7 +1,7 @@
 'use client';
 import { Handle, Position, type Node, type NodeProps } from '@xyflow/react';
 import { createContext, useContext, useState, type PointerEvent as ReactPointerEvent } from 'react';
-import type { QuestionView, V1CurrentInteraction } from '@/lib/backend';
+import type { QuestionView, V1CurrentInteraction, V1DimensionView } from '@/lib/backend';
 
 /**
  * 画布问题节点。
@@ -50,6 +50,11 @@ export type CanvasQuestionData = {
   isActive?: boolean;
   /** V1 三阶段树的子问题从父阶段向下连接，而不是横向漂浮。 */
   verticalAnchor?: boolean;
+  /**
+   * 挂在这块基石上的内部维度(问题结构组的约束 / 杠杆 / 风险等)。
+   * 它们不再单独成卡,而是在基石节点里以“关联”展示。
+   */
+  linkedDimensions?: V1DimensionView[];
   /** 目标定义节点:是否可以确认目标定义(无 interaction 的流程动作,也只在节点里)。 */
   goalConfirmable?: boolean;
   /** 继续形成战略路径(无 interaction 的流程动作)。 */
@@ -338,6 +343,8 @@ export function CanvasQuestionNodeComponent({ data }: NodeProps<QuestionFlowNode
   );
   /** 不足推荐时要说清缺什么。模型没给结构化字段时,用 `whyNow` 兜底。 */
   const missingStrategicInfo = question.whyNow.trim() || '目标的关键约束';
+  /** 挂在这块基石上的内部维度(不再单独成卡)。 */
+  const linked = data.linkedDimensions ?? [];
 
   function setDraft(next: CanvasQuestionDraft) {
     interaction.onDraftChange(question.id, next);
@@ -555,6 +562,31 @@ export function CanvasQuestionNodeComponent({ data }: NodeProps<QuestionFlowNode
           </p>
         )}
       </div>
+
+      {/* 内部维度挂在这块基石上:紧凑时只显示数量,点开后列出它们。 */}
+      {linked.length > 0 && !data.isFocused && (
+        <p className="cq-linked-count" data-testid="cq-linked-count">关联讨论 {linked.length} 项</p>
+      )}
+      {linked.length > 0 && data.isFocused && (
+        <div className="cq-linked" data-testid="cq-linked">
+          <span className="cq-label">关联讨论</span>
+          <ul>
+            {linked.map((dimension) => (
+              <li key={dimension.key}>
+                <strong>{dimension.title}</strong>
+                {dimension.judgment && <span className="cq-linked-judgment">{dimension.judgment}</span>}
+                {((dimension.knownFacts?.length ?? 0) > 0 || (dimension.assumptions?.length ?? 0) > 0) && (
+                  <em className="cq-linked-meta">
+                    {(dimension.knownFacts?.length ?? 0) > 0 ? `事实 ${dimension.knownFacts!.length}` : ''}
+                    {(dimension.knownFacts?.length ?? 0) > 0 && (dimension.assumptions?.length ?? 0) > 0 ? ' · ' : ''}
+                    {(dimension.assumptions?.length ?? 0) > 0 ? `假设 ${dimension.assumptions!.length}` : ''}
+                  </em>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {data.isFocused && question.recommendation && (
         <p className="cq-recommendation">

@@ -302,8 +302,8 @@ test('根画布只显示服务端投影里的三个已分析核心节点', async
     dimension('true_intent', '真实意图', '你想要一个能展示的成果,而不是学完语法。', true),
     dimension('key_conflict', '核心矛盾', '目标太大、反馈太慢。', true),
     dimension('goal_definition', '目标定义', '30 天做出一个可展示的分析小工具。', true, true),
-    dimension('major_risks', '主要风险', '容易只看教程不动手。', false),
-    dimension('hard_constraints', '硬约束', '每天只有 1 小时。', false),
+    dimension('major_risks', '主要风险', '容易只看教程不动手。', true),
+    dimension('hard_constraints', '硬约束', '每天只有 1 小时。', true),
   ];
   const questions = [
     question(workspaceId, rootId, 'true_intent', '真实意图', '你想要一个能展示的成果,而不是学完语法。'),
@@ -324,10 +324,20 @@ test('根画布只显示服务端投影里的三个已分析核心节点', async
 
   await page.goto(`/workbench?workspace=${workspaceId}&view=path`);
   const nodes = page.locator('.react-flow__node-question');
-  // 三个核心(+ focus 已含在核心内);其余内部维度不默认上画布。
+  // 画布**只保留三个基石节点**;其余维度(即使服务端投影 visible)不再单独成卡。
   await expect(nodes).toHaveCount(3, { timeout: 20000 });
   await expect(page.getByText('目标定义', { exact: false }).first()).toBeVisible();
   await expect(page.locator('.react-flow__node-question', { hasText: '主要风险' })).toHaveCount(0);
+  await expect(page.locator('.react-flow__node-question', { hasText: '硬约束' })).toHaveCount(0);
+
+  // 它们被“链接”到关键矛盾节点上:紧凑时显示数量,点开后以关联讨论列出。
+  const conflictNode = page.locator('.react-flow__node-question', { hasText: '核心矛盾' });
+  await expect(conflictNode.getByTestId('cq-linked-count')).toContainText('2');
+  await conflictNode.click();
+  const linked = conflictNode.getByTestId('cq-linked');
+  await expect(linked).toBeVisible();
+  await expect(linked).toContainText('主要风险');
+  await expect(linked).toContainText('硬约束');
 });
 
 test('V1 粗时间架构走中央主轴,草案可确认,相对周刻度稀疏', async ({ page }) => {

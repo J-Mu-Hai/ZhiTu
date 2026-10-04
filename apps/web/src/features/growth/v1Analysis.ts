@@ -54,6 +54,38 @@ export function v1VisibleKeys(reasoning: GoalReasoningView | null): Set<string> 
 }
 
 /**
+ * V1 画布**只保留的三个基石节点** —— 目标重构组里真正长期讨论的三个。
+ *
+ * 其余分析维度(问题结构组里的约束 / 杠杆 / 风险等)不再各自投影成一张卡片,
+ * 而是作为“关联”挂到最相关的基石节点上;找不到归属的维度不投影(等同删除)。
+ */
+export const V1_CORE_GOAL_KEYS: readonly string[] = ['true_intent', 'key_conflict', 'goal_definition'];
+
+/**
+ * 非核心分析维度 **挂到哪个基石节点**上。
+ *
+ * 键来自后端固定十维(`_ANALYSIS`);这里只映射分组关系,不改业务语义:
+ * - `current_state` / `value_assessment` 属于目标重构组,挂在「真实意图」;
+ * - `problem_structure` 五个因素描述“什么卡住你”,挂在「关键矛盾」。
+ */
+export const V1_LINKED_CORE: Record<string, string> = {
+  current_state: 'true_intent',
+  value_assessment: 'true_intent',
+  hard_constraints: 'key_conflict',
+  controllable_factors: 'key_conflict',
+  key_levers: 'key_conflict',
+  major_risks: 'key_conflict',
+  external_conditions: 'key_conflict',
+};
+
+/** 把一个分析维度键归到基石节点键;不是基石也不是已知关联时返回 `null`。 */
+export function v1CoreKeyFor(key: string | null | undefined): string | null {
+  if (!key) return null;
+  if (V1_CORE_GOAL_KEYS.includes(key)) return key;
+  return V1_LINKED_CORE[key] ?? null;
+}
+
+/**
  * 粗时间架构是否**完整到可以呈现/确认**。
  *
  * 只有每个阶段都有时间范围 + 目标 + 成果 + 完成标准时,才允许自动导航到时间线、

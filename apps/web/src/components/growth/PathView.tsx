@@ -48,7 +48,7 @@ import {
   isDescriptionExempt,
 } from '@/lib/codepoints';
 import { useDemo } from '@/features/growth/provider';
-import { v1VisibleKeys } from '@/features/growth/v1Analysis';
+import { V1_CORE_GOAL_KEYS, V1_LINKED_CORE } from '@/features/growth/v1Analysis';
 import { v1Phases, type V1PhaseKey } from '@/features/growth/v1Workflow';
 import { useMobileLayout } from '@/lib/media';
 import type { GrowthEdge, GrowthNode, GrowthRelationType } from '@/types/growth';
@@ -57,7 +57,7 @@ import { CanvasQuestionNodeComponent, QuestionInteractionContext, type CanvasQue
 import { V1PhaseNodeComponent, type V1PhaseFlowNode } from './V1PhaseNode';
 import { V1InteractionNodeComponent, type V1InteractionFlowNode } from './V1InteractionNode';
 import { ReasoningNodeComponent, type ReasoningFlowNode } from './ReasoningNode';
-import { downloadV1Audit, type ReasoningNodeView } from '@/lib/backend';
+import { downloadV1Audit, type ReasoningNodeView, type V1DimensionView } from '@/lib/backend';
 
 type GrowthFlowData = {
   object: GrowthNode;
@@ -1318,47 +1318,54 @@ function Canvas() {
     // 归属它的紫色问题节点围绕这个根节点显示;在顶层(没进入分组)看不到它们 ——
     // 判据就是问题的 `sourceNodeId` 是否等于当前空间根。
     const v1Space = Boolean(reasoning?.v1Stage);
-    // R2 画布修复:**可见性只看服务端投影**。
-    // - 根目标下:显示 `v1Dimensions` 里 visible 的分析维度(core 3 + 当前 focus);
-    // - 进入某个分组(spaceId != 根):显示归属该分组的问题(其余内部维度从这里进入)。
-    // 前端**不再**用 `sourceNodeId === spaceId` 推断根空间可见性 —— 分析节点的
-    // sourceNodeId 是分组(目标重构/问题结构/战略路径),于是在根层永远匹配不到。
-    const v1Visible = v1VisibleKeys(reasoning);
+    // R2 画布修复 + 本轮收口:**根画布只投影目标重构的三个基石节点**
+    // (真实意图 / 关键矛盾 / 目标定义)。其余分析维度不再单独成卡,而是作为“关联”
+    // 挂到基石节点上(见下面的 `V1_LINKED_CORE` / `linkedByCore`)。
+    // 进入某个分组(spaceId != 根)时仍按来源节点显示归属该分组的问题。
     // `isRootSpace` 在组件体上方已声明(line 917),这里直接复用 —— 不能在本回调里
     // 再声明一次:同作用域更早处已经用了它,`const` 会造成 TDZ
     // (“Cannot access 'isRootSpace' before initialization”,整页白屏)。
-    // active interaction 绑到哪张分析问题卡；没有真实问题承接的确认动作，会以
-    // 阶段的可操作子节点呈现，而不是塞回阶段标题或右侧对话框。
-    const activeNodeKey = activeInteraction?.focusKey ?? null;
-    const activeQuestion =
-      activeNodeKey != null
-        ? orderedQuestions.find((item) => item.v1Key === activeNodeKey) ?? null
-        : null;
+    /*
+     * 画布只保留**目标重构的三个基石节点**(真实意图 / 关键矛盾 / 目标定义)。
+     *
+     * 其余分析维度不再各自投影成卡片:它们作为“关联”挂到最相关的基石节点上
+     * (见 `V1_LINKED_CORE`),找不到归属的维度不投影(等同删除)。这样画布上
+     * 讨论的基石始终只有这三个,而不是一张随焦点变化的问卷。
+     */
+    const coreQuestionByKey = new Map<string, (typeof orderedQuestions)[number]>();
+    orderedQuestions.forEach((item) => {
+      if (item.v1Key && V1_CORE_GOAL_KEYS.includes(item.v1Key)) coreQuestionByKey.set(item.v1Key, item);
+    });
+    const coreShownQuestions = V1_CORE_GOAL_KEYS
+      .map((key) => coreQuestionByKey.get(key))
+      .filter((item): item is (typeof orderedQuestions)[number] => Boolean(item));
     const baseShownQuestions = v1Space
-      ? orderedQuestions.filter((item) =>
-          isRootSpace
-            ? item.v1Key != null && v1Visible.has(item.v1Key)
-            : item.sourceNodeId === spaceId,
-        )
+      ? isRootSpace
+        ? coreShownQuestions
+        : orderedQuestions.filter((item) => item.sourceNodeId === spaceId)
       : roadmapExists
         ? orderedQuestions.filter((item) => item.id === primaryQuestionId)
         : [];
-    /*
-     * “想清楚”下**首次最多三个子节点**。服务端会给出 core 3 + 当前 focus,当 focus
-     * 不在 core 3 里时会多出第四个;这里封顶为三,避免又变回问卷。当前 active 的那
-     * 一个一定保留(用 focusKey 找回它,再放回列表)。
-     */
-    const cappedShownQuestions =
-      v1Space && isRootSpace ? baseShownQuestions.slice(0, 3) : baseShownQuestions;
-    const shownQuestions =
-      activeQuestion && !cappedShownQuestions.some((item) => item.id === activeQuestion.id)
-        ? [...cappedShownQuestions.slice(0, 2), activeQuestion]
-        : cappedShownQuestions;
+    const shownQuestions = baseShownQuestions;
+    // active interaction 绑到**基石节点**:只有当 focusKey 本身就是基石键时才绑;
+    // 内部维度(约束 / 风险等)不单独成卡,改由阶段子节点承接,避免把回答提交到错的 question id。
     const questionBindsInteraction = Boolean(activeInteraction && interactionPhaseKey === null);
-    const hasActiveQuestionNode =
-      questionBindsInteraction &&
-      activeNodeKey != null &&
-      shownQuestions.some((item) => item.v1Key === activeNodeKey);
+    const activeFocusKey = activeInteraction?.focusKey ?? null;
+    const activeNodeKey = questionBindsInteraction && activeFocusKey && V1_CORE_GOAL_KEYS.includes(activeFocusKey)
+      ? activeFocusKey
+      : null;
+    const activeQuestion =
+      activeNodeKey != null
+        ? shownQuestions.find((item) => item.v1Key === activeNodeKey) ?? null
+        : null;
+    const hasActiveQuestionNode = Boolean(activeQuestion);
+    // 内部维度 -> 它挂载的基石节点(作为“关联”信息随卡片展示,不单独成卡)。
+    const linkedByCore: Record<string, V1DimensionView[]> = {};
+    (reasoning?.v1Dimensions ?? []).forEach((dimension) => {
+      const coreKey = V1_LINKED_CORE[dimension.key];
+      if (!coreKey) return;
+      (linkedByCore[coreKey] ??= []).push(dimension);
+    });
     const phaseForQuestion = (item: (typeof shownQuestions)[number]): V1PhaseKey => {
       if (!v1Space || !isRootSpace) return 'think';
       // 第一阶段先问“为什么 / 想解决什么 / 成功意味着什么”。时间容量、约束、
@@ -1422,6 +1429,8 @@ function Canvas() {
           interaction: questionBindsInteraction && item.v1Key === activeNodeKey ? activeInteraction : null,
           isActive: Boolean(questionBindsInteraction && activeNodeKey != null && item.v1Key === activeNodeKey),
           verticalAnchor: v1Space && isRootSpace,
+          // 挂在这块基石上的内部维度(约束/风险等):不再单独成卡,作为“关联”显示。
+          linkedDimensions: linkedByCore[item.v1Key ?? ''] ?? [],
         },
       });
       // 仅 UI 的锚定虚线:**不是 NodeRelation、不是 dependency**,不写任何表。

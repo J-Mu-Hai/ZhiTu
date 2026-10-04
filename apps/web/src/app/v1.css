@@ -283,3 +283,45 @@
 .v1-interaction-kicker { font-size: 10px; color: var(--blue-ink, #2f6da3); }
 .v1-interaction-hint { font-size: 10px; color: var(--muted, #7a8b99); }
 .v1-interaction-controls { display: grid; gap: 8px; }
+
+/* ---- 基石节点上的“关联讨论”:被折叠进来的内部维度 ---- */
+.cq-linked-count {
+  margin: 6px 0 0;
+  font-size: 10.5px;
+  color: var(--muted, #8798ad);
+}
+.cq-linked {
+  display: grid;
+  gap: 5px;
+  margin-top: 8px;
+  padding: 8px 9px;
+  border-left: 2px solid var(--line-selected, #c9e2f4);
+  border-radius: 0 6px 6px 0;
+  background: color-mix(in srgb, var(--line-selected, #c9e2f4) 22%, transparent);
+}
+.cq-linked ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 6px;
+}
+.cq-linked li {
+  display: grid;
+  gap: 1px;
+}
+.cq-linked li strong {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--text, #24486a);
+}
+.cq-linked-judgment {
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: #52718b;
+}
+.cq-linked-meta {
+  font-size: 9.5px;
+  font-style: normal;
+  color: var(--muted, #8798ad);
+}

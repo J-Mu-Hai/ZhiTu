@@ -5,6 +5,7 @@ import { ArrowUp, Plus, X, CornerDownLeft, AlertCircle, RotateCcw, RefreshCw } f
 import { useDemo } from '@/features/growth/provider';
 import { readConversationDraft, subscribeConversationDraft, writeConversationDraft } from '@/features/growth/drafts';
 import { V1_READY_PROMPT } from '@/features/growth/v1Workflow';
+import { V1_CORE_GOAL_KEYS } from '@/features/growth/v1Analysis';
 import { degradedHint, sourceLabel } from '@/lib/backend';
 import type { ResearchView } from '@/lib/backend';
 
@@ -366,7 +367,7 @@ export function ConversationPanel() {
    * 对话区只说明“这个决定放在哪个节点、确认后会怎样”,并给一个「定位到节点」。
    * 选项、输入框与确认按钮一律不在对话区出现 —— 那是画布节点的职责。
    */
-  const interactionQuestion = currentInteraction?.focusKey
+  const interactionQuestion = currentInteraction?.focusKey && V1_CORE_GOAL_KEYS.includes(currentInteraction.focusKey)
     ? questions.find(question => question.v1Key === currentInteraction.focusKey) ?? null
     : null;
   /*
