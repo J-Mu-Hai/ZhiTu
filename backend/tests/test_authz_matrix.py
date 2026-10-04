@@ -94,6 +94,8 @@ AUTHENTICATED_ROUTES = {
     ("GET", "/api/sessions/{session_id}/executions"),
     ("POST", "/api/sessions/{session_id}/executions"),
     ("GET", "/api/today"),
+    # 首页两个页签的跨空间聚合。按账号聚合,必须登录。
+    ("GET", "/api/today/plans"),
     ("GET", "/api/reminders"),
     ("POST", "/api/reminders/dismiss"),
     ("POST", "/api/reminders/snooze"),

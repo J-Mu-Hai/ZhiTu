@@ -1496,6 +1496,107 @@ export function fetchToday(): Promise<TodayResponse> {
   return apiFetch<TodayResponse>('/api/today');
 }
 
+/** 一个任务在当前周里的排期场次。空数组 = 没有具体日期,但它仍属于本周计划。 */
+export interface AgendaSessionView {
+  id: string;
+  scheduledDate: string;
+  plannedMinutes: number;
+  startMinute: number | null;
+  endMinute: number | null;
+  seq: number;
+  status: string;
+}
+
+export interface AgendaWeekTaskView {
+  nodeId: string;
+  title: string;
+  nodeType: string;
+  status: string;
+  deadline: string | null;
+  estimateMinutes: number | null;
+  priority: string;
+  sessions: AgendaSessionView[];
+}
+
+export interface AgendaWeekPlanView {
+  workspaceId: string;
+  workspaceTitle: string;
+  planNodeId: string;
+  planTitle: string;
+  stageId: string | null;
+  stageTitle: string | null;
+  tasks: AgendaWeekTaskView[];
+}
+
+/** 今天的一件事。`kind` 区分已排场次(`block`)与只有截止日的任务(`task`)。 */
+export interface AgendaTodayItemView {
+  kind: 'block' | 'task' | string;
+  sessionId: string | null;
+  nodeId: string;
+  workspaceId: string;
+  workspaceTitle: string;
+  title: string;
+  stageId: string | null;
+  stageTitle: string | null;
+  scheduledDate: string;
+  plannedMinutes: number | null;
+  startMinute: number | null;
+  endMinute: number | null;
+  sessionStatus: string | null;
+  nodeStatus: string;
+  result: string | null;
+  recorded: boolean;
+}
+
+export interface AgendaWeekSessionView {
+  id: string;
+  nodeId: string;
+  workspaceId: string;
+  workspaceTitle: string;
+  nodeTitle: string;
+  scheduledDate: string;
+  plannedMinutes: number;
+  startMinute: number | null;
+  endMinute: number | null;
+  status: string;
+}
+
+export interface AgendaPhaseTargetView {
+  stageId: string;
+  stageTitle: string;
+  weekPlanId: string | null;
+  weekPlanTitle: string | null;
+}
+
+export interface AgendaWorkspaceTargetView {
+  workspaceId: string;
+  workspaceTitle: string;
+  phases: AgendaPhaseTargetView[];
+}
+
+/**
+ * 首页「本周计划 / 本日计划」两个页签的聚合载荷。
+ *
+ * **一次查完所有活动空间** —— 不让首页逐空间 N+1 拉 `/plan`。只含正式、活跃、
+ * 未归档的数据:proposal 没有 `PlanNode` 行,历史版本是 `archived`,都不在这里。
+ */
+export interface TodayPlansResponse {
+  today: string;
+  timezone: string;
+  weekStart: string;
+  weekEnd: string;
+  weekPlans: AgendaWeekPlanView[];
+  todayItems: AgendaTodayItemView[];
+  weekSessions: AgendaWeekSessionView[];
+  targets: AgendaWorkspaceTargetView[];
+}
+
+/** `weekStart` 给顶部「本周时间线」翻周用;不传就是当前自然周。 */
+export function fetchTodayPlans(weekStart?: string): Promise<TodayPlansResponse> {
+  const query = weekStart ? `?weekStart=${encodeURIComponent(weekStart)}` : '';
+  return apiFetch<TodayPlansResponse>(`/api/today/plans${query}`);
+}
+
 export interface QuietHoursView {
   active: boolean;
   /** 当日分钟数。`fromMinute > toMinute` 表示这段跨过午夜(22:00 -> 08:00)。 */

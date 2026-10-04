@@ -31,11 +31,14 @@ OperationalError 处理器),成功时响应里也带着 `saved: true` —— 客
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from datetime import date
+
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.dependencies.auth import AuthContext, get_auth_context
 from backend.api.dependencies.session import SessionContext, get_session_context
+from backend.contracts.agenda import TodayPlansResponse
 from backend.contracts.execution import (
     ExecutionHistoryResponse,
     RecordExecutionRequest,
@@ -43,7 +46,7 @@ from backend.contracts.execution import (
     TodayResponse,
 )
 from backend.db.session import get_db
-from backend.services import execution_service
+from backend.services import agenda_service, execution_service
 
 router = APIRouter()
 
@@ -123,3 +126,32 @@ async def today(
     归档的空间不参与 —— 一个归档之后仍然每天早上出现在「今天」里的空间,等于没归档。
     """
     return await execution_service.load_today(db, auth.user, auth.user.timezone)
+
+
+@router.get(
+    "/today/plans",
+    response_model=TodayPlansResponse,
+    summary="跨空间的周计划与今日计划",
+)
+async def today_plans(
+    week_start: date | None = Query(
+        default=None,
+        alias="weekStart",
+        description="要看哪一周(任意一天即可,按周一归一)。不传=当前自然周。",
+    ),
+    auth: AuthContext = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+) -> TodayPlansResponse:
+    """首页「本周计划 / 本日计划」两个页签的聚合数据。
+
+    **路径上没有 `workspace_id`** —— 首页同时展示这个账号全部活动空间的本周计划与
+    今天安排,逐空间读 `/plan` 会让请求数随空间数增长。这里一次查完,并且只返回
+    正式、活跃、未归档的数据:proposal 没有 `PlanNode` 行,历史版本是 `archived`,
+    它们都不会出现在这份载荷里。
+
+    `weekStart` 给顶部「本周时间线」翻到别的周时用;它只影响这一周的周计划与逐场安排。
+    今天相关的两段始终是今天。
+    """
+    return await agenda_service.load_today_plans(
+        db, auth.user, auth.user.timezone, week_start=week_start
+    )

@@ -25,6 +25,501 @@
       "title": "ActionError",
       "type": "object"
     },
+    "AgendaPhaseTargetView": {
+      "additionalProperties": false,
+      "description": "添加表单里的一个可选阶段,以及它当前周的活跃周计划(可空)。",
+      "properties": {
+        "stageId": {
+          "format": "uuid",
+          "title": "Stageid",
+          "type": "string"
+        },
+        "stageTitle": {
+          "title": "Stagetitle",
+          "type": "string"
+        },
+        "weekPlanId": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Weekplanid"
+        },
+        "weekPlanTitle": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Weekplantitle"
+        }
+      },
+      "required": [
+        "stageId",
+        "stageTitle"
+      ],
+      "title": "AgendaPhaseTargetView",
+      "type": "object"
+    },
+    "AgendaSessionView": {
+      "additionalProperties": false,
+      "description": "一个任务在当前周里的排期场次。**可为空** —— 没有具体日期的任务也要出现。",
+      "properties": {
+        "endMinute": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Endminute"
+        },
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "plannedMinutes": {
+          "title": "Plannedminutes",
+          "type": "integer"
+        },
+        "scheduledDate": {
+          "format": "date",
+          "title": "Scheduleddate",
+          "type": "string"
+        },
+        "seq": {
+          "default": 0,
+          "title": "Seq",
+          "type": "integer"
+        },
+        "startMinute": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Startminute"
+        },
+        "status": {
+          "default": "planned",
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "scheduledDate",
+        "plannedMinutes"
+      ],
+      "title": "AgendaSessionView",
+      "type": "object"
+    },
+    "AgendaTodayItemView": {
+      "additionalProperties": false,
+      "description": "今天的一件事。`kind` 区分它来自已排场次还是只有截止日的任务。",
+      "properties": {
+        "endMinute": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Endminute"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "nodeId": {
+          "format": "uuid",
+          "title": "Nodeid",
+          "type": "string"
+        },
+        "nodeStatus": {
+          "default": "pending",
+          "title": "Nodestatus",
+          "type": "string"
+        },
+        "plannedMinutes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Plannedminutes"
+        },
+        "recorded": {
+          "default": false,
+          "title": "Recorded",
+          "type": "boolean"
+        },
+        "result": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Result"
+        },
+        "scheduledDate": {
+          "format": "date",
+          "title": "Scheduleddate",
+          "type": "string"
+        },
+        "sessionId": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sessionid"
+        },
+        "sessionStatus": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sessionstatus"
+        },
+        "stageId": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stageid"
+        },
+        "stageTitle": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stagetitle"
+        },
+        "startMinute": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Startminute"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "workspaceId": {
+          "format": "uuid",
+          "title": "Workspaceid",
+          "type": "string"
+        },
+        "workspaceTitle": {
+          "title": "Workspacetitle",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "nodeId",
+        "workspaceId",
+        "workspaceTitle",
+        "title",
+        "scheduledDate"
+      ],
+      "title": "AgendaTodayItemView",
+      "type": "object"
+    },
+    "AgendaWeekPlanView": {
+      "additionalProperties": false,
+      "description": "某个空间、某个阶段下当前自然周的活跃周计划。",
+      "properties": {
+        "planNodeId": {
+          "format": "uuid",
+          "title": "Plannodeid",
+          "type": "string"
+        },
+        "planTitle": {
+          "title": "Plantitle",
+          "type": "string"
+        },
+        "stageId": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stageid"
+        },
+        "stageTitle": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stagetitle"
+        },
+        "tasks": {
+          "items": {
+            "$ref": "#/$defs/AgendaWeekTaskView"
+          },
+          "title": "Tasks",
+          "type": "array"
+        },
+        "workspaceId": {
+          "format": "uuid",
+          "title": "Workspaceid",
+          "type": "string"
+        },
+        "workspaceTitle": {
+          "title": "Workspacetitle",
+          "type": "string"
+        }
+      },
+      "required": [
+        "workspaceId",
+        "workspaceTitle",
+        "planNodeId",
+        "planTitle"
+      ],
+      "title": "AgendaWeekPlanView",
+      "type": "object"
+    },
+    "AgendaWeekSessionView": {
+      "additionalProperties": false,
+      "description": "某一周里的一场已排场次。顶部「本周时间线」按天铺开的就是它。\n\n它与 `AgendaTodayItemView` 的区别是粒度:一个任务可以有多场,这里逐场返回。",
+      "properties": {
+        "endMinute": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Endminute"
+        },
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "nodeId": {
+          "format": "uuid",
+          "title": "Nodeid",
+          "type": "string"
+        },
+        "nodeTitle": {
+          "title": "Nodetitle",
+          "type": "string"
+        },
+        "plannedMinutes": {
+          "title": "Plannedminutes",
+          "type": "integer"
+        },
+        "scheduledDate": {
+          "format": "date",
+          "title": "Scheduleddate",
+          "type": "string"
+        },
+        "startMinute": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Startminute"
+        },
+        "status": {
+          "default": "planned",
+          "title": "Status",
+          "type": "string"
+        },
+        "workspaceId": {
+          "format": "uuid",
+          "title": "Workspaceid",
+          "type": "string"
+        },
+        "workspaceTitle": {
+          "title": "Workspacetitle",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "nodeId",
+        "workspaceId",
+        "workspaceTitle",
+        "nodeTitle",
+        "scheduledDate",
+        "plannedMinutes"
+      ],
+      "title": "AgendaWeekSessionView",
+      "type": "object"
+    },
+    "AgendaWeekTaskView": {
+      "additionalProperties": false,
+      "description": "一周计划下的一个未归档任务(或里程碑)。",
+      "properties": {
+        "deadline": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Deadline"
+        },
+        "estimateMinutes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Estimateminutes"
+        },
+        "nodeId": {
+          "format": "uuid",
+          "title": "Nodeid",
+          "type": "string"
+        },
+        "nodeType": {
+          "title": "Nodetype",
+          "type": "string"
+        },
+        "priority": {
+          "default": "medium",
+          "title": "Priority",
+          "type": "string"
+        },
+        "sessions": {
+          "items": {
+            "$ref": "#/$defs/AgendaSessionView"
+          },
+          "title": "Sessions",
+          "type": "array"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "nodeId",
+        "title",
+        "nodeType",
+        "status"
+      ],
+      "title": "AgendaWeekTaskView",
+      "type": "object"
+    },
+    "AgendaWorkspaceTargetView": {
+      "additionalProperties": false,
+      "properties": {
+        "phases": {
+          "items": {
+            "$ref": "#/$defs/AgendaPhaseTargetView"
+          },
+          "title": "Phases",
+          "type": "array"
+        },
+        "workspaceId": {
+          "format": "uuid",
+          "title": "Workspaceid",
+          "type": "string"
+        },
+        "workspaceTitle": {
+          "title": "Workspacetitle",
+          "type": "string"
+        }
+      },
+      "required": [
+        "workspaceId",
+        "workspaceTitle"
+      ],
+      "title": "AgendaWorkspaceTargetView",
+      "type": "object"
+    },
     "AgentTraceToolView": {
       "additionalProperties": false,
       "description": "一次只读工具调用的**脱敏**摘要。",
@@ -5875,6 +6370,67 @@
         "plannedMinutes"
       ],
       "title": "TodayItemView",
+      "type": "object"
+    },
+    "TodayPlansResponse": {
+      "additionalProperties": false,
+      "description": "首页下方两个页签的全部数据。**只读,一次查完。**",
+      "properties": {
+        "targets": {
+          "items": {
+            "$ref": "#/$defs/AgendaWorkspaceTargetView"
+          },
+          "title": "Targets",
+          "type": "array"
+        },
+        "timezone": {
+          "title": "Timezone",
+          "type": "string"
+        },
+        "today": {
+          "format": "date",
+          "title": "Today",
+          "type": "string"
+        },
+        "todayItems": {
+          "items": {
+            "$ref": "#/$defs/AgendaTodayItemView"
+          },
+          "title": "Todayitems",
+          "type": "array"
+        },
+        "weekEnd": {
+          "format": "date",
+          "title": "Weekend",
+          "type": "string"
+        },
+        "weekPlans": {
+          "items": {
+            "$ref": "#/$defs/AgendaWeekPlanView"
+          },
+          "title": "Weekplans",
+          "type": "array"
+        },
+        "weekSessions": {
+          "items": {
+            "$ref": "#/$defs/AgendaWeekSessionView"
+          },
+          "title": "Weeksessions",
+          "type": "array"
+        },
+        "weekStart": {
+          "format": "date",
+          "title": "Weekstart",
+          "type": "string"
+        }
+      },
+      "required": [
+        "today",
+        "timezone",
+        "weekStart",
+        "weekEnd"
+      ],
+      "title": "TodayPlansResponse",
       "type": "object"
     },
     "TodayResponse": {

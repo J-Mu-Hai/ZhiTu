@@ -348,39 +348,93 @@
   border-color: var(--line);
 }
 
-/* ---- 首页:已确认的规划(当前阶段 / 下一里程碑 / 本周重点) ---- */
-.plan-focus { margin: 0 0 26px; }
-.plan-focus-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
-.plan-focus-card {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 14px 16px;
+/* ---- 首页:本周计划 / 本日计划 两个页签 ---- */
+.today-plan {
+  margin: 0 0 26px;
+  padding: 16px 18px 18px;
   border: 1px solid var(--line-card, rgba(87, 119, 143, 0.2));
   border-radius: var(--radius-card, 14px);
   background: var(--surface-panel, #fffefa);
   box-shadow: var(--shadow-card, 0 1px 2px rgba(72, 99, 117, .04), 0 8px 22px rgba(72, 99, 117, .06));
 }
-.plan-focus-card .eyebrow { display: flex; align-items: center; gap: 6px; }
-.plan-focus-card h3 { margin: 0; font-size: 15px; line-height: 1.5; color: #254a68; }
-.plan-focus-card p { margin: 0; font-size: 12.5px; line-height: 1.7; color: #526f89; }
-.plan-focus-quiet { color: #7a8b99; }
-.plan-focus-row-actions { margin-top: auto; }
-.plan-focus-card .text-button, .plan-focus-note .text-button { align-self: flex-start; margin-top: 4px; }
-.plan-focus-note {
-  display: flex;
+.today-plan-tabs { display: flex; gap: 8px; border-bottom: 1px solid var(--line, rgba(87, 119, 143, .16)); padding-bottom: 10px; }
+.today-plan-tabs button {
+  display: inline-flex;
   align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  margin-top: 14px;
-  padding: 11px 14px;
-  border: 1px solid #e6d2b4;
-  border-radius: var(--radius-card, 14px);
-  background: #fdf6e8;
-  color: #8a6a2f;
-  font-size: 12.5px;
+  gap: 6px;
+  padding: 6px 14px;
+  border: 0;
+  border-radius: var(--radius-pill, 999px);
+  background: transparent;
+  color: #5a738a;
+  font-size: 13px;
+  cursor: pointer;
 }
-.plan-focus-note .text-button { margin: 0; color: var(--experience-ink, #96652f); }
+.today-plan-tabs button:hover { background: #eef4f8; }
+.today-plan-tabs button.selected { background: #e3eef7; color: #24486a; font-weight: 600; }
+.today-plan-actions { display: flex; justify-content: flex-end; margin: 12px 0 4px; }
+.today-plan-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px;
+  border: 1px dashed #a9c2d6;
+  border-radius: var(--radius-pill, 999px);
+  background: transparent;
+  color: #3f6f96;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.today-plan-add:hover { background: #eef4f8; }
+.today-plan-groups { display: flex; flex-direction: column; gap: 16px; margin-top: 10px; }
+.today-plan-group { display: flex; flex-direction: column; gap: 6px; }
+.today-plan-group > header { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 650; letter-spacing: .02em; color: #3f6f96; }
+.today-plan-subgroup { margin-left: 8px; border-left: 2px solid #e2ebf2; padding-left: 12px; }
+.today-plan-subhead { font-size: 11.5px; color: #6b8198; margin: 4px 0; }
+.today-plan-list { display: flex; flex-direction: column; gap: 2px; margin-top: 10px; }
+.today-plan-row { display: flex; align-items: center; gap: 10px; padding: 7px 4px; border-bottom: 1px solid var(--line, rgba(87, 119, 143, .1)); }
+.today-plan-row:last-child { border-bottom: 0; }
+.today-plan-row-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.today-plan-title { font-size: 13.5px; color: #254a68; text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.today-plan-title:hover { text-decoration: underline; }
+.today-plan-row.done .today-plan-title { color: #7a8b99; text-decoration: line-through; }
+.today-plan-meta { font-size: 11px; color: #7a8b99; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.today-plan-time { font-size: 11.5px; color: #52718b; white-space: nowrap; }
+.today-plan-empty { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 26px 12px; text-align: center; color: #6b8198; font-size: 13px; }
+.today-plan-empty p { margin: 0; }
+.today-plan-quiet { margin: 4px 0; font-size: 11.5px; color: #8a99a8; }
+.today-plan-note { margin-top: 10px; font-size: 12.5px; color: #6b8198; }
+.today-plan-error { margin: 10px 0 0; padding: 8px 11px; border: 1px solid #e6bdb2; border-radius: 5px; background: #fff4f0; color: #bd6d5d; font-size: 12px; }
+.today-plan-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 14px 0 4px;
+  padding: 14px;
+  border: 1px solid #d6e2ec;
+  border-radius: var(--radius-card, 14px);
+  background: #f8fbfd;
+}
+.today-plan-form header { display: flex; align-items: center; justify-content: space-between; }
+.today-plan-form header strong { font-size: 13px; color: #254a68; }
+.today-plan-form header button { border: 0; background: transparent; color: #6b8198; cursor: pointer; }
+.today-plan-form label { display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; color: #4b6479; }
+.today-plan-form input, .today-plan-form select {
+  font-size: 12.5px;
+  padding: 5px 8px;
+  border: 1px solid #cbdae4;
+  border-radius: 6px;
+  background: #fffefa;
+  color: #2f4a63;
+}
+.today-plan-form-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.today-plan-form-row label { flex: 1; min-width: 120px; }
+.today-plan-check { flex-direction: row !important; align-items: center; gap: 7px !important; font-size: 12px; color: #52718b; }
+.today-plan-check input { width: auto; }
+.today-plan-form-actions { display: flex; gap: 8px; }
+.today-plan-form-actions button { padding: 6px 14px; border: 1px solid #cddbe4; border-radius: 7px; background: #fffefa; color: #48627b; font-size: 12.5px; cursor: pointer; }
+.today-plan-form-actions .primary-button { background: #2f6da3; border-color: #2f6da3; color: #fff; font-weight: 600; }
+.today-plan-form-actions button:disabled { opacity: .55; cursor: default; }
 @media (max-width: 720px) {
-  .plan-focus-grid { grid-template-columns: 1fr; }
+  .today-plan-form-row { flex-direction: column; }
 }

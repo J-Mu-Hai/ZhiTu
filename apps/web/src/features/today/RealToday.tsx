@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { ArrowUpRight, Check, Clock3, Sparkles } from 'lucide-react';
 import type { ExecutionResult, TodayItemView } from '@/lib/backend';
 import { Reminders } from './Reminders';
-import { PlanFocus } from './PlanFocus';
+import { TodayPlanTabs } from './TodayPlanTabs';
 import { useToday } from './useToday';
 import { WeekOverview } from './WeekOverview';
 
@@ -23,6 +23,14 @@ import { WeekOverview } from './WeekOverview';
  * 可能没做,可能做了一半。所以这里不把它画成"未完成",而是把它变成一个**问题**
  * (`checkInQuestions` 是服务端拼好的那句问话)。把它显示成"没完成",就是在替
  * 用户断言一件我们并不知道的事,而这个断言会一路影响后面的偏差判定和重规划。
+ *
+ * ## 三个卡片已删除
+ *
+ * 原来的「当前阶段 / 下一里程碑 / 本周重点」三张卡(以及那条黄色"尚未生成工作块"
+ * 横幅)没有了 —— 它们和这里的执行清单说的是同一件事。取而代之的是 `TodayPlanTabs`
+ * 的两个页签(本周计划 / 本日计划),数据来自跨空间的 `GET /api/today/plans`。
+ * 下面的执行清单不删:它是**记录实际发生了什么**的那一环(做了一部分 / 跳过 / 失败),
+ * 与"计划是什么"是两件事。
  */
 
 const RESULT_LABEL: Record<ExecutionResult, string> = {
@@ -191,7 +199,9 @@ export function RealToday() {
   return (
     <>
       <WeekOverview revision={data} />
-      <PlanFocus revision={data} />
+      {/* 两个页签是新的计划区。写入成功 → 刷新聚合,并让上面的时间线与下面的执行清单
+          一起重取(`refresh` 更新 `data`,而 `data` 正是它们的 revision)。 */}
+      <TodayPlanTabs onChanged={() => { void refresh(); }} />
       <Reminders />
 
       {error && (
