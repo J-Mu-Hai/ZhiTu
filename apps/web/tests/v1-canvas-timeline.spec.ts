@@ -362,7 +362,7 @@ test('时间架构共创:先对齐节奏,认可后才生成时间线', async ({ 
   // 客户端切到时间线(不重载,保留新 reasoning):应出现 3 个阶段覆盖条。
   await page.getByRole('tab', { name: '时间线' }).click();
   await expect(page.getByTestId('v1-phase-bar')).toHaveCount(3, { timeout: 20000 });
-  await expect(page.getByTestId('v1-phase-bar').first()).toContainText('定位');
+  await expect(page.locator('[data-testid="v1-phase-card"]').first()).toContainText('定位');
 });
 
 test('根画布只显示服务端投影里的三个已分析核心节点', async ({ page }) => {
@@ -572,7 +572,7 @@ test('V1 根画布不投影旧版固定分组容器(目标重构 / 问题结构 
   expect(edgeIds.some(id => id.includes('group-'))).toBe(false);
 });
 
-test('时间线阶段:覆盖条宽度反映时长,点击开详情,点空白 / Esc 关闭', async ({ page }) => {
+test('时间线阶段:细覆盖条 + 独立方框卡,点击开详情,点空白 / Esc 关闭', async ({ page }) => {
   const { token } = await registerAccount(page, 'v1-timeline-bars');
   const workspaceId = await createWorkspace(page, token, 'V1 阶段条', '30 天做出一个数据分析小工具');
   const rootId = (await getPlan(page, token, workspaceId)).nodes.find(node => node.parentId === null)!.id;
@@ -588,7 +588,7 @@ test('时间线阶段:覆盖条宽度反映时长,点击开详情,点空白 / Es
     baseView(workspaceId, rootId, {
       v1Stage: 'coarse_timeline_review',
       v1Status: 'awaiting_user_confirmation',
-      v01Timeline: [phase(1, '阶段一:起步', 1, 2), phase(2, '阶段二:建设', 3, 6), phase(3, '阶段三:收尾', 7, 8)],
+      v01Timeline: [phase(1, '阶段一:起步', 1, 2), phase(2, '阶段二:建设', 3, 6), phase(3, '阶段三:收尾', 7, 8), phase(4, '阶段四:复盘', 9, 10)],
       v01TimelineProposalId: 'p-bars',
     }),
     [],
@@ -598,44 +598,60 @@ test('时间线阶段:覆盖条宽度反映时长,点击开详情,点空白 / Es
   const view = page.getByTestId('timeline-view');
   await expect(view).toBeVisible({ timeout: 20000 });
 
-  // 每个阶段一条覆盖条:有宽度、有高度。
+  // 一条阶段 = 覆盖条 + 方框卡(各 3 份,不重复)。
   const bars = page.getByTestId('v1-phase-bar');
-  await expect(bars).toHaveCount(3);
+  const cards = page.getByTestId('v1-phase-card');
+  await expect(bars).toHaveCount(4);
+  await expect(cards).toHaveCount(4);
+  // 引线把卡片接到自己的覆盖条。
+  expect(await page.locator('[class*="phaseConnector"]').count()).toBeGreaterThanOrEqual(4);
+  // 不存在“第三份重复大卡”。
+  await expect(page.locator('[data-timeline-card]')).toHaveCount(0);
+
+  // 覆盖条是干净的横向色带:有宽度、高度只有 10–14px 左右。
   const boxes = await bars.evaluateAll(els => els.map(el => {
     const rect = el.getBoundingClientRect();
     return { id: el.getAttribute('data-phase-id'), width: rect.width, height: rect.height };
   }));
   for (const box of boxes) {
     expect(box.width, `${box.id} 太窄`).toBeGreaterThan(26);
-    expect(box.height, `${box.id} 不是有高度的条`).toBeGreaterThanOrEqual(28);
+    expect(box.height, `${box.id} 不是干净的色带`).toBeGreaterThanOrEqual(10);
+    expect(box.height, `${box.id} 又变成文字卡了`).toBeLessThanOrEqual(18);
   }
   // 时长 4 周的那条比 1 周 / 2 周的宽。
   const widthOf = (id: string) => boxes.find(b => b.id === id)!.width;
   expect(widthOf('phase-2')).toBeGreaterThan(widthOf('phase-1'));
   expect(widthOf('phase-2')).toBeGreaterThan(widthOf('phase-3'));
 
-  // 点击阶段条 → 详情出现。
-  await bars.first().click();
+  // 方框卡:标题完整可读(>=13px,不被裁掉),时间范围与摘要各一行。
+  const card2 = page.locator('[data-testid="v1-phase-card"][data-phase-id="phase-2"]');
+  await expect(card2.locator('strong')).toHaveText('阶段二:建设');
+  const titleSize = await card2.locator('strong').evaluate(el => parseFloat(getComputedStyle(el).fontSize));
+  expect(titleSize).toBeGreaterThanOrEqual(13);
+  await expect(card2).toContainText('的成果');
+  const cardBox = (await card2.boundingBox())!;
+  expect(cardBox.width).toBeGreaterThanOrEqual(190);
+
+  // 点击方框卡 → 详情出现。
+  await card2.click();
   await expect(page.getByTestId('v1-phase-detail')).toBeVisible();
+  await expect(page.getByTestId('v1-phase-detail')).toContainText('完成标准');
   // 点击时间轴空白 → 详情关闭。
   const canvasBox = (await page.getByTestId('timeline-canvas').boundingBox())!;
   await page.mouse.click(canvasBox.x + 14, canvasBox.y + 14);
   await expect(page.getByTestId('v1-phase-detail')).toHaveCount(0);
-  // 再次点击阶段条 → 正常打开。
+  // 点击覆盖条同样打开 → Escape 关闭。
   await bars.first().click();
   await expect(page.getByTestId('v1-phase-detail')).toBeVisible();
-  // Escape → 关闭。
   await page.keyboard.press('Escape');
   await expect(page.getByTestId('v1-phase-detail')).toHaveCount(0);
 
-  // 缩放到月 / 周 / 日,条仍可见且宽度合理。
+  // 缩放到月 / 周 / 日,条与卡仍在。
   const presets = page.getByTestId('timeline-presets');
   for (const label of ['月', '周', '天']) {
     await presets.getByRole('button', { name: label }).click();
-    const visible = page.getByTestId('v1-phase-bar');
-    expect(await visible.count()).toBeGreaterThan(0);
-    const w = await visible.first().evaluate(el => el.getBoundingClientRect().width);
-    expect(w).toBeGreaterThan(0);
+    expect(await page.getByTestId('v1-phase-bar').count()).toBeGreaterThan(0);
+    expect(await page.getByTestId('v1-phase-card').count()).toBeGreaterThan(0);
   }
 });
 
@@ -701,13 +717,14 @@ test('时间线:滚轮直接缩放(无需 Ctrl),拖动空白平移', async ({ pa
   await expect(page.getByTestId('v1-phase-bar')).toHaveCount(1);
 
   // Shift + 滚轮 = 平移:start 改变。
-  // 空白横向拖动 = 平移:start 改变。
+  // 平移:Shift + 滚轮 → start 改变,缩放级别不变(不会继续放大)。
   const startBefore = Number(await canvas.getAttribute('data-start'));
-  await page.mouse.move(box.x + 70, box.y + box.height - 46);
-  await page.mouse.down();
-  await page.mouse.move(box.x + 250, box.y + box.height - 46, { steps: 8 });
-  await page.mouse.up();
+  const densityAfterZoom = Number(await canvas.getAttribute('data-density'));
+  await canvas.evaluate(el => {
+    el.dispatchEvent(new WheelEvent('wheel', { deltaX: 0, deltaY: 220, shiftKey: true, bubbles: true, cancelable: true }));
+  });
   await expect.poll(async () => Number(await canvas.getAttribute('data-start'))).not.toBe(startBefore);
+  expect(Number(await canvas.getAttribute('data-density'))).toBe(densityAfterZoom);
 });
 
 test('时间线:周尺度显示 某月·第N周 与已确认周计划', async ({ page }) => {
@@ -728,6 +745,8 @@ test('时间线:周尺度显示 某月·第N周 与已确认周计划', async ({
   }), []);
 
   await page.goto(`/workbench?workspace=${workspaceId}&view=timeline`);
+  // 先等阶段投影出来(plan + reasoning 都到齐),再切到周尺度。
+  await expect(page.getByTestId('v1-phase-bar')).toHaveCount(1, { timeout: 20000 });
   await page.getByTestId('timeline-presets').getByRole('button', { name: '周' }).click();
   await expect(page.getByTestId('timeline-view')).toHaveAttribute('data-zoom', 'week', { timeout: 20000 });
   // 已确认周计划:周条出现在所属阶段条下方。

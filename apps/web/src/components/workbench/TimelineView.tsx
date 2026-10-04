@@ -114,7 +114,6 @@ export function TimelineView() {
   const level = zoomLevelFor(density), end = start + size.width / density;
   // **中央唯一主轴**:卡片从中轴上下错开,引线连到轴上。
   const axisY = Math.max(150, size.height * .5);
-  const cardWidth = Math.min(164, Math.max(126, size.width * .23));
   // ---- V1 粗时间架构:走**同一条中央主轴**,不再另起一个小组件 ----
   // V0.1(`v1Stage` 为空)仍保留原来的 V01TimelineAxis,避免既有时间线回归。
   const v01Items = useMemo(() => reasoning?.v01Timeline ?? [], [reasoning?.v01Timeline]);
@@ -126,6 +125,10 @@ export function TimelineView() {
     () => (v1DraftMode ? draftTimelineItems(v01Items, anchorDay) : null),
     [v1DraftMode, v01Items, anchorDay],
   );
+  // 阶段方框卡固定宽度(200–260),内容决定高度;非 V1 正式卡片仍用紧凑宽度。
+  const cardWidth = draft
+    ? Math.min(260, Math.max(200, size.width * .18))
+    : Math.min(164, Math.max(126, size.width * .23));
   // 草案阶段全部铺开:按阶段数增加轨道,而不是把卡片藏进“另有 N 项”。
   const layers = draft
     ? Math.max(2, Math.ceil(v01Items.length / 2) + 1)
@@ -401,14 +404,18 @@ export function TimelineView() {
         const cardSub = draftSource
           ? `${draftSource.category ? `${draftSource.category} · ` : ''}${draftSource.deliverable || draftSource.goal || ''}${draftSource.status === 'draft' ? ' · 待确认' : ''}`
           : cardNote(item, start);
-        const cardY = upper ? axisY - 108 - Math.floor(lane / 2) * 86 : axisY + 116 + Math.floor(lane / 2) * 86;
+        const lowerTracks = Boolean(draft) && (level === 'week' || level === 'day');
+        const cardUpper = lowerTracks ? true : upper;
+        const cardY = draft
+          ? (cardUpper ? axisY - 100 - Math.floor(lane / 2) * 92 : axisY + 92 + Math.floor(lane / 2) * 92)
+          : (upper ? axisY - 108 - Math.floor(lane / 2) * 86 : axisY + 116 + Math.floor(lane / 2) * 86);
         const color = draftSource?.category
           ? categoryColors[draftSource.category] ?? '#829dc5'
           : item.node.category
             ? colors[item.node.category]
             : '#829dc5';
-        // 粗时间规划的阶段条:按 rangeLane 分层,避免重叠。
-        const barY = axisY + 10 + rangeLane * 34;
+        // 阶段覆盖条:干净的一条,按 rangeLane 分层避让。
+        const barY = axisY + 8 + rangeLane * 20;
         const barDraft = draftSource ? draftSource.status === 'draft' : false;
         const Icon = item.kind === 'milestone' ? Flag : item.kind === 'goal' ? Target : Circle;
         return <div key={id} data-timeline-item={id} data-draft={draftSource ? draftSource.status : undefined} data-start-date={dateString(item.start)} data-end-date={dateString(item.end)} className={`${styles.object} ${effectiveSelectedId === id ? styles.selected : ''} ${hovered && hovered !== id ? styles.dim : ''}`} style={{ '--color': color } as CSSProperties} onMouseEnter={() => setHovered(id)} onMouseLeave={() => setHovered(null)}>
@@ -422,22 +429,60 @@ export function TimelineView() {
           {draft && item.end > item.start && (() => {
             const barLeft = Math.max(0, x(item.start));
             const barWidth = Math.max(26, Math.min(size.width, x(item.end)) - barLeft);
-            return <button
-              type="button"
-              data-testid="v1-phase-bar"
-              data-phase-id={id}
-              data-draft={barDraft ? 'true' : 'false'}
-              className={`${styles.phaseBar} ${barDraft ? styles.phaseBarDraft : styles.phaseBarPlanned}`}
-              style={{ left: barLeft, width: barWidth, top: barY, '--color': color } as CSSProperties}
-              aria-label={`${item.node.title}，${cardRange}${barDraft ? '，草案' : ''}`}
-              aria-pressed={effectiveSelectedId === id}
-              title={`${item.node.title} · ${cardRange}`}
-              onClick={() => choose(id)}
-              onPointerDown={e => beginItem(e, item)}
-            >
-              <span className={styles.phaseBarRange}>{cardRange}</span>
-              <strong>{item.node.title}</strong>
-            </button>;
+            const barCenterX = barLeft + barWidth / 2;
+            const cardCenterX = left + cardWidth / 2;
+            const barEdgeY = cardUpper ? barY : barY + 12;
+            const cardEdgeY = cardUpper ? cardY + 66 : cardY;
+            const showSummary = level === 'year' || level === 'quarter' || level === 'month';
+            const showRange = level !== 'day';
+            const phaseIndex = v01Items.findIndex(entry => entry.id === id) + 1;
+            const cardSummary = draftSource ? draftSource.deliverable || draftSource.goal || '' : '';
+            return <>
+              {/* 细引线:把方框卡连接到它自己的时间覆盖条。 */}
+              <svg className={styles.lines} aria-hidden="true">
+                <path className={styles.phaseConnector} d={`M ${barCenterX} ${barEdgeY} L ${barCenterX} ${cardEdgeY} L ${cardCenterX} ${cardEdgeY}`} />
+              </svg>
+              {/*
+               * **覆盖条只表达“从何时到何时”。** 干净的一条色带,最多放一个极短的
+               * “阶段 N”;空间不够直接隐藏,不截断、不塞标题和成果。
+               */}
+              <button
+                type="button"
+                data-testid="v1-phase-bar"
+                data-phase-id={id}
+                data-draft={barDraft ? 'true' : 'false'}
+                className={`${styles.phaseBar} ${barDraft ? styles.phaseBarDraft : styles.phaseBarPlanned}`}
+                style={{ left: barLeft, width: barWidth, top: barY, '--color': color } as CSSProperties}
+                aria-label={`阶段 ${phaseIndex}：${item.node.title}，${cardRange}${barDraft ? '，草案' : ''}`}
+                aria-pressed={effectiveSelectedId === id}
+                title={`${item.node.title} · ${cardRange}`}
+                onClick={() => choose(id)}
+                onPointerDown={e => beginItem(e, item)}
+              >
+                {barWidth >= 54 && phaseIndex > 0 && <span className={styles.phaseBarLabel}>阶段 {phaseIndex}</span>}
+              </button>
+              {/*
+               * **阶段方框卡表达“这段时间要做什么”。** 固定宽度、内容决定高度、
+               * 标题完整可读;时间范围与摘要各占一行。点击打开同一个详情浮层。
+               */}
+              <button
+                type="button"
+                data-testid="v1-phase-card"
+                data-phase-id={id}
+                data-draft={barDraft ? 'true' : 'false'}
+                className={`${styles.phaseCard} ${barDraft ? styles.phaseCardDraft : styles.phaseCardPlanned}`}
+                style={{ left, top: cardY, width: cardWidth, '--color': color } as CSSProperties}
+                aria-label={`阶段 ${phaseIndex}：${item.node.title}，${cardRange}`}
+                aria-pressed={effectiveSelectedId === id}
+                title={`${item.node.title} · ${cardRange}`}
+                onClick={() => choose(id)}
+                onPointerDown={e => beginItem(e, item)}
+              >
+                <strong className={styles.phaseCardTitle}>{item.node.title}</strong>
+                {showRange && <span className={styles.phaseCardRange}>{cardRange}</span>}
+                {showSummary && cardSummary && <span className={styles.phaseCardSummary}>{cardSummary}</span>}
+              </button>
+            </>;
           })()}
           {!draft && (<>
             <svg className={styles.lines} aria-hidden="true"><path className={styles.connection} d={`M ${anchorX} ${axisY} V ${upper ? cardY + 84 : cardY - 12} L ${left + cardWidth / 2} ${upper ? cardY + 72 : cardY}`}/>
