@@ -837,7 +837,7 @@ def _sanitized_facts(facts, *, classification: str, raw_message: str) -> list[st
     return clean
 
 
-def _strategy_ready(analyses: dict[str, dict], draft) -> bool:
+def _strategy_ready(analyses: dict[str, dict]) -> bool:
     """服务端的战略成形条件。**模型说了不算,这里再判一次。**"""
 
     def has(key: str) -> bool:
@@ -849,6 +849,209 @@ def _strategy_ready(analyses: dict[str, dict], draft) -> bool:
         and (has("key_levers") or has("hard_constraints"))
         and has("major_risks")
     )
+
+
+async def _persisted_strategy_ready(db: AsyncSession, ctx: WorkspaceContext) -> bool:
+    """库里已有的分析是否已经足够合成一版战略。"""
+    questions = await _v1_questions(db, ctx)
+    persisted = {q.v1_key: (q.v1_analysis or {}) for q in questions if q.v1_key}
+    return _strategy_ready(persisted)
+
+
+async def _build_strategy_synthesis_context(
+    db: AsyncSession, ctx: WorkspaceContext, session: GoalReasoningSession
+) -> TurnContext:
+    """战略合成回合的上下文:已确认的目标定义 + 既有分析画布。"""
+    questions = await _v1_questions(db, ctx)
+    groups = await _v1_groups(db, ctx)
+    page = await conversation_service.list_messages(db, ctx, limit=HISTORY_TURNS)
+    history = tuple((m.role.value, m.content) for m in page.messages)[-HISTORY_TURNS:]
+    today = today_in(ctx.timezone)
+    goal = next((q for q in questions if q.v1_key == "goal_definition"), None)
+    lines = [
+        "已确认/待确认的目标定义:",
+        "- "
+        + (
+            ((goal.v1_analysis or {}).get("judgment") if goal else None)
+            or "(尚未形成)"
+        ),
+        "",
+        "既有分析画布:",
+        _render_canvas(groups, questions),
+    ]
+    return TurnContext(
+        current_date=today.isoformat(),
+        weekday=today.strftime("%A"),
+        timezone=ctx.timezone,
+        workspace_title=ctx.workspace.title or "",
+        workspace_intent=ctx.workspace.intent or "",
+        known=KnownConditions(),
+        history=history,
+        user_message="把已确认的目标定义与既有分析合成为四条战略结构。",
+        purpose="v1_strategy_synthesis",
+        reasoning_section="\n".join(lines),
+    )
+
+
+async def synthesize_strategy(
+    db: AsyncSession,
+    ctx: WorkspaceContext,
+    session: GoalReasoningSession,
+    reasoner,
+    *,
+    trigger: str = "strategy_synthesis",
+) -> ReasoningResult:
+    """**窄契约战略合成回合**:只要四条结构 + 取舍,四条齐全才接受。
+
+    - 来源不是真实 OpenJiuwen 时准确失败(同 R1);
+    - 缺任一结构 -> `MODEL_OUTPUT_INVALID` 可重试,不落半成品;
+    - 成功 -> 写 `v1_strategy`(未确认)、建战略子节点、进入 `strategy_draft`。
+    """
+    root = await reasoning_service.root_plan_node(db, ctx)
+    if root is None:
+        from backend.services.errors import InvalidInput
+
+        raise InvalidInput("这个空间还没有根目标。")
+    await _create_containers(db, ctx, root)
+
+    source = reasoner_source_kind(reasoner)
+    if not source_allowed(source):
+        return await _refuse_unavailable_source(
+            db, ctx, session, source=source, trigger=trigger
+        )
+
+    turn = await _build_strategy_synthesis_context(db, ctx, session)
+    stage_before = session.v1_stage
+    _start_turn(session, stage=stage_before, trigger=trigger, source=source)
+    await db.commit()
+
+    result = await _reason_with_timeout(reasoner, turn)
+    draft = result.v1_strategy
+    if result.degraded:
+        session.v1_status = V1_STATUS_FAILED
+        _finish_turn(session, status=V1_STATUS_FAILED)
+        session.v1_error = result.reply or "模型暂时不可用。"
+        await _audit_turn_failure(
+            db, ctx, session, result, trigger=trigger, stage_before=stage_before
+        )
+        await db.commit()
+        return result
+    if draft is None:
+        session.v1_status = V1_STATUS_FAILED
+        _finish_turn(session, status=V1_STATUS_FAILED)
+        session.v1_error = "模型这次没有按契约给出四条战略结构,可以重试。"
+        await _audit(
+            db,
+            ctx,
+            session,
+            "model_output_invalid",
+            trigger=trigger,
+            stage_before=stage_before,
+            stage_after=session.v1_stage,
+            source=result.source.value if result.source else None,
+            summary=session.v1_error,
+            validation_status="failed",
+            error_code="MODEL_OUTPUT_INVALID",
+        )
+        await db.commit()
+        return ReasoningResult(
+            reply=session.v1_error,
+            source=result.source,
+            degraded=True,
+            degraded_reason=DegradedReason.MODEL_OUTPUT_INVALID,
+            retryable=True,
+            request_id=result.request_id,
+            prompt_version=result.prompt_version,
+        )
+
+    values = {
+        "main_line": draft.main_line,
+        "parallel_line": draft.parallel_line,
+        "defer_or_avoid": draft.defer_or_avoid,
+        "risk_control": draft.risk_control,
+    }
+    await _ensure_strategy_questions(db, ctx, values)
+    merged = dict(session.v1_strategy or {})
+    for key, value in values.items():
+        merged[_STRATEGY_FIELD.get(key, key)] = value
+    merged["tradeoff"] = draft.tradeoff or merged.get("tradeoff", "")
+    merged["confirmed"] = False
+    session.v1_strategy = merged
+    if session.v1_stage in (V1_GOAL_REFRAME, V1_FACTOR_ANALYSIS, V1_PROBLEM_STRUCTURE):
+        session.v1_stage = V1_STRATEGY_DRAFT
+    session.v1_question = None
+    session.v1_next_action = None
+    session.phase = ReasoningSessionPhase.ROADMAP_DRAFT
+    session.status = ReasoningSessionStatus.READY
+    _finish_turn(session, status=V1_STATUS_IDLE)
+    session.v1_error = None
+    await _audit(
+        db,
+        ctx,
+        session,
+        "strategy_draft_generated",
+        trigger=trigger,
+        stage_before=stage_before,
+        stage_after=session.v1_stage,
+        source=result.source.value if result.source else None,
+        summary="窄契约战略合成回合产出四条结构。",
+        payload={"strategy": session.v1_strategy},
+    )
+    await _audit(
+        db,
+        ctx,
+        session,
+        "strategy_review_ready",
+        trigger=trigger,
+        stage_after=session.v1_stage,
+        summary="战略草案已就绪,等用户确认或调整。",
+    )
+    await db.commit()
+    return result
+
+
+async def _maybe_synthesize_strategy(
+    db: AsyncSession,
+    ctx: WorkspaceContext,
+    session: GoalReasoningSession,
+    reasoner,
+    *,
+    trigger: str,
+    declared_ready: bool,
+) -> ReasoningResult | None:
+    """分析足够、模型自认“战略已成熟”但仍无结构时,跑一次窄契约合成并上屏。
+
+    `declared_ready` 是模型当轮声明的 `strategyReady`:它说“成熟了”却只给白话,才是
+    这个窄契约回合要补的缺口。模型没声明成熟时仍走通用回合(保留既有 CTA 语义)。
+    """
+    if not declared_ready:
+        return None
+    if session.v1_strategy:
+        return None
+    if session.v1_stage not in (
+        V1_GOAL_REFRAME,
+        V1_FACTOR_ANALYSIS,
+        V1_PROBLEM_STRUCTURE,
+    ):
+        return None
+    # 还在等用户回答关键问题时,不抢跑合成 —— 那一问就是战略的输入。
+    if (session.v1_question or "").strip():
+        return None
+    # 上一轮已经准确失败(来源/输出)时不再叠一次模型调用;重试由用户发起。
+    if session.v1_status == V1_STATUS_FAILED:
+        return None
+    if not await _persisted_strategy_ready(db, ctx):
+        return None
+    result = await synthesize_strategy(db, ctx, session, reasoner, trigger=trigger)
+    await _append_assistant(
+        db,
+        ctx,
+        reply=result.reply,
+        conversation=await conversation_service.get_or_create_primary_conversation(db, ctx),
+        result=result,
+    )
+    await db.commit()
+    return result
 
 
 # =================================================================================
@@ -949,7 +1152,7 @@ async def _run_assessment(
     from_problem_structure = session.v1_stage == V1_PROBLEM_STRUCTURE
     #: 本回合是否形成了战略草案(决定 problem_structure 是否还需要兜底 CTA)。
     synthesized = False
-    if strategy_values and _strategy_ready(persisted, assessment):
+    if strategy_values and _strategy_ready(persisted):
         await _ensure_strategy_questions(db, ctx, strategy_values)
         merged = dict(session.v1_strategy or {})
         for key, value in strategy_values.items():
@@ -2185,6 +2388,15 @@ async def confirm_goal_definition(
         result=result,
     )
     await db.commit()
+    # 通用判断已经写了一些维度;若模型自称成熟却未给结构,立刻用**窄契约**合成战略。
+    await _maybe_synthesize_strategy(
+        db,
+        ctx,
+        session,
+        reasoner,
+        trigger="problem_structure_entered",
+        declared_ready=bool(result.v1_assessment and result.v1_assessment.strategy_ready),
+    )
     return await reasoning_service._response(db, ctx, session, changed=True)
 
 
@@ -2230,6 +2442,15 @@ async def continue_strategy(
         result=result,
     )
     await db.commit()
+    # 通用回合只负责补维度;模型自称成熟却未给结构时,窄契约回合才出手。
+    await _maybe_synthesize_strategy(
+        db,
+        ctx,
+        session,
+        reasoner,
+        trigger="strategy_continue",
+        declared_ready=bool(result.v1_assessment and result.v1_assessment.strategy_ready),
+    )
     return await reasoning_service._response(db, ctx, session, changed=True)
 
 
@@ -2506,10 +2727,12 @@ async def advance_v1_workflow(
         )
         advanced = True
     elif (
-        stage == V1_PROBLEM_STRUCTURE
+        stage in (V1_PROBLEM_STRUCTURE, V1_FACTOR_ANALYSIS)
         and not session.v1_strategy
         and session.v1_next_action == NEXT_CONTINUE_STRATEGY
     ):
+        # 先跑通用判断(模型若直接给了战略结构就在这里成形);仍没有战略时,
+        # `continue_strategy` 内部会退到窄契约合成回合。
         await _audit(
             db,
             ctx,
@@ -2671,6 +2894,7 @@ __all__ = [
     "record_feedback",
     "reopen_direction_selection",
     "select_candidate_direction",
+    "synthesize_strategy",
     "visible_dimension_keys",
     "weekend_review",
 ]

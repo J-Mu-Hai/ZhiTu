@@ -45,6 +45,7 @@ from backend.agent.prompts.planning import (
     render_tools_section,
 )
 from backend.agent.prompts.v1_strategy import render_v1_turn
+from backend.agent.prompts.v1_strategy_synthesis import render_v1_strategy_synthesis_turn
 from backend.agent.prompts.v1_timeline import render_v1_timeline_turn
 from backend.agent.runtime.base import (
     AnalysisDraft,
@@ -62,6 +63,7 @@ from backend.agent.runtime.base import (
     V1CandidateDirection,
     V1KeyDimension,
     V1NodeUpdate,
+    V1StrategyDraft,
     V1TimelineDraft,
     V1TimelinePhaseDraft,
 )
@@ -255,6 +257,9 @@ def render_turn(turn: TurnContext) -> str:
     if turn.purpose == "v1_timeline":
         # 规划智能体重构 V1(P3):把已确认的战略投影为 3–6 个阶段的粗时间架构。
         return render_v1_timeline_turn(turn)
+    if turn.purpose == "v1_strategy_synthesis":
+        # 规划智能体重构 V1:窄契约战略合成 —— 只要四条结构 + 一句取舍。
+        return render_v1_strategy_synthesis_turn(turn)
     if turn.purpose == "goal_reasoning":
         # 目标推理回合走另一份模板:它关心的是决策维度与取舍,不是任务拆解。
         return render_reasoning_turn(turn)
@@ -362,6 +367,7 @@ PARSED_PAYLOAD_FIELDS = frozenset(
         "intakeDecision",
         "v1Assessment",
         "v1Timeline",
+        "v1Strategy",
     }
 )
 
@@ -407,6 +413,7 @@ def payload_to_result(
         intake_decision=parse_intake_decision(payload.get("intakeDecision")),
         v1_assessment=parse_v1_assessment(payload.get("v1Assessment")),
         v1_timeline=parse_v1_timeline(payload.get("v1Timeline")),
+        v1_strategy=parse_v1_strategy(payload.get("v1Strategy")),
         request_id=request_id,
         prompt_version=prompt_version,
         model_name=model_name,
@@ -1028,6 +1035,40 @@ def parse_v1_timeline(raw: Any) -> V1TimelineDraft | None:
     return V1TimelineDraft(
         summary=summary.strip()[:MAX_V1_TEXT_CHARS] if isinstance(summary, str) else "",
         phases=tuple(phases),
+    )
+
+
+#: 战略合成窄契约要求四条齐全;缺一条都拒绝,不落半成品战略。
+V1_STRATEGY_FIELDS = (
+    ("main_line", ("mainLine", "main_line", "main", "主线")),
+    ("parallel_line", ("parallelLine", "parallel_line", "parallel", "并行线")),
+    ("defer_or_avoid", ("deferOrAvoid", "defer_or_avoid", "defer", "deferOrDrop", "暂缓")),
+    ("risk_control", ("riskControl", "risk_control", "risk", "风险控制")),
+)
+
+
+def parse_v1_strategy(raw: Any) -> V1StrategyDraft | None:
+    """把战略合成回合的窄输出变成四条结构。**四条齐全才接受,否则整份拒绝。**
+
+    只做形状判断;写不写入、什么时候写由 `v1_service` 按阶段决定。
+    """
+    if not isinstance(raw, dict):
+        return None
+
+    def _text(value: Any) -> str:
+        return value.strip()[:MAX_V1_TEXT_CHARS] if isinstance(value, str) and value.strip() else ""
+
+    values: dict[str, str] = {}
+    for field, aliases in V1_STRATEGY_FIELDS:
+        values[field] = _text(_v1_pick(raw, *aliases))
+    if not all(values.values()):
+        return None
+    return V1StrategyDraft(
+        main_line=values["main_line"],
+        parallel_line=values["parallel_line"],
+        defer_or_avoid=values["defer_or_avoid"],
+        risk_control=values["risk_control"],
+        tradeoff=_text(_v1_pick(raw, "tradeoff", "strategyTradeoff", "strategy_tradeoff")),
     )
 
 

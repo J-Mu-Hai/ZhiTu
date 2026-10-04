@@ -268,6 +268,17 @@ def test_the_output_declaration_matches_what_the_parser_reads() -> None:
             "strategyTradeoff": "",
             "strategyReady": False,
         },
+        "v1Timeline": {
+            "summary": "基础 → 项目 → 展示",
+            "phases": [{"title": "基础", "startWeek": 1, "endWeek": 2}],
+        },
+        "v1Strategy": {
+            "mainLine": "先做最小闭环",
+            "parallelLine": "并行看一点统计",
+            "deferOrAvoid": "暂不系统学算法",
+            "riskControl": "每两周复盘",
+            "tradeoff": "先要能展示的成果",
+        },
     }
     assert set(payload) == set(OUTPUT_CONFIG), (
         "载荷的键与给 SDK 的输出声明对不上了 —— 有一边多写或少写了"
@@ -289,6 +300,8 @@ def test_the_output_declaration_matches_what_the_parser_reads() -> None:
     assert result.analysis.known == ("n1 的正文里写着只能周末做",)
     assert result.reasoning_map is not None, "解析器读了 reasoningMap,结果里就必须有它"
     assert result.reasoning_map.focus_handle == "r1"
+    assert result.v1_strategy is not None, "解析器读了 v1Strategy,结果里就必须有它"
+    assert result.v1_strategy.main_line == "先做最小闭环"
 
 
 def test_the_forwarding_schemas_carry_every_declared_key() -> None:

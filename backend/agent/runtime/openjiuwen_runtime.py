@@ -65,6 +65,10 @@ from backend.agent.prompts.goal_reasoning import (
     STRATEGIC_INTAKE_SYSTEM_PROMPT,
 )
 from backend.agent.prompts.planning import PROMPT_VERSION, SYSTEM_PROMPT
+from backend.agent.prompts.v1_strategy_synthesis import (
+    V1_STRATEGY_SYNTHESIS_PROMPT_VERSION,
+    V1_STRATEGY_SYNTHESIS_SYSTEM_PROMPT,
+)
 from backend.agent.runtime.base import ReasoningResult, TurnContext
 from backend.agent.runtime.response import (
     ANALYSIS_FIELD_ORDER,
@@ -275,6 +279,21 @@ OUTPUT_CONFIG: dict[str, Any] = {
         "properties": {
             "summary": {"type": "string"},
             "phases": {"type": "array"},
+        },
+    },
+    # 规划智能体重构 V1:战略合成回合的**窄契约**。必须声明 —— 与上面几组同一条
+    # 理由:openJiuwen 那条路照声明重建对象,不在声明里的键会到不了解析器。
+    # 只声明这四个结构 + tradeoff:输出面越窄,真实模型的结构化合规率越高。
+    "v1Strategy": {
+        "type": "object",
+        "required": False,
+        "description": "四条战略结构 + 取舍(仅 v1_strategy_synthesis 回合使用)",
+        "properties": {
+            "mainLine": {"type": "string", "description": "主线:最优先投入什么"},
+            "parallelLine": {"type": "string", "description": "并行线:可同时做但不挤占主线"},
+            "deferOrAvoid": {"type": "string", "description": "暂缓/放弃:当前不值得做什么"},
+            "riskControl": {"type": "string", "description": "风险控制:检查点或备用路径"},
+            "tradeoff": {"type": "string", "description": "这版战略的取舍(可空)"},
         },
     },
 }
@@ -577,6 +596,8 @@ def _system_prompt(turn: TurnContext) -> str:
         return STRATEGIC_INTAKE_SYSTEM_PROMPT
     if turn.purpose == "goal_reasoning":
         return GOAL_REASONING_SYSTEM_PROMPT
+    if turn.purpose == "v1_strategy_synthesis":
+        return V1_STRATEGY_SYNTHESIS_SYSTEM_PROMPT
     return SYSTEM_PROMPT
 
 
@@ -585,6 +606,8 @@ def _prompt_version(turn: TurnContext) -> str:
         return STRATEGIC_INTAKE_PROMPT_VERSION
     if turn.purpose == "goal_reasoning":
         return GOAL_REASONING_PROMPT_VERSION
+    if turn.purpose == "v1_strategy_synthesis":
+        return V1_STRATEGY_SYNTHESIS_PROMPT_VERSION
     return PROMPT_VERSION
 
 

@@ -310,6 +310,8 @@ class FakeReasoner:
     v1_assessment: object | None = None
     #: 规划智能体重构 V1(P3):这一轮的粗时间架构(`V1TimelineDraft`),None = 模型没给。
     v1_timeline: object | None = None
+    #: 规划智能体重构 V1:战略合成回合的四条结构(`V1StrategyDraft`),None = 模型没给。
+    v1_strategy: object | None = None
     calls: list = field(default_factory=list)
 
     async def reason(self, turn):
@@ -344,6 +346,7 @@ class FakeReasoner:
             analysis=self.analysis,
             v1_assessment=self.v1_assessment,
             v1_timeline=self.v1_timeline,
+            v1_strategy=self.v1_strategy,
             request_id="fake-request",
             prompt_version="fake-v1",
             model_name="fake-model",

@@ -742,6 +742,25 @@ class V1TimelineDraft:
 
 
 @dataclass(frozen=True, slots=True)
+class V1StrategyDraft:
+    """规划智能体重构 V1:**战略合成回合**的窄契约。
+
+    通用 V1 判断回合(`v1_assessment`)的自由度太大,真实模型(DeepSeek-chat 实测)
+    在“可以给战略”时会把白话写进 `keyDimensions`/`candidateDirections` 而**始终不产出**
+    主线/并行线/暂缓/风险控制四个结构字段。所以战略单独走一个**只输出这四项**的
+    回合:输出面越窄,结构化合规率越高;服务端仍只在四项齐全时才接受。
+
+    它**不是**计划、不是阶段、不是任务 —— 只是四条战略结构 + 一句取舍。
+    """
+
+    main_line: str
+    parallel_line: str
+    defer_or_avoid: str
+    risk_control: str
+    tradeoff: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class ReasoningResult:
     """一次模型调用的结果。**永远是可用的**,即使内容为空。"""
 
@@ -777,6 +796,9 @@ class ReasoningResult:
     v1_assessment: V1AssessmentDraft | None = None
     #: 规划智能体重构 V1(P3)回合的粗时间架构。**只有 `purpose == v1_timeline` 会读它。**
     v1_timeline: V1TimelineDraft | None = None
+    #: 规划智能体重构 V1:战略合成回合的四条结构。
+    #: **只有 `purpose == v1_strategy_synthesis` 会读它。**
+    v1_strategy: V1StrategyDraft | None = None
     request_id: str = ""
     prompt_version: str = ""
     model_name: str | None = None
