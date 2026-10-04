@@ -165,36 +165,80 @@
 /* --- 粗时间规划:有宽度的阶段覆盖条(不是一根线) --- */
 .phaseBar {
   position: absolute;
-  height: 30px;
+  height: 34px;
   display: flex;
   flex-direction: column;
   justify-content: center;
   gap: 1px;
-  padding: 3px 9px;
+  padding: 4px 10px;
   text-align: left;
-  border-radius: 7px;
+  border-radius: 8px;
   overflow: hidden;
   z-index: 3;
   cursor: pointer;
   touch-action: none;
-  color: #2c4a63;
-  background: color-mix(in srgb, var(--color) 22%, #fffefa);
-  border: 1px solid color-mix(in srgb, var(--color) 52%, #d8e5ea);
-  box-shadow: 0 3px 10px rgba(74, 105, 126, .08);
+  color: #1c3b59;
+  background: color-mix(in srgb, var(--color) 32%, #fffefa);
+  border: 1px solid color-mix(in srgb, var(--color) 70%, #b9c9d6);
+  box-shadow: 0 3px 10px rgba(74, 105, 126, .12);
 }
-.phaseBar strong { display: block; font-size: 11px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.phaseBar small { display: block; font-size: 9px; color: #526f89; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.phaseBar strong { display: block; font-size: 12.5px; font-weight: 650; letter-spacing: .01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.phaseBarRange { display: block; font-size: 10px; font-weight: 500; color: #41617f; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .phaseBarDraft {
-  background: color-mix(in srgb, var(--color) 12%, #fffefa);
+  color: #3a5771;
+  background: color-mix(in srgb, var(--color) 16%, #fffefa);
   border-style: dashed;
+  border-color: color-mix(in srgb, var(--color) 60%, #b9c9d6);
 }
 .phaseBarPlanned {
-  background: color-mix(in srgb, var(--color) 26%, #fffefa);
+  color: #1c3b59;
+  background: color-mix(in srgb, var(--color) 34%, #fffefa);
   border-style: solid;
 }
 .phaseBar:hover, .selected .phaseBar {
   border-color: var(--color);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color) 18%, transparent), 0 5px 14px rgba(74, 105, 126, .12);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color) 24%, transparent), 0 6px 16px rgba(74, 105, 126, .16);
+}
+
+/* --- 周尺度:已确认的周计划条 --- */
+.weekBar {
+  position: absolute;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border-radius: 7px;
+  overflow: hidden;
+  z-index: 2;
+  background: #eef4f8;
+  border: 1px solid #cddbe4;
+  color: #33536f;
+  box-shadow: 0 2px 6px rgba(74, 105, 126, .08);
+}
+.weekBar strong { font-size: 11.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.weekBar small { margin-left: auto; font-size: 9.5px; color: #6b8198; white-space: nowrap; }
+.weekBarPreview { background: #f5f1ea; border-style: dashed; border-color: #ddcdb4; color: #6f5a34; }
+.weekBarPreview small { color: #8a7550; }
+
+/* --- 日尺度:已确认的日工作块 --- */
+.dayBlock {
+  position: absolute;
+  width: 96px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  border-radius: 6px;
+  overflow: hidden;
+  z-index: 2;
+  background: #eaf3fa;
+  border: 1px solid #c6dced;
+  color: #2f5573;
+  font-size: 10.5px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  box-shadow: 0 2px 6px rgba(74, 105, 126, .08);
 }
 .point {
   position: absolute;
@@ -393,7 +437,8 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin: 12px 20px 0;
+  /* 右上角是五档尺度预设(绝对定位),这里让出它的宽度,避免两条浮层叠在一起。 */
+  margin: 12px 216px 0 20px;
   padding: 8px 12px;
   border: 1px dashed #b9c9d6;
   border-radius: var(--radius-control, 9px);
@@ -492,3 +537,18 @@
 .phasePopover header button { border: 0; background: transparent; color: #6b8198; cursor: pointer; }
 .phasePopover span { display: block; margin-top: 4px; font-size: 10px; color: #52718b; }
 .phasePopover p { margin: 6px 0 0; font-size: 11px; color: #3f5a72; line-height: 1.5; }
+
+/* 最小交互提示:滚轮缩放 · 拖动空白平移。放在左下角,低干扰。 */
+.zoomHint {
+  position: absolute;
+  left: 16px;
+  bottom: 12px;
+  z-index: 4;
+  padding: 4px 9px;
+  border-radius: var(--radius-pill, 999px);
+  background: rgba(255, 254, 250, .86);
+  border: 1px solid #e0e7ee;
+  color: #71869b;
+  font-size: 10.5px;
+  pointer-events: none;
+}

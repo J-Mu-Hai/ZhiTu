@@ -149,12 +149,70 @@ export function TimelineView() {
   const { placed, hidden } = layoutItems(displayItems, start, density, size.width, effectiveSelectedId, cardWidth, layers);
   const relativeAxis = Boolean(draft && draft.mode === 'relative');
   // 预测日历轴与正式时间线共用同一套刻度:年/季/月/周/天随 density 自动切换。
-  const ticks = timelineTicks(start, end, level);
+  // V1 周尺度把标签换成“某月 · 第 N 周” —— 用户看的是已确认的周计划,不是 10/6。
+  const ticks = useMemo(() => {
+    const base = timelineTicks(start, end, level);
+    if (!draft || level !== 'week') return base;
+    return base.map(tick => {
+      const date = new Date(tick.day * 86400000);
+      const month = date.getUTCMonth() + 1;
+      const day = date.getUTCDate();
+      return { ...tick, label: `${month}月 · 第${Math.floor((day - 1) / 7) + 1}周` };
+    });
+  }, [start, end, level, draft]);
   const firstYear = new Date(start * 86400000).getUTCFullYear();
   const years = Array.from({ length: new Date(end * 86400000).getUTCFullYear() - firstYear + 1 }, (_, i) => firstYear + i);
   const draftSelected = draft ? v01Items.find(item => item.id === draftSelectedId) ?? null : null;
   const selectedPlaced = draft ? placed.find(entry => entry.item.node.id === effectiveSelectedId) ?? null : null;
   const x = (day: number) => dateToX(day, start, density);
+
+  /*
+   * ---- 周 / 日轨道:只读**已确认**计划,缩放揭示更多 ----
+   *
+   * 周条来自已确认的「本周计划 / 下周预览」节点(`PlanNode`,stage),用父链回到正式阶段
+   * 取它的相对周映射区间;日块来自已确认的排期场次(`sessions`)。proposal 草案和归档
+   * 版本不进入这两条轨道 —— 这里只显示已经写进计划的东西。
+   */
+  const phaseRangeByTitle = new Map<string, { start: number; end: number }>();
+  if (draft) draft.items.forEach(item => phaseRangeByTitle.set(item.node.title, { start: item.start, end: item.end }));
+  const weekItems: TimelineItem[] = [];
+  if (draft && (level === 'week' || level === 'day')) {
+    for (const node of Object.values(growth.nodes)) {
+      if (node.type !== 'stage' || !/^(本周计划|下周预览)[:：]/.test(node.title)) continue;
+      const parent = node.parentId ? growth.nodes[node.parentId] : undefined;
+      const range = parent ? phaseRangeByTitle.get(parent.title) : undefined;
+      if (!range) continue;
+      weekItems.push({ node, start: range.start, end: range.end, kind: 'duration', derived: false, track: 'week', itemId: `week:${node.id}` });
+    }
+  }
+  const dayItems: TimelineItem[] = [];
+  if (draft && level === 'day') {
+    for (const node of Object.values(growth.nodes)) {
+      if (node.type !== 'task' || node.purpose === 'information') continue;
+      for (const session of node.sessions ?? []) {
+        const day = dayNumber(session.date);
+        if (!Number.isFinite(day)) continue;
+        dayItems.push({ node, start: day, end: day, kind: 'event', derived: false, track: 'day', itemId: `session:${session.id}` });
+      }
+    }
+  }
+  const packLanes = (items: TimelineItem[], widthOf: (item: TimelineItem) => number) => {
+    const lanes: { left: number; right: number }[][] = [];
+    const result = new Map<string, number>();
+    for (const item of items) {
+      const id = item.itemId ?? item.node.id;
+      const left = Math.max(0, x(item.start));
+      const width = widthOf(item);
+      let lane = lanes.findIndex(occupied => occupied.every(range => left + width + 8 <= range.left || left >= range.right + 8));
+      if (lane < 0) { lane = lanes.length; lanes.push([]); }
+      lanes[lane].push({ left, right: left + width });
+      result.set(id, lane);
+    }
+    return result;
+  };
+  const weekLanes = packLanes(weekItems, item => Math.max(48, Math.min(size.width, x(item.end)) - Math.max(0, x(item.start))));
+  const dayLanes = packLanes(dayItems, () => 96);
+
   const selected = selectedId ? growth.nodes[selectedId] : null;
 
   useEffect(() => {
@@ -168,12 +226,21 @@ export function TimelineView() {
     const element = canvas.current;
     if (!element) return;
     const wheel = (event: WheelEvent) => {
-      if ((event.target as HTMLElement).closest('[data-cluster-panel],[data-unscheduled-panel]')) return;
+      if ((event.target as HTMLElement).closest('[data-cluster-panel],[data-unscheduled-panel],[data-testid="v1-phase-detail"]')) return;
       event.preventDefault();
-      if (event.ctrlKey || event.metaKey) {
-        const anchor = event.clientX - element.getBoundingClientRect().left;
-        setViewport(v => { const next = Math.max(.25, Math.min(160, v.density * Math.exp(-event.deltaY * .008))); return { start: anchoredZoom(v.start, v.density, next, anchor), density: next }; });
-      } else setViewport(v => ({ ...v, start: v.start + (event.deltaX || event.deltaY) / v.density }));
+      const rect = element.getBoundingClientRect();
+      const anchor = event.clientX - rect.left;
+      const horizontal = event.shiftKey || Math.abs(event.deltaX) > Math.abs(event.deltaY);
+      if (horizontal) {
+        // 平移:触控板横向滚动 / Shift + 滚轮。
+        setViewport(v => ({ ...v, start: v.start + (event.deltaX || event.deltaY) / v.density }));
+        return;
+      }
+      // 缩放:**直接垂直滚轮**,围绕鼠标所在时间点 —— 不是固定屏幕中心。
+      setViewport(v => {
+        const next = Math.max(.25, Math.min(160, v.density * Math.exp(-event.deltaY * .0015)));
+        return { start: anchoredZoom(v.start, v.density, next, anchor), density: next };
+      });
     };
     element.addEventListener('wheel', wheel, { passive: false });
     return () => element.removeEventListener('wheel', wheel);
@@ -206,7 +273,10 @@ export function TimelineView() {
     // 不是把 30 天方案一进来就放大成按周/按日的执行视图。用户仍可自由切换
     // 年 / 季度 / 月 / 周 / 日，且后续平移缩放不受这一初始值影响。
     const fittedDensity = (size.width - 140) / span;
-    const nextDensity = Math.max(.25, Math.min(zoomPresets.month, fittedDensity));
+    // 首屏停在“月”尺度(密度 < 12):职责是看见阶段覆盖的长度。但**不要**压到
+    // 月预设的 4 —— 那样一周的阶段只有 28px,标题全截断。取 11 既仍属于月级,
+    // 又让短阶段有可读宽度。用户仍可自由切年/季/月/周/日。
+    const nextDensity = Math.max(.25, Math.min(11, fittedDensity));
     setViewport({ start: first - 20 / nextDensity, density: nextDensity });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft, measured, size.width]);
@@ -262,7 +332,7 @@ export function TimelineView() {
   }
   return <div className={styles.view} data-testid="timeline-view" data-zoom={level}>
     {/* 交互说明只说一次,而且是给读屏的;**不再用常驻说明条占空间**。 */}
-    <p id="timeline-help" className={styles.srOnly}>拖动空白平移，Ctrl 或 Command 加滚轮缩放，方向键平移，加号减号缩放，Home 回到今天。改具体安排请用「排期」。</p>
+    <p id="timeline-help" className={styles.srOnly}>滚轮缩放；拖动空白平移；Shift 加滚轮或触控板横向滚动平移；方向键平移，加号减号缩放，Home 回到今天。改具体安排请用「排期」。</p>
     {/* 统一的中央时间轴:五档快捷尺度 + 滚轮/触控板缩放 + 拖拽平移。 */}
     <div className={styles.presets} data-testid="timeline-presets" role="group" aria-label="时间尺度">
       {(Object.keys(zoomPresets) as ZoomLevel[]).map(preset => (
@@ -271,6 +341,7 @@ export function TimelineView() {
         </button>
       ))}
     </div>
+    <span className={styles.zoomHint}>滚轮缩放 · 拖动空白平移</span>
     {/* R2:V1 粗时间架构草案走主轴;顶部只留一条状态 + 操作,不再另摆一块预览。 */}
     {draft && (
       <div className={styles.draftBar} data-testid="v1-timeline-draft-bar" data-draft={draftIsPending ? 'true' : 'false'}>
@@ -320,7 +391,7 @@ export function TimelineView() {
       {ticks.map(t => <div key={t.day} data-testid="timeline-tick" data-major={t.major ? 'true' : 'false'} className={`${styles.tick} ${t.major ? styles.majorTick : ''}`} style={{ left: x(t.day), top: axisY }}>{t.major && <span className={styles.tickLabel}>{t.label}</span>}</div>)}
       {x(today) >= 0 && x(today) <= size.width && <div className={styles.today} style={{ left: x(today), top: 6, bottom: 6 }} data-testid="today-marker"><span className={styles.todayLabel}>{shortDate(today)}<strong>今天</strong></span><span className={styles.todayDot} style={{ top: axisY - 9 }}/></div>}
       {placed.map(({ item, x: anchorX, left, lane, rangeLane }) => {
-        const id = item.node.id, upper = lane % 2 === 0;
+        const id = item.itemId ?? item.node.id, upper = lane % 2 === 0;
         const draftSource = draft ? v01Items.find(entry => entry.id === id) ?? null : null;
         const cardRange = draftSource
           ? draftSource.startDate && draftSource.endDate
@@ -341,12 +412,12 @@ export function TimelineView() {
         const barDraft = draftSource ? draftSource.status === 'draft' : false;
         const Icon = item.kind === 'milestone' ? Flag : item.kind === 'goal' ? Target : Circle;
         return <div key={id} data-timeline-item={id} data-draft={draftSource ? draftSource.status : undefined} data-start-date={dateString(item.start)} data-end-date={dateString(item.end)} className={`${styles.object} ${effectiveSelectedId === id ? styles.selected : ''} ${hovered && hovered !== id ? styles.dim : ''}`} style={{ '--color': color } as CSSProperties} onMouseEnter={() => setHovered(id)} onMouseLeave={() => setHovered(null)}>
-          <svg className={styles.lines} aria-hidden="true"><path className={styles.connection} d={`M ${anchorX} ${axisY} V ${upper ? cardY + 84 : cardY - 12} L ${left + cardWidth / 2} ${upper ? cardY + 72 : cardY}`}/>
-            {!draft && item.end > item.start && <><line className={styles.range} x1={Math.max(0, x(item.start))} x2={Math.min(size.width, x(item.end))} y1={axisY + 7} y2={axisY + 7}/>{[item.start,item.end].filter(d => x(d) >= 0 && x(d) <= size.width).map(d => <circle key={d} className={styles.endpoint} cx={x(d)} cy={axisY + 7} r="2.5"/>)}</>}
-          </svg>
           {/*
-           * 阶段覆盖条:有高度、有宽度、可点击。宽度 = 真实区间长度(相对周映射后);
-           * 按 rangeLane 分层避让,不互相盖住。草案虚线低饱和,确认后实线填充。
+           * **一条阶段只保留一个主表现。**
+           *
+           * V1 粗时间线(draft)只用有高度的覆盖条:不再同时挂一张固定大卡,否则
+           * 「轴上条 + 旁边卡」是同一件事说两遍。目标 / 成果 / 完成标准只在点击 bar
+           * 后的详情浮层里出现一次。非 V1 正式时间线保持原来的卡片 + 锚点。
            */}
           {draft && item.end > item.start && (() => {
             const barLeft = Math.max(0, x(item.start));
@@ -364,17 +435,59 @@ export function TimelineView() {
               onClick={() => choose(id)}
               onPointerDown={e => beginItem(e, item)}
             >
+              <span className={styles.phaseBarRange}>{cardRange}</span>
               <strong>{item.node.title}</strong>
-              {cardSub && <small>{cardSub}</small>}
             </button>;
           })()}
-          <button className={`${styles.point} ${item.start < start ? styles.continuation : item.kind === 'milestone' ? styles.milestone : item.kind === 'goal' ? styles.goal : ''}`} style={{ left: anchorX, top: axisY }} aria-label={`${item.node.title}${item.start < start ? '从此前延续' : '时间点'}`} onClick={() => choose(id)} onPointerDown={e => beginItem(e, item)}/>
-          <button data-timeline-card data-draft={draftSource ? draftSource.status : undefined} className={`${styles.card} ${item.kind !== 'duration' ? styles.eventCard : ''} ${draftSource && draftSource.status === 'draft' ? styles.draftCard : ''}`} style={{ left, top: cardY, width: cardWidth }} aria-label={`${item.node.title}，${cardRange}`} aria-pressed={effectiveSelectedId === id} title={`${item.node.title} · ${cardRange}`} onClick={() => choose(id)} onPointerDown={e => beginItem(e, item)}>
-            <time><Icon size={11}/>{draftSource?.index ? `阶段 ${draftSource.index} · ` : ''}{cardRange}</time><strong>{item.node.title}</strong><small>{cardSub}</small>
-          </button>
-          {(hovered === id || effectiveSelectedId === id) && item.start >= start && !draft && <div className={styles.hoverDate} style={{ left: anchorX, top: axisY - 21 }}><span>{shortDate(item.start)}</span></div>}
+          {!draft && (<>
+            <svg className={styles.lines} aria-hidden="true"><path className={styles.connection} d={`M ${anchorX} ${axisY} V ${upper ? cardY + 84 : cardY - 12} L ${left + cardWidth / 2} ${upper ? cardY + 72 : cardY}`}/>
+              {item.end > item.start && <><line className={styles.range} x1={Math.max(0, x(item.start))} x2={Math.min(size.width, x(item.end))} y1={axisY + 7} y2={axisY + 7}/>{[item.start,item.end].filter(d => x(d) >= 0 && x(d) <= size.width).map(d => <circle key={d} className={styles.endpoint} cx={x(d)} cy={axisY + 7} r="2.5"/>)}</>}
+            </svg>
+            <button className={`${styles.point} ${item.start < start ? styles.continuation : item.kind === 'milestone' ? styles.milestone : item.kind === 'goal' ? styles.goal : ''}`} style={{ left: anchorX, top: axisY }} aria-label={`${item.node.title}${item.start < start ? '从此前延续' : '时间点'}`} onClick={() => choose(id)} onPointerDown={e => beginItem(e, item)}/>
+            <button data-timeline-card data-draft={draftSource ? draftSource.status : undefined} className={`${styles.card} ${item.kind !== 'duration' ? styles.eventCard : ''} ${draftSource && draftSource.status === 'draft' ? styles.draftCard : ''}`} style={{ left, top: cardY, width: cardWidth }} aria-label={`${item.node.title}，${cardRange}`} aria-pressed={effectiveSelectedId === id} title={`${item.node.title} · ${cardRange}`} onClick={() => choose(id)} onPointerDown={e => beginItem(e, item)}>
+              <time><Icon size={11}/>{draftSource?.index ? `阶段 ${draftSource.index} · ` : ''}{cardRange}</time><strong>{item.node.title}</strong><small>{cardSub}</small>
+            </button>
+            {(hovered === id || effectiveSelectedId === id) && item.start >= start && <div className={styles.hoverDate} style={{ left: anchorX, top: axisY - 21 }}><span>{shortDate(item.start)}</span></div>}
+          </>)}
         </div>;
       })}
+      {/* 周尺度:已确认的“本周计划 / 下周预览”条,放在所属阶段条下方。 */}
+      {weekItems.map(item => {
+        const id = item.itemId ?? item.node.id;
+        const barLeft = Math.max(0, x(item.start));
+        const barWidth = Math.max(48, Math.min(size.width, x(item.end)) - barLeft);
+        const lane = weekLanes.get(id) ?? 0;
+        const isPreview = item.node.title.startsWith('下周预览');
+        return <div
+          key={id}
+          data-testid="v1-week-bar"
+          data-week-id={item.node.id}
+          data-preview={isPreview ? 'true' : 'false'}
+          className={`${styles.weekBar} ${isPreview ? styles.weekBarPreview : ''}`}
+          style={{ left: barLeft, width: barWidth, top: axisY + 122 + lane * 30 }}
+          title={item.node.title}
+        >
+          <strong>{item.node.title.replace(/^(本周计划|下周预览)[:：]\s*/, '')}</strong>
+          <small>{isPreview ? '下周预览' : '本周计划'}</small>
+        </div>;
+      })}
+      {/* 日尺度:已确认的日工作块(排期场次),放在日轨道,不与阶段条重叠。 */}
+      {dayItems.map(item => {
+        const id = item.itemId ?? item.node.id;
+        const lane = dayLanes.get(id) ?? 0;
+        const left = Math.max(0, Math.min(size.width - 96, x(item.start) - 48));
+        return <div
+          key={id}
+          data-testid="v1-day-block"
+          data-session-id={item.itemId}
+          className={styles.dayBlock}
+          style={{ left, top: axisY + 198 + lane * 28 }}
+          title={item.node.title}
+        >
+          {item.node.title}
+        </div>;
+      })}
+
       {/* 草案阶段不允许被折进“另有 N 项”:3–6 个阶段必须全部在轴上可见。 */}
       {!draft && hidden.length > 0 && <button className={styles.cluster} style={{ left: size.width / 2, top: axisY + 19 }} aria-expanded={clusterOpen} onClick={() => setClusterOpen(!clusterOpen)}>另有 {hidden.length} 项 · 展开</button>}
       {!draft && clusterOpen && hidden.length > 0 && <div className={styles.clusterPanel} data-cluster-panel onPointerDown={e => e.stopPropagation()}><header>同一时段的其他安排<button aria-label="关闭其他安排" onClick={() => setClusterOpen(false)}><X size={14}/></button></header>{hidden.map(item => <button key={item.node.id} onClick={() => reveal(item)}>{item.node.title}<small>{dateString(item.start)} — {dateString(item.end)}</small></button>)}</div>}

@@ -48,7 +48,31 @@ export function weekBounds(date: string): { start: string; end: string } {
   return { start: dateString(day - mondayOffset), end: dateString(day - mondayOffset + 6) };
 }
 
-export interface TimelineItem { node: GrowthNode; start: number; end: number; kind: 'event' | 'duration' | 'milestone' | 'goal'; derived: boolean }
+export interface TimelineItem {
+  node: GrowthNode;
+  start: number;
+  end: number;
+  kind: 'event' | 'duration' | 'milestone' | 'goal';
+  derived: boolean;
+  /**
+   * 这条投影属于哪条轨道。
+   *
+   * - `phase`:粗时间架构的阶段条(月/季/年尺度主表现);
+   * - `week`:已确认的“本周计划 / 下周预览”周条(周尺度);
+   * - `day` :已确认的日工作块(日尺度)。
+   *
+   * 轨道只决定画在哪一行,不影响数据真值。`undefined` 按 `phase` 处理。
+   */
+  track?: 'phase' | 'week' | 'day';
+  /**
+   * 同一条投影在 React 列表里的稳定 id。
+   *
+   * 一个节点的**多场日工作块**必须各自一条(不能都拿 `node.id` 当 key),所以投影
+   * 自带一个;`undefined` 时回退到 `node.id`。
+   */
+  itemId?: string;
+}
+
 export function timelineItems(growth: GrowthState, spaceId: string): TimelineItem[] {
   return Object.values(growth.nodes).filter(n => isInSpace(growth, n.id, spaceId) && n.type !== 'capability').flatMap(node => {
     let start = node.startDate ?? node.scheduledDate;
@@ -141,7 +165,7 @@ export function draftTimelineItems(
       endDate: dateString(Math.round(end)),
       description: item.deliverable || item.goal,
     };
-    items.push({ node, start, end, kind: 'duration', derived: false });
+    items.push({ node, start, end, kind: 'duration', derived: false, track: 'phase', itemId: item.id });
   }
   return { items, mode: dated ? 'dated' : 'relative' };
 }

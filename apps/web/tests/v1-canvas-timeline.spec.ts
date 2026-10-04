@@ -359,10 +359,10 @@ test('时间架构共创:先对齐节奏,认可后才生成时间线', async ({ 
   await activeNode.click();
   await expect(activeNode).toContainText('更希望更快见成果');
   await activeNode.getByRole('button', { name: '认可默认节奏' }).click();
-  // 客户端切到时间线(不重载,保留新 reasoning):应出现 3 个阶段。
+  // 客户端切到时间线(不重载,保留新 reasoning):应出现 3 个阶段覆盖条。
   await page.getByRole('tab', { name: '时间线' }).click();
-  await expect(page.locator('[data-timeline-card]')).toHaveCount(3, { timeout: 20000 });
-  await expect(page.getByText(/阶段 1/).first()).toBeVisible();
+  await expect(page.getByTestId('v1-phase-bar')).toHaveCount(3, { timeout: 20000 });
+  await expect(page.getByTestId('v1-phase-bar').first()).toContainText('定位');
 });
 
 test('根画布只显示服务端投影里的三个已分析核心节点', async ({ page }) => {
@@ -467,8 +467,9 @@ test('V1 粗时间架构走中央主轴,草案可确认,相对周刻度稀疏', 
   const presets = page.getByTestId('timeline-presets');
   await expect(presets).toBeVisible();
   await expect(presets.getByRole('button')).toHaveCount(5);
-  // 阶段卡片全部画在主轴上,且不出现“另有 N 项”。
-  await expect(page.locator('[data-timeline-card]')).toHaveCount(3);
+  // 阶段只保留**一条主表现**:有高度的覆盖条,且不出现“另有 N 项”。
+  await expect(page.getByTestId('v1-phase-bar')).toHaveCount(3);
+  await expect(page.locator('[data-timeline-card]')).toHaveCount(0);
   await expect(page.getByText(/另有 \d+ 项/)).toHaveCount(0);
   // 刻度随缩放稀疏显示(不把所有周标签塞一行)。
   const ticks = page.getByTestId('timeline-tick');
@@ -480,7 +481,7 @@ test('V1 粗时间架构走中央主轴,草案可确认,相对周刻度稀疏', 
   // 底部不再有常驻阶段详情;点卡片才出现轻量浮层。
   await expect(page.getByTestId('v1-timeline-detail')).toHaveCount(0);
   await expect(page.getByTestId('v1-phase-detail')).toHaveCount(0);
-  await page.locator('[data-timeline-card]').first().click();
+  await page.getByTestId('v1-phase-bar').first().click();
   const popover = page.getByTestId('v1-phase-detail');
   await expect(popover).toBeVisible();
   await expect(popover).toContainText('目标：');
@@ -636,4 +637,141 @@ test('时间线阶段:覆盖条宽度反映时长,点击开详情,点空白 / Es
     const w = await visible.first().evaluate(el => el.getBoundingClientRect().width);
     expect(w).toBeGreaterThan(0);
   }
+});
+
+// ---- 时间线缩放层级:滚轮 / 周 / 日 ----
+
+const TODAY_ISO = new Intl.DateTimeFormat('en-CA', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+
+function planNode(over: Record<string, unknown>) {
+  return {
+    description: null, acceptanceCriteria: null, purpose: 'planning', planningLevel: null,
+    status: 'pending', priority: 'medium', estimateMinutes: null, deadline: null,
+    depth: 0, orderIndex: 0, origin: 'user', completedAt: null, createdAt: new Date().toISOString(),
+    contentVersion: 1, v1Key: null, v1Analysis: null, ...over,
+  };
+}
+
+async function installPlan(page: Page, workspaceId: string, rootId: string, nodes: unknown[], sessions: unknown[] = []) {
+  await page.route('**/api/workspaces/*/plan', route =>
+    route.request().method() === 'GET'
+      ? route.fulfill({
+        status: 200, contentType: 'application/json',
+        body: JSON.stringify({
+          workspaceId, revisionVersion: 1, nodes, dependencies: [], relations: [],
+          brief: { version: 1, goal: null, deadline: null, weeklyAvailableMinutes: null, currentLevel: null, successCriteria: null, constraints: [], missing: [] },
+          sessions, totalNodes: nodes.length, completedNodes: 0,
+        }),
+      })
+      : route.continue(),
+  );
+}
+
+const PHASE_TITLE = '阶段一 · 打基础';
+
+function phaseView() {
+  return {
+    id: 'phase-1', title: PHASE_TITLE, kind: 'phase', startWeek: 1, endWeek: 2,
+    startDate: null, endDate: null, goal: '把基础打牢', deliverable: '一份笔记',
+    completionCriteria: '能复述', status: 'planned', planNodeId: null,
+  };
+}
+
+test('时间线:滚轮直接缩放(无需 Ctrl),拖动空白平移', async ({ page }) => {
+  const { token } = await registerAccount(page, 'v1-wheel-zoom');
+  const workspaceId = await createWorkspace(page, token, '滚轮缩放', '30 天做出一个数据分析小工具');
+  const rootId = (await getPlan(page, token, workspaceId)).nodes.find(node => node.parentId === null)!.id;
+  await installMock(page, baseView(workspaceId, rootId, {
+    v1Stage: 'coarse_timeline_review',
+    v1Status: 'awaiting_user_confirmation',
+    v01Timeline: [phaseView()],
+    v01TimelineProposalId: 'p-wheel',
+  }), []);
+
+  await page.goto(`/workbench?workspace=${workspaceId}&view=timeline`);
+  const canvas = page.getByTestId('timeline-canvas');
+  await expect(canvas).toBeVisible({ timeout: 20000 });
+  const box = await canvas.evaluate(el => { const r = (el as HTMLElement).getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; });
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  const densityBefore = Number(await canvas.getAttribute('data-density'));
+  // **普通垂直滚轮**就缩放,不带 Ctrl/Command。
+  await page.mouse.wheel(0, -240);
+  await expect.poll(async () => Number(await canvas.getAttribute('data-density'))).toBeGreaterThan(densityBefore);
+  // 缩放后阶段仍在视野附近(条还存在)。
+  await expect(page.getByTestId('v1-phase-bar')).toHaveCount(1);
+
+  // Shift + 滚轮 = 平移:start 改变。
+  // 空白横向拖动 = 平移:start 改变。
+  const startBefore = Number(await canvas.getAttribute('data-start'));
+  await page.mouse.move(box.x + 70, box.y + box.height - 46);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 250, box.y + box.height - 46, { steps: 8 });
+  await page.mouse.up();
+  await expect.poll(async () => Number(await canvas.getAttribute('data-start'))).not.toBe(startBefore);
+});
+
+test('时间线:周尺度显示 某月·第N周 与已确认周计划', async ({ page }) => {
+  const { token } = await registerAccount(page, 'v1-week-level');
+  const workspaceId = await createWorkspace(page, token, '周尺度', '30 天做出一个数据分析小工具');
+  const rootId = (await getPlan(page, token, workspaceId)).nodes.find(node => node.parentId === null)!.id;
+  const phaseId = `phase-${workspaceId}`;
+  const weekId = `week-${workspaceId}`;
+  await installPlan(page, workspaceId, rootId, [
+    planNode({ id: rootId, parentId: null, title: '根目标', nodeType: 'goal', depth: 0 }),
+    planNode({ id: phaseId, parentId: rootId, title: PHASE_TITLE, nodeType: 'stage', depth: 1 }),
+    planNode({ id: weekId, parentId: phaseId, title: '本周计划:阶段一 · 第 1 版', nodeType: 'stage', depth: 2 }),
+  ]);
+  await installMock(page, baseView(workspaceId, rootId, {
+    v1Stage: 'coarse_timeline_review',
+    v01Timeline: [phaseView()],
+    v01TimelineProposalId: 'p-week',
+  }), []);
+
+  await page.goto(`/workbench?workspace=${workspaceId}&view=timeline`);
+  await page.getByTestId('timeline-presets').getByRole('button', { name: '周' }).click();
+  await expect(page.getByTestId('timeline-view')).toHaveAttribute('data-zoom', 'week', { timeout: 20000 });
+  // 已确认周计划:周条出现在所属阶段条下方。
+  const weekBar = page.getByTestId('v1-week-bar');
+  await expect(weekBar).toHaveCount(1);
+  await expect(weekBar).toContainText('阶段一');
+  // 刻度是“某月 · 第 N 周”,不是 10/6。
+  const labels = await page.getByTestId('timeline-tick').allTextContents();
+  expect(labels.some(label => /月 · 第\d+周/.test(label))).toBe(true);
+});
+
+test('时间线:日尺度显示已确认日工作块;没有日计划时不造假', async ({ page }) => {
+  const { token } = await registerAccount(page, 'v1-day-level');
+  const workspaceId = await createWorkspace(page, token, '日尺度', '30 天做出一个数据分析小工具');
+  const rootId = (await getPlan(page, token, workspaceId)).nodes.find(node => node.parentId === null)!.id;
+  const phaseId = `phase-${workspaceId}`;
+  const weekId = `week-${workspaceId}`;
+  const taskId = `task-${workspaceId}`;
+  await installPlan(page, workspaceId, rootId, [
+    planNode({ id: rootId, parentId: null, title: '根目标', nodeType: 'goal', depth: 0 }),
+    planNode({ id: phaseId, parentId: rootId, title: PHASE_TITLE, nodeType: 'stage', depth: 1 }),
+    planNode({ id: weekId, parentId: phaseId, title: '本周计划:阶段一 · 第 1 版', nodeType: 'stage', depth: 2 }),
+    planNode({ id: taskId, parentId: weekId, title: '写第一版脚本', nodeType: 'task', depth: 3 }),
+  ], [{
+    id: `s-${workspaceId}`, nodeId: taskId, workspaceId, nodeTitle: '写第一版脚本',
+    scheduledDate: TODAY_ISO, plannedMinutes: 30, bufferMinutes: 0, actualMinutes: null, seq: 0,
+    status: 'planned', locked: false, lockReason: null, origin: 'scheduler', startMinute: null, endMinute: null, completedAt: null,
+  }]);
+  await installMock(page, baseView(workspaceId, rootId, {
+    v1Stage: 'coarse_timeline_review',
+    v01Timeline: [phaseView()],
+    v01TimelineProposalId: 'p-day',
+  }), []);
+
+  await page.goto(`/workbench?workspace=${workspaceId}&view=timeline`);
+  // 先等阶段投影出来(plan + reasoning 都到齐),再切到日尺度。
+  await expect(page.getByTestId('v1-phase-bar')).toHaveCount(1, { timeout: 20000 });
+  await page.getByTestId('timeline-presets').getByRole('button', { name: '天' }).click();
+  await expect(page.getByTestId('timeline-view')).toHaveAttribute('data-zoom', 'day', { timeout: 20000 });
+  const dayBlock = page.getByTestId('v1-day-block');
+  await expect(dayBlock).toHaveCount(1);
+  await expect(dayBlock).toContainText('写第一版脚本');
+  // 今天线仍在:把视口带回到今天再断言(日尺度下阶段中心可能不在今天附近)。
+  await page.getByTestId('timeline-canvas').focus();
+  await page.keyboard.press('Home');
+  await expect(page.getByTestId('today-marker')).toBeVisible();
 });
