@@ -96,6 +96,9 @@ AUDIT_EVENT_TYPES = frozenset(
         "v1_step_timed_out",
         # R1:V1 要求真实 OpenJiuwen;来源不满足时准确失败,不静默降级。
         "v1_openjiuwen_required",
+        # 对话交互收口:居中专注模式的打开 / 收起(不记录草稿或思维链)。
+        "v1_interaction_focus_opened",
+        "v1_interaction_focus_dismissed",
     }
 )
 

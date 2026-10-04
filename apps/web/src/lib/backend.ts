@@ -1909,6 +1909,42 @@ export interface V01TimelineItemView {
   planNodeId: string | null;
 }
 
+/** 当前唯一待处理动作的一个候选方向。 */
+export interface V1CurrentInteractionOption {
+  key: string;
+  title: string;
+  reason?: string;
+  impact?: string;
+}
+
+/**
+ * **当前唯一待处理动作**(不是一条普通聊天消息)。
+ *
+ * 每个 V1 阶段同时最多一个 active;`presentation === 'focus_modal'` 时才居中专注。
+ */
+export interface V1CurrentInteraction {
+  id: string;
+  /** 每次推进都会变;前端用它判断“这是一个新动作”。 */
+  nonce: string;
+  kind:
+    | 'strategic_question'
+    | 'candidate_selection'
+    | 'strategy_review'
+    | 'timeline_alignment'
+    | 'timeline_review'
+    | 'weekly_review';
+  priority: 'normal' | 'high';
+  title: string;
+  context: string;
+  whyNow: string;
+  prompt: string;
+  options: V1CurrentInteractionOption[];
+  recommendedOption: string | null;
+  focusKey: string | null;
+  status: 'active' | 'answered' | 'confirmed' | 'dismissed';
+  presentation: 'dock' | 'focus_modal';
+}
+
 /** 深度对话:呈现给用户的“战略理解”。 */
 export interface V1StrategyUnderstanding {
   goal?: string;
@@ -1995,6 +2031,8 @@ export interface GoalReasoningView {
   v1StrategicThesis: string | null;
   /** P2.1:用户无法回答时 AI 给出的候选方向(最多 3 个)。R2 起每项带 impact。 */
   v1CandidateDirections: V1CandidateDirection[] | null;
+  /** 当前唯一待处理动作(固定卡 / 居中专注都读它)。 */
+  v1CurrentInteraction: V1CurrentInteraction | null;
   /** 深度对话:对用户已说内容的具体理解(问题之前先给)。 */
   v1UserUnderstanding: string | null;
   /** 深度对话:一个可参考的具体例子。 */
@@ -2199,6 +2237,18 @@ export function alignV1Strategy(workspaceId: string): Promise<GoalReasoningView>
     method: 'POST',
     body: {},
   }).then(response => response.reasoning);
+}
+
+/** 对话交互收口:记录居中专注模式的打开 / 收起(只记交互,不记草稿)。 */
+export function recordV1InteractionEvent(
+  workspaceId: string,
+  interactionId: string,
+  event: 'opened' | 'dismissed',
+): Promise<void> {
+  return apiFetch<void>(`/api/workspaces/${workspaceId}/agent/v1/interaction`, {
+    method: 'POST',
+    body: { interactionId, event },
+  });
 }
 
 /** 深度对话:对齐时间节奏;`accepted` 认可默认节奏,`answer` 可说明调整/截止日期。 */

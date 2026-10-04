@@ -1027,10 +1027,56 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     [space.id],
   );
 
-  /** 居中“专注思考”模式开关(保留右侧 Dock;关闭后草稿/消息不丢)。 */
-  const [focusThinking, setFocusThinking] = useState(false);
-  const openFocusThinking = useCallback(() => setFocusThinking(true), []);
-  const closeFocusThinking = useCallback(() => setFocusThinking(false), []);
+  /**
+   * 对话交互收口:**当前唯一待处理动作** + 居中专注模式。
+   *
+   * - `currentInteraction` 由服务端投影派生;前端不用阶段/`v1Thinking` 猜。
+   * - 居中只由 `presentation === 'focus_modal'` 且**用户没有收起过这个 id** 时触发。
+   * - 打开 / 收起写审计(`v1_interaction_focus_*`),不记草稿。
+   */
+  const currentInteraction = reasoning?.v1CurrentInteraction ?? null;
+  const [focusInteractionId, setFocusInteractionId] = useState<string | null>(null);
+  // 用户手动打开居中模式(即使当前没有待处理动作)。
+  const [manualFocus, setManualFocus] = useState(false);
+  const dismissedFocusRef = useRef<Set<string>>(new Set());
+  const auditFocus = useCallback(
+    (id: string, event: 'opened' | 'dismissed') => {
+      void backend.recordV1InteractionEvent(space.id, id, event).catch(() => undefined);
+    },
+    [space.id],
+  );
+  const focusThinking = manualFocus || focusInteractionId !== null;
+  const openFocusThinking = useCallback(() => {
+    setManualFocus(true);
+    const id = currentInteraction?.id ?? null;
+    if (!id) return;
+    dismissedFocusRef.current.delete(id);
+    setFocusInteractionId(id);
+    auditFocus(id, 'opened');
+  }, [currentInteraction?.id, auditFocus]);
+  const closeFocusThinking = useCallback(() => {
+    setManualFocus(false);
+    setFocusInteractionId(prev => {
+      if (prev) {
+        dismissedFocusRef.current.add(prev);
+        auditFocus(prev, 'dismissed');
+      }
+      return null;
+    });
+  }, [auditFocus]);
+  // 自动居中:只给声明了 focus_modal 的动作;用户收起过后不再自动弹出。
+  useEffect(() => {
+    if (!currentInteraction || currentInteraction.presentation !== 'focus_modal') {
+      setFocusInteractionId(null);
+      return;
+    }
+    if (dismissedFocusRef.current.has(currentInteraction.id)) return;
+    setFocusInteractionId(prev => {
+      if (prev === currentInteraction.id) return prev;
+      auditFocus(currentInteraction.id, 'opened');
+      return currentInteraction.id;
+    });
+  }, [currentInteraction, auditFocus]);
 
   /** 「细化第一阶段」:把已确认战略交给既有的对话工作流拆出阶段/里程碑提案。 */
   const [refining, setRefining] = useState(false);
@@ -2434,6 +2480,7 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     confirmV1Strategy, confirmV1Goal, continueV1Strategy, reopenV1Direction,
     runV1PlanStep, selectV1Direction,
     alignV1Strategy, alignV1Timeline,
+    currentInteraction,
     focusThinking, openFocusThinking, closeFocusThinking,
     refineStrategy, refining, requestChat, chatRequestNonce,
     replan, replanState,

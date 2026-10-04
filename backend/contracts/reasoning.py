@@ -214,6 +214,9 @@ class GoalReasoningView(ApiModel):
     v1_strategic_thesis: str | None = None
     #: P2.1:用户无法回答时 AI 给出的候选方向(最多 3 个)。R2 起每项带 `impact`。
     v1_candidate_directions: list[dict] | None = None
+    #: **当前唯一待处理动作**(不是普通聊天消息):id/nonce/kind/priority/title/
+    #: context/whyNow/prompt/options/recommendedOption/focusKey/status/presentation。
+    v1_current_interaction: dict | None = None
     #: 深度对话:对用户已说内容的**具体理解**(问题之前必须先给)。
     v1_user_understanding: str | None = None
     #: 深度对话:一个可参考的**具体例子**。
@@ -261,6 +264,13 @@ class V01FeedbackRequest(ApiModel):
     outcome: Literal["done", "partial", "missed", "delayed"]
 
 
+class V1InteractionEventRequest(ApiModel):
+    """居中专注模式的 UI 事件。**只记交互编排,不记草稿/思维链。**"""
+
+    interaction_id: str = Field(min_length=1, max_length=64)
+    event: Literal["opened", "dismissed"]
+
+
 class UpdateReasoningNodeRequest(ApiModel):
     """用户对地图节点的编辑。**只改标题与用户原文** —— 其余字段由 Agent 维护。
 
@@ -302,4 +312,5 @@ __all__ = [
     "UpdateReasoningNodeRequest",
     "V01FeedbackRequest",
     "V01TimelineItemView",
+    "V1InteractionEventRequest",
 ]

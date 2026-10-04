@@ -60,18 +60,9 @@ export function Workbench() {
   // 规划智能体 V0.1:阶段一(DISCOVERY)用中央大输入框,画布保持干净。
   const discovery = reasoning?.workflowStage === 'discovery';
   /*
-   * P2.2.1:Stage 1“思考模式”。右侧面板承载了战略判断 + 候选方向 + 节点详情 +
-   * 对话输入,普通对话面板太窄/太短会把它撑到不可用。满足任一条件时给右侧面板一档
-   * 更宽、更高的布局;**非 V1 对话保持原尺寸**。
+   * 对话交互收口:**右侧 Dock 默认保持紧凑**,不再因为处于某个 V1 阶段就长期放大。
+   * 需要用户聚焦时改由居中「专注思考」Overlay 承载(见 `FocusThinking`),不挤压画布。
    */
-  const v1Thinking = Boolean(reasoning?.v1Stage) && (
-    reasoning!.v1Stage === 'initial_thinking' ||
-    reasoning!.v1Stage === 'goal_reframe' ||
-    reasoning!.v1Stage === 'problem_structure' ||
-    Boolean(reasoning!.v1StrategicThesis) ||
-    (reasoning!.v1CandidateDirections?.length ?? 0) > 0 ||
-    Boolean(reasoning!.v1Question)
-  );
   // 阶段 11:“调整战略”把对话 Dock 展开 —— 只是把注意力带回对话,不替用户发言。
   useEffect(() => {
     if (chatRequestNonce > 0) setChatChoice(true);
@@ -105,7 +96,7 @@ export function Workbench() {
       router.replace(`/workbench?${workspaceParam}&view=timeline`, { scroll: false });
     }
   }, [v1TimelineProposalId, v1TimelineIsReady, view, router, workspaceParam, urlWorkspace, workspaceId]);
-  return <div className="workbench open-workbench"><div className={`workbench-body ${chatOpen ? '' : 'chat-hidden'} ${v1Thinking ? 'v1-thinking' : ''}`}><section className="workspace">
+  return <div className="workbench open-workbench"><div className={`workbench-body ${chatOpen ? '' : 'chat-hidden'}`}><section className="workspace">
     <div className="space-topbar">{!isRootSpace && <button className="icon-button space-back" aria-label="返回上级空间" onClick={() => enterSpace(growth.nodes[spaceId]?.parentId ?? growth.goalId)}><ArrowLeft size={15}/></button>}{discovery ? null : <div className="view-tabs" role="tablist" aria-label="工作台视图">{tabs.map(({id,label,Icon}) => <button key={id} role="tab" aria-selected={view === id} aria-label={label} className={view === id ? 'selected' : ''} onClick={() => router.replace(`/workbench?${workspaceParam}&view=${id}`, { scroll: false })}><Icon size={15}/><span>{label}</span></button>)}</div>}{!chatOpen && <button className="icon-button reopen-chat" aria-label="展开对话" onClick={() => setChatChoice(true)}><PanelRightOpen size={18}/></button>}</div>
     {/* 视图是一个三元表达式,所以**切一下页签,整棵画布子树就被卸载了** —— 这是有意的:
         画布和列表不该抢同一个位置,而隐藏着不卸载会让 ReactFlow 拿到一个尺寸为 0 的容器。

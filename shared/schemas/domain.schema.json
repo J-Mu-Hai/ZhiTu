@@ -2214,6 +2214,19 @@
           "default": null,
           "title": "V1Candidatedirections"
         },
+        "v1CurrentInteraction": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "V1Currentinteraction"
+        },
         "v1DecisionContext": {
           "anyOf": [
             {
@@ -6694,6 +6707,32 @@
         "kind"
       ],
       "title": "V01TimelineItemView",
+      "type": "object"
+    },
+    "V1InteractionEventRequest": {
+      "additionalProperties": false,
+      "description": "居中专注模式的 UI 事件。**只记交互编排,不记草稿/思维链。**",
+      "properties": {
+        "event": {
+          "enum": [
+            "opened",
+            "dismissed"
+          ],
+          "title": "Event",
+          "type": "string"
+        },
+        "interactionId": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Interactionid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "interactionId",
+        "event"
+      ],
+      "title": "V1InteractionEventRequest",
       "type": "object"
     },
     "WorkspaceCounts": {

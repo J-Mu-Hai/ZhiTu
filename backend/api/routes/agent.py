@@ -31,6 +31,7 @@ from backend.contracts.reasoning import (
     GoalReasoningView,
     UpdateReasoningNodeRequest,
     V01FeedbackRequest,
+    V1InteractionEventRequest,
 )
 from backend.contracts.trace import AgentTraceView
 from backend.core.config import settings
@@ -269,6 +270,25 @@ async def v1_feedback(
         event="execution_feedback",
         payload={"node_id": payload.node_id, "outcome": payload.outcome},
     )
+
+
+@router.post(
+    "/{workspace_id}/agent/v1/interaction",
+    status_code=204,
+    summary="规划智能体 V1:记录居中专注模式的打开 / 收起",
+)
+async def v1_interaction_event(
+    payload: V1InteractionEventRequest,
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    from backend.services import v1_service
+
+    session = await _v1_session(ctx, db)
+    await v1_service.record_interaction_event(
+        db, ctx, session, interaction_id=payload.interaction_id, event=payload.event
+    )
+    return Response(status_code=204)
 
 
 @router.get(

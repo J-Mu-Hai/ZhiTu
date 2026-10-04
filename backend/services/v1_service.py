@@ -32,6 +32,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import uuid
@@ -535,6 +536,116 @@ def has_explained_state(session: GoalReasoningSession) -> bool:
     # 新建空间尚未跑完第一轮;编排器会立刻推进,不算不透明 idle。
     # 执行阶段已经有计划,同样不算。
     return session.v1_stage in (None, V1_INITIAL_THINKING, V1_WEEKLY_EXECUTION)
+
+
+def _stable_interaction_id(kind: str, prompt: str, focus_key: str | None) -> str:
+    digest = hashlib.blake2b(
+        f"{kind}|{focus_key or ''}|{prompt}".encode(), digest_size=6
+    ).hexdigest()
+    return f"ci-{kind}-{digest}"
+
+
+def current_interaction(session: GoalReasoningSession) -> dict | None:
+    """**当前唯一待处理动作**。由既有会话状态派生,不改状态机。
+
+    每个 V1 阶段同时最多一个 active interaction;它不是一条普通聊天消息,而是
+    “现在需要用户回答/确认的那件事”。`presentation=focus_modal` 只给高价值动作。
+    """
+    if not is_v1(session):
+        return None
+    kind = ""
+    title = ""
+    prompt = ""
+    context = session.v1_strategic_thesis or ""
+    why_now = ""
+    options: list[dict] = []
+    recommended: str | None = None
+    focus_key = session.v1_focus_key
+
+    if (session.v1_question or "").strip():
+        kind, title = "strategic_question", "需要你回答一个关键问题"
+        prompt = session.v1_question or ""
+        why_now = session.v1_decision_context or session.v1_focus_reason or ""
+    elif session.v1_stage == V1_GOAL_REFRAME and session.v1_candidate_directions:
+        kind, title = "candidate_selection", "请选择一个起点"
+        prompt = "选一个候选方向,或直接否定我。"
+        why_now = session.v1_decision_context or session.v1_focus_reason or ""
+        for item in session.v1_candidate_directions:
+            if isinstance(item, dict):
+                options.append(
+                    {
+                        "key": str(item.get("key") or ""),
+                        "title": str(item.get("title") or ""),
+                        "reason": str(item.get("reason") or ""),
+                        "impact": str(item.get("impact") or ""),
+                    }
+                )
+        if options:
+            recommended = options[0]["key"]
+    elif session.v1_strategy and not (session.v1_strategy or {}).get("confirmed"):
+        kind, title = "strategy_review", "确认战略理解与战略"
+        prompt = "确认这份战略理解,或指出哪一句不对。"
+        why_now = "战略决定后面所有阶段与时间线,先确认再往下。"
+    elif session.v1_stage == V1_TIMELINE_ALIGNMENT:
+        alignment = session.v1_timeline_alignment or {}
+        kind, title = "timeline_alignment", "对齐时间节奏"
+        prompt = str(alignment.get("question") or "认可默认节奏,或提出调整。")
+        context = str(alignment.get("summary") or context)
+        why_now = "先对齐节奏,才生成粗时间架构。"
+        options = [
+            {"key": str(index), "title": str(item), "reason": "", "impact": ""}
+            for index, item in enumerate(alignment.get("options") or [])
+        ]
+    elif session.v1_stage == V1_COARSE_TIMELINE_REVIEW:
+        kind, title = "timeline_review", "确认粗时间架构"
+        prompt = "确认这份粗时间架构,或调整时间范围与验收标准。"
+        why_now = "确认前不写正式计划;确认后进入月/周/日细化。"
+    elif session.v1_stage == V1_REPLANNING:
+        kind, title = "weekly_review", "确认未来重规划"
+        prompt = "确认这份只调整未来的重规划。"
+        why_now = "执行偏差需要调整未来计划,已完成历史不变。"
+    else:
+        return None
+
+    return {
+        "id": _stable_interaction_id(kind, prompt, focus_key),
+        "nonce": session.v1_turn_id or "",
+        "kind": kind,
+        "priority": "high",
+        "title": title,
+        "context": context,
+        "whyNow": why_now,
+        "prompt": prompt,
+        "options": options,
+        "recommendedOption": recommended,
+        "focusKey": focus_key,
+        "status": "active",
+        # 高价值动作才居中专注;其余留 Dock(当前派生出的都是高价值动作)。
+        "presentation": "focus_modal",
+    }
+
+
+async def record_interaction_event(
+    db: AsyncSession,
+    ctx: WorkspaceContext,
+    session: GoalReasoningSession,
+    *,
+    interaction_id: str,
+    event: str,
+) -> None:
+    """居中专注模式的打开 / 收起。**只记交互编排,不记草稿或思维链。**"""
+    if event not in ("opened", "dismissed"):
+        return
+    await _audit(
+        db,
+        ctx,
+        session,
+        "v1_interaction_focus_opened" if event == "opened" else "v1_interaction_focus_dismissed",
+        trigger="focus_modal",
+        summary="打开居中专注对话。" if event == "opened" else "收起居中专注对话。",
+        payload={"interactionId": interaction_id},
+    )
+    await db.commit()
 
 
 async def _audit(db, ctx: WorkspaceContext, session, event_type: str, **kwargs):
@@ -3489,6 +3600,7 @@ __all__ = [
     "confirm_strategy_understanding",
     "confirm_timeline_alignment",
     "continue_strategy",
+    "current_interaction",
     "dimension_projection",
     "dimension_title",
     "generate_coarse_timeline",

@@ -6,6 +6,7 @@ import { useDemo } from '@/features/growth/provider';
 import { degradedHint, sourceLabel } from '@/lib/backend';
 import type { ResearchView } from '@/lib/backend';
 import { StrategySummaryCard } from './StrategySummaryCard';
+import { CurrentInteractionCard } from './CurrentInteractionCard';
 
 /**
  * 提案落下之后,卡片上显示的状态。
@@ -217,7 +218,7 @@ function IntakeChips({
  */
 export function ConversationPanel() {
   const { growth, selectedId, select, messages, remoteProposals, proposalErrors, inputChanged, deciding, confirmRemote, rejectRemote, replan, replanState, send, retry, sending, sendError, retryable, historyLoading, messagesTruncated, spaceId, questions, focusQuestion, openTrace, traceAvailability, reasoning, agentStatus, confirmV1Strategy, confirmV1Goal, continueV1Strategy, reopenV1Direction,
-  runV1PlanStep, selectV1Direction, requestChat, alignV1Strategy, alignV1Timeline, openFocusThinking } = useDemo();
+  runV1PlanStep, selectV1Direction, requestChat, alignV1Strategy, alignV1Timeline, openFocusThinking, currentInteraction } = useDemo();
   const [input, setInput] = useState('');
   const [showContexts, setShowContexts] = useState(false);
   /** P2.2:候选方向选择中 —— 立刻禁用按钮,避免重复点击。 */
@@ -231,6 +232,7 @@ export function ConversationPanel() {
   /** 输入框的 DOM 元素。高度按内容算(见下面那个 effect)。 */
   const composer = useRef<HTMLTextAreaElement>(null);
   const bottom = useRef<HTMLDivElement>(null);
+  const history = useRef<HTMLDivElement>(null);
   const selected = selectedId ? growth.nodes[selectedId] : null;
 
   /**
@@ -348,7 +350,13 @@ export function ConversationPanel() {
 
   // 提案也要跟着滚。`replan` 产出的那份提案是**追加在末尾**的,不滚过去的话
   // 用户点了「按执行情况调整」会看到界面毫无反应。
-  useEffect(() => { bottom.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }); }, [messages.length, sending, remoteProposals.length]);
+  // 只在用户位于底部附近时才自动滚到底;正在查看历史时不得强行跳动。
+  useEffect(() => {
+    const el = history.current;
+    if (!el) return;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 160;
+    if (nearBottom) bottom.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  }, [messages.length, sending, remoteProposals.length]);
 
   /**
    * 输入框随内容长高,到 120px 就内部滚动。
@@ -411,7 +419,7 @@ export function ConversationPanel() {
       {/* 阶段 10:对话区首屏的**当前战略判断摘要**。低干扰、可展开,不遮住画布。 */}
       <StrategySummaryCard />
 
-      <div className="conversation-history">
+      <div className="conversation-history" ref={history}>
         {historyLoading && <p className="turn-loading">正在读取对话…</p>}
         {/* 阶段 12:极轻量的 intake 进度。不是卡片、不占节点空间。 */}
         {primaryIntake && (
@@ -666,7 +674,8 @@ export function ConversationPanel() {
             </div>
           )}
           {/* 深度对话:时间架构共创 —— 先对齐节奏,才生成粗时间线。 */}
-          {v1InTimelineAlignment && v1TimelineAlignment && (
+          {/* 交互收口:当前动作由输入框上方的固定卡承载,历史里不重复完整选项。 */}
+          {!currentInteraction && v1InTimelineAlignment && v1TimelineAlignment && (
             <div className="v1-alignment" data-testid="v1-timeline-alignment">
               <span className="eyebrow">时间架构共创</span>
               {v1TimelineAlignment.summary && <p className="v1-alignment-summary">{v1TimelineAlignment.summary}</p>}
@@ -781,7 +790,7 @@ export function ConversationPanel() {
               <p>{v1Thesis}</p>
             </div>
           )}
-          {v1Directions.length > 0 && v1CanReselect && (
+          {!currentInteraction && v1Directions.length > 0 && v1CanReselect && (
             <div className="v1-directions" data-testid="v1-directions">
               {v1DecisionContext && (
                 <p className="v1-decision-context" data-testid="v1-decision-context">
@@ -826,7 +835,7 @@ export function ConversationPanel() {
               </button>
             </div>
           )}
-          {v1GoalConfirmable && (
+          {!currentInteraction && v1GoalConfirmable && (
             <div className="v1-goal-confirm">
               <button
                 type="button"
@@ -880,7 +889,7 @@ export function ConversationPanel() {
               {v1QuestionExample && <p><strong>参考例子：</strong>{v1QuestionExample}</p>}
             </div>
           )}
-          {v1ConversationQuestion && (
+          {!currentInteraction && v1ConversationQuestion && (
             <div className="v1-conversation-question" data-testid="v1-conversation-question" role="status">
               <span className="v1-conversation-tag">对话中回答</span>
               <p>{v1ConversationQuestion}</p>
@@ -892,6 +901,7 @@ export function ConversationPanel() {
       </div>
 
       <div className="composer-area">
+        <CurrentInteractionCard />
         {/* 问题入口已经移到标题栏下方那条紧凑状态条(见 `QuestionStatusBar`)。
             这里不再重复渲染问题正文 —— 完整回答只在画布的 Question Node 里完成。 */}
         {/* 「按执行情况调整」的入口。

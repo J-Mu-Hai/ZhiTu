@@ -152,6 +152,54 @@ test.beforeAll(async ({ request }) => {
   await assertBackendRunning(request);
 });
 
+test('当前关键行动固定在输入框上方,不在历史里;Dock 默认紧凑', async ({ page }) => {
+  const { token } = await registerAccount(page, 'v1-current-interaction');
+  const workspaceId = await createWorkspace(page, token, '当前行动固定', '我想学 Python 用于自动化');
+  const rootId = (await getPlan(page, token, workspaceId)).nodes.find(node => node.parentId === null)!.id;
+
+  await installMock(
+    page,
+    baseView(workspaceId, rootId, {
+      v1Stage: 'goal_reframe',
+      v1CurrentInteraction: {
+        id: 'ci-strategic_question-abc',
+        nonce: 'turn-1',
+        kind: 'strategic_question',
+        priority: 'high',
+        title: '需要你回答一个关键问题',
+        context: '你想要自动化省时间,但还没说清具体是哪件事。',
+        whyNow: '它决定第一周先做什么。',
+        prompt: '你想自动化的具体是哪一件重复工作?',
+        options: [],
+        recommendedOption: null,
+        focusKey: 'true_intent',
+        status: 'active',
+        presentation: 'focus_modal',
+      },
+      v1VisibleAnalysisKeys: ['true_intent', 'key_conflict', 'goal_definition'],
+      v1Dimensions: [dimension('true_intent', '真实意图', '想省时间。', true, true)],
+    }),
+    [],
+  );
+  await page.route('**/agent/v1/interaction', async route =>
+    route.fulfill({ status: 204, body: '' }),
+  );
+
+  await page.goto(`/workbench?workspace=${workspaceId}&view=path`);
+  // Dock 默认紧凑:不再有 v1-thinking 整体放大类。
+  await expect(page.locator('.workbench-body.v1-thinking')).toHaveCount(0);
+  // 固定卡在输入框上方(右侧 Dock),且**不在**滚动历史里。
+  const dockCard = page.locator('.floating-conversation [data-testid="current-interaction-card"]');
+  await expect(dockCard).toBeVisible({ timeout: 20000 });
+  await expect(dockCard).toContainText('你想自动化的具体是哪一件重复工作');
+  await expect(page.locator('.conversation-history [data-testid="current-interaction-card"]')).toHaveCount(0);
+  // focus_modal 自动居中;收起后回到小 Dock,固定卡仍在。
+  await expect(page.getByTestId('focus-thinking')).toBeVisible({ timeout: 20000 });
+  await page.getByTestId('focus-thinking-close').click();
+  await expect(page.getByTestId('focus-thinking')).toHaveCount(0);
+  await expect(dockCard).toBeVisible();
+});
+
 test('专注思考:居中放大,关闭后回到右侧,内容不丢', async ({ page }) => {
   const { token } = await registerAccount(page, 'v1-focus-thinking');
   const workspaceId = await createWorkspace(page, token, '专注思考', '我想学 Python 用于自动化');
