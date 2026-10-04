@@ -159,7 +159,14 @@ async def _drive_to_weekly(client, account, reasoner):
         headers=account.headers,
     )
     assert confirm_strategy.status_code == 200, confirm_strategy.text
-    view = confirm_strategy.json()["reasoning"]
+    assert confirm_strategy.json()["reasoning"]["v1Stage"] == "timeline_alignment"
+    align = await client.post(
+        f"/api/workspaces/{account.workspace_id}/agent/v1/timeline/align",
+        params={"accepted": "true"},
+        headers=account.headers,
+    )
+    assert align.status_code == 200, align.text
+    view = align.json()["reasoning"]
     assert view["v1Stage"] == "coarse_timeline_review"
     proposal_id = view["v01TimelineProposalId"]
     await _confirm(client, account, proposal_id, "r3-timeline")

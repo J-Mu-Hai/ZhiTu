@@ -413,9 +413,15 @@ async def build_view(
         #: P2.1:战略判断优先 + 候选方向与用户选择。
         v1_strategic_thesis=session.v1_strategic_thesis,
         v1_candidate_directions=session.v1_candidate_directions,
+        #: 深度对话:理解 / 例子(问题之前先给)。
+        v1_user_understanding=session.v1_user_understanding,
+        v1_question_example=session.v1_question_example,
         #: R2:候选方向必须跟随“为什么现在决定 + AI 倾向”一起出现。
         v1_decision_context=session.v1_decision_context,
         v1_provisional_recommendation=session.v1_provisional_recommendation,
+        #: 深度对话:战略理解 + 时间架构共创。
+        v1_strategy_understanding=session.v1_strategy_understanding,
+        v1_timeline_alignment=session.v1_timeline_alignment,
         v1_selected_direction=session.v1_selected_direction,
         #: P2.2:可见性投影与真实待回答问题数。
         v1_visible_analysis_keys=v1_visible_keys,

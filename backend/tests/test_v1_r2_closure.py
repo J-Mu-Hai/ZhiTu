@@ -307,7 +307,14 @@ async def test_timeline_incomplete_triggers_repair_then_succeeds(
         headers=account.headers,
     )
     assert confirm.status_code == 200, confirm.text
-    view = confirm.json()["reasoning"]
+    assert confirm.json()["reasoning"]["v1Stage"] == "timeline_alignment"
+    align = await app_client.post(
+        f"/api/workspaces/{account.workspace_id}/agent/v1/timeline/align",
+        params={"accepted": "true"},
+        headers=account.headers,
+    )
+    assert align.status_code == 200, align.text
+    view = align.json()["reasoning"]
     assert view["v1Stage"] == "coarse_timeline_review"
     assert view["v1Status"] == "awaiting_user_confirmation", "必须是等待确认,不是 idle"
     assert len(view["v01Timeline"]) == 3
@@ -337,7 +344,13 @@ async def test_timeline_repair_failure_is_retryable(
         headers=account.headers,
     )
     assert confirm.status_code == 200, confirm.text
-    view = confirm.json()["reasoning"]
+    align = await app_client.post(
+        f"/api/workspaces/{account.workspace_id}/agent/v1/timeline/align",
+        params={"accepted": "true"},
+        headers=account.headers,
+    )
+    assert align.status_code == 200, align.text
+    view = align.json()["reasoning"]
     assert view["v1Status"] == "failed"
     assert "缺少时间范围或验收标准" in (view["v1Error"] or "")
     assert view["v01Timeline"] == [], "不合格不得创建时间线"

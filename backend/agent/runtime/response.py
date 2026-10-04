@@ -47,6 +47,7 @@ from backend.agent.prompts.planning import (
 from backend.agent.prompts.v1_strategy import render_v1_turn
 from backend.agent.prompts.v1_strategy_synthesis import render_v1_strategy_synthesis_turn
 from backend.agent.prompts.v1_timeline import render_v1_timeline_turn
+from backend.agent.prompts.v1_timeline_alignment import render_v1_timeline_alignment_turn
 from backend.agent.prompts.v1_timeline_repair import render_v1_timeline_repair_turn
 from backend.agent.runtime.base import (
     AnalysisDraft,
@@ -60,11 +61,13 @@ from backend.agent.runtime.base import (
     ReasoningResult,
     ToolRequest,
     TurnContext,
+    V1AlignmentAssumption,
     V1AssessmentDraft,
     V1CandidateDirection,
     V1KeyDimension,
     V1NodeUpdate,
     V1StrategyDraft,
+    V1TimelineAlignmentDraft,
     V1TimelineDraft,
     V1TimelinePhaseDraft,
 )
@@ -136,6 +139,8 @@ V1_STATUS_ALIASES = {
 #: 规划智能体重构 V1(P2.1):战略判断优先。
 MAX_V1_KEY_DIMENSIONS = 3
 MAX_V1_CANDIDATE_DIRECTIONS = 3
+#: 时间架构共创回合最多几条假设。
+MAX_V1_ALIGNMENT_ASSUMPTIONS = 8
 V1_RESPONSE_MODES = frozenset(
     {"none", "ask", "offer_options", "provisional_synthesis", "ready_for_strategy"}
 )
@@ -264,6 +269,9 @@ def render_turn(turn: TurnContext) -> str:
     if turn.purpose == "v1_timeline_repair":
         # 规划智能体重构 V1:窄契约时间架构修补 —— 只补缺失字段。
         return render_v1_timeline_repair_turn(turn)
+    if turn.purpose == "v1_timeline_alignment":
+        # 规划智能体重构 V1:时间架构共创 —— 先讲时间假设,再问一个战略级问题。
+        return render_v1_timeline_alignment_turn(turn)
     if turn.purpose == "goal_reasoning":
         # 目标推理回合走另一份模板:它关心的是决策维度与取舍,不是任务拆解。
         return render_reasoning_turn(turn)
@@ -372,6 +380,7 @@ PARSED_PAYLOAD_FIELDS = frozenset(
         "v1Assessment",
         "v1Timeline",
         "v1Strategy",
+        "v1TimelineAlignment",
     }
 )
 
@@ -418,6 +427,9 @@ def payload_to_result(
         v1_assessment=parse_v1_assessment(payload.get("v1Assessment")),
         v1_timeline=parse_v1_timeline(payload.get("v1Timeline")),
         v1_strategy=parse_v1_strategy(payload.get("v1Strategy")),
+        v1_timeline_alignment=parse_v1_timeline_alignment(
+            payload.get("v1TimelineAlignment")
+        ),
         request_id=request_id,
         prompt_version=prompt_version,
         model_name=model_name,
@@ -1022,6 +1034,14 @@ def parse_v1_assessment(raw: Any) -> V1AssessmentDraft | None:
         response_mode=response_mode if response_mode in V1_RESPONSE_MODES else "none",
         critical_question=critical,
         question=critical,
+        user_understanding=_text(
+            _v1_pick(raw, "userUnderstanding", "user_understanding", "understanding"),
+            MAX_V1_TEXT_CHARS,
+        ),
+        question_example=_text(
+            _v1_pick(raw, "questionExample", "question_example", "example"),
+            MAX_V1_TEXT_CHARS,
+        ),
         decision_context=_text(
             _v1_pick(raw, "decisionContext", "decision_context", "whyNow", "why_decide"),
             MAX_V1_TEXT_CHARS,
@@ -1045,6 +1065,52 @@ def parse_v1_assessment(raw: Any) -> V1AssessmentDraft | None:
         strategy_ready=bool(
             _v1_pick(raw, "strategyReady", "strategy_ready", "ready")
         ),
+    )
+
+
+def parse_v1_timeline_alignment(raw: Any) -> V1TimelineAlignmentDraft | None:
+    """把时间架构共创回合的窄输出变成“时间假设 + 至多一个问题”。
+
+    只做形状判断;`summary` 为空则整份拒绝(至少要讲清时间假设)。
+    """
+    if not isinstance(raw, dict):
+        return None
+
+    def _text(value: Any, limit: int = MAX_V1_TEXT_CHARS) -> str:
+        return value.strip()[:limit] if isinstance(value, str) and value.strip() else ""
+
+    assumptions: list[V1AlignmentAssumption] = []
+    for entry in (raw.get("assumptions") or [])[:MAX_V1_ALIGNMENT_ASSUMPTIONS]:
+        if isinstance(entry, str):
+            text, source = entry.strip(), "ai_assumption"
+        elif isinstance(entry, dict):
+            text = _text(_v1_pick(entry, "text", "assumption", "content"))
+            source_raw = str(_v1_pick(entry, "source", "kind") or "").strip().lower()
+            source = "user_fact" if source_raw in ("user_fact", "user", "fact", "用户事实") else "ai_assumption"
+        else:
+            continue
+        if text:
+            assumptions.append(V1AlignmentAssumption(text=text, source=source))
+
+    summary = _text(_v1_pick(raw, "summary", "overview"))
+    if not summary and not assumptions:
+        return None
+
+    phase_count = _v1_pick(raw, "phaseCount", "phase_count")
+    options = tuple(
+        _text(item, MAX_V1_TIMELINE_TITLE_CHARS)
+        for item in (raw.get("options") or raw.get("quickReplies") or [])[:3]
+        if isinstance(item, str) and item.strip()
+    )
+    return V1TimelineAlignmentDraft(
+        summary=summary,
+        total_span=_text(_v1_pick(raw, "totalSpan", "total_span", "duration")),
+        cadence=_text(_v1_pick(raw, "cadence", "rhythm")),
+        phase_count=phase_count if isinstance(phase_count, int) and 1 <= phase_count <= 12 else None,
+        biggest_risk=_text(_v1_pick(raw, "biggestRisk", "biggest_risk", "risk")),
+        assumptions=tuple(assumptions),
+        question=_text(_v1_pick(raw, "question", "criticalQuestion", "critical_question"), MAX_V1_QUESTION_CHARS),
+        options=options,
     )
 
 

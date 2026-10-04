@@ -697,6 +697,10 @@ class V1AssessmentDraft:
     node_updates: tuple[V1NodeUpdate, ...] = ()
     #: R2:为什么此刻需要用户做这个决定(候选方向必须跟随它一起出现)。
     decision_context: str = ""
+    #: 深度对话:对用户已说内容的**具体理解**(不是复述)。问题之前必须先给。
+    user_understanding: str = ""
+    #: 深度对话:一个可参考的**具体例子**。
+    question_example: str = ""
     #: R2:AI 当前倾向与理由(候选方向之前先给推荐)。
     provisional_recommendation: str = ""
     #: R2:每个候选键 → “选它会改变哪一段”。与 `candidate_directions[].impact` 同义。
@@ -747,6 +751,40 @@ class V1TimelineDraft:
 
     summary: str = ""
     phases: tuple[V1TimelinePhaseDraft, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class V1AlignmentAssumption:
+    """时间架构共创里的一条假设。`source` 区分用户事实与 AI 暂定。"""
+
+    text: str
+    #: `user_fact` 或 `ai_assumption`。
+    source: str = "ai_assumption"
+
+
+@dataclass(frozen=True, slots=True)
+class V1TimelineAlignmentDraft:
+    """**时间架构共创**回合的窄契约:先讲清时间假设,再问一个战略级问题。
+
+    它不是时间线、不写计划;只是把“我打算按什么节奏排”说清楚,让用户在生成粗时间线
+    之前对齐。不含每天几点 / 工具 / 课程。
+    """
+
+    summary: str = ""
+    #: 总周期,如“约 8 周”。
+    total_span: str = ""
+    #: 默认推进节奏,如“每周 1 个可验收小闭环”。
+    cadence: str = ""
+    #: 预计阶段数。
+    phase_count: int | None = None
+    #: 当前最大的排期风险。
+    biggest_risk: str = ""
+    #: 假设列表(用户事实 / AI 暂定分开)。
+    assumptions: tuple[V1AlignmentAssumption, ...] = ()
+    #: 至多一个真正影响时间架构的问题。
+    question: str = ""
+    #: 可选回答(2–3 个短标签)。
+    options: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -807,6 +845,9 @@ class ReasoningResult:
     #: 规划智能体重构 V1:战略合成回合的四条结构。
     #: **只有 `purpose == v1_strategy_synthesis` 会读它。**
     v1_strategy: V1StrategyDraft | None = None
+    #: 时间架构共创回合的假设与问题。
+    #: **只有 `purpose == v1_timeline_alignment` 会读它。**
+    v1_timeline_alignment: V1TimelineAlignmentDraft | None = None
     request_id: str = ""
     prompt_version: str = ""
     model_name: str | None = None

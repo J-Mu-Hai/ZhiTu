@@ -2323,6 +2323,18 @@
           "default": null,
           "title": "V1Question"
         },
+        "v1QuestionExample": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "V1Questionexample"
+        },
         "v1RequireOpenjiuwen": {
           "default": false,
           "title": "V1Requireopenjiuwen",
@@ -2389,6 +2401,32 @@
           "default": null,
           "title": "V1Strategy"
         },
+        "v1StrategyUnderstanding": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "V1Strategyunderstanding"
+        },
+        "v1TimelineAlignment": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "V1Timelinealignment"
+        },
         "v1TurnDeadlineAt": {
           "anyOf": [
             {
@@ -2425,6 +2463,18 @@
           ],
           "default": null,
           "title": "V1Turnsource"
+        },
+        "v1UserUnderstanding": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "V1Userunderstanding"
         },
         "v1VisibleAnalysisKeys": {
           "items": {
@@ -6515,6 +6565,11 @@
       "additionalProperties": false,
       "description": "V0.1 时间轴上的一个投影项(阶段 / 里程碑 / 截止 / 成果)。\n\n它来自会话上的 `v01_timeline` JSON,是**唯一权威来源**;前端不解析自然语言\n描述去猜日期。`status=draft` 表示还没被用户确认。",
       "properties": {
+        "category": {
+          "default": "",
+          "title": "Category",
+          "type": "string"
+        },
         "completionCriteria": {
           "default": "",
           "title": "Completioncriteria",
@@ -6523,6 +6578,11 @@
         "deliverable": {
           "default": "",
           "title": "Deliverable",
+          "type": "string"
+        },
+        "dependsOn": {
+          "default": "",
+          "title": "Dependson",
           "type": "string"
         },
         "endDate": {
@@ -6558,6 +6618,18 @@
         "id": {
           "title": "Id",
           "type": "string"
+        },
+        "index": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Index"
         },
         "kind": {
           "title": "Kind",
@@ -6608,6 +6680,11 @@
         },
         "title": {
           "title": "Title",
+          "type": "string"
+        },
+        "whyHere": {
+          "default": "",
+          "title": "Whyhere",
           "type": "string"
         }
       },

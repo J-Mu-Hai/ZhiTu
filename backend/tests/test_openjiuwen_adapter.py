@@ -279,6 +279,16 @@ def test_the_output_declaration_matches_what_the_parser_reads() -> None:
             "riskControl": "每两周复盘",
             "tradeoff": "先要能展示的成果",
         },
+        "v1TimelineAlignment": {
+            "summary": "按每周一个闭环推进",
+            "totalSpan": "约 4 周",
+            "cadence": "每周一个可验收小闭环",
+            "phaseCount": 3,
+            "biggestRisk": "投入不稳定",
+            "assumptions": [{"text": "用户想尽快出成果", "source": "user_fact"}],
+            "question": "",
+            "options": [],
+        },
     }
     assert set(payload) == set(OUTPUT_CONFIG), (
         "载荷的键与给 SDK 的输出声明对不上了 —— 有一边多写或少写了"

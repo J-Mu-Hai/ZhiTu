@@ -400,3 +400,107 @@
   font-size: 11px;
   font-weight: 600;
 }
+
+/* ---- 深度战略对话 + 时间架构共创 ---- */
+.v1-focus-row {
+  display: flex;
+  justify-content: flex-end;
+  margin: 4px 0 8px;
+}
+.v1-understanding,
+.v1-alignment {
+  border: 1px solid #d7e2ea;
+  border-radius: 10px;
+  background: #f8fbfd;
+  padding: 10px 12px;
+  margin: 8px 0;
+}
+.v1-understanding ul,
+.v1-alignment ul {
+  margin: 6px 0 0;
+  padding-left: 16px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: #33506a;
+}
+.v1-understanding li strong,
+.v1-alignment li strong {
+  margin-right: 6px;
+  color: #25486a;
+}
+.v1-understanding-ask {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: #5a738a;
+}
+.v1-assumptions li em {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: #e8eff4;
+  font-style: normal;
+  font-size: 10px;
+  color: #4a6a85;
+}
+.v1-alignment-summary,
+.v1-alignment-question {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: #33506a;
+}
+.v1-alignment-question {
+  font-weight: 600;
+  color: #24486a;
+}
+.v1-alignment-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.v1-alignment-options button {
+  padding: 5px 10px;
+  border: 1px solid #cbdae4;
+  border-radius: 8px;
+  background: #fffefa;
+  font-size: 11px;
+  color: #3c5771;
+  cursor: pointer;
+}
+.v1-adjust-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+.v1-adjust-row input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid #cbdae4;
+  border-radius: 8px;
+  font-size: 11px;
+  background: #fffefa;
+  color: #3c5771;
+}
+.v1-adjust-row button {
+  padding: 5px 10px;
+  border-radius: 8px;
+  border: 1px solid #7fa8c9;
+  background: #e9f2f9;
+  font-size: 11px;
+  color: #24486a;
+  cursor: pointer;
+}
+.v1-adjust-row button:disabled { opacity: .55; cursor: default; }
+.v1-understanding-hint {
+  border-left: 3px solid #9db8cf;
+  padding: 6px 10px;
+  margin: 8px 0;
+  background: #f7fafc;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #3f5a72;
+}
+.v1-understanding-hint p { margin: 2px 0; }
+.v1-understanding-hint strong { color: #25486a; }

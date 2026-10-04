@@ -133,6 +133,10 @@ class V01TimelineItemView(ApiModel):
     title: str
     #: phase / milestone / deadline / deliverable
     kind: str
+    #: 阶段序号(从 1 开始)。V1 起有值。
+    index: int | None = None
+    #: 语义类别:定位 / 基础闭环 / 深入建设 / 产出 / 缓冲(不只靠颜色区分)。
+    category: str = ""
     start_week: int | None = None
     end_week: int | None = None
     start_date: date | None = None
@@ -140,6 +144,10 @@ class V01TimelineItemView(ApiModel):
     goal: str = ""
     deliverable: str = ""
     completion_criteria: str = ""
+    #: 前置阶段标题(可空)。
+    depends_on: str = ""
+    #: 为什么这个阶段排在这里。
+    why_here: str = ""
     #: draft / planned
     status: str = "draft"
     plan_node_id: uuid.UUID | None = None
@@ -206,10 +214,18 @@ class GoalReasoningView(ApiModel):
     v1_strategic_thesis: str | None = None
     #: P2.1:用户无法回答时 AI 给出的候选方向(最多 3 个)。R2 起每项带 `impact`。
     v1_candidate_directions: list[dict] | None = None
+    #: 深度对话:对用户已说内容的**具体理解**(问题之前必须先给)。
+    v1_user_understanding: str | None = None
+    #: 深度对话:一个可参考的**具体例子**。
+    v1_question_example: str | None = None
     #: R2:为什么此刻需要用户做这个决定(候选按钮之前必须先显示它)。
     v1_decision_context: str | None = None
     #: R2:AI 当前倾向与理由。
     v1_provisional_recommendation: str | None = None
+    #: 深度对话:呈现给用户的“战略理解”(目标/关键矛盾/主线/暂缓/风险/取舍 + confirmed)。
+    v1_strategy_understanding: dict | None = None
+    #: 深度对话:时间架构共创的假设与问题(summary/cadence/assumptions/question/answer)。
+    v1_timeline_alignment: dict | None = None
     #: P2.1:用户选择的候选方向键。
     v1_selected_direction: str | None = None
     #: P2.2:当前**画布默认可见**的分析维度键(内部十维 ≠ 十个待回答问题)。

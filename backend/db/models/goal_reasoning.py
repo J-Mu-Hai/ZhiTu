@@ -198,6 +198,14 @@ class GoalReasoningSession(UuidPk, TimestampMixin, Base):
     v1_provisional_recommendation: Mapped[str | None] = mapped_column(Text)
     #: 连续“问题 + 候选选项”的轮数。**最多连续 1 次**,避免退化成问卷。
     v1_options_streak: Mapped[int | None] = mapped_column(Integer)
+    #: 时间架构共创回合的假设与问题(生成粗时间线之前的对齐产物)。
+    v1_timeline_alignment: Mapped[dict | None] = mapped_column(JsonDict)
+    #: 深度对话:呈现给用户的“战略理解”(目标/关键矛盾/主线/暂缓/风险/取舍)。
+    v1_strategy_understanding: Mapped[dict | None] = mapped_column(JsonDict)
+    #: 深度对话:对用户已说内容的**具体理解**(问题之前必须先给)。
+    v1_user_understanding: Mapped[str | None] = mapped_column(Text)
+    #: 深度对话:一个可参考的**具体例子**。
+    v1_question_example: Mapped[str | None] = mapped_column(Text)
 
     nodes: Mapped[list[ReasoningNode]] = relationship(
         back_populates="session", cascade="all, delete-orphan"

@@ -1890,6 +1890,10 @@ export interface V01TimelineItemView {
   id: string;
   title: string;
   kind: 'phase' | 'milestone' | 'deadline' | 'deliverable';
+  /** 阶段序号(从 1 开始);V1 起有值。 */
+  index?: number | null;
+  /** 语义类别:定位 / 基础闭环 / 深入建设 / 产出 / 缓冲。 */
+  category?: string;
   startWeek: number | null;
   endWeek: number | null;
   startDate: string | null;
@@ -1897,8 +1901,38 @@ export interface V01TimelineItemView {
   goal: string;
   deliverable: string;
   completionCriteria: string;
+  /** 前置阶段标题(可空)。 */
+  dependsOn?: string;
+  /** 为什么这个阶段排在这里。 */
+  whyHere?: string;
   status: 'draft' | 'planned';
   planNodeId: string | null;
+}
+
+/** 深度对话:呈现给用户的“战略理解”。 */
+export interface V1StrategyUnderstanding {
+  goal?: string;
+  keyConflict?: string;
+  mainLine?: string;
+  parallelLine?: string;
+  deferOrAvoid?: string;
+  riskControl?: string;
+  tradeoff?: string;
+  confirmed?: boolean;
+}
+
+/** 深度对话:时间架构共创的假设与问题。 */
+export interface V1TimelineAlignment {
+  summary?: string;
+  totalSpan?: string;
+  cadence?: string;
+  phaseCount?: number | null;
+  biggestRisk?: string;
+  assumptions?: { text?: string; source?: string }[];
+  question?: string;
+  options?: string[];
+  answer?: string;
+  confirmed?: boolean;
 }
 
 /** 当前目标推理地图。读接口与 agent turn 都返回这一份。 */
@@ -1961,10 +1995,18 @@ export interface GoalReasoningView {
   v1StrategicThesis: string | null;
   /** P2.1:用户无法回答时 AI 给出的候选方向(最多 3 个)。R2 起每项带 impact。 */
   v1CandidateDirections: V1CandidateDirection[] | null;
+  /** 深度对话:对用户已说内容的具体理解(问题之前先给)。 */
+  v1UserUnderstanding: string | null;
+  /** 深度对话:一个可参考的具体例子。 */
+  v1QuestionExample: string | null;
   /** R2:为什么此刻需要这个决定(候选按钮之前先显示)。 */
   v1DecisionContext: string | null;
   /** R2:AI 当前倾向与理由。 */
   v1ProvisionalRecommendation: string | null;
+  /** 深度对话:呈现给用户的“战略理解”。 */
+  v1StrategyUnderstanding: V1StrategyUnderstanding | null;
+  /** 深度对话:时间架构共创的假设与问题。 */
+  v1TimelineAlignment: V1TimelineAlignment | null;
   /** P2.1:用户选择的候选方向键。 */
   v1SelectedDirection: string | null;
   /** P2.2:当前画布默认可见的分析维度键(内部十维 ≠ 十个待回答问题)。 */
@@ -2149,6 +2191,28 @@ export function confirmV1Strategy(workspaceId: string): Promise<GoalReasoningVie
     method: 'POST',
     body: {},
   }).then(response => response.reasoning);
+}
+
+/** 深度对话:确认“战略理解”(进入正式战略确认前的中间确认)。 */
+export function alignV1Strategy(workspaceId: string): Promise<GoalReasoningView> {
+  return apiFetch<AgentTurnResponse>(`/api/workspaces/${workspaceId}/agent/v1/strategy/align`, {
+    method: 'POST',
+    body: {},
+  }).then(response => response.reasoning);
+}
+
+/** 深度对话:对齐时间节奏;`accepted` 认可默认节奏,`answer` 可说明调整/截止日期。 */
+export function alignV1Timeline(
+  workspaceId: string,
+  options: { answer?: string; accepted?: boolean } = {},
+): Promise<GoalReasoningView> {
+  const params = new URLSearchParams();
+  if (options.answer) params.set('answer', options.answer);
+  params.set('accepted', options.accepted ? 'true' : 'false');
+  return apiFetch<AgentTurnResponse>(
+    `/api/workspaces/${workspaceId}/agent/v1/timeline/align?${params.toString()}`,
+    { method: 'POST', body: {} },
+  ).then(response => response.reasoning);
 }
 
 /** 细化已确认战略。**只有已确认战略存在时**服务端才接受。 */

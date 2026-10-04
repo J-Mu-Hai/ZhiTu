@@ -69,6 +69,10 @@ from backend.agent.prompts.v1_strategy_synthesis import (
     V1_STRATEGY_SYNTHESIS_PROMPT_VERSION,
     V1_STRATEGY_SYNTHESIS_SYSTEM_PROMPT,
 )
+from backend.agent.prompts.v1_timeline_alignment import (
+    V1_TIMELINE_ALIGNMENT_PROMPT_VERSION,
+    V1_TIMELINE_ALIGNMENT_SYSTEM_PROMPT,
+)
 from backend.agent.prompts.v1_timeline_repair import (
     V1_TIMELINE_REPAIR_PROMPT_VERSION,
     V1_TIMELINE_REPAIR_SYSTEM_PROMPT,
@@ -262,6 +266,8 @@ OUTPUT_CONFIG: dict[str, Any] = {
         "properties": {
             "globalAssessment": {"type": "string"},
             "strategicThesis": {"type": "string"},
+            "userUnderstanding": {"type": "string"},
+            "questionExample": {"type": "string"},
             "keyDimensions": {"type": "array"},
             "nodeUpdates": {"type": "array"},
             "responseMode": {"type": "string"},
@@ -287,6 +293,22 @@ OUTPUT_CONFIG: dict[str, Any] = {
         "properties": {
             "summary": {"type": "string"},
             "phases": {"type": "array"},
+        },
+    },
+    # 规划智能体重构 V1:时间架构共创回合。必须声明 —— 与上面几组同一条理由。
+    "v1TimelineAlignment": {
+        "type": "object",
+        "required": False,
+        "description": "时间假设 + 至多一个战略级问题(仅 v1_timeline_alignment 回合使用)",
+        "properties": {
+            "summary": {"type": "string"},
+            "totalSpan": {"type": "string"},
+            "cadence": {"type": "string"},
+            "phaseCount": {"type": "integer"},
+            "biggestRisk": {"type": "string"},
+            "assumptions": {"type": "array"},
+            "question": {"type": "string"},
+            "options": {"type": "array"},
         },
     },
     # 规划智能体重构 V1:战略合成回合的**窄契约**。必须声明 —— 与上面几组同一条
@@ -608,6 +630,8 @@ def _system_prompt(turn: TurnContext) -> str:
         return V1_STRATEGY_SYNTHESIS_SYSTEM_PROMPT
     if turn.purpose == "v1_timeline_repair":
         return V1_TIMELINE_REPAIR_SYSTEM_PROMPT
+    if turn.purpose == "v1_timeline_alignment":
+        return V1_TIMELINE_ALIGNMENT_SYSTEM_PROMPT
     return SYSTEM_PROMPT
 
 
@@ -620,6 +644,8 @@ def _prompt_version(turn: TurnContext) -> str:
         return V1_STRATEGY_SYNTHESIS_PROMPT_VERSION
     if turn.purpose == "v1_timeline_repair":
         return V1_TIMELINE_REPAIR_PROMPT_VERSION
+    if turn.purpose == "v1_timeline_alignment":
+        return V1_TIMELINE_ALIGNMENT_PROMPT_VERSION
     return PROMPT_VERSION
 
 

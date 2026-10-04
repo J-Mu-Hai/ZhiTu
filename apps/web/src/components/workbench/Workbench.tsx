@@ -7,6 +7,7 @@ import { TimelineView } from './TimelineView';
 import { TaskView } from './TaskView';
 import { ScheduleView } from './ScheduleView';
 import { FloatingConversation } from '@/components/conversation/FloatingConversation';
+import { FocusThinking } from '@/components/conversation/FocusThinking';
 import { DiscoveryPrompt } from './DiscoveryPrompt';
 import { AgentTraceInspector } from '@/components/conversation/AgentTraceInspector';
 import { useDemo } from '@/features/growth/provider';
@@ -113,5 +114,5 @@ export function Workbench() {
         `key` 用的是 `canvasKey` 而不是 `spaceId`,理由见 Provider 里 `canvasKey` 那段。 */}
     {discovery
       ? <DiscoveryPrompt questions={reasoning?.discoveryQuestions ?? []} busy={sending} onSend={text => { void send(text); }} />
-      : <div className="view-content">{view === 'path' ? <PathView key={canvasKey}/> : view === 'timeline' ? <TimelineView/> : view === 'schedule' ? <ScheduleView/> : <TaskView/>}</div>}</section><FloatingConversation open={chatOpen} onClose={() => setChatChoice(false)}/><AgentTraceInspector/></div></div>;
+      : <div className="view-content">{view === 'path' ? <PathView key={canvasKey}/> : view === 'timeline' ? <TimelineView/> : view === 'schedule' ? <ScheduleView/> : <TaskView/>}</div>}</section><FloatingConversation open={chatOpen} onClose={() => setChatChoice(false)}/><FocusThinking/><AgentTraceInspector/></div></div>;
 }

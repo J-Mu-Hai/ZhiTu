@@ -160,7 +160,14 @@ async def test_v1_orientation_then_auto_strategy_to_coarse_timeline(
         headers=account.headers,
     )
     assert confirm.status_code == 200, confirm.text
-    view = confirm.json()["reasoning"]
+    assert confirm.json()["reasoning"]["v1Stage"] == "timeline_alignment", "先共创时间节奏"
+    align = await app_client.post(
+        f"/api/workspaces/{account.workspace_id}/agent/v1/timeline/align",
+        params={"accepted": "true"},
+        headers=account.headers,
+    )
+    assert align.status_code == 200, align.text
+    view = align.json()["reasoning"]
     assert view["v1Stage"] == "coarse_timeline_review"
     assert view["v01Timeline"] and all(item["status"] == "draft" for item in view["v01Timeline"])
     assert view["v01TimelineProposalId"], "战略确认后应自动生成待确认时间线"

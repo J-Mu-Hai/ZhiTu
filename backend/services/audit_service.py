@@ -52,6 +52,13 @@ AUDIT_EVENT_TYPES = frozenset(
         "node_analysis_updated",
         "strategy_draft_generated",
         "strategy_confirmed",
+        # 深度对话:战略理解先确认,再生成正式战略草案;战略确认后先进时间架构共创。
+        "strategy_understanding_presented",
+        "strategy_understanding_confirmed",
+        "timeline_assumptions_presented",
+        "timeline_alignment_question_asked",
+        "timeline_alignment_answered",
+        "timeline_alignment_accepted",
         "coarse_timeline_draft_generated",
         # R2:字段不全时自动修补一次(仍不合格才 failed_retryable)。
         "timeline_repair_requested",

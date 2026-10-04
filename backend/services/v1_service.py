@@ -90,8 +90,12 @@ V1_FACTOR_ANALYSIS = "factor_analysis"
 V1_STRATEGY_DRAFT = "strategy_draft"
 #: P2.2:目标定义经用户确认后,进入“问题结构”分析层(五个因素维度)。
 V1_PROBLEM_STRUCTURE = "problem_structure"
-#: 用户已确认战略逻辑;P3 可以据此生成粗时间架构。
+#: 深度对话:已给出战略理解,等用户确认或指出哪一句不对(确认后才进入正式战略草案)。
+V1_STRATEGY_ALIGNMENT = "strategy_alignment"
+#: 用户已确认战略逻辑;先进入**时间架构共创**,不直接生成时间线。
 V1_STRATEGY_CONFIRMED = "strategy_confirmed_for_timeline"
+#: 时间架构共创:已给出时间假设(至多一个问题),等用户对齐节奏。
+V1_TIMELINE_ALIGNMENT = "timeline_alignment"
 #: P3:已生成 3–6 个阶段的粗时间架构草案,等用户确认。
 V1_COARSE_TIMELINE_REVIEW = "coarse_timeline_review"
 #: P4:粗时间架构已确认,进入周/日计划与执行。
@@ -153,6 +157,10 @@ NEXT_CONFIRM_GOAL = "confirm_goal"
 NEXT_CONFIRM_STRATEGY = "confirm_strategy"
 NEXT_CONFIRM_TIMELINE = "confirm_timeline"
 NEXT_CONFIRM_REPLAN = "confirm_replan"
+#: 深度对话:先确认“战略理解”,再进入正式战略草案。
+NEXT_CONFIRM_UNDERSTANDING = "confirm_strategy_understanding"
+#: 时间架构共创:对齐节奏后才生成粗时间线。
+NEXT_CONFIRM_TIMELINE_ALIGNMENT = "confirm_timeline_alignment"
 #: 阶段一全局关键问题的总预算。超过后服务端不再接受新问题。
 MAX_V1_QUESTIONS = 3
 
@@ -492,8 +500,12 @@ def compute_next_action(session: GoalReasoningSession) -> str | None:
         return None
     if session.v1_stage == V1_COARSE_TIMELINE_REVIEW:
         return NEXT_CONFIRM_TIMELINE
+    if session.v1_stage == V1_TIMELINE_ALIGNMENT:
+        return NEXT_CONFIRM_TIMELINE_ALIGNMENT
     if session.v1_stage == V1_REPLANNING:
         return NEXT_CONFIRM_REPLAN
+    if session.v1_stage == V1_STRATEGY_ALIGNMENT:
+        return NEXT_CONFIRM_UNDERSTANDING
     if session.v1_strategy and not (session.v1_strategy or {}).get("confirmed"):
         return NEXT_CONFIRM_STRATEGY
     if session.v1_stage == V1_GOAL_REFRAME:
@@ -882,6 +894,20 @@ def _strategy_ready(analyses: dict[str, dict]) -> bool:
     )
 
 
+def _strategy_understanding_payload(strategy: dict, analyses: dict) -> dict:
+    """从战略四条结构 + 目标/矛盾分析,组织“我据此形成的战略理解”。"""
+    return {
+        "goal": str((analyses.get("goal_definition") or {}).get("judgment") or ""),
+        "keyConflict": str((analyses.get("key_conflict") or {}).get("judgment") or ""),
+        "mainLine": strategy.get("mainLine", ""),
+        "parallelLine": strategy.get("parallelLine", ""),
+        "deferOrAvoid": strategy.get("deferOrAvoid", ""),
+        "riskControl": strategy.get("riskControl", ""),
+        "tradeoff": strategy.get("tradeoff", ""),
+        "confirmed": False,
+    }
+
+
 async def _build_strategy_synthesis_context(
     db: AsyncSession, ctx: WorkspaceContext, session: GoalReasoningSession
 ) -> TurnContext:
@@ -1003,6 +1029,11 @@ async def synthesize_strategy(
     session.v1_strategy = merged
     if session.v1_stage in (V1_GOAL_REFRAME, V1_FACTOR_ANALYSIS, V1_PROBLEM_STRUCTURE):
         session.v1_stage = V1_STRATEGY_DRAFT
+    # 深度对话:先把“战略理解”作为可审阅对象存下来(目标 / 关键矛盾 / 主线 / 暂缓 /
+    # 风险 / 取舍),前端先展示它,用户确认理解后才进入正式战略确认。
+    questions = await _v1_questions(db, ctx)
+    by_key = {q.v1_key: (q.v1_analysis or {}) for q in questions if q.v1_key}
+    session.v1_strategy_understanding = _strategy_understanding_payload(merged, by_key)
     session.v1_question = None
     session.v1_next_action = None
     session.phase = ReasoningSessionPhase.ROADMAP_DRAFT
@@ -1020,6 +1051,16 @@ async def synthesize_strategy(
         source=result.source.value if result.source else None,
         summary="窄契约战略合成回合产出四条结构。",
         payload={"strategy": session.v1_strategy},
+    )
+    await _audit(
+        db,
+        ctx,
+        session,
+        "strategy_understanding_presented",
+        trigger=trigger,
+        stage_after=session.v1_stage,
+        summary="先给出“我据此形成的战略理解”,等用户确认或指出哪一句不对。",
+        payload={"understanding": session.v1_strategy_understanding},
     )
     await _audit(
         db,
@@ -1229,6 +1270,8 @@ async def _run_assessment(
     from_problem_structure = session.v1_stage == V1_PROBLEM_STRUCTURE
     #: 本回合是否形成了战略草案(决定 problem_structure 是否还需要兜底 CTA)。
     synthesized = False
+    #: 本回合是否首次呈现了“战略理解”。
+    understanding_presented = False
     if strategy_values and _strategy_ready(persisted):
         await _ensure_strategy_questions(db, ctx, strategy_values)
         merged = dict(session.v1_strategy or {})
@@ -1239,6 +1282,9 @@ async def _run_assessment(
         session.v1_strategy = merged
         if session.v1_stage in (V1_GOAL_REFRAME, V1_FACTOR_ANALYSIS, V1_PROBLEM_STRUCTURE):
             session.v1_stage = V1_STRATEGY_DRAFT
+        if not session.v1_strategy_understanding:
+            session.v1_strategy_understanding = _strategy_understanding_payload(merged, persisted)
+            understanding_presented = True
         synthesized = True
 
     thesis = assessment.strategic_thesis or assessment.global_assessment
@@ -1313,10 +1359,17 @@ async def _run_assessment(
     if assessment.focus_key:
         session.v1_focus_key = assessment.focus_key
         session.v1_focus_reason = assessment.focus_reason or None
+    # 深度对话:问题之前必须先给“对用户已说内容的具体理解 / 会改变什么 / 一个例子”。
+    if assessment.user_understanding:
+        session.v1_user_understanding = assessment.user_understanding
+    if assessment.question_example:
+        session.v1_question_example = assessment.question_example
     if question_accepted:
         session.v1_question = proposed_question
         session.v1_last_focus_key = assessment.focus_key
         session.v1_question_budget_used = budget_used + 1
+        if assessment.decision_context:
+            session.v1_decision_context = assessment.decision_context
     else:
         session.v1_question = None
     if session.v1_stage == V1_INITIAL_THINKING:
@@ -1444,6 +1497,18 @@ async def _run_assessment(
             focus_key=session.v1_focus_key,
             summary=f"更新了 {len(node_updates)} 个分析节点。",
             payload={"nodeUpdates": node_updates},
+        )
+    if understanding_presented and session.v1_strategy_understanding:
+        await _audit(
+            db,
+            ctx,
+            session,
+            "strategy_understanding_presented",
+            trigger=trigger,
+            stage_before=stage_before,
+            stage_after=session.v1_stage,
+            summary="先给出“我据此形成的战略理解”,等用户确认或指出哪一句不对。",
+            payload={"understanding": session.v1_strategy_understanding},
         )
     if strategy_values and session.v1_strategy:
         await _audit(
@@ -1632,6 +1697,22 @@ async def _append_assistant(
 # =================================================================================
 # P3:粗时间架构(战略确认后才生成)
 # =================================================================================
+def _phase_category(index: int, total: int, title: str) -> str:
+    """给阶段一个**语义类别标记**(不靠颜色区分):定位 / 基础闭环 / 深入建设 / 产出 / 缓冲。"""
+    text = title or ""
+    if any(marker in text for marker in ("缓冲", "收尾", "复盘")):
+        return "缓冲"
+    if total <= 1:
+        return "产出"
+    if index <= 1:
+        return "定位"
+    if index >= total:
+        return "产出"
+    middle = total - 2
+    rank = index - 1
+    return "基础闭环" if rank <= (middle + 1) // 2 else "深入建设"
+
+
 def _timeline_payload(phases, *, include_dates: bool = True) -> list[dict]:
     """阶段草案 -> 前端时间轴的**唯一权威投影**(与 V0.1 同形)。
 
@@ -1640,12 +1721,16 @@ def _timeline_payload(phases, *, include_dates: bool = True) -> list[dict]:
     但**不**把估算日期写进后端真值。
     """
     payload: list[dict] = []
+    total = len(phases)
     for index, phase in enumerate(phases, start=1):
+        category = _phase_category(index, total, phase.title)
         payload.append(
             {
                 "id": f"phase-{index}",
+                "index": index,
                 "title": phase.title,
                 "kind": "phase",
+                "category": category,
                 "startWeek": phase.start_week,
                 "endWeek": phase.end_week,
                 "startDate": phase.start_date if include_dates else None,
@@ -1653,6 +1738,8 @@ def _timeline_payload(phases, *, include_dates: bool = True) -> list[dict]:
                 "goal": phase.goal,
                 "deliverable": phase.deliverable,
                 "completionCriteria": phase.completion_criteria,
+                "dependsOn": phase.depends_on,
+                "whyHere": f"第 {index}/{total} 阶段({category}):承接上一阶段成果并解锁下一阶段。",
                 "status": "draft",
                 "planNodeId": None,
             }
@@ -1709,6 +1796,19 @@ async def _build_timeline_turn_context(
             lines.append(f"- {label}:{strategy[field]}")
     if strategy.get("tradeoff"):
         lines.append(f"- 取舍:{strategy['tradeoff']}")
+    alignment = session.v1_timeline_alignment or {}
+    if alignment:
+        lines.append("")
+        lines.append("时间架构共创结论(按此节奏排):")
+        if alignment.get("cadence"):
+            lines.append(f"- 默认节奏:{alignment['cadence']}")
+        if alignment.get("totalSpan"):
+            lines.append(f"- 总周期:{alignment['totalSpan']}")
+        if alignment.get("phaseCount"):
+            lines.append(f"- 预计阶段数:{alignment['phaseCount']}")
+        if alignment.get("answer"):
+            lines.append(f"- 用户对齐回答:{alignment['answer']}")
+        lines.append("- 用户未给明确日期时只用相对周,不要伪造日历日期。")
     return TurnContext(
         current_date=today.isoformat(),
         weekday=today.strftime("%A"),
@@ -1802,6 +1902,179 @@ async def _repair_coarse_timeline(
     return repaired, result
 
 
+async def _build_timeline_alignment_context(
+    db: AsyncSession, ctx: WorkspaceContext, session: GoalReasoningSession
+) -> TurnContext:
+    """时间架构共创回合的上下文:已确认战略 + 用户说过的条件。"""
+    page = await conversation_service.list_messages(db, ctx, limit=HISTORY_TURNS)
+    history = tuple((m.role.value, m.content) for m in page.messages)[-HISTORY_TURNS:]
+    today = today_in(ctx.timezone)
+    strategy = session.v1_strategy or {}
+    lines = ["已确认的战略逻辑:"]
+    for field, label in (
+        ("mainLine", "主线"),
+        ("parallelLine", "并行线"),
+        ("deferOrAvoid", "暂缓/放弃"),
+        ("riskControl", "风险控制"),
+    ):
+        if strategy.get(field):
+            lines.append(f"- {label}:{strategy[field]}")
+    if strategy.get("tradeoff"):
+        lines.append(f"- 取舍:{strategy['tradeoff']}")
+    understanding = session.v1_strategy_understanding or {}
+    if understanding.get("goal"):
+        lines.append(f"- 已确认目标:{understanding['goal']}")
+    questions = await _v1_questions(db, ctx)
+    facts: list[str] = []
+    for question in questions:
+        analysis = question.v1_analysis or {}
+        facts.extend(str(item) for item in (analysis.get("knownFacts") or []))
+    if facts:
+        lines.append("用户已说过的条件(只能作为 user_fact):" + ";".join(facts[:8]))
+    return TurnContext(
+        current_date=today.isoformat(),
+        weekday=today.strftime("%A"),
+        timezone=ctx.timezone,
+        workspace_title=ctx.workspace.title or "",
+        workspace_intent=ctx.workspace.intent or "",
+        known=KnownConditions(),
+        history=history,
+        user_message="先给出你的时间架构假设,至多问一个真正影响时间架构的战略级问题。",
+        purpose="v1_timeline_alignment",
+        reasoning_section="\n".join(lines),
+    )
+
+
+async def generate_timeline_alignment(
+    db: AsyncSession,
+    ctx: WorkspaceContext,
+    session: GoalReasoningSession,
+    reasoner,
+    *,
+    trigger: str = "strategy_confirmed",
+) -> ReasoningResult:
+    """**时间架构共创回合**:先讲清时间假设,至多问一个战略级问题。
+
+    它**不生成**时间线、不建 proposal;只有用户对齐节奏后(`confirm_timeline_alignment`)
+    才调用粗时间架构生成。
+    """
+    root = await reasoning_service.root_plan_node(db, ctx)
+    if root is None:
+        from backend.services.errors import InvalidInput
+
+        raise InvalidInput("这个空间还没有根目标。")
+    source = reasoner_source_kind(reasoner)
+    if not source_allowed(source):
+        return await _refuse_unavailable_source(db, ctx, session, source=source, trigger=trigger)
+
+    turn = await _build_timeline_alignment_context(db, ctx, session)
+    stage_before = session.v1_stage
+    _start_turn(session, stage=stage_before, trigger=trigger, source=source)
+    await db.commit()
+
+    result = await _reason_with_timeout(reasoner, turn)
+    draft = result.v1_timeline_alignment
+    if result.degraded:
+        session.v1_status = V1_STATUS_FAILED
+        _finish_turn(session, status=V1_STATUS_FAILED)
+        session.v1_error = result.reply or "模型暂时不可用。"
+        await _audit_turn_failure(db, ctx, session, result, trigger=trigger, stage_before=stage_before)
+        await db.commit()
+        return result
+    if draft is None:
+        session.v1_status = V1_STATUS_FAILED
+        _finish_turn(session, status=V1_STATUS_FAILED)
+        session.v1_error = "模型这次没有给出时间架构假设,可以重试。"
+        await _audit(
+            db, ctx, session, "model_output_invalid", trigger=trigger,
+            stage_before=stage_before, stage_after=session.v1_stage,
+            source=result.source.value if result.source else None, summary=session.v1_error,
+            validation_status="failed", error_code="MODEL_OUTPUT_INVALID",
+        )
+        await db.commit()
+        return ReasoningResult(
+            reply=session.v1_error, source=result.source, degraded=True,
+            degraded_reason=DegradedReason.MODEL_OUTPUT_INVALID, retryable=True,
+            request_id=result.request_id, prompt_version=result.prompt_version,
+        )
+
+    payload = {
+        "summary": draft.summary,
+        "totalSpan": draft.total_span,
+        "cadence": draft.cadence,
+        "phaseCount": draft.phase_count,
+        "biggestRisk": draft.biggest_risk,
+        "assumptions": [
+            {"text": item.text, "source": item.source} for item in draft.assumptions
+        ],
+        "question": draft.question,
+        "options": list(draft.options),
+        "answer": "",
+        "confirmed": False,
+    }
+    session.v1_timeline_alignment = payload
+    session.v1_stage = V1_TIMELINE_ALIGNMENT
+    session.v1_question = None
+    session.v1_next_action = None
+    session.phase = ReasoningSessionPhase.ROADMAP_DRAFT
+    session.status = ReasoningSessionStatus.READY
+    _finish_turn(session, status=V1_STATUS_AWAITING_CONFIRMATION)
+    session.v1_error = None
+    await _audit(
+        db, ctx, session, "timeline_assumptions_presented",
+        trigger=trigger, stage_before=stage_before, stage_after=session.v1_stage,
+        source=result.source.value if result.source else None,
+        summary="给出时间架构假设(总周期 / 节奏 / 阶段数 / 风险)。",
+        payload=payload,
+    )
+    if draft.question:
+        await _audit(
+            db, ctx, session, "timeline_alignment_question_asked",
+            trigger=trigger, stage_after=session.v1_stage,
+            summary=draft.question,
+            payload={"question": draft.question, "options": list(draft.options)},
+        )
+    await db.commit()
+    return result
+
+
+async def confirm_timeline_alignment(
+    db: AsyncSession,
+    ctx: WorkspaceContext,
+    session: GoalReasoningSession,
+    reasoner,
+    *,
+    answer: str = "",
+    accepted: bool = False,
+) -> AgentTurnResponse:
+    """用户对齐时间节奏:记录回答/默认接受,然后才生成粗时间架构。"""
+    from backend.services.errors import InvalidInput
+
+    if session.v1_stage != V1_TIMELINE_ALIGNMENT:
+        await _guard_reject(db, ctx, session, reason="当前不在时间架构共创阶段。")
+        raise InvalidInput("当前不在时间架构共创阶段。")
+    payload = dict(session.v1_timeline_alignment or {})
+    payload["answer"] = (answer or "").strip()
+    payload["confirmed"] = True
+    session.v1_timeline_alignment = payload
+    if payload["answer"]:
+        await _audit(
+            db, ctx, session, "timeline_alignment_answered",
+            trigger="timeline_alignment", stage_after=session.v1_stage,
+            summary=payload["answer"], payload={"answer": payload["answer"]},
+        )
+    else:
+        await _audit(
+            db, ctx, session, "timeline_alignment_accepted",
+            trigger="timeline_alignment", stage_after=session.v1_stage,
+            summary="用户认可默认时间节奏。",
+            payload={"accepted": True, **({"acceptedDefault": True} if accepted else {})},
+        )
+    await db.commit()
+    await generate_coarse_timeline(db, ctx, session, reasoner)
+    return await reasoning_service._response(db, ctx, session, changed=True)
+
+
 async def _root_handle(db: AsyncSession, ctx: WorkspaceContext, root: PlanNode):
     conversation = await conversation_service.find_primary_conversation(db, ctx)
     turn = await turn_context.build_turn_context(
@@ -1831,7 +2104,7 @@ async def generate_coarse_timeline(
     """把已确认战略投影为 3–6 个阶段,落成**待确认提案**。不写正式计划。"""
     from backend.services.errors import InvalidInput
 
-    if session.v1_stage != V1_STRATEGY_CONFIRMED:
+    if session.v1_stage not in (V1_STRATEGY_CONFIRMED, V1_TIMELINE_ALIGNMENT):
         await _guard_reject(db, ctx, session, reason="当前不在“可生成粗时间架构”的状态。")
         raise InvalidInput("当前不在“可生成粗时间架构”的状态。")
     root = await reasoning_service.root_plan_node(db, ctx)
@@ -2760,7 +3033,9 @@ V1_EVENTS = frozenset(
         "canvas_question_answered",
         "candidate_direction_selected",
         "goal_definition_confirmed",
+        "strategy_understanding_confirmed",
         "strategy_confirmed",
+        "timeline_alignment_confirmed",
         "timeline_proposal_confirmed",
         "execution_feedback",
         "weekly_review_due",
@@ -2801,8 +3076,10 @@ def _blocked_reason(session: GoalReasoningSession) -> str:
         return "等待用户选择候选方向"
     if session.v1_stage == V1_COARSE_TIMELINE_REVIEW:
         return "等待用户确认时间线"
+    if session.v1_stage == V1_TIMELINE_ALIGNMENT:
+        return "等待用户对齐时间节奏"
     if session.v1_strategy and not (session.v1_strategy or {}).get("confirmed"):
-        return "等待用户确认战略"
+        return "等待用户确认战略理解与战略"
     if session.v1_stage == V1_STRATEGY_CONFIRMED:
         return "等待生成粗时间架构"
     if session.v1_stage == V1_WEEKLY_EXECUTION:
@@ -2865,7 +3142,9 @@ async def advance_v1_workflow(
     explicit_events = {
         "candidate_direction_selected",
         "goal_definition_confirmed",
+        "strategy_understanding_confirmed",
         "strategy_confirmed",
+        "timeline_alignment_confirmed",
         "execution_feedback",
         "weekly_review_due",
         "weekly_refinement_requested",
@@ -2904,8 +3183,19 @@ async def advance_v1_workflow(
         )
     if entry_event == "goal_definition_confirmed":
         return await confirm_goal_definition(db, ctx, session, reasoner)
+    if entry_event == "strategy_understanding_confirmed":
+        return await confirm_strategy_understanding(db, ctx, session)
     if entry_event == "strategy_confirmed":
         return await confirm_strategy(db, ctx, session, reasoner)
+    if entry_event == "timeline_alignment_confirmed":
+        return await confirm_timeline_alignment(
+            db,
+            ctx,
+            session,
+            reasoner,
+            answer=str(body.get("answer") or ""),
+            accepted=bool(body.get("accepted")),
+        )
     if entry_event == "execution_feedback":
         return await record_feedback(
             db,
@@ -3005,7 +3295,16 @@ async def advance_v1_workflow(
         await db.commit()
         return await continue_strategy(db, ctx, session, reasoner)
     elif stage == V1_STRATEGY_CONFIRMED and not session.v01_timeline:
-        await generate_coarse_timeline(db, ctx, session, reasoner, trace=None)
+        # 深度对话:不直接生成时间线,先做时间架构共创。
+        await generate_timeline_alignment(db, ctx, session, reasoner, trigger=entry_event)
+        advanced = True
+    elif (
+        stage == V1_TIMELINE_ALIGNMENT
+        and not session.v01_timeline
+        and not (session.v1_timeline_alignment or {}).get("summary")
+    ):
+        # 已进入共创但假设还没呈现(例如进程重启):补一次呈现,仍不直接生成时间线。
+        await generate_timeline_alignment(db, ctx, session, reasoner, trigger=entry_event)
         advanced = True
     elif stage == V1_REPLANNING and not await v01_service._has_open_proposal(db, ctx):
         # R4:进入重规划阶段后**自动**准备未来重规划提案(确定性,不需要再点一次)。
@@ -3077,15 +3376,42 @@ async def advance(
     )
 
 
+async def confirm_strategy_understanding(
+    db: AsyncSession,
+    ctx: WorkspaceContext,
+    session: GoalReasoningSession,
+) -> AgentTurnResponse:
+    """用户确认“我据此形成的战略理解”。确认后才进入正式战略草案确认。"""
+    from backend.services.errors import InvalidInput
+
+    understanding = dict(session.v1_strategy_understanding or {})
+    if not understanding or not session.v1_strategy:
+        await _guard_reject(db, ctx, session, reason="现在还没有可确认的战略理解。")
+        raise InvalidInput("现在还没有可确认的战略理解。")
+    understanding["confirmed"] = True
+    session.v1_strategy_understanding = understanding
+    await _audit(
+        db,
+        ctx,
+        session,
+        "strategy_understanding_confirmed",
+        stage_after=session.v1_stage,
+        summary="用户确认了战略理解,可以进入正式战略确认。",
+        payload={"understanding": understanding},
+    )
+    await db.commit()
+    return await reasoning_service._response(db, ctx, session, changed=True)
+
+
 async def confirm_strategy(
     db: AsyncSession,
     ctx: WorkspaceContext,
     session: GoalReasoningSession,
     reasoner=None,
 ) -> AgentTurnResponse:
-    """用户确认战略逻辑:进入 P3 准备状态;有 reasoner 时立即生成粗时间架构草案。
+    """用户确认战略逻辑:进入**时间架构共创**;有 reasoner 时立即给出时间假设。
 
-    **不生成任何正式计划** —— 粗时间架构先落成待确认提案,用户确认后才写入阶段。
+    **不生成时间线、不写正式计划** —— 必须先经过 `timeline_alignment` 对齐节奏。
     """
     from backend.services.errors import InvalidInput
 
@@ -3093,22 +3419,38 @@ async def confirm_strategy(
     if not strategy:
         await _guard_reject(db, ctx, session, reason="现在还没有可确认的战略路径。")
         raise InvalidInput("现在还没有可确认的战略路径。")
+    # 深度对话:确认战略前先把“战略理解”标为已确认(若前端未单独调过确认)。
+    understanding = dict(session.v1_strategy_understanding or {})
+    if understanding and not understanding.get("confirmed"):
+        understanding["confirmed"] = True
+        session.v1_strategy_understanding = understanding
+        await _audit(
+            db,
+            ctx,
+            session,
+            "strategy_understanding_confirmed",
+            stage_after=session.v1_stage,
+            summary="用户确认了战略理解(随战略确认一并记录)。",
+            payload={"understanding": understanding},
+        )
     strategy["confirmed"] = True
     session.v1_strategy = strategy
+    stage_before = session.v1_stage
     session.v1_stage = V1_STRATEGY_CONFIRMED
     await _audit(
         db,
         ctx,
         session,
         "strategy_confirmed",
-        stage_before=V1_STRATEGY_DRAFT,
+        stage_before=stage_before,
         stage_after=V1_STRATEGY_CONFIRMED,
-        summary="用户确认了战略逻辑。",
+        summary="用户确认了战略逻辑,进入时间架构共创。",
         payload={"strategy": strategy},
     )
     await db.commit()
     if reasoner is not None:
-        await generate_coarse_timeline(db, ctx, session, reasoner)
+        # 深度对话:不直接生成时间线,先做时间架构共创。
+        await generate_timeline_alignment(db, ctx, session, reasoner)
     return await reasoning_service._response(db, ctx, session, changed=True)
 
 
@@ -3119,6 +3461,8 @@ __all__ = [
     "NEXT_CONFIRM_REPLAN",
     "NEXT_CONFIRM_STRATEGY",
     "NEXT_CONFIRM_TIMELINE",
+    "NEXT_CONFIRM_TIMELINE_ALIGNMENT",
+    "NEXT_CONFIRM_UNDERSTANDING",
     "NEXT_CONTINUE_STRATEGY",
     "NEXT_SELECT_DIRECTION",
     "V1_COARSE_TIMELINE_REVIEW",
@@ -3129,8 +3473,10 @@ __all__ = [
     "V1_STATUS_FAILED",
     "V1_STATUS_IDLE",
     "V1_STATUS_RUNNING",
+    "V1_STRATEGY_ALIGNMENT",
     "V1_STRATEGY_CONFIRMED",
     "V1_STRATEGY_DRAFT",
+    "V1_TIMELINE_ALIGNMENT",
     "V1_WEEKLY_EXECUTION",
     "actual_pending_question_count",
     "advance",
@@ -3140,12 +3486,15 @@ __all__ = [
     "compute_next_action",
     "confirm_goal_definition",
     "confirm_strategy",
+    "confirm_strategy_understanding",
+    "confirm_timeline_alignment",
     "continue_strategy",
     "dimension_projection",
     "dimension_title",
     "generate_coarse_timeline",
     "generate_daily_plan",
     "generate_replan",
+    "generate_timeline_alignment",
     "generate_weekly_plan",
     "has_explained_state",
     "is_v1",

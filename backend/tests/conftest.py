@@ -312,12 +312,19 @@ class FakeReasoner:
     v1_timeline: object | None = None
     #: 规划智能体重构 V1:战略合成回合的四条结构(`V1StrategyDraft`),None = 模型没给。
     v1_strategy: object | None = None
+    #: 时间架构共创回合的假设(`V1TimelineAlignmentDraft`)。None = 用默认假设。
+    v1_timeline_alignment: object | None = None
     #: 粗时间架构(含 repair)按调用顺序取用的队列;非空时优先于 `v1_timeline`。
     timeline_queue: list = field(default_factory=list)
     calls: list = field(default_factory=list)
 
     async def reason(self, turn):
-        from backend.agent.runtime.base import IntakeDecision, ReasoningResult
+        from backend.agent.runtime.base import (
+            IntakeDecision,
+            ReasoningResult,
+            V1AlignmentAssumption,
+            V1TimelineAlignmentDraft,
+        )
         from backend.agent.runtime.response import (
             parse_questions,
             parse_stop_reason,
@@ -354,6 +361,26 @@ class FakeReasoner:
                 else self.v1_timeline
             ),
             v1_strategy=self.v1_strategy,
+            v1_timeline_alignment=(
+                self.v1_timeline_alignment
+                if self.v1_timeline_alignment is not None
+                else (
+                    V1TimelineAlignmentDraft(
+                        summary="按每周 1 个可验收小闭环推进。",
+                        total_span="约 4 周",
+                        cadence="每周 1 个可验收小闭环",
+                        phase_count=3,
+                        biggest_risk="投入不稳定",
+                        assumptions=(
+                            V1AlignmentAssumption(text="用户想尽快出成果", source="user_fact"),
+                        ),
+                        question="",
+                        options=(),
+                    )
+                    if getattr(turn, "purpose", "") == "v1_timeline_alignment"
+                    else None
+                )
+            ),
             request_id="fake-request",
             prompt_version="fake-v1",
             model_name="fake-model",

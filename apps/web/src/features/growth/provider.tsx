@@ -1000,6 +1000,38 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     }
   }, [space.id]);
 
+  /** 深度对话:确认“战略理解”。 */
+  const alignV1Strategy = useCallback(async () => {
+    try {
+      const view = await backend.alignV1Strategy(space.id);
+      setReasoning(view);
+      return view;
+    } catch (cause) {
+      setSendError(cause instanceof ApiError ? cause.message : '确认战略理解失败,请重试。');
+      return null;
+    }
+  }, [space.id]);
+
+  /** 深度对话:对齐时间节奏(认可默认 / 说明调整)。 */
+  const alignV1Timeline = useCallback(
+    async (options: { answer?: string; accepted?: boolean } = {}) => {
+      try {
+        const view = await backend.alignV1Timeline(space.id, options);
+        setReasoning(view);
+        return view;
+      } catch (cause) {
+        setSendError(cause instanceof ApiError ? cause.message : '对齐时间节奏失败,请重试。');
+        return null;
+      }
+    },
+    [space.id],
+  );
+
+  /** 居中“专注思考”模式开关(保留右侧 Dock;关闭后草稿/消息不丢)。 */
+  const [focusThinking, setFocusThinking] = useState(false);
+  const openFocusThinking = useCallback(() => setFocusThinking(true), []);
+  const closeFocusThinking = useCallback(() => setFocusThinking(false), []);
+
   /** 「细化第一阶段」:把已确认战略交给既有的对话工作流拆出阶段/里程碑提案。 */
   const [refining, setRefining] = useState(false);
   /**
@@ -2401,6 +2433,8 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     reasoning, reasoningLoading, ensureStrategicIntake, ensureReasoningMap, refreshReasoning, agentTurn, editReasoningNode,
     confirmV1Strategy, confirmV1Goal, continueV1Strategy, reopenV1Direction,
     runV1PlanStep, selectV1Direction,
+    alignV1Strategy, alignV1Timeline,
+    focusThinking, openFocusThinking, closeFocusThinking,
     refineStrategy, refining, requestChat, chatRequestNonce,
     replan, replanState,
     // 上一轮是不是基于已经变过的输入(见 `inputChanged` 的注释),以及"重新分析"

@@ -304,7 +304,8 @@ async def test_v1_strategy_draft_and_confirmation(
         headers=account.headers,
     )
     assert confirm.status_code == 200, confirm.text
-    assert confirm.json()["reasoning"]["v1Stage"] == "strategy_confirmed_for_timeline"
+    # 深度对话:战略确认后先进时间架构共创,**不直接生成时间线**。
+    assert confirm.json()["reasoning"]["v1Stage"] == "timeline_alignment"
     assert confirm.json()["reasoning"]["v1Strategy"]["confirmed"] is True
     assert confirm.json()["reasoning"]["v01Timeline"] == []
     assert await _plan_node_count(db, account) == before, "确认战略不应新增任何计划节点"

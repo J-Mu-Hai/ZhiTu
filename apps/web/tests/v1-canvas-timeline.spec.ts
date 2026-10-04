@@ -152,6 +152,111 @@ test.beforeAll(async ({ request }) => {
   await assertBackendRunning(request);
 });
 
+test('专注思考:居中放大,关闭后回到右侧,内容不丢', async ({ page }) => {
+  const { token } = await registerAccount(page, 'v1-focus-thinking');
+  const workspaceId = await createWorkspace(page, token, '专注思考', '我想学 Python 用于自动化');
+  const rootId = (await getPlan(page, token, workspaceId)).nodes.find(node => node.parentId === null)!.id;
+
+  await installMock(
+    page,
+    baseView(workspaceId, rootId, {
+      v1Stage: 'strategy_draft',
+      v1VisibleAnalysisKeys: ['true_intent', 'key_conflict', 'goal_definition'],
+      v1StrategyUnderstanding: {
+        goal: '用 Python 自动化一件重复小事',
+        keyConflict: '不确定值不值得投入',
+        mainLine: '先用最小脚本跑通',
+        deferOrAvoid: '暂不系统学语法',
+        riskControl: '每两周复盘',
+        confirmed: false,
+      },
+      v1Dimensions: [
+        dimension('true_intent', '真实意图', '想要自动化省时间。', true),
+        dimension('key_conflict', '核心矛盾', '怕学了用不上。', true),
+        dimension('goal_definition', '目标定义', '做出一个自动化小工具。', true, true),
+      ],
+    }),
+    [],
+  );
+
+  await page.goto(`/workbench?workspace=${workspaceId}&view=path`);
+  await expect(page.getByTestId('v1-strategy-understanding')).toBeVisible({ timeout: 20000 });
+  await expect(page.getByTestId('focus-thinking')).toHaveCount(0);
+
+  await page.getByTestId('focus-thinking-open').first().click();
+  const modal = page.getByTestId('focus-thinking');
+  await expect(modal).toBeVisible();
+  await expect(modal.getByTestId('v1-strategy-understanding')).toBeVisible();
+  await page.getByTestId('focus-thinking-close').click();
+  await expect(page.getByTestId('focus-thinking')).toHaveCount(0);
+  // 关闭后回到右侧 Dock,战略理解仍在。
+  await expect(page.getByTestId('v1-strategy-understanding').first()).toBeVisible();
+});
+
+test('时间架构共创:先对齐节奏,认可后才生成时间线', async ({ page }) => {
+  const { token } = await registerAccount(page, 'v1-timeline-align');
+  const workspaceId = await createWorkspace(page, token, '时间共创', '我想学 Python 用于自动化');
+  const rootId = (await getPlan(page, token, workspaceId)).nodes.find(node => node.parentId === null)!.id;
+
+  const alignmentView = baseView(workspaceId, rootId, {
+    v1Stage: 'timeline_alignment',
+    v1WorkflowNext: 'confirm_timeline_alignment',
+    v1TimelineAlignment: {
+      summary: '按每周一个可验收小闭环推进。',
+      totalSpan: '约 6 周',
+      cadence: '每周 1 个可验收小闭环',
+      phaseCount: 3,
+      biggestRisk: '投入不稳定',
+      assumptions: [
+        { text: '用户想尽快出成果', source: 'user_fact' },
+        { text: '我暂定每周 6 小时', source: 'ai_assumption' },
+      ],
+      question: '更希望更快见成果,还是更稳打基础?',
+      options: ['先快后稳', '先稳后快'],
+      answer: '',
+      confirmed: false,
+    },
+    v1VisibleAnalysisKeys: ['true_intent', 'key_conflict', 'goal_definition'],
+    v1Dimensions: [dimension('goal_definition', '目标定义', '做出一个自动化小工具。', true, true)],
+  });
+  await installMock(page, alignmentView, []);
+
+  // 对齐接口返回“已生成粗时间线”的视图。
+  const generatedView = baseView(workspaceId, rootId, {
+    v1Stage: 'coarse_timeline_review',
+    v1Status: 'awaiting_user_confirmation',
+    v1WorkflowNext: 'confirm_timeline',
+    v01TimelineProposalId: 'p-aligned',
+    v01Timeline: [
+      { id: 'phase-1', index: 1, title: '定位', kind: 'phase', category: '定位', startWeek: 1, endWeek: 1, startDate: null, endDate: null, goal: '定题', deliverable: '一句问题', completionCriteria: '能说清', status: 'draft', planNodeId: null },
+      { id: 'phase-2', index: 2, title: '闭环', kind: 'phase', category: '基础闭环', startWeek: 2, endWeek: 3, startDate: null, endDate: null, goal: '跑通', deliverable: '一张图', completionCriteria: '能复现', status: 'draft', planNodeId: null },
+      { id: 'phase-3', index: 3, title: '产出', kind: 'phase', category: '产出', startWeek: 4, endWeek: 4, startDate: null, endDate: null, goal: '展示', deliverable: '一页报告', completionCriteria: '能讲清', status: 'draft', planNodeId: null },
+    ],
+  });
+  await page.route('**/agent/v1/timeline/align*', async route => {
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ reasoning: generatedView }),
+    });
+  });
+
+  await page.goto(`/workbench?workspace=${workspaceId}&view=path`);
+  const card = page.getByTestId('v1-timeline-alignment');
+  await expect(card).toBeVisible({ timeout: 20000 });
+  await expect(card.getByTestId('v1-timeline-assumptions')).toContainText('你说过');
+  await expect(card.getByTestId('v1-timeline-assumptions')).toContainText('AI 暂定');
+  await expect(card).toContainText('更希望更快见成果');
+
+  await card.getByRole('button', { name: '认可默认节奏' }).click();
+  // 对齐后共创卡片消失(provider 已换成粗时间线视图)。
+  await expect(page.getByTestId('v1-timeline-alignment')).toHaveCount(0, { timeout: 20000 });
+  // 客户端切到时间线(不重载,保留新 reasoning):应出现 3 个阶段。
+  await page.getByRole('tab', { name: '时间线' }).click();
+  await expect(page.locator('[data-timeline-card]')).toHaveCount(3, { timeout: 20000 });
+  await expect(page.getByText(/阶段 1/).first()).toBeVisible();
+});
+
 test('根画布只显示服务端投影里的三个已分析核心节点', async ({ page }) => {
   const { token } = await registerAccount(page, 'v1-canvas-projection');
   const workspaceId = await createWorkspace(page, token, 'V1 画布投影', '30 天做出一个数据分析小工具');

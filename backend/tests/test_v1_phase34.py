@@ -156,7 +156,8 @@ async def test_v1_coarse_timeline_requires_confirmation(
         headers=account.headers,
     )
     assert confirm.status_code == 200, confirm.text
-    body = confirm.json()["reasoning"]
+    assert confirm.json()["reasoning"]["v1Stage"] == "timeline_alignment"
+    body = await _align_timeline(app_client, account)
     assert body["v1Stage"] == "coarse_timeline_review"
     assert len(body["v01Timeline"]) == 3
     assert all(item["status"] == "draft" for item in body["v01Timeline"])
@@ -204,10 +205,21 @@ async def test_v1_coarse_timeline_invalid_and_guard(
         headers=account.headers,
     )
     assert confirm.status_code == 200, confirm.text
+    await _align_timeline(app_client, account)
     view = await _reasoning(app_client, account)
-    assert view["v1Stage"] == "strategy_confirmed_for_timeline"
     assert view["v1Status"] == "failed"
     assert view["v01Timeline"] == []
+
+
+async def _align_timeline(client, account, *, accepted=True, answer=""):
+    """深度对话:战略确认后先对齐时间节奏,才生成粗时间线。"""
+    response = await client.post(
+        f"/api/workspaces/{account.workspace_id}/agent/v1/timeline/align",
+        params={"accepted": str(accepted).lower(), "answer": answer},
+        headers=account.headers,
+    )
+    assert response.status_code == 200, response.text
+    return response.json()["reasoning"]
 
 
 async def _open_proposal(client, account):
@@ -246,7 +258,9 @@ async def _confirm_timeline(client, account, reasoner):
         headers=account.headers,
     )
     assert confirm.status_code == 200, confirm.text
-    proposal_id = confirm.json()["reasoning"]["v01TimelineProposalId"]
+    assert confirm.json()["reasoning"]["v1Stage"] == "timeline_alignment"
+    aligned = await _align_timeline(client, account)
+    proposal_id = aligned["v01TimelineProposalId"]
     await _confirm(client, account, proposal_id, "p4-timeline")
     assert (await _reasoning(client, account))["v1Stage"] == "weekly_execution"
 

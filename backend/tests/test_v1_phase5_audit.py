@@ -186,7 +186,14 @@ async def test_v1_audit_export_replay(
         headers=account.headers,
     )
     assert confirmed.status_code == 200, confirmed.text
-    timeline_proposal = confirmed.json()["reasoning"]["v01TimelineProposalId"]
+    assert confirmed.json()["reasoning"]["v1Stage"] == "timeline_alignment"
+    aligned = await app_client.post(
+        f"/api/workspaces/{account.workspace_id}/agent/v1/timeline/align",
+        params={"accepted": "true"},
+        headers=account.headers,
+    )
+    assert aligned.status_code == 200, aligned.text
+    timeline_proposal = aligned.json()["reasoning"]["v01TimelineProposalId"]
     await _confirm(app_client, account, timeline_proposal, "audit-timeline")
     assert (await _reasoning(app_client, account))["v1Stage"] == "weekly_execution"
 

@@ -120,6 +120,48 @@ async def v01_feedback(
 
 
 @router.post(
+    "/{workspace_id}/agent/v1/strategy/align",
+    response_model=AgentTurnResponse,
+    summary="规划智能体 V1:确认“战略理解”(进入正式战略确认前的中间确认)",
+)
+async def v1_align_strategy_understanding(
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+) -> AgentTurnResponse:
+    from backend.services import v1_service
+
+    session = await _v1_session(ctx, db)
+    return await v1_service.advance_v1_workflow(
+        db, ctx, session, event="strategy_understanding_confirmed"
+    )
+
+
+@router.post(
+    "/{workspace_id}/agent/v1/timeline/align",
+    response_model=AgentTurnResponse,
+    summary="规划智能体 V1:对齐时间节奏(认可默认 / 提出调整)",
+)
+async def v1_align_timeline(
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+    reasoner: Reasoner = Depends(get_reasoner),
+    answer: str = Query(default="", max_length=2000),
+    accepted: bool = Query(default=False),
+) -> AgentTurnResponse:
+    from backend.services import v1_service
+
+    session = await _v1_session(ctx, db)
+    return await v1_service.advance_v1_workflow(
+        db,
+        ctx,
+        session,
+        reasoner,
+        event="timeline_alignment_confirmed",
+        payload={"answer": answer, "accepted": accepted},
+    )
+
+
+@router.post(
     "/{workspace_id}/agent/v1/strategy/confirm",
     response_model=AgentTurnResponse,
     summary="规划智能体 V1:确认战略逻辑(进入时间架构的准备状态)",

@@ -217,13 +217,17 @@ function IntakeChips({
  */
 export function ConversationPanel() {
   const { growth, selectedId, select, messages, remoteProposals, proposalErrors, inputChanged, deciding, confirmRemote, rejectRemote, replan, replanState, send, retry, sending, sendError, retryable, historyLoading, messagesTruncated, spaceId, questions, focusQuestion, openTrace, traceAvailability, reasoning, agentStatus, confirmV1Strategy, confirmV1Goal, continueV1Strategy, reopenV1Direction,
-  runV1PlanStep, selectV1Direction, requestChat } = useDemo();
+  runV1PlanStep, selectV1Direction, requestChat, alignV1Strategy, alignV1Timeline, openFocusThinking } = useDemo();
   const [input, setInput] = useState('');
   const [showContexts, setShowContexts] = useState(false);
   /** P2.2:候选方向选择中 —— 立刻禁用按钮,避免重复点击。 */
   const [v1Selecting, setV1Selecting] = useState(false);
   /** P2.3:确认目标定义后,面板显示“正在形成战略路径”。 */
   const [v1GoalPending, setV1GoalPending] = useState(false);
+  /** 深度对话:战略理解确认 / 时间节奏对齐的进行态。 */
+  const [v1UnderstandingPending, setV1UnderstandingPending] = useState(false);
+  const [v1TimelineAlignPending, setV1TimelineAlignPending] = useState(false);
+  const [v1TimelineAdjust, setV1TimelineAdjust] = useState('');
   /** 输入框的 DOM 元素。高度按内容算(见下面那个 effect)。 */
   const composer = useRef<HTMLTextAreaElement>(null);
   const bottom = useRef<HTMLDivElement>(null);
@@ -305,6 +309,12 @@ export function ConversationPanel() {
     ? ([['主线', v1Strategy.mainLine], ['并行线', v1Strategy.parallelLine], ['暂缓/放弃', v1Strategy.deferOrAvoid], ['风险控制', v1Strategy.riskControl]] as [string, string | undefined][])
         .filter((entry): entry is [string, string] => Boolean(entry[1]))
     : [];
+  /** 深度对话:战略理解 + 时间架构共创。 */
+  const v1Understanding = reasoning?.v1StrategyUnderstanding ?? null;
+  const v1TimelineAlignment = reasoning?.v1TimelineAlignment ?? null;
+  const v1InTimelineAlignment = reasoning?.v1Stage === 'timeline_alignment';
+  const v1UserUnderstanding = reasoning?.v1UserUnderstanding ?? null;
+  const v1QuestionExample = reasoning?.v1QuestionExample ?? null;
   // 阶段 12:待回答问题只来自会话状态(`reasoning.pendingIntake`),**不是问题实体**。
   const primaryIntake = reasoning?.pendingIntake ?? null;
   const intakeAsked = reasoning?.intakeQuestionsAsked ?? 0;
@@ -624,6 +634,100 @@ export function ConversationPanel() {
          * 而且这一层在浮动面板里是 `pointer-events:none` 的兄弟区域,会吞掉点击。
          */}
         <div className="v1-stage1">
+          {isV1 && (
+            <div className="v1-focus-row">
+              <button type="button" className="text-button" data-testid="focus-thinking-open" onClick={openFocusThinking}>
+                专注思考
+              </button>
+            </div>
+          )}
+          {/* 深度对话:先给“战略理解”,再进入正式战略确认。 */}
+          {v1Understanding && !v1Understanding.confirmed && (
+            <div className="v1-understanding" data-testid="v1-strategy-understanding">
+              <span className="eyebrow">我据此形成的战略理解</span>
+              <ul>
+                {v1Understanding.goal && <li><strong>目标</strong>{v1Understanding.goal}</li>}
+                {v1Understanding.keyConflict && <li><strong>关键矛盾</strong>{v1Understanding.keyConflict}</li>}
+                {v1Understanding.mainLine && <li><strong>主线</strong>{v1Understanding.mainLine}</li>}
+                {v1Understanding.deferOrAvoid && <li><strong>暂缓项</strong>{v1Understanding.deferOrAvoid}</li>}
+                {v1Understanding.riskControl && <li><strong>风险</strong>{v1Understanding.riskControl}</li>}
+              </ul>
+              <p className="v1-understanding-ask">请确认这份理解,或指出哪一句不对。</p>
+              <div className="v1-goal-confirm">
+                <button
+                  type="button"
+                  disabled={v1UnderstandingPending}
+                  onClick={() => { setV1UnderstandingPending(true); void alignV1Strategy().finally(() => setV1UnderstandingPending(false)); }}
+                >
+                  确认理解
+                </button>
+                <button type="button" className="text-button" onClick={openFocusThinking}>继续纠正</button>
+              </div>
+            </div>
+          )}
+          {/* 深度对话:时间架构共创 —— 先对齐节奏,才生成粗时间线。 */}
+          {v1InTimelineAlignment && v1TimelineAlignment && (
+            <div className="v1-alignment" data-testid="v1-timeline-alignment">
+              <span className="eyebrow">时间架构共创</span>
+              {v1TimelineAlignment.summary && <p className="v1-alignment-summary">{v1TimelineAlignment.summary}</p>}
+              <ul>
+                {v1TimelineAlignment.totalSpan && <li><strong>总周期</strong>{v1TimelineAlignment.totalSpan}</li>}
+                {v1TimelineAlignment.cadence && <li><strong>默认节奏</strong>{v1TimelineAlignment.cadence}</li>}
+                {v1TimelineAlignment.phaseCount ? <li><strong>预计阶段数</strong>{v1TimelineAlignment.phaseCount}</li> : null}
+                {v1TimelineAlignment.biggestRisk && <li><strong>最大风险</strong>{v1TimelineAlignment.biggestRisk}</li>}
+              </ul>
+              {Boolean(v1TimelineAlignment.assumptions?.length) && (
+                <ul className="v1-assumptions" data-testid="v1-timeline-assumptions">
+                  {v1TimelineAlignment.assumptions!.map((item, index) => (
+                    <li key={index}>
+                      <em>{item.source === 'user_fact' ? '你说过' : 'AI 暂定'}</em>{item.text}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {v1TimelineAlignment.question && (
+                <p className="v1-alignment-question">{v1TimelineAlignment.question}</p>
+              )}
+              {Boolean(v1TimelineAlignment.options?.length) && (
+                <div className="v1-alignment-options">
+                  {v1TimelineAlignment.options!.map(option => (
+                    <button
+                      key={option}
+                      type="button"
+                      disabled={v1TimelineAlignPending}
+                      onClick={() => { setV1TimelineAlignPending(true); void alignV1Timeline({ answer: option }).finally(() => setV1TimelineAlignPending(false)); }}
+                    >
+                      {option}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <div className="v1-goal-confirm">
+                <button
+                  type="button"
+                  disabled={v1TimelineAlignPending}
+                  onClick={() => { setV1TimelineAlignPending(true); void alignV1Timeline({ accepted: true }).finally(() => setV1TimelineAlignPending(false)); }}
+                >
+                  认可默认节奏
+                </button>
+              </div>
+              <div className="v1-adjust-row">
+                <input
+                  aria-label="调整时间节奏"
+                  value={v1TimelineAdjust}
+                  onChange={event => setV1TimelineAdjust(event.target.value)}
+                  placeholder="调整总周期 / 截止日期 / 不可用时间"
+                />
+                <button
+                  type="button"
+                  disabled={!v1TimelineAdjust.trim() || v1TimelineAlignPending}
+                  onClick={() => { const answer = v1TimelineAdjust.trim(); setV1TimelineAlignPending(true); void alignV1Timeline({ answer }).finally(() => { setV1TimelineAlignPending(false); setV1TimelineAdjust(''); }); }}
+                >
+                  提交调整
+                </button>
+              </div>
+            </div>
+          )}
           {v1StatusFailed && (
             <div className="v1-status" role="status">
               <span>{reasoning?.v1Error ?? '这次战略判断没有完成。'}</span>
@@ -766,6 +870,14 @@ export function ConversationPanel() {
               <button type="button" disabled={sending} onClick={() => void runV1PlanStep('review')}>
                 本周回顾
               </button>
+            </div>
+          )}
+          {/* 深度对话:问题之前先给理解 / 会改变什么 / 例子。 */}
+          {(v1UserUnderstanding || v1QuestionExample || reasoning?.v1DecisionContext) && (
+            <div className="v1-understanding-hint" data-testid="v1-user-understanding">
+              {v1UserUnderstanding && <p><strong>我的理解：</strong>{v1UserUnderstanding}</p>}
+              {reasoning?.v1DecisionContext && <p><strong>这个问题会改变：</strong>{reasoning.v1DecisionContext}</p>}
+              {v1QuestionExample && <p><strong>参考例子：</strong>{v1QuestionExample}</p>}
             </div>
           )}
           {v1ConversationQuestion && (

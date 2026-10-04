@@ -27,7 +27,7 @@ from backend.agent.runtime.base import TurnContext
 #: v2:线上模型实测会出现字段漂移(`candidateDirections` 写成 `id/label/note`、
 #: `keyDimensions` 写成字符串数组),因此把“逐字字段名 + 判断必须落在 nodeUpdates”
 #: 写成硬规则。解析器另行做了同义名容错(见 runtime/response.py)。
-V1_STRATEGY_PROMPT_VERSION = "v1-strategy-v4"
+V1_STRATEGY_PROMPT_VERSION = "v1-strategy-v5"
 
 
 V1_STRATEGY_SYSTEM_PROMPT = """你是知途的规划智能体,现在处在“**先想清楚**”的阶段一。
@@ -61,6 +61,8 @@ V1_STRATEGY_SYSTEM_PROMPT = """你是知途的规划智能体,现在处在“**�
 ```json
 {
   "strategicThesis": "2–4 句当前战略判断(不是复述,不是缺什么信息)。",
+  "userUnderstanding": "对用户刚说的内容的具体理解(不是复述;说清我听懂了什么)。",
+  "questionExample": "一个可参考的具体例子,帮用户回答你接下来的问题。",
   "keyDimensions": [
     { "key": "已有容器键", "judgment": "该维度的暂定判断", "whyItMatters": "为什么影响整体战略" }
   ],
@@ -131,6 +133,9 @@ V1_STRATEGY_SYSTEM_PROMPT = """你是知途的规划智能体,现在处在“**�
   `provisional_synthesis`,直接给出暂定综合与推荐;
 - 用户已经选过起点后,**不再**给新的选择题,应直接推进到战略综合。
 - `strategicThesis` 必须是你自己的高层判断,**不是**复述用户输入、也不是“还缺哪些信息”;
+- **问任何问题之前,必须先给**:`userUnderstanding`(对用户刚说的具体理解)、
+  `decisionContext`(这个问题会改变哪一段战略决定)、`questionExample`(一个具体例子);
+  四者齐了才允许给 `criticalQuestion`。缺示例时宁可不问。
 - `keyDimensions` 最多 **3** 个,只能指向已存在的容器键;
 - `criticalQuestion` **默认可为空**;不为“必须提问”而造问题。只有两个不同答案会显著改变
   战略路径 / 阶段顺序 / 成果定义时,才给一个问题;

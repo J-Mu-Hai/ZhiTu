@@ -10,6 +10,14 @@ import { V01TimelineAxis } from './V01TimelineAxis';
 import styles from './TimelineView.module.css';
 
 const colors = { academic: '#749ce1', research: '#61ad9e', experience: '#c7a06e', personal: '#a294ce' };
+// 阶段语义类别 -> 低饱和度色系。**不只靠颜色**:卡片上另有类别文字 + 阶段编号。
+const categoryColors: Record<string, string> = {
+  定位: '#7d9bb5',
+  基础闭环: '#7aa892',
+  深入建设: '#9a8fc0',
+  产出: '#c19a6b',
+  缓冲: '#9aa7b3',
+};
 const shortDate = (day: number) => { const d = new Date(day * 86400000); return `${d.getUTCMonth() + 1}.${d.getUTCDate()}`; };
 
 /**
@@ -241,7 +249,7 @@ export function TimelineView() {
         <span className={styles.draftStatus}>
           {draftIsPending
             ? relativeAxis
-              ? `预测时间轴，以 ${timelineAnchor} 为起点，可调整 · 相对周草案，等待你确认`
+              ? `预测时间轴，以 ${timelineAnchor} 为起点，可调整${reasoning?.v1TimelineAlignment?.cadence ? ` · 估算节奏：${reasoning.v1TimelineAlignment.cadence}` : ''} · 相对周草案，等待你确认`
               : '已生成粗时间架构草案，等待你确认'
             : '时间架构已确认'}
         </span>
@@ -288,10 +296,14 @@ export function TimelineView() {
             : `${shortDate(item.start)} — ${shortDate(item.end)}`
           : rangeLabel(item);
         const cardSub = draftSource
-          ? `${draftSource.deliverable || draftSource.goal || ''}${draftSource.status === 'draft' ? ' · 待确认' : ''}`
+          ? `${draftSource.category ? `${draftSource.category} · ` : ''}${draftSource.deliverable || draftSource.goal || ''}${draftSource.status === 'draft' ? ' · 待确认' : ''}`
           : cardNote(item, start);
         const cardY = upper ? axisY - 108 - Math.floor(lane / 2) * 86 : axisY + 40 + Math.floor(lane / 2) * 86;
-        const color = item.node.category ? colors[item.node.category] : '#829dc5';
+        const color = draftSource?.category
+          ? categoryColors[draftSource.category] ?? '#829dc5'
+          : item.node.category
+            ? colors[item.node.category]
+            : '#829dc5';
         const rangeY = axisY + 7 + rangeLane * 4;
         const Icon = item.kind === 'milestone' ? Flag : item.kind === 'goal' ? Target : Circle;
         return <div key={id} data-timeline-item={id} data-draft={draftSource ? draftSource.status : undefined} data-start-date={dateString(item.start)} data-end-date={dateString(item.end)} className={`${styles.object} ${effectiveSelectedId === id ? styles.selected : ''} ${hovered && hovered !== id ? styles.dim : ''}`} style={{ '--color': color } as CSSProperties} onMouseEnter={() => setHovered(id)} onMouseLeave={() => setHovered(null)}>
@@ -300,7 +312,7 @@ export function TimelineView() {
           </svg>
           <button className={`${styles.point} ${item.start < start ? styles.continuation : item.kind === 'milestone' ? styles.milestone : item.kind === 'goal' ? styles.goal : ''}`} style={{ left: anchorX, top: axisY }} aria-label={`${item.node.title}${item.start < start ? '从此前延续' : '时间点'}`} onClick={() => choose(id)} onPointerDown={e => beginItem(e, item)}/>
           <button data-timeline-card data-draft={draftSource ? draftSource.status : undefined} className={`${styles.card} ${item.kind !== 'duration' ? styles.eventCard : ''} ${draftSource && draftSource.status === 'draft' ? styles.draftCard : ''}`} style={{ left, top: cardY, width: cardWidth }} aria-label={`${item.node.title}，${cardRange}`} aria-pressed={effectiveSelectedId === id} title={`${item.node.title} · ${cardRange}`} onClick={() => choose(id)} onPointerDown={e => beginItem(e, item)}>
-            <time><Icon size={11}/>{cardRange}</time><strong>{item.node.title}</strong><small>{cardSub}</small>
+            <time><Icon size={11}/>{draftSource?.index ? `阶段 ${draftSource.index} · ` : ''}{cardRange}</time><strong>{item.node.title}</strong><small>{cardSub}</small>
           </button>
           {(hovered === id || effectiveSelectedId === id) && item.start >= start && !draft && <div className={styles.hoverDate} style={{ left: anchorX, top: axisY - 21 }}><span>{shortDate(item.start)}</span></div>}
         </div>;
@@ -348,6 +360,7 @@ export function TimelineView() {
             <button type="button" aria-label="关闭阶段详情" onClick={() => setDraftSelectedId(null)}><X size={13} /></button>
           </header>
           <span>
+            {draftSelected.category ? `${draftSelected.category} · ` : ''}
             {draftSelected.startDate && draftSelected.endDate
               ? `${draftSelected.startDate} → ${draftSelected.endDate}`
               : `${shortDate(anchorDay + ((draftSelected.startWeek ?? 1) - 1) * 7)} — ${shortDate(anchorDay + (draftSelected.endWeek ?? draftSelected.startWeek ?? 1) * 7)} · 第 ${draftSelected.startWeek ?? '?'}–${draftSelected.endWeek ?? draftSelected.startWeek ?? '?'} 周（预测）`}
@@ -355,12 +368,11 @@ export function TimelineView() {
           {draftSelected.goal && <p>目标：{draftSelected.goal}</p>}
           {draftSelected.deliverable && <p>成果：{draftSelected.deliverable}</p>}
           {draftSelected.completionCriteria && <p>完成标准：{draftSelected.completionCriteria}</p>}
-          {(draftSelected as { dependsOn?: string }).dependsOn && (
-            <p>依赖：{(draftSelected as { dependsOn?: string }).dependsOn}</p>
-          )}
+          {draftSelected.dependsOn && <p>依赖：{draftSelected.dependsOn}</p>}
           {reasoning?.v1Strategy?.riskControl && (
             <p>风险控制：{reasoning.v1Strategy.riskControl}</p>
           )}
+          {draftSelected.whyHere && <p>为何排在这里：{draftSelected.whyHere}</p>}
         </div>
       )}
     </div>
