@@ -406,8 +406,8 @@ export function ConversationPanel() {
       : null;
   const noticeTitle = canvasInteraction
     ? reviewPhase
-      ? reviewPhase.title
-      : canvasQuestion?.v1Title ?? canvasInteraction.title
+      ? `${reviewPhase.title} → ${canvasInteraction.title}`
+      : `想清楚 → ${canvasQuestion?.v1Title ?? canvasInteraction.title}`
     : flowActionVisible
       ? '想清楚'
       : '画布';
@@ -465,13 +465,13 @@ export function ConversationPanel() {
       )}
 
       {/*
-       * **在对话中回答**:自由叙述型问题只在对话区出现。
+       * **需要在对话中回答**:自由叙述型问题只在对话区出现。
        *
-       * 它**不**在画布上建同一份选项/输入框;用户直接用下面的输入框自由作答。
+       * 橙色提示携带“问什么 + 为什么重要”;它**不**在画布上建同一份选项/输入框。
        */}
       {conversationInteraction && (
         <div className="chat-conversation-question" data-testid="chat-conversation-question">
-          <span className="chat-conversation-tag">在对话中回答</span>
+          <span className="chat-conversation-tag">需要在对话中回答</span>
           {conversationInteraction.context && (
             <p className="chat-conversation-context">{conversationInteraction.context}</p>
           )}
@@ -489,7 +489,7 @@ export function ConversationPanel() {
       {noticeVisible && (
         <div className="chat-action-notice" data-testid="chat-action-notice">
           <p>
-            我把这个决定放在「{noticeTitle}」节点，确认后我会据此{noticeImpact}。
+            我需要你在「{noticeTitle}」节点确认这一点；确认后我会{noticeImpact}。
           </p>
           <button
             type="button"

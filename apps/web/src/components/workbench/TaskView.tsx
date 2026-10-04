@@ -73,15 +73,25 @@ export function TaskView() {
    */
   const groups = useMemo(() => {
     const known = new Map(categories.map(category => [category.id as string, category]));
-    const buckets = new Map<string, { id: string; title: string; number: string; tasks: GrowthNode[] }>();
+    const buckets = new Map<string, { id: string; className: string; title: string; number: string; tasks: GrowthNode[] }>();
     for (const node of filtered) {
-      const key = node.category ?? node.stageId ?? 'ungrouped';
-      const bucket = buckets.get(key);
+      /*
+       * 分组的**真实键**是 category 或 stageId,不是显示用的 id。
+       *
+       * 旧代码把**所有**非示例分类的桶都写成 `id: 'general'` —— 于是“阶段 A 的任务”
+       * 和“阶段 B 的任务”是两个不同的桶,却拿到同一个 React key `general`,直接触发
+       * “Encountered two children with the same key”。这里用稳定且有语义的复合 id:
+       * 已知分类用分类 id;某个阶段用 `general:<stageId>`;没有阶段用 `general:ungrouped`。
+       */
+      const realKey = node.category ?? node.stageId ?? null;
+      const bucketKey = realKey ?? 'ungrouped';
+      const bucket = buckets.get(bucketKey);
       if (bucket) { bucket.tasks.push(node); continue; }
-      const category = known.get(key);
-      buckets.set(key, {
-        id: category ? category.id : 'general',
-        title: category ? category.title : growth.nodes[key]?.title ?? '其他任务',
+      const category = realKey ? known.get(realKey) : undefined;
+      buckets.set(bucketKey, {
+        id: category ? category.id : realKey ? `general:${realKey}` : 'general:ungrouped',
+        className: category ? category.id : 'general',
+        title: category ? category.title : realKey ? growth.nodes[realKey]?.title ?? '其他任务' : '其他任务',
         number: category ? category.number : '',
         tasks: [node],
       });
@@ -100,6 +110,6 @@ export function TaskView() {
       ? '这几天没有安排。计划里已经有排好的场次，切到别的时间范围看看。'
       : '这个范围里还没有安排到具体某天的任务。计划里的节点都带截止时间，但“哪天做”还没有排——打开「排期」预览一次，就能把它们落到具体日期上。'
     : '当前范围没有任务。可以回到路径，在这个空间添加一个新节点。'}</p>}<div className="filter-row">{['全部','本阶段','本周','今天'].map(f => <button key={f} className={filter === f ? 'active' : ''} onClick={() => setFilter(f)}>{f}</button>)}</div><div className="stage-summary"><div><span className="eyebrow">{currentStage === growth.goalId ? '当前空间' : '当前阶段'}{stageNode?.deadline ? ` · 截止 ${stageNode.deadline}` : ''}</span><h3>{stageNode?.title ?? growth.title}</h3></div>{stageTasks.length > 0 && <><strong>{progress}<small>%</small></strong><div className="progress-track"><span style={{ width: `${progress}%` }}/></div></>}</div>
-    {groups.map(group => <section className={`task-group ${group.id}`} key={group.id}><header><span>{group.number}</span><h3>{group.title}</h3><small>{group.tasks.filter(n => n.status === 'completed').length} / {group.tasks.length}</small></header>{group.tasks.map(n => <div className={`task-row ${selectedId === n.id ? 'selected-row' : ''} ${n.status === 'completed' ? 'completed-row' : ''}`} key={n.id}><button className="task-check" aria-label={`${n.status === 'completed' ? '取消完成' : '完成'}${n.title}`} aria-pressed={n.status === 'completed'} onClick={() => apply({ type: 'UPDATE_STATUS', nodeId: n.id, status: n.status === 'completed' ? 'pending' : 'completed' })}>{n.status === 'completed' && <Check size={13}/>}</button><button className="task-detail" onClick={() => select(n.id)}><span>{n.title}{n.estimatedHours && <small><Clock3 size={11}/>预计 {n.estimatedHours}h</small>}</span><time>{n.scheduledDate?.slice(5).replace('-', ' / ')}</time><ArrowUpRight size={14}/></button></div>)}</section>)}
+    {groups.map(group => <section className={`task-group ${group.className}`} key={group.id}><header><span>{group.number}</span><h3>{group.title}</h3><small>{group.tasks.filter(n => n.status === 'completed').length} / {group.tasks.length}</small></header>{group.tasks.map(n => <div className={`task-row ${selectedId === n.id ? 'selected-row' : ''} ${n.status === 'completed' ? 'completed-row' : ''}`} key={n.id}><button className="task-check" aria-label={`${n.status === 'completed' ? '取消完成' : '完成'}${n.title}`} aria-pressed={n.status === 'completed'} onClick={() => apply({ type: 'UPDATE_STATUS', nodeId: n.id, status: n.status === 'completed' ? 'pending' : 'completed' })}>{n.status === 'completed' && <Check size={13}/>}</button><button className="task-detail" onClick={() => select(n.id)}><span>{n.title}{n.estimatedHours && <small><Clock3 size={11}/>预计 {n.estimatedHours}h</small>}</span><time>{n.scheduledDate?.slice(5).replace('-', ' / ')}</time><ArrowUpRight size={14}/></button></div>)}</section>)}
   </div>;
 }

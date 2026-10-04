@@ -1559,6 +1559,8 @@ async def _run_assessment(
                 "focus": assessment.focus_key,
                 "reason": assessment.focus_reason,
                 "responseMode": response_mode,
+                # 渠道:自由叙述型问题在对话里回答。**只记渠道,不记隐藏提示词/思维链。**
+                "answerChannel": "conversation",
             },
         )
     if offer_allowed:
@@ -1578,6 +1580,8 @@ async def _run_assessment(
                     {"key": d.key, "impact": d.impact} for d in offered
                 ],
                 "candidateDirections": session.v1_candidate_directions,
+                # 渠道:候选方向是画布节点上的结构化决策。
+                "answerChannel": "canvas_node",
             },
         )
     if response_mode == "provisional_synthesis":

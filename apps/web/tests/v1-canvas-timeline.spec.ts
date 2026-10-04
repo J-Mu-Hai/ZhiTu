@@ -220,7 +220,7 @@ test('conversation 型 interaction 只在右侧对话区,画布不建同一份�
   await page.goto(`/workbench?workspace=${workspaceId}&view=path`);
   const chatQuestion = page.getByTestId('chat-conversation-question');
   await expect(chatQuestion).toBeVisible({ timeout: 20000 });
-  await expect(chatQuestion).toContainText('在对话中回答');
+  await expect(chatQuestion).toContainText('需要在对话中回答');
   await expect(chatQuestion).toContainText('你真正担心的是什么?');
   // 对话区不给“定位到节点”,也没有结构化控件。
   await expect(page.getByTestId('chat-action-notice')).toHaveCount(0);
