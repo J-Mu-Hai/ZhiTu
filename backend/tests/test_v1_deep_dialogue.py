@@ -23,11 +23,14 @@ from backend.agent.runtime.base import (
     V1AlignmentAssumption,
     V1AssessmentDraft,
     V1NodeUpdate,
+    V1StrategyDraft,
     V1TimelineAlignmentDraft,
 )
 from backend.agent.runtime.response import parse_v1_timeline_alignment
 from backend.core.config import settings
 from backend.db.models import AgentAuditEvent
+from backend.db.models.goal_reasoning import GoalReasoningSession
+from backend.db.models.question import AgentQuestion
 from backend.tests.conftest import FakeReasoner
 from backend.tests.test_v1_phase34 import _timeline_draft
 
@@ -67,35 +70,55 @@ def _assessment(**overrides):
     return V1AssessmentDraft(**base)
 
 
-async def _drive_to_strategy_formed(client, account, reasoner):
+async def _drive_to_strategy_formed(client, account, reasoner, db: AsyncSession | None = None):
+    """按产品状态机完成四维讨论，再明确确认“已经想清楚”。"""
     reasoner.v1_assessment = _assessment()
     await _turn(client, account, "dd-open")
-    reasoner.v1_assessment = _assessment(
-        node_updates=(
-            V1NodeUpdate(node_key="goal_definition", judgment="30 天做出可展示项目。"),
-            V1NodeUpdate(node_key="key_conflict", judgment="目标太大、反馈太慢。"),
-            V1NodeUpdate(node_key="hard_constraints", judgment="每天只有 1 小时。"),
+    for index, (key, answer) in enumerate((
+        ("true_intent", "我想做出一个能展示的自动化项目。"),
+        ("current_state", "我会一点 Python 基础语法，也能查资料。"),
+        ("hard_constraints", "我每天最多投入一小时，预计用六周。"),
+        ("goal_definition", "能独立完成、演示并写进简历才算完成。"),
+    ), start=1):
+        reasoner.v1_assessment = _assessment(
+            node_updates=(V1NodeUpdate(node_key=key, judgment=answer),),
         )
+        await _send(client, account, answer, f"dd-{index}")
+
+    # 战略只能在四项讨论结束、用户明确确认“想清楚”之后形成。
+    reasoner.v1_strategy = V1StrategyDraft(
+        main_line="先用最小项目跑通自动化闭环。",
+        parallel_line="并行补齐完成项目所需的基础。",
+        defer_or_avoid="暂不扩展到复杂算法和大而全课程。",
+        risk_control="每周检查一次是否产出可演示成果。",
+        tradeoff="优先可展示成果，而非覆盖所有知识点。",
     )
-    await _send(client, account, "我想做出一个能展示的项目", "dd-1")
-    reasoner.v1_assessment = _assessment(
-        strategy_ready=True,
-        node_updates=(
-            V1NodeUpdate(node_key="major_risks", judgment="容易只学不做。"),
-            V1NodeUpdate(node_key="main_line", judgment="先用最小项目闭环。"),
-            V1NodeUpdate(node_key="parallel_line", judgment="并行看一点统计。"),
-        ),
-        strategy_tradeoff="先要能展示的成果。",
+    confirmed = await client.post(
+        f"/api/workspaces/{account.workspace_id}/agent/v1/goal/confirm",
+        headers=account.headers,
     )
-    await _send(client, account, "可以", "dd-2")
-    reasoner.v1_assessment = _assessment(
-        strategy_ready=True,
-        node_updates=(
-            V1NodeUpdate(node_key="defer_or_avoid", judgment="暂不系统学算法。"),
-            V1NodeUpdate(node_key="risk_control", judgment="每两周复盘。"),
-        ),
-    )
-    await _send(client, account, "继续", "dd-3")
+    assert confirmed.status_code == 200, confirmed.text
+    if db is not None:
+        session = await db.scalar(
+            select(GoalReasoningSession).where(
+                GoalReasoningSession.workspace_id == uuid.UUID(account.workspace_id)
+            )
+        )
+        assert session is not None
+        assert session.v1_question_budget_used == 15
+        rows = list(
+            await db.scalars(
+                select(AgentQuestion).where(
+                    AgentQuestion.workspace_id == uuid.UUID(account.workspace_id),
+                    AgentQuestion.v1_key.in_((
+                        "true_intent", "current_state", "hard_constraints", "goal_definition",
+                    )),
+                )
+            )
+        )
+        assert {row.v1_key for row in rows if (row.v1_analysis or {}).get("discussionAnswer")} == {
+            "true_intent", "current_state", "hard_constraints", "goal_definition",
+        }
 
 
 def test_parse_timeline_alignment_contract() -> None:
@@ -122,13 +145,99 @@ def test_parse_timeline_alignment_contract() -> None:
 
 
 @pytest.mark.asyncio
+async def test_four_core_discussions_are_a_hard_gate_before_strategy_confirmation(
+    app_client: httpx.AsyncClient, make_account, monkeypatch, use_reasoner
+) -> None:
+    """回归：答完第一题不能直接出现“确认战略”或进入时间线。"""
+    monkeypatch.setattr(settings, "planning_v1", True)
+    account = await make_account(workspace_title="四维门槛")
+    reasoner = use_reasoner(FakeReasoner(reply="先给战略分析。", v1_source_kind="test"))
+    reasoner.v1_assessment = _assessment()
+    await _turn(app_client, account, "four-open")
+
+    reasoner.v1_assessment = _assessment(
+        node_updates=(V1NodeUpdate(node_key="true_intent", judgment="做出可展示的自动化工具。"),),
+    )
+    await _send(app_client, account, "我要做一个能展示的自动化工具", "four-1")
+    view = (await app_client.get(
+        f"/api/workspaces/{account.workspace_id}/reasoning", headers=account.headers
+    )).json()
+    assert view["v1Stage"] == "goal_reframe"
+    assert view["v1WorkflowNext"] is None
+    assert view["v1FocusKey"] == "current_state"
+    assert view["v1ActualPendingQuestionCount"] == 1
+    blocked = await app_client.post(
+        f"/api/workspaces/{account.workspace_id}/agent/v1/goal/confirm",
+        headers=account.headers,
+    )
+    assert blocked.status_code == 400
+
+    for index, (key, answer) in enumerate((
+        ("current_state", "我会基础语法。"),
+        ("hard_constraints", "每周稳定投入六小时。"),
+        ("goal_definition", "能完成演示并解决真实问题。"),
+    ), start=2):
+        reasoner.v1_assessment = _assessment(
+            node_updates=(V1NodeUpdate(node_key=key, judgment=answer),),
+        )
+        await _send(app_client, account, answer, f"four-{index}")
+
+    view = (await app_client.get(
+        f"/api/workspaces/{account.workspace_id}/reasoning", headers=account.headers
+    )).json()
+    assert view["v1ActualPendingQuestionCount"] == 0
+    assert view["v1WorkflowNext"] == "confirm_goal"
+    assert view["v1Strategy"] is None
+    assert view["v01Timeline"] == []
+
+
+@pytest.mark.asyncio
+async def test_conversation_acceptance_after_fourth_answer_starts_strategy(
+    app_client: httpx.AsyncClient, make_account, monkeypatch, use_reasoner
+) -> None:
+    """最后一题答完后说“可以”是确认，不得再跑一遍同焦点的模型分析。"""
+    monkeypatch.setattr(settings, "planning_v1", True)
+    account = await make_account(workspace_title="对话确认推进")
+    reasoner = use_reasoner(FakeReasoner(reply="已记录。", v1_source_kind="test"))
+    reasoner.v1_assessment = _assessment()
+    await _turn(app_client, account, "accept-open")
+
+    for index, (key, answer) in enumerate((
+        ("true_intent", "做出一个能展示的自动化工具。"),
+        ("current_state", "我会一点 Python 基础语法。"),
+        ("hard_constraints", "每周稳定投入六小时。"),
+        ("goal_definition", "能独立完成演示并解决真实问题。"),
+    ), start=1):
+        reasoner.v1_assessment = _assessment(
+            node_updates=(V1NodeUpdate(node_key=key, judgment=answer),),
+        )
+        await _send(app_client, account, answer, f"accept-{index}")
+
+    reasoner.v1_strategy = V1StrategyDraft(
+        main_line="先完成一个最小可演示闭环。",
+        parallel_line="并行补齐直接需要的基础。",
+        defer_or_avoid="暂不追求大而全的课程覆盖。",
+        risk_control="每周检查一次是否有可运行产出。",
+        tradeoff="优先完成可演示成果。",
+    )
+    accepted = await _send(app_client, account, "可以", "accept-confirm")
+    assert accepted["assistantMessage"]["content"]
+    view = (await app_client.get(
+        f"/api/workspaces/{account.workspace_id}/reasoning", headers=account.headers
+    )).json()
+    assert view["v1Stage"] == "strategy_draft"
+    assert view["v1Strategy"] and view["v1Strategy"]["mainLine"]
+    assert view["v1WorkflowNext"] == "confirm_strategy"
+
+
+@pytest.mark.asyncio
 async def test_strategy_confirm_enters_alignment_then_generates_timeline(
     app_client: httpx.AsyncClient, make_account, db: AsyncSession, monkeypatch, use_reasoner
 ) -> None:
     monkeypatch.setattr(settings, "planning_v1", True)
     account = await make_account(workspace_title="时间架构共创")
     reasoner = use_reasoner(FakeReasoner(reply="记下战略。", v1_source_kind="test"))
-    await _drive_to_strategy_formed(app_client, account, reasoner)
+    await _drive_to_strategy_formed(app_client, account, reasoner, db)
 
     # 有战略理解,且未确认。
     view = (await app_client.get(
@@ -198,7 +307,7 @@ async def test_accepting_default_cadence_records_accepted(
     monkeypatch.setattr(settings, "planning_v1", True)
     account = await make_account(workspace_title="默认节奏")
     reasoner = use_reasoner(FakeReasoner(reply="记下战略。", v1_source_kind="test"))
-    await _drive_to_strategy_formed(app_client, account, reasoner)
+    await _drive_to_strategy_formed(app_client, account, reasoner, db)
     reasoner.v1_timeline = _timeline_draft()
     reasoner.v1_timeline_alignment = V1TimelineAlignmentDraft(
         summary="按每周一个闭环推进。", cadence="每周 1 个可验收小闭环", question=""

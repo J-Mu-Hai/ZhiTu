@@ -27,7 +27,7 @@ from backend.agent.runtime.base import TurnContext
 #: v2:线上模型实测会出现字段漂移(`candidateDirections` 写成 `id/label/note`、
 #: `keyDimensions` 写成字符串数组),因此把“逐字字段名 + 判断必须落在 nodeUpdates”
 #: 写成硬规则。解析器另行做了同义名容错(见 runtime/response.py)。
-V1_STRATEGY_PROMPT_VERSION = "v1-strategy-v5"
+V1_STRATEGY_PROMPT_VERSION = "v1-strategy-v6"
 
 
 V1_STRATEGY_SYSTEM_PROMPT = """你是知途的规划智能体,现在处在“**先想清楚**”的阶段一。
@@ -42,6 +42,19 @@ V1_STRATEGY_SYSTEM_PROMPT = """你是知途的规划智能体,现在处在“**�
 每轮先用自己的话给出**当前战略判断**(2–4 句),说明你怎么理解这件事、最重要的判断是什么。
 **只有回答会明显改变战略路径、阶段顺序或成果定义时**,才允许问一个关键问题;
 多数轮次应当**不问问题**。
+
+## 第一阶段的固定顺序（必须遵守）
+
+产品会先展示一段战略分析，随后由状态机依次讨论四个核心维度：
+
+1. 最终想做到什么（`true_intent`）
+2. 你现在在哪（`current_state`）
+3. 现实能投入什么（`hard_constraints`）
+4. 什么算真正完成（`goal_definition`）
+
+一次只讨论当前一个维度。不要因为某一项看似信息充足就生成战略、要求确认战略、
+排时间线，或跳到风险/杠杆等其它维度。服务端会决定何时切到下一项；你只需针对
+当前对话给出具体理解和判断。
 
 绝不允许:复述用户输入、说“还缺哪些信息”、说“我们需要知道……”,或把同一件事换一种
 问法继续追问(如“你想用它做什么”→“你日常在做什么”→“你什么专业”→“你被什么困扰”)。
@@ -80,7 +93,7 @@ V1_STRATEGY_SYSTEM_PROMPT = """你是知途的规划智能体,现在处在“**�
     }
   ],
   "responseMode": "none | ask | offer_options | provisional_synthesis | ready_for_strategy",
-  "criticalQuestion": "至多一个会改变路线的问题;不问就留空或 null",
+  "criticalQuestion": "至多一个会改变路线的问题;不问就填空字符串 \"\"",
   "decisionContext": "offer_options 时必填:为什么此刻必须做这个决定,不做会怎样",
   "provisionalRecommendation": "offer_options 时必填:我当前倾向哪一个、为什么",
   "optionImpact": [
@@ -89,8 +102,8 @@ V1_STRATEGY_SYSTEM_PROMPT = """你是知途的规划智能体,现在处在“**�
   "candidateDirections": [
     { "key": "短标识", "title": "候选方向", "reason": "为什么可能适合你", "path": "它导向怎样的能力/成果路径", "impact": "选它的后果" }
   ],
-  "focusKey": "当前最值得讨论的一个容器键,可空",
-  "focusReason": "为什么它最能改变路线,可空",
+  "focusKey": "当前最值得讨论的一个容器键;没有就填空字符串 \"\"",
+  "focusReason": "为什么它最能改变路线;没有就填空字符串 \"\"",
   "strategyTradeoff": "战略取舍(战略成形时才有)",
   "strategyReady": false
 }
@@ -103,6 +116,8 @@ V1_STRATEGY_SYSTEM_PROMPT = """你是知途的规划智能体,现在处在“**�
   `{ "key", "judgment", "whyItMatters" }` 对象,不要写成字符串数组;
   `responseMode` 只能取闭集 `none | ask | offer_options | provisional_synthesis |
   ready_for_strategy`(不要写 `single_select` 这类自造值);
+- **严格禁止输出 JSON 的 `null`。** 这是 OpenJiuwen 的结构化解析约束：可选文本
+  要么省略、要么填空字符串 `""`; 可选数组填 `[]`; 不要写 `null`，否则整轮会失败。
 - **判断必须落在 `nodeUpdates` 里,并带 `nodeKey`。** 只把判断写进 `keyDimensions`
   或正文,服务端无法把它归到画布容器上 —— 真正会写进战略分析的是 `nodeUpdates`;
 

@@ -2,7 +2,7 @@
  * V1 画布与时间线投影修复:定向 E2E。
  *
  * 只验本轮修复的两件事:
- * 1. 根画布按**服务端 V1 可见性投影**显示三个已分析核心节点(不再用 sourceNodeId 猜);
+ * 1. 根画布「想清楚」下只显示**固定 4 个问题框架节点** + 各自的具体问题(不再展示发散维度);
  * 2. V1 粗时间架构走**同一条中央主轴**(不再是 V01TimelineAxis 小组件),草案可确认。
  *
  * 数据用 `page.route` 固定 `/reasoning` 与 `/questions`;后端只需要活着并提供一个
@@ -222,7 +222,18 @@ test('conversation 型 interaction 只在右侧对话区,画布不建同一份�
   await expect(chatQuestion).toBeVisible({ timeout: 20000 });
   await expect(chatQuestion).toContainText('需要在对话中回答');
   await expect(chatQuestion).toContainText('你真正担心的是什么?');
-  // 对话区不给“定位到节点”,也没有结构化控件。
+  // 战略判断之后，先明确说明四维讨论路线；当前只突出一个节点。
+  const roadmap = page.getByTestId('discussion-roadmap');
+  await expect(roadmap).toContainText('从以下 4 个维度');
+  await expect(roadmap.locator('.discussion-roadmap-item')).toHaveCount(4);
+  await expect(roadmap.locator('li.is-active')).toHaveCount(1);
+  await expect(roadmap.locator('li.is-active')).toContainText('最终想做到什么');
+  // 橙色提问与路线说明都必须在滚动消息流内，不能作为覆盖画布/历史的浮层。
+  const history = page.locator('.floating-conversation .conversation-history');
+  await expect(history.getByTestId('discussion-roadmap')).toHaveCount(1);
+  await expect(history.getByTestId('chat-conversation-question')).toHaveCount(1);
+  await expect(page.getByTestId('chat-action-notice')).toHaveCount(0);
+  // 对话区没有“定位到节点”或重复的结构化控件。
   await expect(page.getByTestId('chat-action-notice')).toHaveCount(0);
   await expect(page.locator('.floating-conversation .cq-direction')).toHaveCount(0);
   // 画布上同一个问题**不**建 active 节点/控件。
@@ -233,7 +244,7 @@ test('conversation 型 interaction 只在右侧对话区,画布不建同一份�
   await expect(page.getByLabel('发送消息')).toBeEnabled();
 });
 
-test('canvas_node 型 interaction 只在画布节点,对话区只给定位', async ({ page }) => {
+test('canvas_node 型 interaction 只在画布节点,对话区不重复占位', async ({ page }) => {
   const { token } = await registerAccount(page, 'v1-canvas-channel');
   const workspaceId = await createWorkspace(page, token, '画布渠道', '我想学 Python 用于自动化');
   const rootId = (await getPlan(page, token, workspaceId)).nodes.find(node => node.parentId === null)!.id;
@@ -268,11 +279,8 @@ test('canvas_node 型 interaction 只在画布节点,对话区只给定位', asy
   );
 
   await page.goto(`/workbench?workspace=${workspaceId}&view=path`);
-  // 对话区:只有位置提示 + 定位,没有“在对话中回答”,没有选项。
-  const notice = page.getByTestId('chat-action-notice');
-  await expect(notice).toBeVisible({ timeout: 20000 });
-  await expect(notice).toContainText('真实意图');
-  await expect(notice.getByRole('button', { name: '定位到节点' })).toBeVisible();
+  // 对话区不再放“定位到节点”的占位提示，也没有“在对话中回答”或选项。
+  await expect(page.getByTestId('chat-action-notice')).toHaveCount(0);
   await expect(page.getByTestId('chat-conversation-question')).toHaveCount(0);
   await expect(page.locator('.floating-conversation .cq-direction')).toHaveCount(0);
   // 画布:唯一 active 节点,点开后才有候选方向。
@@ -349,9 +357,9 @@ test('时间架构共创:先对齐节奏,认可后才生成时间线', async ({ 
   });
 
   await page.goto(`/workbench?workspace=${workspaceId}&view=path`);
-  // 对话区不再承载时间节奏共创卡片 —— 它只留聊天与定位。
+  // 对话区不再承载时间节奏共创卡片，也不显示定位占位。
   await expect(page.getByTestId('v1-timeline-alignment')).toHaveCount(0);
-  await expect(page.getByTestId('chat-action-notice')).toContainText('排出来');
+  await expect(page.getByTestId('chat-action-notice')).toHaveCount(0);
 
   // 结构化动作只在「排出来」下面的子问题节点里，阶段卡本身只做导航。
   const activeNode = page.locator('.v1-interaction-node[data-phase="plan"]');
@@ -365,7 +373,7 @@ test('时间架构共创:先对齐节奏,认可后才生成时间线', async ({ 
   await expect(page.locator('[data-testid="v1-phase-card"]').first()).toContainText('定位');
 });
 
-test('根画布只显示服务端投影里的三个已分析核心节点', async ({ page }) => {
+test('根画布:想清楚下是固定问题框架节点,不再展示发散维度', async ({ page }) => {
   const { token } = await registerAccount(page, 'v1-canvas-projection');
   const workspaceId = await createWorkspace(page, token, 'V1 画布投影', '30 天做出一个数据分析小工具');
   const rootId = (await getPlan(page, token, workspaceId)).nodes.find(node => node.parentId === null)!.id;
@@ -395,21 +403,16 @@ test('根画布只显示服务端投影里的三个已分析核心节点', async
   );
 
   await page.goto(`/workbench?workspace=${workspaceId}&view=path`);
-  const nodes = page.locator('.react-flow__node-question');
-  // 画布**只保留三个基石节点**;其余维度(即使服务端投影 visible)不再单独成卡。
-  await expect(nodes).toHaveCount(3, { timeout: 20000 });
-  await expect(page.getByText('目标定义', { exact: false }).first()).toBeVisible();
+  // 只投影 4 个固定框架里、服务端有数据的那些:
+  // true_intent / hard_constraints / goal_definition(当前状态没有数据 → 不生成)。
+  await expect(page.locator('[data-testid="v1-key"]')).toHaveCount(3, { timeout: 20000 });
+  // 具体问题挂在框架下:true_intent / goal_definition 各一个。
+  await expect(page.locator('.react-flow__node-question')).toHaveCount(2);
+  // key_conflict / major_risks 不属于那 4 个框架,不再单独成卡。
+  await expect(page.locator('.react-flow__node-question', { hasText: '核心矛盾' })).toHaveCount(0);
   await expect(page.locator('.react-flow__node-question', { hasText: '主要风险' })).toHaveCount(0);
-  await expect(page.locator('.react-flow__node-question', { hasText: '硬约束' })).toHaveCount(0);
-
-  // 它们被“链接”到关键矛盾节点上:紧凑时显示数量,点开后以关联讨论列出。
-  const conflictNode = page.locator('.react-flow__node-question', { hasText: '核心矛盾' });
-  await expect(conflictNode.getByTestId('cq-linked-count')).toContainText('2');
-  await conflictNode.click();
-  const linked = conflictNode.getByTestId('cq-linked');
-  await expect(linked).toBeVisible();
-  await expect(linked).toContainText('主要风险');
-  await expect(linked).toContainText('硬约束');
+  // 旧的“关联讨论”折叠不再出现。
+  await expect(page.getByTestId('cq-linked-count')).toHaveCount(0);
 });
 
 test('V1 粗时间架构走中央主轴,草案可确认,相对周刻度稀疏', async ({ page }) => {
@@ -552,9 +555,9 @@ test('V1 根画布不投影旧版固定分组容器(目标重构 / 问题结构 
   );
 
   await page.goto(`/workbench?workspace=${workspaceId}&view=path`);
-  // 三阶段骨架与三个基石问题仍保留。
+  // 三阶段骨架仍在;想清楚下是问题框架(这份 mock 里只有 true_intent / goal_definition 有数据)。
   await expect(page.locator('.v1-phase-node')).toHaveCount(3, { timeout: 20000 });
-  await expect(page.locator('.react-flow__node-question')).toHaveCount(3);
+  await expect(page.locator('.react-flow__node-question')).toHaveCount(2);
 
   // 旧分组容器不在画布里(节点、缩略图同源,都用这份投影)。
   await expect(page.locator('.react-flow__node[data-id^="group-"]')).toHaveCount(0);

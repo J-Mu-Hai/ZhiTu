@@ -559,3 +559,40 @@ def test_the_adapter_never_imports_openjiuwen_at_module_load() -> None:
     assert "openjiuwen" not in sys.modules, (
         "openjiuwen 被导入了 —— 适配器必须用 find_spec 判断、在 reason() 里才真导入"
     )
+
+
+def test_v1_strategy_turn_uses_the_v1_strategy_prompt() -> None:
+    """阶段一“想清楚”的战略判断回合必须用 v1_strategy 提示词,不是 planning 默认。
+
+    这条钉的是一个很难发现的漏分支:direct_llm 有 `v1_strategy` 分支,但
+    openjiuwen 的 `_system_prompt` 曾经没有 —— 于是真实模式(默认路径)落到
+    planning 提示词,“先给判断再决定要不要问”的行为规则静默失效。
+    """
+    from backend.agent.prompts.v1_strategy import (
+        V1_STRATEGY_PROMPT_VERSION,
+        V1_STRATEGY_SYSTEM_PROMPT,
+    )
+    from backend.agent.runtime.openjiuwen_runtime import _prompt_version, _system_prompt
+
+    turn = TurnContext(
+        current_date="2026-10-06",
+        weekday="星期二",
+        timezone="Asia/Shanghai",
+        workspace_title="Python 学习",
+        workspace_intent="",
+        known=KnownConditions(),
+        purpose="v1_strategy",
+    )
+    assert _system_prompt(turn) == V1_STRATEGY_SYSTEM_PROMPT
+    assert _prompt_version(turn) == V1_STRATEGY_PROMPT_VERSION
+
+
+def test_v1_prompt_and_sdk_instruction_forbid_json_null() -> None:
+    """回归：`criticalQuestion: null` 会在 SDK 的 string 校验中中断整轮。"""
+    from backend.agent.prompts.v1_strategy import V1_STRATEGY_SYSTEM_PROMPT
+    from backend.agent.runtime.openjiuwen_runtime import _STRICT_JSON_INSTRUCTION
+
+    assert "留空或 null" not in V1_STRATEGY_SYSTEM_PROMPT
+    assert "严格禁止输出 JSON 的 `null`" in V1_STRATEGY_SYSTEM_PROMPT
+    assert "Never emit JSON null" in _STRICT_JSON_INSTRUCTION
+    assert 'empty string ""' in _STRICT_JSON_INSTRUCTION

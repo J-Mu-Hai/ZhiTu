@@ -62,6 +62,22 @@ export function v1VisibleKeys(reasoning: GoalReasoningView | null): Set<string> 
 export const V1_CORE_GOAL_KEYS: readonly string[] = ['true_intent', 'key_conflict', 'goal_definition'];
 
 /**
+ * 「想清楚」下面的**四个固定问题框架节点**。
+ *
+ * 产品规则:第一个战略分析之后,「想清楚」下面只生成这 4 个框架节点,具体问题挂在
+ * 它们下面。不要再生成第五、第六、第七个发散问题。
+ *
+ * 标题是固定的产品文案;`key` 指向后端已有的分析维度 —— 框架节点下的具体问题就是
+ * 那个维度的问题(**不新建后端实体**,只是换个层级展示)。
+ */
+export const V1_KEY_QUESTIONS: readonly { key: string; title: string }[] = [
+  { key: 'true_intent', title: '最终想做到什么？' },
+  { key: 'current_state', title: '你现在在哪？' },
+  { key: 'hard_constraints', title: '现实能投入什么？' },
+  { key: 'goal_definition', title: '什么算真正完成？' },
+];
+
+/**
  * 非核心分析维度 **挂到哪个基石节点**上。
  *
  * 键来自后端固定十维(`_ANALYSIS`);这里只映射分组关系,不改业务语义:

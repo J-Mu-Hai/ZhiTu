@@ -65,6 +65,10 @@ from backend.agent.prompts.goal_reasoning import (
     STRATEGIC_INTAKE_SYSTEM_PROMPT,
 )
 from backend.agent.prompts.planning import PROMPT_VERSION, SYSTEM_PROMPT
+from backend.agent.prompts.v1_strategy import (
+    V1_STRATEGY_PROMPT_VERSION,
+    V1_STRATEGY_SYSTEM_PROMPT,
+)
 from backend.agent.prompts.v1_strategy_synthesis import (
     V1_STRATEGY_SYNTHESIS_PROMPT_VERSION,
     V1_STRATEGY_SYNTHESIS_SYSTEM_PROMPT,
@@ -89,6 +93,15 @@ from backend.core.config import Settings
 from backend.db.models.enums import DegradedReason, ModelSource
 
 logger = logging.getLogger(__name__)
+
+# OpenJiuwen 0.1.x 的 JSON formatter 对配置为 string 的字段不接受 JSON null。
+# 这条指令追加在 SDK 自动生成的 schema 提示中，覆盖所有回合而不只靠某一份业务提示词。
+_STRICT_JSON_INSTRUCTION = (
+    "Return valid JSON only, conforming to the schema below. "
+    "Never emit JSON null: omit optional text fields or use an empty string \"\"; "
+    "use [] for optional arrays. "
+    "Schema: ${json_schema}.\nQuestion: ${query}."
+)
 
 #: 这张图的 id。openJiuwen 用 (id, version) 生成工作流的注册键。
 WORKFLOW_ID = "zhitu_planning"
@@ -140,6 +153,38 @@ _ANALYSIS_SCALAR_DESCRIPTIONS: dict[str, str] = {
         "七栏是摘要,这里才是推理本身"
     ),
 }
+
+# 模型在尚未掌握某项信息时，偶尔会用 JSON ``null`` 表达“未知”。这些字段都是
+# 可选的说明文字；若让 SDK 把一个空值升级成整轮执行异常，用户就会看到“模型不可用”。
+# 因此嵌套文本字段显式接受 null，后续解析器再把它归一为空字符串。
+_NULLABLE_STRING_SCHEMA = {"type": ["string", "null"]}
+
+
+def _enable_sdk_nullable_string_schema(llm_comp_module: Any) -> None:
+    """Teach openJiuwen 0.1.x about the JSON-Schema union used above.
+
+    Its built-in validator accepts only one type name even though its schema
+    generator faithfully emits ``[\"string\", \"null\"]``.  This narrowly scoped
+    compatibility shim applies only to that union, leaving every other SDK
+    validation rule unchanged.
+    """
+    validator = llm_comp_module.ValidationUtils
+    if getattr(validator, "_zhitu_nullable_string_enabled", False):
+        return
+
+    original_validate_type = validator.validate_type
+
+    def validate_type(instance: Any, expected_type: Any) -> None:
+        if expected_type == ["string", "null"]:
+            if instance is None or isinstance(instance, str):
+                return
+            validator.raise_invalid_params_error(
+                error_msg=f"expected type string or null but got {type(instance)}"
+            )
+        original_validate_type(instance, expected_type)
+
+    validator.validate_type = staticmethod(validate_type)
+    validator._zhitu_nullable_string_enabled = True
 
 #: 给模型看的输出形状。**它同时是给 SDK 的抽取声明**:
 #: 只有在这里列出的键会被带回来,模型多写的字段由 SDK 丢掉,
@@ -219,7 +264,7 @@ OUTPUT_CONFIG: dict[str, Any] = {
                 for field in ANALYSIS_FIELD_ORDER
             },
             **{
-                field: {"type": "string", "description": description}
+                field: {**_NULLABLE_STRING_SCHEMA, "description": description}
                 for field, description in _ANALYSIS_SCALAR_DESCRIPTIONS.items()
             },
         },
@@ -233,10 +278,10 @@ OUTPUT_CONFIG: dict[str, Any] = {
         "required": False,
         "description": "目标推理地图操作(仅目标推理回合使用)",
         "properties": {
-            "phase": {"type": "string"},
-            "turnAction": {"type": "string"},
-            "focus": {"type": "string"},
-            "focusReason": {"type": "string"},
+            "phase": _NULLABLE_STRING_SCHEMA,
+            "turnAction": _NULLABLE_STRING_SCHEMA,
+            "focus": _NULLABLE_STRING_SCHEMA,
+            "focusReason": _NULLABLE_STRING_SCHEMA,
             "nodes": {"type": "array"},
             "links": {"type": "array"},
         },
@@ -248,10 +293,10 @@ OUTPUT_CONFIG: dict[str, Any] = {
         "required": False,
         "description": "战略 intake 决策(仅 strategic_intake 回合使用)",
         "properties": {
-            "action": {"type": "string"},
-            "question": {"type": "string"},
-            "decisionScope": {"type": "string"},
-            "whyThisMatters": {"type": "string"},
+            "action": _NULLABLE_STRING_SCHEMA,
+            "question": _NULLABLE_STRING_SCHEMA,
+            "decisionScope": _NULLABLE_STRING_SCHEMA,
+            "whyThisMatters": _NULLABLE_STRING_SCHEMA,
             "quickReplies": {"type": "array"},
         },
     },
@@ -264,23 +309,23 @@ OUTPUT_CONFIG: dict[str, Any] = {
         "required": False,
         "description": "V1 战略判断(仅 v1_strategy 回合使用)",
         "properties": {
-            "globalAssessment": {"type": "string"},
-            "strategicThesis": {"type": "string"},
-            "userUnderstanding": {"type": "string"},
-            "questionExample": {"type": "string"},
+            "globalAssessment": _NULLABLE_STRING_SCHEMA,
+            "strategicThesis": _NULLABLE_STRING_SCHEMA,
+            "userUnderstanding": _NULLABLE_STRING_SCHEMA,
+            "questionExample": _NULLABLE_STRING_SCHEMA,
             "keyDimensions": {"type": "array"},
             "nodeUpdates": {"type": "array"},
-            "responseMode": {"type": "string"},
-            "criticalQuestion": {"type": "string"},
+            "responseMode": _NULLABLE_STRING_SCHEMA,
+            "criticalQuestion": _NULLABLE_STRING_SCHEMA,
             # R2:候选方向必须带解释一起出现。
-            "decisionContext": {"type": "string"},
-            "provisionalRecommendation": {"type": "string"},
+            "decisionContext": _NULLABLE_STRING_SCHEMA,
+            "provisionalRecommendation": _NULLABLE_STRING_SCHEMA,
             "optionImpact": {"type": "array"},
             "candidateDirections": {"type": "array"},
-            "focusKey": {"type": "string"},
-            "focusReason": {"type": "string"},
-            "question": {"type": "string"},
-            "strategyTradeoff": {"type": "string"},
+            "focusKey": _NULLABLE_STRING_SCHEMA,
+            "focusReason": _NULLABLE_STRING_SCHEMA,
+            "question": _NULLABLE_STRING_SCHEMA,
+            "strategyTradeoff": _NULLABLE_STRING_SCHEMA,
             "strategyReady": {"type": "boolean"},
         },
     },
@@ -291,7 +336,7 @@ OUTPUT_CONFIG: dict[str, Any] = {
         "required": False,
         "description": "粗时间架构(仅 v1_timeline 回合使用)",
         "properties": {
-            "summary": {"type": "string"},
+            "summary": _NULLABLE_STRING_SCHEMA,
             "phases": {"type": "array"},
         },
     },
@@ -301,13 +346,13 @@ OUTPUT_CONFIG: dict[str, Any] = {
         "required": False,
         "description": "时间假设 + 至多一个战略级问题(仅 v1_timeline_alignment 回合使用)",
         "properties": {
-            "summary": {"type": "string"},
-            "totalSpan": {"type": "string"},
-            "cadence": {"type": "string"},
+            "summary": _NULLABLE_STRING_SCHEMA,
+            "totalSpan": _NULLABLE_STRING_SCHEMA,
+            "cadence": _NULLABLE_STRING_SCHEMA,
             "phaseCount": {"type": "integer"},
-            "biggestRisk": {"type": "string"},
+            "biggestRisk": _NULLABLE_STRING_SCHEMA,
             "assumptions": {"type": "array"},
-            "question": {"type": "string"},
+            "question": _NULLABLE_STRING_SCHEMA,
             "options": {"type": "array"},
         },
     },
@@ -319,11 +364,11 @@ OUTPUT_CONFIG: dict[str, Any] = {
         "required": False,
         "description": "四条战略结构 + 取舍(仅 v1_strategy_synthesis 回合使用)",
         "properties": {
-            "mainLine": {"type": "string", "description": "主线:最优先投入什么"},
-            "parallelLine": {"type": "string", "description": "并行线:可同时做但不挤占主线"},
-            "deferOrAvoid": {"type": "string", "description": "暂缓/放弃:当前不值得做什么"},
-            "riskControl": {"type": "string", "description": "风险控制:检查点或备用路径"},
-            "tradeoff": {"type": "string", "description": "这版战略的取舍(可空)"},
+            "mainLine": {**_NULLABLE_STRING_SCHEMA, "description": "主线:最优先投入什么"},
+            "parallelLine": {**_NULLABLE_STRING_SCHEMA, "description": "并行线:可同时做但不挤占主线"},
+            "deferOrAvoid": {**_NULLABLE_STRING_SCHEMA, "description": "暂缓/放弃:当前不值得做什么"},
+            "riskControl": {**_NULLABLE_STRING_SCHEMA, "description": "风险控制:检查点或备用路径"},
+            "tradeoff": {**_NULLABLE_STRING_SCHEMA, "description": "这版战略的取舍(可空)"},
         },
     },
 }
@@ -479,6 +524,7 @@ class OpenJiuwenReasoner:
         )
         runner_module = importlib.import_module("openjiuwen.core.runner.runner")
         llm_module = importlib.import_module("openjiuwen.core.foundation.llm")
+        _enable_sdk_nullable_string_schema(llm_comp_module)
 
         settings = self._settings
         config = llm_comp_module.LLMCompConfig(
@@ -500,7 +546,7 @@ class OpenJiuwenReasoner:
                 {"role": "system", "content": _system_prompt(turn)},
                 {"role": "user", "content": render_turn(turn)},
             ],
-            response_format={"type": "json"},
+            response_format={"type": "json", "jsonInstruction": _STRICT_JSON_INSTRUCTION},
             output_config=OUTPUT_CONFIG,
         )
 
@@ -626,6 +672,10 @@ def _system_prompt(turn: TurnContext) -> str:
         return STRATEGIC_INTAKE_SYSTEM_PROMPT
     if turn.purpose == "goal_reasoning":
         return GOAL_REASONING_SYSTEM_PROMPT
+    # 阶段一“想清楚”的战略判断回合。它的行为规则(先给判断再决定要不要问)在
+    # `V1_STRATEGY_SYSTEM_PROMPT` 里;漏了这条会落到默认的 planning 提示词。
+    if turn.purpose == "v1_strategy":
+        return V1_STRATEGY_SYSTEM_PROMPT
     if turn.purpose == "v1_strategy_synthesis":
         return V1_STRATEGY_SYNTHESIS_SYSTEM_PROMPT
     if turn.purpose == "v1_timeline_repair":
@@ -640,6 +690,8 @@ def _prompt_version(turn: TurnContext) -> str:
         return STRATEGIC_INTAKE_PROMPT_VERSION
     if turn.purpose == "goal_reasoning":
         return GOAL_REASONING_PROMPT_VERSION
+    if turn.purpose == "v1_strategy":
+        return V1_STRATEGY_PROMPT_VERSION
     if turn.purpose == "v1_strategy_synthesis":
         return V1_STRATEGY_SYNTHESIS_PROMPT_VERSION
     if turn.purpose == "v1_timeline_repair":

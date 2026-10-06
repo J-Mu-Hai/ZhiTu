@@ -120,7 +120,13 @@ async def test_v1_fixed_groups_and_question_nodes(
     body = await _turn(app_client, account, "v1-1")
     view = body["reasoning"]
     assert view["v1Stage"] == "goal_reframe"
-    assert view["v1Question"] == "30 天后你想拿出什么具体成果?"
+    # 首轮必须把战略判断**落成助手消息**说给用户听。
+    # 否则用户只看到一张「需要回答」的问题卡 —— 体感就是"刚说一句 AI 就开始审问"。
+    assert body["message"] is not None, "首轮战略判断没有落成助手消息"
+    assert body["message"]["role"] == "assistant"
+    assert "Python 是手段而不是成果" in body["message"]["content"]
+    # 首问由四维状态机固定，不再直接采用模型临时生成的问题。
+    assert "最终拿出什么具体成果" in view["v1Question"]
     assert view["v1Judgment"]
     assert view["nodes"] == [], "只有 reasoning 节点为空;分析维度是 AgentQuestion"
     assert await _plan_node_count(db, account) == 4, "根 + 3 个分组"
@@ -160,7 +166,10 @@ async def test_v1_fixed_groups_and_question_nodes(
     assert len(by_source[by_title["问题结构"]["id"]]) == 5
     intent = next(q for q in questions if q["v1Key"] == "true_intent")
     assert intent["v1Analysis"]["judgment"] == "真实诉求还不明确。"
-    assert intent["v1Analysis"]["knownFacts"] == ["你写下的目标是:我想学 Python"]
+    assert intent["v1Analysis"]["knownFacts"] == [
+        "你写下的目标是:我想学 Python",
+        "我想学 Python",
+    ]
 
     # ---- 5. 没有提案、没有 reasoning 节点 ----
     assert (

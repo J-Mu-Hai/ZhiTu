@@ -58,8 +58,10 @@ test('started: three-phase chain, think active, plan/do locked; no dashboard', a
   await expect(phases.nth(2)).toContainText('已锁定');
   await expect(page.locator('.v1-phase-node.is-active')).toHaveCount(1);
 
-  // 子节点:三个分析节点锚在想清楚下面。
-  await expect(page.locator('.react-flow__node-question')).toHaveCount(3);
+  // 子节点:想清楚下是问题框架节点 + 各自的具体问题
+  // (mock 只给了 true_intent / goal_definition 两个维度,所以是 2 个框架)。
+  await expect(page.locator('[data-testid="v1-key"]')).toHaveCount(2);
+  await expect(page.locator('.react-flow__node-question')).toHaveCount(2);
 
   // 对话区没有战略仪表盘。
   const panel = page.locator('.floating-conversation');
@@ -67,6 +69,36 @@ test('started: three-phase chain, think active, plan/do locked; no dashboard', a
   await expect(panel.locator('.v1-understanding')).toHaveCount(0);
   await expect(panel.locator('.v1-strategy-card')).toHaveCount(0);
   await expect(panel.locator('.v1-direction-adopted')).toHaveCount(0);
+});
+
+test('想清楚下固定 4 个问题框架节点,具体问题挂在它们下面', async ({ page }) => {
+  const { token } = await registerAccount(page, 'v1-key-frames');
+  const workspaceId = await createWorkspace(page, token, '问题框架', '我想学 Python 用于自动化');
+  const rootId = (await getPlan(page, token, workspaceId)).nodes.find(n => n.parentId === null)!.id;
+  const frameKeys = ['true_intent', 'current_state', 'hard_constraints', 'goal_definition'];
+  await mock(page, baseView(workspaceId, rootId, {
+    v1Stage: 'strategy_draft',
+    v1VisibleAnalysisKeys: frameKeys,
+    v1Dimensions: frameKeys.map((key, i) => dimension(key, key, '判断', true, i === 0)),
+  }), frameKeys.map(key => question(workspaceId, rootId, key, key, 'pending')));
+  await page.goto(`/workbench?workspace=${workspaceId}&view=path`);
+  // 恰好 4 个框架节点,不要第五、第六个。
+  await expect(page.locator('[data-testid="v1-key"]')).toHaveCount(4, { timeout: 20000 });
+  await expect(page.locator('[data-testid="v1-key"][data-frame-key="true_intent"]')).toContainText('最终想做到什么');
+  await expect(page.locator('[data-testid="v1-key"][data-frame-key="current_state"]')).toContainText('你现在在哪');
+  await expect(page.locator('[data-testid="v1-key"][data-frame-key="hard_constraints"]')).toContainText('现实能投入什么');
+  await expect(page.locator('[data-testid="v1-key"][data-frame-key="goal_definition"]')).toContainText('什么算真正完成');
+  // 两层层级线都必须是可见的真实 React Flow edge：阶段→框架、框架→具体问题。
+  await expect(page.locator('.react-flow__node-question')).toHaveCount(4);
+  const frameworkEdges = page.locator(
+    '.react-flow__edge[data-id^="v1key-edge:"], .react-flow__edge[data-id^="question-anchor:"]',
+  );
+  await expect(frameworkEdges).toHaveCount(8);
+  for (let index = 0; index < 8; index += 1) {
+    const path = frameworkEdges.nth(index).locator('.react-flow__edge-path');
+    await expect(path).toBeVisible();
+    expect(await path.evaluate(element => getComputedStyle(element).stroke)).toBe('rgb(62, 120, 168)');
+  }
 });
 
 test('strategy confirmed: think done, plan unlocked and awaiting', async ({ page }) => {
@@ -95,10 +127,8 @@ test('strategy confirmed: think done, plan unlocked and awaiting', async ({ page
   await expect(phases.nth(2)).toContainText('已锁定');
   await expect(page.locator('.v1-phase-node.is-active')).toHaveCount(1);
 
-  // 对话区的「定位到节点」把排出来阶段选中。
-  await page.getByTestId('chat-action-notice').getByRole('button', { name: '定位到节点' }).click();
-  await expect(page.locator('.v1-phase-node.is-focused')).toHaveCount(1);
-  await expect(page.locator('.v1-phase-node.is-focused')).toContainText('排出来');
+  // 对话区不再占用位置展示“定位到节点”；流程状态只由画布节点表达。
+  await expect(page.getByTestId('chat-action-notice')).toHaveCount(0);
 });
 
 test('粗时间线确认后:做起来阶段出现“是否细化为具体执行计划？”节点', async ({ page }) => {

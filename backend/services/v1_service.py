@@ -162,8 +162,9 @@ NEXT_CONFIRM_REPLAN = "confirm_replan"
 NEXT_CONFIRM_UNDERSTANDING = "confirm_strategy_understanding"
 #: 时间架构共创:对齐节奏后才生成粗时间线。
 NEXT_CONFIRM_TIMELINE_ALIGNMENT = "confirm_timeline_alignment"
-#: 阶段一全局关键问题的总预算。超过后服务端不再接受新问题。
-MAX_V1_QUESTIONS = 3
+#: 第一阶段不是“问到模型觉得够”为止，而是用户明确要求的四维澄清。
+#: 这个数同时是状态机的硬门槛：四项没有逐一讨论完，不得生成/确认战略。
+MAX_V1_QUESTIONS = 4
 
 #: 用户输入的语义分类(P2.1)。**只有前三类能写节点事实。**
 INPUT_STRATEGIC_FACT = "strategic_fact"
@@ -243,6 +244,98 @@ _DIMENSION_TITLES: dict[str, str] = {
 ANALYSIS_DIMENSION_KEYS = frozenset(key for _group, key, _title, _q in _ANALYSIS)
 #: goal_reframe 阶段默认可见的三个**核心分析维度**。
 _CORE_GOAL_KEYS: tuple[str, ...] = ("true_intent", "key_conflict", "goal_definition")
+#: 「想清楚」阶段必须逐项走完的四个讨论维度。它们和前端
+#: `V1_KEY_QUESTIONS` 一一对应；顺序是产品状态机，不交给模型随意跳过。
+_DISCUSSION_FRAMES: tuple[tuple[str, str], ...] = (
+    ("true_intent", "你希望最终拿出什么具体成果？请描述一个别人能看见、能验证的结果。"),
+    ("current_state", "你目前已经会什么、做过什么？你从哪里开始，哪些资源可以直接使用？"),
+    ("hard_constraints", "你现实中每周能稳定投入多少时间？是否有固定截止日期或不能改变的限制？"),
+    ("goal_definition", "做到什么程度、满足哪些标准，你会认定这件事真的完成了？"),
+)
+_DISCUSSION_FRAME_KEYS = tuple(key for key, _question in _DISCUSSION_FRAMES)
+_DISCUSSION_FRAME_KEY_SET = frozenset(_DISCUSSION_FRAME_KEYS)
+
+
+def _core_discussion_complete(session: GoalReasoningSession) -> bool:
+    """四个核心维度都已提问且最后一问已得到回答。
+
+    `v1_question_budget_used` 在四维流程中保存的是**完成位图**，不是旧版的追问次数：
+    只有 4 个 bit 全部为 1 才通过。这样旧会话遗留的“已问 3 次 / 4 次”不会被误判为
+    四个节点都已讨论。仍存在 `v1_question` 时，说明最后一项还在等用户，不能提前放行。
+    """
+    return (
+        int(session.v1_question_budget_used or 0) == (1 << len(_DISCUSSION_FRAMES)) - 1
+        and not (session.v1_question or "").strip()
+    )
+
+
+def _is_stage_acceptance(content: str) -> bool:
+    """是否是用户在对话框中对当前可见方案的明确同意。
+
+    画布按钮和对话框是同一条工作流的两个入口。不能让用户在最后一问答完后
+    输入“可以/确认”却再次进入模型分析回合，否则会停在 ``goal_reframe`` 不断
+    重复同一段战略判断。
+    """
+    normalized = "".join((content or "").strip().lower().split())
+    return normalized in {
+        "可以", "好的", "好", "行", "行的", "确认", "确认一下", "同意",
+        "接受", "没问题", "继续", "开始", "ok", "okay", "yes",
+    }
+
+
+def _discussion_completion_mask(questions: list[AgentQuestion]) -> int:
+    """从四个真实节点的 `discussionAnswer` 重建完成位图。
+
+    完成事实在节点分析中，而不是“模型曾经提过多少问题”的会话计数中；每次回合都
+    重建一次，也顺便把旧版本留下的普通计数迁移为新语义。
+    """
+    by_key = {question.v1_key: question for question in questions if question.v1_key}
+    mask = 0
+    for index, key in enumerate(_DISCUSSION_FRAME_KEYS):
+        answer = ((by_key.get(key).v1_analysis or {}).get("discussionAnswer") if by_key.get(key) else None)
+        if isinstance(answer, str) and answer.strip():
+            mask |= 1 << index
+    return mask
+
+
+def _next_discussion_frame(questions: list[AgentQuestion]) -> tuple[str, str] | None:
+    """返回第一个没有真实用户回答的核心节点。"""
+    mask = _discussion_completion_mask(questions)
+    for index, frame in enumerate(_DISCUSSION_FRAMES):
+        if not (mask & (1 << index)):
+            return frame
+    return None
+
+
+def _record_discussion_answer(
+    questions: list[AgentQuestion],
+    *,
+    key: str,
+    content: str,
+    classification: str,
+) -> None:
+    """把用户对当前框架节点的回答准确地记为已讨论。
+
+    这不是让 AI 把用户原话冒充成“战略判断”：原文只进入 `knownFacts` 和
+    `discussionAnswer`，`judgment` 仍由模型的节点更新负责。这里记录的是状态机事实——
+    用户已经回答过这一维，所以可以进入下一维。
+    """
+    question = next((item for item in questions if item.v1_key == key), None)
+    if question is None:
+        return
+    analysis = dict(question.v1_analysis or {})
+    facts = list(analysis.get("knownFacts") or [])
+    clean = content.strip()
+    if classification in (INPUT_STRATEGIC_FACT, INPUT_USER_PREFERENCE, INPUT_USER_CORRECTION) and clean:
+        if clean not in facts:
+            facts.append(clean)
+    analysis["knownFacts"] = facts
+    analysis["discussionAnswer"] = clean
+    analysis["discussionCount"] = max(1, int(analysis.get("discussionCount", 0) or 0) + 1)
+    analysis["status"] = "resolved"
+    question.v1_analysis = analysis
+    question.status = QuestionStatus.RESOLVED
+    flag_modified(question, "v1_analysis")
 #: 进入 problem_structure 后默认可见的五个因素维度。
 _PROBLEM_KEYS: tuple[str, ...] = (
     "hard_constraints",
@@ -431,7 +524,9 @@ def visible_dimension_keys(session: GoalReasoningSession) -> set[str]:
 
     战略子项一旦形成就显示(在 `list_questions` 里单独放行)。
     """
-    keys: set[str] = set(_CORE_GOAL_KEYS)
+    # 第一阶段向用户展示的就是四个讨论节点，而不是旧版“3 个基石 + 当前模型焦点”。
+    # 模型仍可在内部分析其它维度，但不能把它们插队成新的待回答问题。
+    keys: set[str] = set(_DISCUSSION_FRAME_KEYS)
     # 焦点只接受**真实的分析维度键**:模型偶尔会返回分组键(如 `strategy_path`),
     # 那不是画布上的分析节点,不能因此被当成“可见维度”。
     if session.v1_focus_key in ANALYSIS_DIMENSION_KEYS:
@@ -473,7 +568,7 @@ def dimension_projection(
                     str(analysis.get("summary") or "")
                     or (f"已讨论 {discussion_count} 次" if discussion_count else "")
                 ),
-                "internal": key not in _CORE_GOAL_KEYS,
+                "internal": key not in _DISCUSSION_FRAME_KEY_SET,
                 "questionId": str(question.id) if question is not None else None,
                 "knownFacts": [str(x) for x in (analysis.get("knownFacts") or [])],
                 "assumptions": [str(x) for x in (analysis.get("assumptions") or [])],
@@ -510,6 +605,9 @@ def compute_next_action(session: GoalReasoningSession) -> str | None:
     if session.v1_strategy and not (session.v1_strategy or {}).get("confirmed"):
         return NEXT_CONFIRM_STRATEGY
     if session.v1_stage == V1_GOAL_REFRAME:
+        # 战略判断可以先形成，但战略确认必须排在四项讨论之后。
+        if not _core_discussion_complete(session):
+            return None
         if session.v1_candidate_directions:
             return NEXT_SELECT_DIRECTION
         if session.v1_strategic_thesis:
@@ -829,6 +927,10 @@ async def _build_turn_context(
     exclude_message_id=None,
 ) -> TurnContext:
     questions = await _v1_questions(db, ctx)
+    # 旧版这里存的是“已问次数”，新流程存的是“四个节点真实完成位图”。每一回合
+    # 都从节点回答重建，避免旧会话带着一个 3/4 就被错误放行到战略。
+    if session.v1_stage in (V1_INITIAL_THINKING, V1_GOAL_REFRAME):
+        session.v1_question_budget_used = _discussion_completion_mask(questions)
     page = await conversation_service.list_messages(db, ctx, limit=HISTORY_TURNS + 1)
     history = tuple(
         (message.role.value, message.content)
@@ -935,6 +1037,9 @@ def _apply_updates(
             "impactedNodeKeys": [item for item in impacts_raw if item in by_key],
             "discussionCount": int(existing.get("discussionCount", 0))
             + (1 if is_local_discussion and key == discussion_key else 0),
+            # 这是状态机的用户事实，不是模型判断字段。模型回合刷新 judgment 时
+            # 必须保留它；否则四项都答完后再合成战略，会把先前节点误判为未讨论。
+            "discussionAnswer": existing.get("discussionAnswer", ""),
         }
         if _analysis_unchanged(existing, analysis):
             continue
@@ -1000,19 +1105,20 @@ def _strategy_ready(analyses: dict[str, dict]) -> bool:
     def has(key: str) -> bool:
         return bool((analyses.get(key) or {}).get("judgment"))
 
-    return bool(
-        has("goal_definition")
-        and has("key_conflict")
-        and (has("key_levers") or has("hard_constraints"))
-        and has("major_risks")
-    )
+    # 战略草案的前置事实来自四维讨论；不再要求模型越过用户自行补出“风险/杠杆”
+    # 等第五、第六项回答，避免它绕开这条主流程。
+    return all(has(key) for key in _DISCUSSION_FRAME_KEYS)
 
 
 def _strategy_understanding_payload(strategy: dict, analyses: dict) -> dict:
     """从战略四条结构 + 目标/矛盾分析,组织“我据此形成的战略理解”。"""
     return {
         "goal": str((analyses.get("goal_definition") or {}).get("judgment") or ""),
-        "keyConflict": str((analyses.get("key_conflict") or {}).get("judgment") or ""),
+        "keyConflict": str(
+            (analyses.get("hard_constraints") or {}).get("judgment")
+            or (analyses.get("key_conflict") or {}).get("judgment")
+            or ""
+        ),
         "mainLine": strategy.get("mainLine", ""),
         "parallelLine": strategy.get("parallelLine", ""),
         "deferOrAvoid": strategy.get("deferOrAvoid", ""),
@@ -1078,6 +1184,17 @@ async def synthesize_strategy(
         raise InvalidInput("这个空间还没有根目标。")
     await _create_containers(db, ctx, root)
 
+    # 不论从哪个入口触发（自动兜底 / 点击“继续形成战略” / 旧会话恢复），四维
+    # 讨论不完整时都绝不能合成战略。不要只依赖调用方的阶段判断。
+    if not _core_discussion_complete(session):
+        return ReasoningResult(
+            reply="请先依次完成四个核心问题的讨论，再形成战略路径。",
+            source=ModelSource.UNAVAILABLE,
+            degraded=True,
+            degraded_reason=DegradedReason.MODEL_OUTPUT_INVALID,
+            retryable=False,
+            prompt_version="v1-four-discussion-gate",
+        )
     source = reasoner_source_kind(reasoner)
     if not source_allowed(source):
         return await _refuse_unavailable_source(
@@ -1206,6 +1323,10 @@ async def _maybe_synthesize_strategy(
     """
     if session.v1_strategy:
         return None
+    # 旧逻辑只要当前没有待回答问题就自动综合，导致“答一题→确认战略”。
+    # 这里把四维讨论作为不可绕过的门槛。
+    if not _core_discussion_complete(session):
+        return None
     if session.v1_stage not in (
         V1_GOAL_REFRAME,
         V1_FACTOR_ANALYSIS,
@@ -1284,6 +1405,67 @@ async def _sync_question_states(
             group.status = NodeStatus.DOING
         else:
             group.status = NodeStatus.PENDING
+
+
+async def recover_legacy_early_progression(
+    db: AsyncSession, ctx: WorkspaceContext, session: GoalReasoningSession
+) -> bool:
+    """把旧逻辑过早推进的会话安全拉回四维讨论。
+
+    旧版用“提问次数”判定完成，已经可能把只答过一题的空间推进到战略甚至粗时间线。
+    新协议以四个 AgentQuestion 上的真实 `discussionAnswer` 为准；若缺任何一项，旧的
+    战略/时间草案就没有可靠输入，必须作废并回到第一个未回答节点。
+    """
+    if session.v1_stage not in {
+        V1_STRATEGY_DRAFT,
+        V1_STRATEGY_ALIGNMENT,
+        V1_STRATEGY_CONFIRMED,
+        V1_TIMELINE_ALIGNMENT,
+        V1_COARSE_TIMELINE_REVIEW,
+    }:
+        return False
+    # 只有旧版的“提问次数”才需要迁移。新版把同一字段写为四维完成位图，完整
+    # 讨论后的值固定是 0b1111 (=15)。不能再从较旧的节点 JSON 反推它，否则
+    # 一份已经按新协议完成的战略会被错误撤回。
+    #
+    # 旧版的这个字段最多就是 0..4；大于 4 的值不是旧计数，绝不当作残留流程处理。
+    if int(session.v1_question_budget_used or 0) > len(_DISCUSSION_FRAMES):
+        return False
+    questions = await _v1_questions(db, ctx)
+    mask = _discussion_completion_mask(questions)
+    if mask == (1 << len(_DISCUSSION_FRAMES)) - 1:
+        return False
+    next_frame = _next_discussion_frame(questions)
+    if next_frame is None:
+        return False
+    stage_before = session.v1_stage
+    focus_key, prompt = next_frame
+    session.v1_stage = V1_GOAL_REFRAME
+    session.v1_question = prompt
+    session.v1_focus_key = focus_key
+    session.v1_focus_reason = "旧流程尚未完成四维讨论，先回到当前核心问题。"
+    session.v1_last_focus_key = focus_key
+    session.v1_question_budget_used = mask
+    session.v1_strategy = None
+    session.v1_strategy_understanding = None
+    session.v1_timeline_alignment = None
+    session.v01_timeline = None
+    session.timeline_proposal_id = None
+    session.v1_next_action = None
+    session.v1_candidate_directions = None
+    session.v1_status = V1_STATUS_IDLE
+    await _audit(
+        db,
+        ctx,
+        session,
+        "v1_legacy_early_progression_reset",
+        stage_before=stage_before,
+        stage_after=V1_GOAL_REFRAME,
+        focus_key=focus_key,
+        summary="旧流程未完成四个核心节点，撤回过早战略/时间草案并恢复逐项讨论。",
+        payload={"completionMask": mask, "nextFocus": focus_key},
+    )
+    return True
 
 
 # =================================================================================
@@ -1371,6 +1553,17 @@ async def _run_assessment(
         )
 
     questions = await _v1_questions(db, ctx)
+    # 进入本回合前若正在等四维流程中的一个回答，这条用户消息就是该维度的
+    # 唯一回答入口。低信息/元反馈不推进，仍停在原问题上。
+    pending_discussion_key = (
+        session.v1_focus_key
+        if (
+            session.v1_stage in (V1_INITIAL_THINKING, V1_GOAL_REFRAME)
+            and (session.v1_question or "").strip()
+            and session.v1_focus_key in _DISCUSSION_FRAME_KEY_SET
+        )
+        else None
+    )
     changed, analyses, strategy_values = _apply_updates(
         questions,
         assessment,
@@ -1379,6 +1572,15 @@ async def _run_assessment(
         discussion_key=assessment.focus_key,
         raw_message=user_message,
     )
+    if pending_discussion_key and not _counts_as_low_info(classification):
+        _record_discussion_answer(
+            questions,
+            key=pending_discussion_key,
+            content=user_message,
+            classification=classification,
+        )
+    if session.v1_stage in (V1_INITIAL_THINKING, V1_GOAL_REFRAME):
+        session.v1_question_budget_used = _discussion_completion_mask(questions)
     persisted = {q.v1_key: (q.v1_analysis or {}) for q in questions if q.v1_key}
 
     from_problem_structure = session.v1_stage == V1_PROBLEM_STRUCTURE
@@ -1386,7 +1588,11 @@ async def _run_assessment(
     synthesized = False
     #: 本回合是否首次呈现了“战略理解”。
     understanding_presented = False
-    if strategy_values and _strategy_ready(persisted):
+    discussion_still_open = (
+        session.v1_stage in (V1_INITIAL_THINKING, V1_GOAL_REFRAME)
+        and not _core_discussion_complete(session)
+    )
+    if strategy_values and not discussion_still_open and _strategy_ready(persisted):
         await _ensure_strategy_questions(db, ctx, strategy_values)
         merged = dict(session.v1_strategy or {})
         for key, value in strategy_values.items():
@@ -1440,6 +1646,8 @@ async def _run_assessment(
         and options_streak < 1
         and not direction_locked
         and not question_accepted
+        # 四维讨论没有完成前，不允许用候选方向把流程岔开。
+        and not discussion_still_open
     )
     if response_mode == "offer_options" and not offer_allowed:
         # 不是真正的分叉 / 连续重复 / 用户已选过起点:退回“暂定综合”,
@@ -1486,6 +1694,36 @@ async def _run_assessment(
             session.v1_decision_context = assessment.decision_context
     else:
         session.v1_question = None
+
+    # ---- 第一阶段的硬顺序：四个节点逐一讨论，模型不能提前跳到战略确认 ----
+    if session.v1_stage in (V1_INITIAL_THINKING, V1_GOAL_REFRAME):
+        # 低信息回答不消耗当前节点；其他回答已在上方记录，然后安排下一个固定维度。
+        if pending_discussion_key and _counts_as_low_info(classification):
+            # 用户明确表示“不知道/没想好”时，不把它当作回答；原节点继续讨论。
+            next_frame = next(
+                (frame for frame in _DISCUSSION_FRAMES if frame[0] == pending_discussion_key),
+                None,
+            )
+        else:
+            # 依据节点中是否存在真实回答挑选下一项，而不是依据模型问了几次。
+            next_frame = _next_discussion_frame(questions)
+        if next_frame is not None:
+            focus_key, controlled_question = next_frame
+            session.v1_focus_key = focus_key
+            session.v1_focus_reason = "这是四维澄清流程中的当前节点，完成后才进入下一项。"
+            session.v1_question = controlled_question
+            session.v1_last_focus_key = focus_key
+            session.v1_candidate_directions = None
+            session.v1_decision_context = None
+            session.v1_provisional_recommendation = None
+            question_accepted = not (pending_discussion_key and _counts_as_low_info(classification))
+        else:
+            # 最后一项的有效回答已被记录：这时才允许出现“确认已经想清楚”的下一步。
+            session.v1_question = None
+            session.v1_candidate_directions = None
+        # `_run_assessment` 的兼容分支可能按旧语义写过“提问次数”；最终以节点的
+        # 真实回答重建位图，保证确认门槛不会受那条旧路径影响。
+        session.v1_question_budget_used = _discussion_completion_mask(questions)
     if session.v1_stage == V1_INITIAL_THINKING:
         session.v1_stage = V1_GOAL_REFRAME
     # P2.3:非终态阶段不允许“idle + 无问题 + 无 CTA + 无战略”。
@@ -1551,13 +1789,13 @@ async def _run_assessment(
             trigger=trigger,
             stage_before=stage_before,
             stage_after=session.v1_stage,
-            focus_key=assessment.focus_key,
-            focus_reason=assessment.focus_reason or None,
-            summary=proposed_question,
+            focus_key=session.v1_focus_key,
+            focus_reason=session.v1_focus_reason or None,
+            summary=session.v1_question or proposed_question,
             payload={
-                "question": proposed_question,
-                "focus": assessment.focus_key,
-                "reason": assessment.focus_reason,
+                "question": session.v1_question or proposed_question,
+                "focus": session.v1_focus_key,
+                "reason": session.v1_focus_reason,
                 "responseMode": response_mode,
                 # 渠道:自由叙述型问题在对话里回答。**只记渠道,不记隐藏提示词/思维链。**
                 "answerChannel": "conversation",
@@ -1697,6 +1935,8 @@ async def answer_v1_in_conversation(
     root = await reasoning_service.root_plan_node(db, ctx)
     if root is not None:
         await _create_containers(db, ctx, root)
+    # 旧会话可能已经被“答一题即进战略”的逻辑推进；在处理下一条用户输入前先恢复。
+    await recover_legacy_early_progression(db, ctx, session)
 
     # ---- P2.1 输入分类:元对话 / 情绪 / 对 AI 的反馈不是战略事实 ----
     classification = classify_user_message(content)
@@ -1722,6 +1962,68 @@ async def answer_v1_in_conversation(
             summary=content,
             payload={"classification": classification},
         )
+
+    # 对话框里的“可以 / 确认”与画布上的确认按钮语义相同。尤其是最后一个
+    # 核心问题答完后，`v1_question` 已清空，若仍把这句话送进模型，就会重新得到
+    # 一轮同样的战略分析，用户永远到不了时间架构共创。
+    if _is_stage_acceptance(content):
+        acceptance_target: str | None = None
+        if (
+            session.v1_stage == V1_GOAL_REFRAME
+            and _core_discussion_complete(session)
+            and not (session.v1_question or "").strip()
+            and not session.v1_strategy
+        ):
+            acceptance_target = "goal_definition"
+        elif (
+            session.v1_stage == V1_STRATEGY_DRAFT
+            and bool(session.v1_strategy)
+            and not bool((session.v1_strategy or {}).get("confirmed"))
+        ):
+            acceptance_target = "strategy"
+        elif session.v1_stage == V1_TIMELINE_ALIGNMENT:
+            acceptance_target = "timeline_alignment"
+
+        if acceptance_target is not None:
+            await _audit(
+                db,
+                ctx,
+                session,
+                "conversation_stage_accepted",
+                trigger=trigger,
+                stage_before=session.v1_stage,
+                summary=f"用户在对话框确认了 {acceptance_target}。",
+                payload={"target": acceptance_target, "content": content.strip()},
+            )
+            await db.commit()
+            if acceptance_target == "goal_definition":
+                await confirm_goal_definition(db, ctx, session, reasoner)
+                fallback_reply = "已确认目标定义，我正在据此形成战略路径。"
+            elif acceptance_target == "strategy":
+                await confirm_strategy(db, ctx, session, reasoner)
+                fallback_reply = "已确认战略，下面开始一起对齐粗略时间规划。"
+            else:
+                await confirm_timeline_alignment(db, ctx, session, reasoner, accepted=True)
+                fallback_reply = "已确认时间节奏，下面生成粗略时间计划。"
+
+            # `/messages` 必须始终交还与这条用户消息配对的助手消息；而确认接口
+            # 返回的是 AgentTurnResponse，不能直接透传给消息接口。战略/时间确认有时
+            # 只更新画布状态、不产生模型文字，此时补一条简洁的阶段说明。
+            assistant_message = await conversation_service.find_reply_after(
+                db, conversation.id, user_message.seq
+            )
+            if assistant_message is None:
+                assistant_message = await _append_assistant(
+                    db,
+                    ctx,
+                    reply=fallback_reply,
+                    conversation=conversation,
+                )
+                await db.commit()
+            return conversation_service.turn_outcome_for_reply(
+                user_message=user_message, assistant_message=assistant_message, brief=None
+            )
+
     # 连续低信息 / 元对话回答计数:>=2 时服务端强制给候选方向或暂定综合。
     if _counts_as_low_info(classification):
         session.v1_low_info_streak = int(session.v1_low_info_streak or 0) + 1
@@ -2076,10 +2378,14 @@ async def generate_timeline_alignment(
     它**不生成**时间线、不建 proposal;只有用户对齐节奏后(`confirm_timeline_alignment`)
     才调用粗时间架构生成。
     """
+    from backend.services.errors import InvalidInput
+
+    # 时间讨论只能在四项事实全部收齐、且用户已确认战略之后开始；这是第二道服务端
+    # 闸门，避免任何前端遗漏或旧接口直接把用户送进时间线。
+    if not _core_discussion_complete(session) or session.v1_stage != V1_STRATEGY_CONFIRMED:
+        raise InvalidInput("请先完成四个核心问题并确认战略，再讨论粗略时间规划。")
     root = await reasoning_service.root_plan_node(db, ctx)
     if root is None:
-        from backend.services.errors import InvalidInput
-
         raise InvalidInput("这个空间还没有根目标。")
     source = reasoner_source_kind(reasoner)
     if not source_allowed(source):
@@ -2541,6 +2847,10 @@ async def generate_weekly_plan(
     root = await reasoning_service.root_plan_node(db, ctx)
     if root is None:
         raise InvalidInput("这个空间还没有根目标。")
+    # 时间线确认后会自动生成一份待确认的周计划。用户在界面刷新前再次点击
+    # “生成本周计划”不应再建第二/第三份节点；先复用这份仍待确认的提案。
+    if await v01_service._has_open_proposal(db, ctx):
+        return await _response(db, ctx, session, changed=False, trace=trace)
     response = await v01_service.generate_weekly_plan(
         db, ctx, root, session, trace=trace, include_monthly=include_monthly
     )
@@ -3008,6 +3318,9 @@ async def confirm_goal_definition(
     if session.v1_stage != V1_GOAL_REFRAME:
         await _guard_reject(db, ctx, session, reason="当前不在目标重构阶段。")
         raise InvalidInput("当前不在目标重构阶段。")
+    if not _core_discussion_complete(session):
+        await _guard_reject(db, ctx, session, reason="四个核心问题尚未逐一讨论完成。")
+        raise InvalidInput("请先依次完成四个核心问题的讨论，再确认战略。")
     session.v1_stage = V1_PROBLEM_STRUCTURE
     #: 先给一个明确 CTA;合成成功后会被清掉。
     session.v1_next_action = NEXT_CONTINUE_STRATEGY
@@ -3054,6 +3367,8 @@ async def confirm_goal_definition(
         result=result,
     )
     await db.commit()
+    # 通用判断没有直接产出四条战略结构时，再走窄契约合成；此时四维门槛已经满足。
+    await _maybe_synthesize_strategy(db, ctx, session, reasoner, trigger="goal_definition_confirmed")
     return await reasoning_service._response(db, ctx, session, changed=True)
 
 
@@ -3294,6 +3609,9 @@ async def advance_v1_workflow(
         )
         await db.commit()
 
+    # 每次进入工作流也执行一次恢复，因此用户不必再发一条无意义消息才能看到正确阶段。
+    await recover_legacy_early_progression(db, ctx, session)
+
     # 2) 事件分发:所有入口都归到这里,由编排器决定下一阶段。
     if entry_event == "candidate_direction_selected":
         return await select_candidate_direction(
@@ -3359,6 +3677,9 @@ async def advance_v1_workflow(
 
     stage = session.v1_stage
     advanced = False
+    #: 首轮战略判断要**落成一条助手消息**给用户看。以前模型的 `reply` 在这里被丢掉,
+    #: 用户只看到一张「需要回答」的问题卡 —— 体感就是"刚说一句 AI 就开始审问"。
+    first_reply: str | None = None
     if stage == V1_INITIAL_THINKING:
         # **进入空间就实际启动首轮整体判断**,而不是干等用户先输入。
         root = await reasoning_service.root_plan_node(db, ctx)
@@ -3367,10 +3688,13 @@ async def advance_v1_workflow(
         message = (
             f"用户刚创建目标空间「{goal}」"
             + (f",并写下意图:{intent}" if intent else "")
-            + "。请先给出整体判断:它可能服务于什么、真正的歧义在哪;"
-            "最多只问一个会改变路线的关键问题(或给候选方向)。"
+            + "。这是**首轮开场**:请先给出一段 150–300 字的战略理解——"
+            "你怎么理解这个目标、它可能对应哪几条不同路线、哪些因素决定路径、为什么先问当前这个问题;"
+            "然后再问一个会改变路线的关键问题(或给 2–3 个候选方向)。"
+            "不要写成清单,不要鸡汤,**严格控制在 150–300 字**;"
+            "写超了就先删例子、再删背景铺垫。"
         )
-        await _run_assessment(
+        result = await _run_assessment(
             db,
             ctx,
             session,
@@ -3379,6 +3703,8 @@ async def advance_v1_workflow(
             classification=INPUT_STRATEGIC_FACT,
             trigger=entry_event,
         )
+        if not result.degraded and (result.reply or "").strip():
+            first_reply = result.reply
         advanced = True
     elif stage == V1_GOAL_REFRAME and not session.v1_strategic_thesis:
         root = await reasoning_service.root_plan_node(db, ctx)
@@ -3472,7 +3798,13 @@ async def advance_v1_workflow(
                 "hasStrategy": bool(session.v1_strategy),
             },
         )
-    return await _response(db, ctx, session, changed=advanced, trace=trace)
+    # 首轮判断已经生成:先把"我替你想了什么"说给用户听,再让他回答问题。
+    first_message = (
+        await _append_assistant(db, ctx, reply=first_reply) if first_reply else None
+    )
+    return await _response(
+        db, ctx, session, message=first_message, changed=advanced, trace=trace
+    )
 
 
 async def advance(
@@ -3533,6 +3865,11 @@ async def confirm_strategy(
     """
     from backend.services.errors import InvalidInput
 
+    # 任何确认入口都必须复核四维门槛；旧会话即使残留了 strategy JSON，也不能靠
+    # 一个按钮直接跳过“逐项讨论 → 确认战略”。
+    if not _core_discussion_complete(session):
+        await _guard_reject(db, ctx, session, reason="四个核心问题尚未逐一讨论完成。")
+        raise InvalidInput("请先依次完成四个核心问题的讨论，再确认战略并讨论时间规划。")
     strategy = dict(session.v1_strategy or {})
     if not strategy:
         await _guard_reject(db, ctx, session, reason="现在还没有可确认的战略路径。")

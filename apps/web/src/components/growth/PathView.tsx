@@ -48,13 +48,14 @@ import {
   isDescriptionExempt,
 } from '@/lib/codepoints';
 import { useDemo } from '@/features/growth/provider';
-import { V1_CORE_GOAL_KEYS, V1_LINKED_CORE, isLegacyV1GroupKey, v1AnswerChannel } from '@/features/growth/v1Analysis';
+import { V1_CORE_GOAL_KEYS, V1_KEY_QUESTIONS, V1_LINKED_CORE, isLegacyV1GroupKey, v1AnswerChannel } from '@/features/growth/v1Analysis';
 import { v1Phases, type V1PhaseKey } from '@/features/growth/v1Workflow';
 import { useMobileLayout } from '@/lib/media';
 import type { GrowthEdge, GrowthNode, GrowthRelationType } from '@/types/growth';
 import { SpaceFiles } from './SpaceFiles';
 import { CanvasQuestionNodeComponent, QuestionInteractionContext, type CanvasQuestionDraft, type QuestionFlowNode, type QuestionInteraction, type V1NodeActions } from './CanvasQuestionNode';
 import { V1PhaseNodeComponent, type V1PhaseFlowNode } from './V1PhaseNode';
+import { V1KeyNodeComponent, type V1KeyFlowNode } from './V1KeyNode';
 import { V1InteractionNodeComponent, type V1InteractionFlowNode } from './V1InteractionNode';
 import { ReasoningNodeComponent, type ReasoningFlowNode } from './ReasoningNode';
 import { downloadV1Audit, type ReasoningNodeView, type V1DimensionView } from '@/lib/backend';
@@ -90,7 +91,7 @@ type GrowthFlowData = {
   onCreatedEnd: (id: string) => void;
 };
 type GrowthFlowNode = Node<GrowthFlowData, 'growth'>;
-type FlowNode = GrowthFlowNode | QuestionFlowNode | ReasoningFlowNode | V1PhaseFlowNode | V1InteractionFlowNode;
+type FlowNode = GrowthFlowNode | QuestionFlowNode | ReasoningFlowNode | V1PhaseFlowNode | V1KeyFlowNode | V1InteractionFlowNode;
 
 const colors = {
   academic: '#749ce1',
@@ -312,6 +313,7 @@ const nodeTypes = {
   question: CanvasQuestionNodeComponent,
   reasoning: ReasoningNodeComponent,
   v1phase: V1PhaseNodeComponent,
+  v1key: V1KeyNodeComponent,
   v1interaction: V1InteractionNodeComponent,
 };
 
@@ -1080,7 +1082,7 @@ function Canvas() {
   const strategyUnderstandingConfirmed = Boolean(reasoning?.v1StrategyUnderstanding?.confirmed);
   /** 没有 interaction 的流程动作:确认目标定义 / 继续形成战略路径 —— 也只在节点里出现。 */
   const goalConfirmable =
-    reasoning?.v1Stage === 'goal_reframe' && Boolean(reasoning?.v1StrategicThesis);
+    reasoning?.v1Stage === 'goal_reframe' && reasoning?.v1NextAction === 'confirm_goal';
   const continueStrategy = reasoning?.v1NextAction === 'continue_strategy';
   const timelineProposalId = reasoning?.v01TimelineProposalId ?? null;
   const openProposalId =
@@ -1352,31 +1354,36 @@ function Canvas() {
      * (见 `V1_LINKED_CORE`),找不到归属的维度不投影(等同删除)。这样画布上
      * 讨论的基石始终只有这三个,而不是一张随焦点变化的问卷。
      */
-    const coreQuestionByKey = new Map<string, (typeof orderedQuestions)[number]>();
+    /*
+     * 根空间的问题改由「**4 个固定问题框架节点**」承接(见下面的 `v1key` 投影):
+     * 想清楚 → 4 个框架 → 各自的具体问题。非根 / 非 V1 沿用旧投影。
+     */
+    const questionByKey = new Map<string, (typeof orderedQuestions)[number]>();
     orderedQuestions.forEach((item) => {
-      if (item.v1Key && V1_CORE_GOAL_KEYS.includes(item.v1Key)) coreQuestionByKey.set(item.v1Key, item);
+      if (item.v1Key) questionByKey.set(item.v1Key, item);
     });
-    const coreShownQuestions = V1_CORE_GOAL_KEYS
-      .map((key) => coreQuestionByKey.get(key))
-      .filter((item): item is (typeof orderedQuestions)[number] => Boolean(item));
-    const baseShownQuestions = v1Space
+    const shownQuestions = v1Space
       ? isRootSpace
-        ? coreShownQuestions
+        ? []
         : orderedQuestions.filter((item) => item.sourceNodeId === spaceId)
       : roadmapExists
         ? orderedQuestions.filter((item) => item.id === primaryQuestionId)
         : [];
-    const shownQuestions = baseShownQuestions;
-    // active interaction 绑到**基石节点**:只有当 focusKey 本身就是基石键时才绑;
-    // 内部维度(约束 / 风险等)不单独成卡,改由阶段子节点承接,避免把回答提交到错的 question id。
+    // active interaction 绑到当前焦点:根空间认那 4 个框架键,非根认基石键。
     const questionBindsInteraction = Boolean(canvasInteraction && interactionPhaseKey === null);
     const activeFocusKey = canvasInteraction?.focusKey ?? null;
-    const activeNodeKey = questionBindsInteraction && activeFocusKey && V1_CORE_GOAL_KEYS.includes(activeFocusKey)
+    const isBindableFrameKey = (key: string) =>
+      v1Space && isRootSpace
+        ? V1_KEY_QUESTIONS.some((frame) => frame.key === key)
+        : V1_CORE_GOAL_KEYS.includes(key);
+    const activeNodeKey = questionBindsInteraction && activeFocusKey && isBindableFrameKey(activeFocusKey)
       ? activeFocusKey
       : null;
     const activeQuestion =
       activeNodeKey != null
-        ? shownQuestions.find((item) => item.v1Key === activeNodeKey) ?? null
+        ? (v1Space && isRootSpace
+            ? questionByKey.get(activeNodeKey) ?? null
+            : shownQuestions.find((item) => item.v1Key === activeNodeKey) ?? null)
         : null;
     const hasActiveQuestionNode = Boolean(activeQuestion);
     // 内部维度 -> 它挂载的基石节点(作为“关联”信息随卡片展示,不单独成卡)。
@@ -1472,6 +1479,119 @@ function Canvas() {
     });
 
     /*
+     * 根空间:「想清楚」下的 **4 个固定问题框架** + 各自的具体问题。
+     *
+     * 第一个战略分析之后出现。框架节点是产品固定文案(`V1_KEY_QUESTIONS`),
+     * 它下面挂的就是那个维度的具体问题(后端已有的 `agent_questions` 行,不新建实体)。
+     */
+    if (v1Space && isRootSpace && phases.length > 0) {
+      const thinkPos = phasePosition('think');
+      const frames = V1_KEY_QUESTIONS
+        .map((frame) => ({
+          ...frame,
+          question: questionByKey.get(frame.key) ?? null,
+          dimension:
+            (reasoning?.v1Dimensions ?? []).find((dimension) => dimension.key === frame.key) ?? null,
+        }))
+        .filter((frame) => Boolean(frame.question || frame.dimension));
+      const FRAME_W = 200;
+      const FRAME_GAP = 28;
+      const FRAME_H = 92;
+      const rowWidth = frames.length * FRAME_W + Math.max(0, frames.length - 1) * FRAME_GAP;
+      const rowStartX = thinkPos.x + 110 - rowWidth / 2;
+      const frameY = thinkPos.y + 176;
+      const childY = frameY + FRAME_H + 20;
+      frames.forEach((frame, index) => {
+        const x = rowStartX + index * (FRAME_W + FRAME_GAP);
+        const frameNodeId = `v1key:${frame.key}`;
+        const frameKey = `${spaceId}:v1layout2:${frameNodeId}`;
+        nextNodes.push({
+          id: frameNodeId,
+          type: 'v1key',
+          draggable: true,
+          connectable: false,
+          deletable: false,
+          selectable: true,
+          measured: measurements[frameNodeId],
+          ariaLabel: `关键问题：${frame.title}`,
+          position: questionDragging[frameKey] ?? questionPositions[frameKey] ?? { x, y: frameY },
+          data: {
+            frameKey: frame.key,
+            title: frame.title,
+            hasQuestion: Boolean(frame.question),
+            // 画布同一时刻只有一个讨论焦点。后端的内部分析状态可能有多个
+            // `investigating`，但它们不是需要用户同时回答的事项，不能在界面上
+            // 伪装成四个节点都“正在处理”。
+            status: activeFocusKey === frame.key
+              ? 'investigating'
+              : frame.dimension?.status === 'resolved'
+                ? 'resolved'
+                : 'pending',
+            isFocused: activeFocusKey === frame.key,
+          },
+        });
+        nextEdges.push({
+          id: `v1key-edge:${frame.key}`,
+          source: 'v1phase:think',
+          sourceHandle: 'phase-out',
+          target: frameNodeId,
+          targetHandle: 'key-in',
+          // 用 React Flow 内建的 smoothstep 边，拖动两端节点后仍会重新计算路径；
+          // 不依赖自定义 edge 的挂载时机，避免画布重绘后看起来“线没了”。
+          type: 'smoothstep',
+          className: 'v1-framework-edge',
+          style: { stroke: '#3e78a8', strokeWidth: 2, opacity: 1 },
+          selectable: false,
+          deletable: false,
+          reconnectable: false,
+          focusable: false,
+          zIndex: 0,
+        });
+        if (!frame.question) return;
+        const questionNodeId = `question:${frame.question.id}`;
+        const questionPositionKey = `${spaceId}:v1layout2:${questionNodeId}`;
+        nextNodes.push({
+          id: questionNodeId,
+          type: 'question',
+          draggable: true,
+          connectable: false,
+          deletable: false,
+          selectable: true,
+          measured: measurements[questionNodeId],
+          ariaLabel: frame.question.question,
+          position:
+            questionDragging[questionPositionKey] ??
+            questionPositions[questionPositionKey] ??
+            { x, y: childY },
+          data: {
+            questionId: frame.question.id,
+            question: frame.question,
+            isPrimary: frame.question.id === primaryQuestionId,
+            isFocused: focusedQuestionId === frame.question.id,
+            interaction: activeNodeKey === frame.key ? canvasInteraction : null,
+            isActive: Boolean(activeNodeKey === frame.key),
+            verticalAnchor: true,
+          },
+        });
+        nextEdges.push({
+          id: `question-anchor:${frame.question.id}`,
+          source: frameNodeId,
+          sourceHandle: 'key-out',
+          target: questionNodeId,
+          type: 'smoothstep',
+          className: 'v1-framework-edge',
+          style: { stroke: '#3e78a8', strokeWidth: 2, opacity: 1 },
+          selectable: false,
+          deletable: false,
+          reconnectable: false,
+          focusable: false,
+          zIndex: 0,
+        });
+      });
+      questionCounts.think = frames.length;
+    }
+
+    /*
      * ---- V1 三阶段骨架节点 ----------------------------------------------
      *
      * 根目标直接分出三个同级阶段。阶段是稳定骨架，问题 / 选择 / 确认作为
@@ -1482,7 +1602,7 @@ function Canvas() {
         ? { phaseKey: 'think' as const, title: '确认目标定义', prompt: '这是否准确描述了你真正想实现的结果？', action: 'confirm_goal' as const }
         : !activeInteraction && continueStrategy
           ? { phaseKey: 'think' as const, title: '形成战略路径', prompt: '现有判断已经足以形成一条主线战略吗？', action: 'continue_strategy' as const }
-          : !activeInteraction && (reasoning?.v1Stage === 'weekly_execution' || reasoning?.v1Stage === 'replanning')
+          : !activeInteraction && !openProposalId && (reasoning?.v1Stage === 'weekly_execution' || reasoning?.v1Stage === 'replanning')
             ? { phaseKey: 'do' as const, title: '是否细化为具体执行计划？', prompt: '粗时间规划已经确认。要我把它细化为本周计划，再生成今天的工作块吗？', action: 'generate_execution' as const }
             : null;
       // review 类确认(战略 / 时间架构 / 周回顾)一定作为阶段子节点出现;
@@ -1556,13 +1676,17 @@ function Canvas() {
         nextNodes.push({
           id: nodeId,
           type: 'v1interaction',
-          draggable: false,
+          // 阶段确认卡也是画布上的节点；允许用户把它挪开，不让它盖住时间架构卡。
+          draggable: true,
           connectable: false,
           deletable: false,
           selectable: true,
           measured: measurements[nodeId],
           ariaLabel: stageChild.title,
-          position: { x: parentPosition.x + 18, y: parentPosition.y + 176 + questionCount * 168 },
+          position:
+            questionDragging[projectionLayoutKey(nodeId)] ??
+            questionPositions[projectionLayoutKey(nodeId)] ??
+            { x: parentPosition.x + 18, y: parentPosition.y + 176 + questionCount * 168 },
           data: {
             phaseKey: stageChild.phaseKey,
             title: stageChild.title,
@@ -1596,6 +1720,9 @@ function Canvas() {
     // 其余推理节点(维度/风险/假设/多余的讨论)是“思考层”,默认折叠、不占主画布。
     if (reasoning && reasoning.nodes.length > 0) {
       const anchor = positionById[spaceId] ?? { x: 0, y: 0 };
+      // V1 的三段工作流骨架已经占用根节点下方的区域。把模型后续生成的
+      // 时间架构 / 周计划说明放到骨架下方，不能再与“想清楚”的问题框重叠。
+      const reasoningStartY = v1Space && isRootSpace ? phaseTop + 520 : anchor.y + 430;
       const reasoningPos: Record<string, { x: number; y: number }> = {};
       const nodeIdOf = (handle: string) => `reasoning:${handle}`;
       // 用**真实 measured 高度**推进,长卡片不会和下一张叠上。
@@ -1615,7 +1742,10 @@ function Canvas() {
 
       if (roadmapRoute) {
         // 竖排主链:根目标(已由业务布局排好)→ 路线 → 阶段 1 → 阶段 2 …
-        let cursor = anchor.y + (measurements[spaceId]?.height ?? 155) + 120;
+        let cursor = Math.max(
+          anchor.y + (measurements[spaceId]?.height ?? 155) + 120,
+          reasoningStartY,
+        );
         reasoningPos[roadmapRoute.handle] = { x: anchor.x, y: cursor };
         cursor += heightOf(roadmapRoute.handle, 110) + 80;
         for (const stage of stagesOf(roadmapRoute.handle).sort(byHandleOrder)) {
@@ -1626,11 +1756,11 @@ function Canvas() {
         // 旧布局:一级节点横排、子节点挂右侧。保留是为了不丢存量地图。
         const primaries = reasoning.nodes.filter((item) => !item.parentHandle);
         primaries.forEach((item, index) => {
-          reasoningPos[item.handle] = { x: anchor.x + index * 300, y: anchor.y + 430 };
+          reasoningPos[item.handle] = { x: anchor.x + index * 300, y: reasoningStartY };
         });
         for (const item of reasoning.nodes) {
           if (!item.parentHandle) continue;
-          const parent = reasoningPos[item.parentHandle] ?? { x: anchor.x, y: anchor.y + 430 };
+          const parent = reasoningPos[item.parentHandle] ?? { x: anchor.x, y: reasoningStartY };
           const siblings = reasoning.nodes.filter((node) => node.parentHandle === item.parentHandle);
           const index = siblings.indexOf(item);
           reasoningPos[item.handle] = { x: parent.x + (index + 1) * 220, y: parent.y + 160 };
@@ -1647,7 +1777,7 @@ function Canvas() {
         // 思考材料**平铺**一列,不与主路线争位置;层级关系由图上的锚定线/链接表达。
         const thinking = reasoning.nodes.filter((item) => !roadmapHandles.has(item.handle));
         const originX = anchor.x + (roadmapRoute ? 460 : 0);
-        let cursorY = anchor.y + 430;
+        let cursorY = reasoningStartY;
         for (const item of thinking) {
           reasoningPos[item.handle] = { x: originX, y: cursorY };
           cursorY += heightOf(item.handle, 120) + 80;
@@ -1660,7 +1790,8 @@ function Canvas() {
         nextNodes.push({
           id: nodeId,
           type: 'reasoning',
-          draggable: false,
+          // 这类节点是投影，不写业务图谱；位置只保存在本地画布偏好中。
+          draggable: true,
           connectable: false,
           deletable: false,
           selectable: true,
@@ -1668,7 +1799,10 @@ function Canvas() {
           // 而反复重测 —— 那是悬停/重建时闪烁的直接机制(与问题节点同一条)。
           measured: measurements[nodeId],
           ariaLabel: item.title,
-          position: reasoningPos[item.handle],
+          position:
+            questionDragging[projectionLayoutKey(nodeId)] ??
+            questionPositions[projectionLayoutKey(nodeId)] ??
+            reasoningPos[item.handle],
           data: {
             node: item,
             isFocus: item.handle === reasoning.focusHandle,
@@ -1747,7 +1881,7 @@ function Canvas() {
       });
     });
     return { nodes: nextNodes, edges: nextEdges };
-  }, [growth, spaceId, isRootSpace, selectedId, selectedEdgeId, positions, dragging, questionPositions, questionDragging, files, measurements, handleMore, createdId, drawnEdgeId, clearCreated, clearDrawn, questions, focusedQuestionId, reasoning, showThinking, currentInteraction, goalConfirmable, continueStrategy, phases, focusedPhaseKey]);
+  }, [growth, spaceId, isRootSpace, selectedId, selectedEdgeId, positions, dragging, questionPositions, questionDragging, files, measurements, handleMore, createdId, drawnEdgeId, clearCreated, clearDrawn, questions, focusedQuestionId, reasoning, showThinking, currentInteraction, goalConfirmable, continueStrategy, openProposalId, phases, focusedPhaseKey]);
 
   /*
    * hover / 拖动的高亮**只作用在边对象上**。
@@ -2333,6 +2467,11 @@ function Canvas() {
             setFocusedPhaseKey(node.data.phaseKey);
             return;
           }
+          if (node.type === 'v1key') {
+            // 点框架节点 = 聚焦「想清楚」,它下面的具体问题才是可回答的。
+            setFocusedPhaseKey('think');
+            return;
+          }
           if (node.type === 'question') {
             setFocusedQuestionId(node.data.questionId);
             return;
@@ -2432,8 +2571,14 @@ function Canvas() {
         onNodesChange={(changes) => {
           for (const change of changes) {
             if (change.type === 'position' && change.position && change.dragging) {
-              // 问题节点是 UI-only:拖动只进它自己的预览表,不进业务那份。
-              if (change.id.startsWith('question:')) {
+              // 投影节点(问题 / 问题框架 / 阶段确认 / 推理地图)是 UI-only:拖动只进
+              // 本地预览表,不把 synthetic id 错当业务节点提交给后端。
+              if (
+                change.id.startsWith('question:') ||
+                change.id.startsWith('v1key:') ||
+                change.id.startsWith('v1interaction:') ||
+                change.id.startsWith('reasoning:')
+              ) {
                 const key = projectionLayoutKey(change.id);
                 setQuestionDragging((old) => ({ ...old, [key]: change.position! }));
               } else {
@@ -2452,12 +2597,17 @@ function Canvas() {
           }
         }}
         onNodeDragStop={(_, node) => {
-          const key = node.type === 'question'
+          const isProjection =
+            node.type === 'question' ||
+            node.type === 'v1key' ||
+            node.type === 'v1interaction' ||
+            node.type === 'reasoning';
+          const key = isProjection
             ? projectionLayoutKey(node.id)
             : `${spaceId}:${node.id}`;
           const started = dragStart.current;
           dragStart.current = null;
-          if (node.type === 'question') {
+          if (isProjection) {
             // **UI-only 位置。** 不记历史、不排布局落库、不碰后端 —— 问题节点不是
             // 业务节点,拖它只是“我把这张卡放在这里”。
             commitQuestionMove(key, { x: node.position.x, y: node.position.y });
@@ -2472,7 +2622,7 @@ function Canvas() {
           // **拖完把预览扔掉。** 预览只是“拖动中”的那一份(画节点用的是
           // `dragging[key] ?? positions[key] ?? 自动排布`),拖完不清的话位置的
           // 真值会被它挡住 —— 撤销因此“按了没反应”。
-          if (node.type === 'question') {
+          if (isProjection) {
             setQuestionDragging((old) => {
               if (!(key in old)) return old;
               const next = { ...old };

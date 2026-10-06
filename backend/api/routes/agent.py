@@ -36,7 +36,7 @@ from backend.contracts.reasoning import (
 from backend.contracts.trace import AgentTraceView
 from backend.core.config import settings
 from backend.db.session import get_db
-from backend.services import agent_trace_service, reasoning_service
+from backend.services import agent_trace_service, reasoning_service, v1_service
 from backend.services.context import WorkspaceContext
 from backend.services.errors import InvalidInput, TraceDisabled
 
@@ -52,12 +52,18 @@ async def read_reasoning_map(
     ctx: WorkspaceContext = Depends(get_workspace_context),
     db: AsyncSession = Depends(get_db),
 ) -> GoalReasoningView:
-    """这个空间的目标推理地图。**只读,不创建会话。**
+    """这个空间的目标推理地图。**不创建会话。**
 
     新空间返回的是一个空地图(phase=strategic_exploration、没有节点),不是 404 ——
     "还没探索过"和"这个空间不存在"是两回事。真正的探索只发生在显式的
     `POST /agent/turn {trigger: space_entered}`(步骤 2)。
+
+    唯一的兼容写入是将旧版“答一题即进战略”的会话迁回四维讨论；它不调用模型、
+    不创建会话，只确保用户刷新页面就能看见正确流程。
     """
+    session = await reasoning_service.get_session(db, ctx)
+    if session is not None and await v1_service.recover_legacy_early_progression(db, ctx, session):
+        await db.commit()
     return await reasoning_service.load_map(db, ctx)
 
 

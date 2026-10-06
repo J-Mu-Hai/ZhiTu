@@ -270,6 +270,15 @@
   opacity: 1;
 }
 
+/* 四维讨论树:框架与其具体问题均为可拖动节点，连接用可见实线表达层级。 */
+.v1-framework-edge .react-flow__edge-path,
+.react-flow__edge.v1-framework-edge .react-flow__edge-path {
+  stroke: #6f8fb0;
+  stroke-width: 1.55;
+  stroke-dasharray: none;
+  opacity: .9;
+}
+
 /* 阶段下的待办是真正可操作的画布节点；卡片不再被塞进右侧对话或阶段标题里。 */
 .v1-interaction-node {
   width: 248px;
@@ -336,12 +345,16 @@
 .chat-conversation-question {
   display: grid;
   gap: 5px;
-  margin: 4px 0 12px;
+  margin: 0;
   padding: 11px 13px;
   border: 1px solid color-mix(in srgb, var(--experience, #c7a06e) 55%, #e6d2b4);
   border-left: 3px solid var(--experience, #c7a06e);
   border-radius: 10px;
   background: color-mix(in srgb, var(--experience, #c7a06e) 9%, var(--surface-panel, #fffefa));
+}
+.conversation-question-message {
+  /* 它是消息流中的一条助手消息，不能脱离滚动区覆盖其他消息。 */
+  position: static;
 }
 .chat-conversation-tag {
   justify-self: start;
@@ -367,4 +380,96 @@
   font-size: 10.5px;
   line-height: 1.5;
   color: var(--muted, #7a8b99);
+}
+
+/* 战略判断后的四维讨论路线：它是一条普通助手消息，不是悬浮的流程面板。 */
+.discussion-roadmap-message { position: static; }
+.discussion-roadmap {
+  display: grid;
+  gap: 9px;
+  padding: 11px 13px;
+  border: 1px solid var(--line-card, #d7e2ea);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface-panel, #fffefa) 88%, #eaf4fb);
+}
+.discussion-roadmap > p {
+  margin: 0;
+  color: #526f87;
+  font-size: 11.5px;
+  line-height: 1.65;
+}
+.discussion-roadmap ol {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.discussion-roadmap-item {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text, #24486a);
+  font-size: 11px;
+  text-align: left;
+}
+.discussion-roadmap li.is-active .discussion-roadmap-item {
+  border-color: #bfdaec;
+  background: #edf7fd;
+}
+.discussion-roadmap-index {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #dcecf7;
+  color: #39719a;
+  font-size: 10px;
+  font-weight: 700;
+}
+.discussion-roadmap em {
+  color: var(--muted, #7a8b99);
+  font-size: 9.5px;
+  font-style: normal;
+}
+.discussion-roadmap li.is-active em { color: #2f6da3; font-weight: 600; }
+
+/* ================================================================== */
+/* 「想清楚」下的 4 个固定问题框架节点(具体问题挂在它们下面)            */
+/* ================================================================== */
+.v1-key-node {
+  position: relative;
+  width: 200px;
+  padding: 10px 13px;
+  border: 1px solid var(--line-card, #d7e2ea);
+  border-left: 3px solid var(--blue-ink, #2f6da3);
+  border-radius: 10px;
+  background: var(--surface-raised, #fff);
+  box-shadow: 0 6px 18px rgba(72, 99, 117, .07);
+  color: var(--text, #304b62);
+  cursor: pointer;
+}
+.v1-key-node.is-focus { outline: 2px solid var(--line-selected, #c9e2f4); outline-offset: 3px; }
+.v1-key-node.is-done { border-left-color: var(--research-ink, #477a6e); }
+.v1-key-title { font-size: 12.5px; font-weight: 600; line-height: 1.5; color: var(--text, #24486a); }
+.v1-key-badge {
+  display: inline-block;
+  margin-top: 6px;
+  padding: 0 7px;
+  border: 1px solid var(--line, #d8e0e6);
+  border-radius: 999px;
+  font-size: 9.5px;
+  color: var(--muted, #6f8293);
+}
+.v1-key-node.is-done .v1-key-badge {
+  color: var(--research-ink, #477a6e);
+  border-color: #bcdccb;
+  background: #eef7f3;
 }

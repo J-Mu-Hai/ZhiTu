@@ -5,7 +5,7 @@ import { createWorkspace, openSpacePage, registerAccount } from './support/sessi
  * V1 交互职责分离(真实后端)。
  *
  * 这一版把**结构化问答、候选方向与节点确认**全部收进画布节点;对话区只保留
- * 判断 / 解释、自由输入与「定位到节点」。所以这里验的不是“候选方向长什么样”,
+ * 判断 / 解释与自由输入。所以这里验的不是“候选方向长什么样”,
  * 而是**同一个 interaction 不再出现在对话区**:
  *
  * 1. 对话区没有选项按钮、没有第二个输入框、没有固定交互卡;
@@ -36,8 +36,7 @@ test.describe('V1 交互职责分离', () => {
     // 有判断 / 有节点 / 有位置提示 —— 任一先到即可,不硬等某一个。
     await expect(
       page.getByTestId('v1-thesis')
-        .or(page.locator('.canvas-question-node'))
-        .or(page.getByTestId('chat-action-notice')),
+        .or(page.locator('.canvas-question-node')),
     ).toBeVisible({ timeout: 180_000 });
 
     // 对话区**不允许**出现结构化交互。
@@ -46,12 +45,8 @@ test.describe('V1 交互职责分离', () => {
     await expect(page.locator('.floating-conversation .v1-alignment-options')).toHaveCount(0);
     await expect(page.locator('.floating-conversation [data-testid="cq-interaction"]')).toHaveCount(0);
 
-    // 位置提示只给文字 + 定位,没有选项 / 第二个输入框。
-    const notice = page.getByTestId('chat-action-notice');
-    if (await notice.count() > 0) {
-      await expect(notice).toContainText('节点');
-      await expect(notice.getByRole('button', { name: '定位到节点' })).toBeVisible();
-    }
+    // 对话区不再塞入“定位到节点”的占位提示。
+    await expect(page.getByTestId('chat-action-notice')).toHaveCount(0);
 
     // 任意时刻至多一个 active node。
     const activeNodes = page.locator('.canvas-question-node.is-active');

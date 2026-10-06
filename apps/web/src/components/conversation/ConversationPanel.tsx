@@ -5,7 +5,7 @@ import { ArrowUp, Plus, X, CornerDownLeft, AlertCircle, RotateCcw, RefreshCw } f
 import { useDemo } from '@/features/growth/provider';
 import { readConversationDraft, subscribeConversationDraft, writeConversationDraft } from '@/features/growth/drafts';
 import { V1_READY_PROMPT } from '@/features/growth/v1Workflow';
-import { V1_CORE_GOAL_KEYS, v1AnswerChannel } from '@/features/growth/v1Analysis';
+import { V1_KEY_QUESTIONS, v1AnswerChannel } from '@/features/growth/v1Analysis';
 import { degradedHint, sourceLabel } from '@/lib/backend';
 import type { ResearchView } from '@/lib/backend';
 
@@ -92,26 +92,6 @@ function ResearchCitations({ research }: { research: ResearchView }) {
  * **完整回答只发生在画布的 Question Node 里** —— 这里不提供第二份可提交控件,
  * 只负责定位。它高度不到 32px,不展示正文/理由/来源/选项。
  */
-function QuestionStatusBar({
-  count,
-  processing,
-  onLocate,
-}: {
-  count: number;
-  processing: boolean;
-  onLocate: () => void;
-}) {
-  return (
-    <div className="question-status-bar" role="status" aria-label={`画布上有 ${count} 个待回答问题`}>
-      <span className="tiny-dot" aria-hidden="true" />
-      <span className="question-status-text">{processing ? '正在处理你的回答' : `待回答问题 ${count}`}</span>
-      <button type="button" className="question-locate" onClick={onLocate}>
-        定位到画布
-      </button>
-    </div>
-  );
-}
-
 /**
  * 提案校验失败的**紧凑**提示。
  *
@@ -218,7 +198,7 @@ function IntakeChips({
  * 被"截止时间/每周投入"干扰。`replan` 入口只在**已确认战略 + 存在执行计划**时才出现。
  */
 export function ConversationPanel() {
-  const { growth, selectedId, select, messages, remoteProposals, proposalErrors, inputChanged, deciding, confirmRemote, rejectRemote, replan, replanState, send, retry, sending, sendError, retryable, historyLoading, messagesTruncated, spaceId, workspaceId, questions, focusQuestion, openTrace, traceAvailability, reasoning, agentStatus,
+  const { growth, selectedId, select, messages, remoteProposals, proposalErrors, inputChanged, deciding, confirmRemote, rejectRemote, replan, replanState, send, retry, sending, sendError, retryable, historyLoading, messagesTruncated, spaceId, workspaceId, openTrace, traceAvailability, reasoning, agentStatus,
   currentInteraction } = useDemo();
   /*
    * 草稿住在组件外面(见 `features/growth/drafts.ts`)。
@@ -258,26 +238,6 @@ export function ConversationPanel() {
     proposal => proposal.status === 'validated' || proposal.status === 'pending_confirmation',
   ).filter(proposal => !messages.some(message => message.proposalId === proposal.id));
 
-  /**
-   * 同一时刻只突出**一个**主问题。
-   *
-   * 优先一个还没答的;没有的话,正在处理的也要显示(用户刚答完,不能让它凭空消失,
-   * 否则他会以为答案没提交上)。列表已由后端按时间排好,这里只做挑选,不再排序。
-   */
-  /**
-   * 只有 `canvas_question` 才参与“待回答问题 / 定位到画布”。
-   *
-   * 阶段 12 起战略 intake **不再落问题实体**;但老数据里可能残留
-   * `conversation_intake` 行。它们必须在这里就被排除,不能重新变成 primaryQuestion、
-   * 不能显示定位按钮、不能劫持用户输入。
-   */
-  const canvasQuestions = questions.filter(
-    question => question.presentation !== 'conversation_intake',
-  );
-  const primaryQuestion =
-    canvasQuestions.find(question => question.status === 'pending') ??
-    canvasQuestions.find(question => question.status === 'investigating' || question.status === 'answered') ??
-    null;
   /**
    * 阶段 12:战略澄清 intake 的问题**就在对话流里**,不是一张常驻表单。
    *
@@ -361,71 +321,39 @@ export function ConversationPanel() {
     setInput('');
   }
 
-  /*
-   * 没有 interaction 的流程动作(确认目标定义 / 继续形成战略路径)也把决定放在
-   * 画布节点里。对话区对它们同样只给一句位置说明 + 定位。
-   */
-  const goalConfirmable =
-    reasoning?.v1Stage === 'goal_reframe' && Boolean(reasoning?.v1StrategicThesis);
-  const continueStrategy = reasoning?.v1NextAction === 'continue_strategy';
   const activeInteraction = currentInteraction?.status === 'active' ? currentInteraction : null;
   /*
    * **回答渠道分流**(服务端稳定字段):
    * - `conversation`:自由叙述型问题,只在对话区以“在对话中回答”出现;
-   * - `canvas_node`:会改变流程状态的决策,对话区只说位置并给「定位到节点」。
+   * - `canvas_node`:会改变流程状态的决策,由画布节点承接；对话区不重复占位。
    * 同一个问题绝不会两边同时出现。
    */
   const activeChannel = activeInteraction ? v1AnswerChannel(activeInteraction) : null;
   const conversationInteraction = activeInteraction && activeChannel === 'conversation' ? activeInteraction : null;
-  const canvasInteraction = activeInteraction && activeChannel === 'canvas_node' ? activeInteraction : null;
-  const canvasQuestion = canvasInteraction?.focusKey && V1_CORE_GOAL_KEYS.includes(canvasInteraction.focusKey)
-    ? questions.find(question => question.v1Key === canvasInteraction.focusKey) ?? null
-    : null;
+  /*
+   * 第一次战略判断之后，先把「接下来怎样讨论」说清楚。
+   *
+   * 这不是另一套状态机：四项和画布上的固定框架节点共用同一份常量，焦点也只读
+   * 服务端的 `focusKey`。所以用户看见的是一个明确的讨论顺序，而不是又多出一张
+   * 会和画布不同步的问卷。
+   */
+  const showDiscussionRoadmap = Boolean(
+    isV1 &&
+    // 流程说明不能依赖模型有没有恰好返回 strategicThesis：即使这一字段暂缺，
+    // 用户也必须先看见“四维逐项讨论”的规则，不能被直接丢进第一道问题。
+    ['initial_thinking', 'goal_reframe', 'factor_analysis', 'problem_structure'].includes(reasoning?.v1Stage ?? ''),
+  );
+  const discussionFocusKey =
+    conversationInteraction?.focusKey ??
+    (V1_KEY_QUESTIONS.some((item) => item.key === reasoning?.v1FocusKey)
+      ? reasoning?.v1FocusKey
+      : null);
   /*
    * review 类动作绑在**阶段节点**上(战略 → 想清楚,时间 → 排出来,周回顾 → 做起来);
-   * 问答类动作绑在对应的分析子节点上。对话区只给一个「定位到节点」。
+   * 问答类动作绑在对应的分析子节点上。对话区只保留自然语言交流。
    */
-  const reviewPhase: { key: 'think' | 'plan' | 'do'; title: string } | null = canvasInteraction
-    ? canvasInteraction.kind === 'strategy_review'
-      ? { key: 'think', title: '想清楚' }
-      : canvasInteraction.kind === 'timeline_alignment' || canvasInteraction.kind === 'timeline_review'
-        ? { key: 'plan', title: '排出来' }
-        : canvasInteraction.kind === 'weekly_review'
-          ? { key: 'do', title: '做起来' }
-          : null
-    : null;
   // 流程动作(确认目标 / 继续形成战略)只在**没有任何 active interaction** 时出现:
   // 同一个时刻只有一个待办,不能和对话问题抢同一片区域。
-  const flowActionVisible = !activeInteraction && (goalConfirmable || continueStrategy);
-  const noticeTarget = canvasInteraction
-    ? reviewPhase
-      ? `v1phase:${reviewPhase.key}`
-      : canvasQuestion?.id ?? 'v1phase:think'
-    : flowActionVisible
-      ? 'v1phase:think'
-      : null;
-  const noticeTitle = canvasInteraction
-    ? reviewPhase
-      ? `${reviewPhase.title} → ${canvasInteraction.title}`
-      : `想清楚 → ${canvasQuestion?.v1Title ?? canvasInteraction.title}`
-    : flowActionVisible
-      ? '想清楚'
-      : '画布';
-  const noticeImpact = canvasInteraction?.kind === 'strategy_review'
-    ? '收束战略'
-    : canvasInteraction?.kind === 'timeline_review'
-      ? '生成时间架构'
-      : canvasInteraction?.kind === 'timeline_alignment'
-        ? '对齐时间节奏'
-        : canvasInteraction?.kind === 'candidate_selection'
-          ? '确定起点'
-          : goalConfirmable
-            ? '进入问题结构'
-            : continueStrategy
-              ? '继续形成战略路径'
-              : '继续推进';
-  const noticeVisible = Boolean(isV1 && (canvasInteraction || flowActionVisible));
-
   return (
     <aside className="conversation-panel" aria-label="与 AI 一起思考">
       <header className="conversation-header">
@@ -449,60 +377,6 @@ export function ConversationPanel() {
           `FloatingConversation`)。这里只留一句说明,免得下一个人又把它加回来。
         */}
       </header>
-
-      {/*
-       * **待回答问题:标题栏下方一条紧凑状态。**
-       *
-       * 它取代了正文里那张大卡片 —— 同一件事只在一处说,而且不占正文空间。
-       * 只在存在活动问题时出现;回答仍然只在画布的 Question Node 里完成。
-       */}
-      {!isV1 && primaryQuestion && primaryQuestion.presentation !== 'conversation_intake' && (
-        <QuestionStatusBar
-          count={questions.length}
-          processing={primaryQuestion.status === 'answered' || primaryQuestion.status === 'investigating'}
-          onLocate={() => focusQuestion(primaryQuestion.id)}
-        />
-      )}
-
-      {/*
-       * **需要在对话中回答**:自由叙述型问题只在对话区出现。
-       *
-       * 橙色提示携带“问什么 + 为什么重要”;它**不**在画布上建同一份选项/输入框。
-       */}
-      {conversationInteraction && (
-        <div className="chat-conversation-question" data-testid="chat-conversation-question">
-          <span className="chat-conversation-tag">需要在对话中回答</span>
-          {conversationInteraction.context && (
-            <p className="chat-conversation-context">{conversationInteraction.context}</p>
-          )}
-          <p className="chat-conversation-prompt">{conversationInteraction.prompt}</p>
-          <p className="chat-conversation-hint">直接在下面的输入框里说就好，想到多少说多少。</p>
-        </div>
-      )}
-
-      {/*
-       * **当前决定放在哪个画布节点。**
-       *
-       * 对话区只说明位置并给「定位到节点」——选项、输入框与确认按钮都在画布节点里
-       * (见 `CanvasQuestionNode`)。它固定在历史之上,不需要滚动就能看到。
-       */}
-      {noticeVisible && (
-        <div className="chat-action-notice" data-testid="chat-action-notice">
-          <p>
-            我需要你在「{noticeTitle}」节点确认这一点；确认后我会{noticeImpact}。
-          </p>
-          <button
-            type="button"
-            className="text-button"
-            onClick={() => {
-              if (noticeTarget) focusQuestion(noticeTarget);
-              else select(spaceId);
-            }}
-          >
-            定位到节点
-          </button>
-        </div>
-      )}
 
       <div className="conversation-history" ref={history}>
         {historyLoading && <p className="turn-loading">正在读取对话…</p>}
@@ -629,6 +503,59 @@ export function ConversationPanel() {
             </article>
           );
         })}
+
+        {/*
+         * 战略判断之后的流程说明也是消息流的一部分：先告知四个维度，再进入当前
+         * 一个节点的提问。它不悬浮、不遮挡，也不提供第二个回答入口。
+         */}
+        {showDiscussionRoadmap && (
+          <article className="message assistant discussion-roadmap-message" data-testid="discussion-roadmap">
+            <div className="message-byline">
+              <BrandMark size={20} />
+              <strong>知途</strong>
+              <span>先把问题想清楚</span>
+            </div>
+            <div className="discussion-roadmap">
+              <p>接下来我会从以下 4 个维度，陪你把这件事想清楚。我们每次只讨论一个节点；其余节点会先保留，等当前问题有结论后再继续。</p>
+              <ol>
+                {V1_KEY_QUESTIONS.map((item, index) => {
+                  const active = discussionFocusKey === item.key;
+                  return (
+                    <li key={item.key} className={active ? 'is-active' : ''}>
+                      <div className="discussion-roadmap-item">
+                        <span className="discussion-roadmap-index">{index + 1}</span>
+                        <span>{item.title}</span>
+                        <em>{active ? '当前讨论' : '随后讨论'}</em>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ol>
+            </div>
+          </article>
+        )}
+
+        {/*
+         * 自由叙述问题也是一条“知途”消息，而不是悬在消息流上方的通知。
+         * 放在历史流的末尾后，它会随滚动正常阅读，绝不会遮住先前的分析回复。
+         */}
+        {conversationInteraction && (
+          <article className="message assistant conversation-question-message" data-testid="chat-conversation-question">
+            <div className="message-byline">
+              <BrandMark size={20} />
+              <strong>知途</strong>
+              <span>与你一起</span>
+            </div>
+            <div className="chat-conversation-question">
+              <span className="chat-conversation-tag">需要在对话中回答</span>
+              {conversationInteraction.context && (
+                <p className="chat-conversation-context">{conversationInteraction.context}</p>
+              )}
+              <p className="chat-conversation-prompt">{conversationInteraction.prompt}</p>
+              <p className="chat-conversation-hint">直接在下面的输入框里说就好，想到多少说多少。</p>
+            </div>
+          </article>
+        )}
 
         {/*
          * 当前动作处理完之后,历史里留一句短摘要。
@@ -778,8 +705,6 @@ export function ConversationPanel() {
       </div>
 
       <div className="composer-area">
-        {/* 问题入口已经移到标题栏下方那条紧凑状态条(见 `QuestionStatusBar`)。
-            这里不再重复渲染问题正文 —— 完整回答只在画布的 Question Node 里完成。 */}
         {/* 「按执行情况调整」的入口。
             放在对话里而不是排期页,是因为它的产出是一份**要用户确认的提案**,
             而确认的界面就在这里 —— 换个地方发起、再让用户回来确认,中间那一步
@@ -802,14 +727,10 @@ export function ConversationPanel() {
           </div>
         )}
 
-        {/* 「选择画布中的节点,让讨论更聚焦」这条说明只在**确实有事可做**时出现:
-            已经选了一个节点(`.context-chip`),或者有一个当前待回答的问题。既没有
-            问题也没有选中项时,它是一句指向不存在动作的常驻空话 —— 不渲染。 */}
+        {/* 画布选中时只说明当前上下文；不再把“定位到讨论节点”塞进对话区。 */}
         {selected
           ? <div className="context-chip"><span className="tiny-dot" />正在讨论：{selected.title}<button aria-label="清除上下文" onClick={() => select(null)}><X size={12} /></button></div>
-          : primaryQuestion
-            ? <div className="context-hint"><span className="tiny-dot" />选择画布中的节点，让讨论更聚焦</div>
-            : null}
+          : null}
 
         {showContexts && (
           <div className="context-options">

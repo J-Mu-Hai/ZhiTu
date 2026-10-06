@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.agent.runtime.base import (
     V1AssessmentDraft,
     V1NodeUpdate,
+    V1StrategyDraft,
     V1TimelineDraft,
     V1TimelinePhaseDraft,
 )
@@ -76,33 +77,35 @@ def _assessment(**overrides):
 
 
 async def _drive_to_strategy_confirmed(client, account, reasoner):
+    """四维讨论完成并确认目标后，才形成可供确认的战略。"""
+    reasoner.v1_assessment = _assessment()
     await _turn(client, account, "p3-open")
-    reasoner.v1_assessment = _assessment(
-        node_updates=(
-            V1NodeUpdate(node_key="goal_definition", judgment="30 天内做出一个能展示的分析项目。"),
-            V1NodeUpdate(node_key="key_conflict", judgment="目标太大,反馈太慢。"),
-            V1NodeUpdate(node_key="hard_constraints", judgment="每天只有 1 小时。"),
+    # 某些守卫用例已先以“无模型判断”的默认 FakeReasoner 打开会话。那一轮不会
+    # 产生待答问题；先用一条消息让服务端落下固定的第一维，再开始四项计数。
+    if (await _reasoning(client, account))["v1ActualPendingQuestionCount"] == 0:
+        await _send(client, account, "我开始梳理目标。", "p3-bootstrap")
+    for index, (key, answer) in enumerate((
+        ("true_intent", "我想做出一个能展示的数据分析项目。"),
+        ("current_state", "我会一点 Python 基础，也能查资料。"),
+        ("hard_constraints", "每天只有一小时，预计六周。"),
+        ("goal_definition", "能独立演示并写进简历才算完成。"),
+    ), start=1):
+        reasoner.v1_assessment = _assessment(
+            node_updates=(V1NodeUpdate(node_key=key, judgment=answer),),
         )
+        await _send(client, account, answer, f"p3-{index}")
+    reasoner.v1_strategy = V1StrategyDraft(
+        main_line="先用最小项目闭环补齐 pandas。",
+        parallel_line="并行看一点统计基础。",
+        defer_or_avoid="暂不系统学算法。",
+        risk_control="每两周复盘一次。",
+        tradeoff="先要能展示的成果。",
     )
-    await _send(client, account, "我想做出一个能展示的数据分析项目", "p3-1")
-    reasoner.v1_assessment = _assessment(
-        strategy_ready=True,
-        node_updates=(
-            V1NodeUpdate(node_key="major_risks", judgment="容易陷入只看不做的教程循环。"),
-            V1NodeUpdate(node_key="main_line", judgment="先用最小项目闭环补齐 pandas。"),
-            V1NodeUpdate(node_key="parallel_line", judgment="并行看一点统计基础。"),
-        ),
-        strategy_tradeoff="先要能展示的成果。",
+    confirmed = await client.post(
+        f"/api/workspaces/{account.workspace_id}/agent/v1/goal/confirm",
+        headers=account.headers,
     )
-    await _send(client, account, "我更在意能拿出东西", "p3-2")
-    reasoner.v1_assessment = _assessment(
-        strategy_ready=True,
-        node_updates=(
-            V1NodeUpdate(node_key="defer_or_avoid", judgment="暂不系统学算法。"),
-            V1NodeUpdate(node_key="risk_control", judgment="每两周复盘一次。"),
-        ),
-    )
-    await _send(client, account, "可以", "p3-3")
+    assert confirmed.status_code == 200, confirmed.text
 
 
 def _timeline_draft():
