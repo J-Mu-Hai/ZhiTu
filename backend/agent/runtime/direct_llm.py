@@ -50,6 +50,10 @@ from backend.agent.prompts.v1_timeline_repair import (
     V1_TIMELINE_REPAIR_PROMPT_VERSION,
     V1_TIMELINE_REPAIR_SYSTEM_PROMPT,
 )
+from backend.agent.prompts.v1_weekly_plan import (
+    PROMPT_VERSION as V1_WEEKLY_PLAN_PROMPT_VERSION,
+    V1_WEEKLY_PLAN_SYSTEM_PROMPT,
+)
 from backend.agent.runtime.base import ReasoningResult, TurnContext
 from backend.agent.runtime.response import (
     PayloadInvalid,
@@ -243,6 +247,8 @@ def _prompt_for(turn: TurnContext) -> tuple[str, str]:
         return V1_TIMELINE_REPAIR_SYSTEM_PROMPT, V1_TIMELINE_REPAIR_PROMPT_VERSION
     if turn.purpose == "v1_timeline_alignment":
         return V1_TIMELINE_ALIGNMENT_SYSTEM_PROMPT, V1_TIMELINE_ALIGNMENT_PROMPT_VERSION
+    if turn.purpose == "v1_weekly_plan":
+        return V1_WEEKLY_PLAN_SYSTEM_PROMPT, V1_WEEKLY_PLAN_PROMPT_VERSION
     return SYSTEM_PROMPT, PROMPT_VERSION
 
 

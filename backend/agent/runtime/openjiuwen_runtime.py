@@ -81,6 +81,10 @@ from backend.agent.prompts.v1_timeline_repair import (
     V1_TIMELINE_REPAIR_PROMPT_VERSION,
     V1_TIMELINE_REPAIR_SYSTEM_PROMPT,
 )
+from backend.agent.prompts.v1_weekly_plan import (
+    PROMPT_VERSION as V1_WEEKLY_PLAN_PROMPT_VERSION,
+    V1_WEEKLY_PLAN_SYSTEM_PROMPT,
+)
 from backend.agent.runtime.base import ReasoningResult, TurnContext
 from backend.agent.runtime.response import (
     ANALYSIS_FIELD_ORDER,
@@ -370,6 +374,12 @@ OUTPUT_CONFIG: dict[str, Any] = {
             "riskControl": {**_NULLABLE_STRING_SCHEMA, "description": "风险控制:检查点或备用路径"},
             "tradeoff": {**_NULLABLE_STRING_SCHEMA, "description": "这版战略的取舍(可空)"},
         },
+    },
+    "v1WeeklyPlan": {
+        "type": "object",
+        "required": False,
+        "description": "阶段三周任务明细(仅 v1_weekly_plan 回合使用)",
+        "properties": {"summary": _NULLABLE_STRING_SCHEMA, "tasks": {"type": "array"}},
     },
 }
 
@@ -682,6 +692,8 @@ def _system_prompt(turn: TurnContext) -> str:
         return V1_TIMELINE_REPAIR_SYSTEM_PROMPT
     if turn.purpose == "v1_timeline_alignment":
         return V1_TIMELINE_ALIGNMENT_SYSTEM_PROMPT
+    if turn.purpose == "v1_weekly_plan":
+        return V1_WEEKLY_PLAN_SYSTEM_PROMPT
     return SYSTEM_PROMPT
 
 
@@ -698,6 +710,8 @@ def _prompt_version(turn: TurnContext) -> str:
         return V1_TIMELINE_REPAIR_PROMPT_VERSION
     if turn.purpose == "v1_timeline_alignment":
         return V1_TIMELINE_ALIGNMENT_PROMPT_VERSION
+    if turn.purpose == "v1_weekly_plan":
+        return V1_WEEKLY_PLAN_PROMPT_VERSION
     return PROMPT_VERSION
 
 

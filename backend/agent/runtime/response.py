@@ -49,6 +49,7 @@ from backend.agent.prompts.v1_strategy_synthesis import render_v1_strategy_synth
 from backend.agent.prompts.v1_timeline import render_v1_timeline_turn
 from backend.agent.prompts.v1_timeline_alignment import render_v1_timeline_alignment_turn
 from backend.agent.prompts.v1_timeline_repair import render_v1_timeline_repair_turn
+from backend.agent.prompts.v1_weekly_plan import render_v1_weekly_plan_turn
 from backend.agent.runtime.base import (
     AnalysisDraft,
     BriefClaim,
@@ -70,6 +71,8 @@ from backend.agent.runtime.base import (
     V1TimelineAlignmentDraft,
     V1TimelineDraft,
     V1TimelinePhaseDraft,
+    V1WeeklyPlanDraft,
+    V1WeeklyTaskDraft,
 )
 from backend.db.models.enums import ModelSource
 
@@ -272,6 +275,8 @@ def render_turn(turn: TurnContext) -> str:
     if turn.purpose == "v1_timeline_alignment":
         # 规划智能体重构 V1:时间架构共创 —— 先讲时间假设,再问一个战略级问题。
         return render_v1_timeline_alignment_turn(turn)
+    if turn.purpose == "v1_weekly_plan":
+        return render_v1_weekly_plan_turn(turn)
     if turn.purpose == "goal_reasoning":
         # 目标推理回合走另一份模板:它关心的是决策维度与取舍,不是任务拆解。
         return render_reasoning_turn(turn)
@@ -381,6 +386,7 @@ PARSED_PAYLOAD_FIELDS = frozenset(
         "v1Timeline",
         "v1Strategy",
         "v1TimelineAlignment",
+        "v1WeeklyPlan",
     }
 )
 
@@ -430,6 +436,7 @@ def payload_to_result(
         v1_timeline_alignment=parse_v1_timeline_alignment(
             payload.get("v1TimelineAlignment")
         ),
+        v1_weekly_plan=parse_v1_weekly_plan(payload.get("v1WeeklyPlan")),
         request_id=request_id,
         prompt_version=prompt_version,
         model_name=model_name,
@@ -1114,6 +1121,40 @@ def parse_v1_timeline_alignment(raw: Any) -> V1TimelineAlignmentDraft | None:
     )
 
 
+def parse_v1_weekly_plan(raw: Any) -> V1WeeklyPlanDraft | None:
+    """校验阶段三任务：五个字段缺一项就整份拒绝，避免半成品混进计划。"""
+    if not isinstance(raw, dict):
+        return None
+    tasks: list[V1WeeklyTaskDraft] = []
+    for item in (raw.get("tasks") or [])[:6]:
+        if not isinstance(item, dict):
+            continue
+        action = _v1_pick(item, "action", "动作")
+        content = _v1_pick(item, "content", "内容")
+        output = _v1_pick(item, "output", "产出")
+        acceptance = _v1_pick(item, "acceptance", "acceptanceCriteria", "验收标准")
+        minutes = _v1_pick(item, "estimateMinutes", "estimate_minutes", "minutes", "预计时间")
+        if not all(isinstance(value, str) and value.strip() for value in (action, content, output, acceptance)):
+            continue
+        try:
+            estimate = int(minutes)
+        except (TypeError, ValueError):
+            continue
+        if not 10 <= estimate <= 480:
+            continue
+        tasks.append(V1WeeklyTaskDraft(
+            action=action.strip()[:80], content=content.strip()[:500], output=output.strip()[:200],
+            acceptance=acceptance.strip()[:300], estimate_minutes=estimate,
+        ))
+    if not 3 <= len(tasks) <= 6:
+        return None
+    summary = raw.get("summary")
+    return V1WeeklyPlanDraft(
+        summary=summary.strip()[:500] if isinstance(summary, str) else "",
+        tasks=tuple(tasks),
+    )
+
+
 def parse_v1_timeline(raw: Any) -> V1TimelineDraft | None:
     """把模型的 `v1Timeline` 变成一份**形状合法**的粗时间架构。
 
@@ -1550,6 +1591,7 @@ __all__ = [
     "parse_tool_requests",
     "parse_v1_assessment",
     "parse_v1_timeline",
+    "parse_v1_weekly_plan",
     "payload_from_chat_completion",
     "payload_to_result",
     "render_turn",

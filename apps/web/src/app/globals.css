@@ -9,3 +9,6 @@
    连"只改颜色"的那些一起 —— 而规范要求 reduced motion 下面板仍然要淡入、checkbox
    仍然要换颜色和图标。`transition:none` 还会取消"从当前值开始"这件事,于是状态变化
    变成了跳变。分两类处理的那一版见 `motion.css` 第 9 节。 */
+
+/* 任务详情直接在被点击的任务下方展开，避免挤占右侧详情区。 */
+.task-row{flex-wrap:wrap;align-items:flex-start}.task-detail{min-height:48px}.task-chevron{transition:transform .18s ease;color:#6b85a4}.task-chevron.is-open{transform:rotate(180deg)}.task-spec{flex:0 0 calc(100% - 27px);margin:-2px 0 12px 27px;padding:11px 13px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 20px;border:1px solid #2b4058;border-radius:7px;background:#111d2a;box-shadow:inset 2px 0 0 #497db8}.task-spec p{min-width:0;display:grid;grid-template-columns:58px minmax(0,1fr);gap:8px;align-items:start;color:#9bacbf;font-size:11px;line-height:1.55}.task-spec p:nth-child(2),.task-spec p:nth-child(4){grid-column:1/-1}.task-spec b{font-weight:500;color:#7299c6}.task-spec p>span{overflow-wrap:anywhere;color:#c2d0df}.completed-row .task-spec p>span{text-decoration:none;color:#93a5b8}@media(max-width:680px){.task-spec{grid-template-columns:1fr;margin-left:22px;flex-basis:calc(100% - 22px)}.task-spec p:nth-child(2),.task-spec p:nth-child(4){grid-column:auto}}

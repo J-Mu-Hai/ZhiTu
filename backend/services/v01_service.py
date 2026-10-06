@@ -40,9 +40,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
 from backend.agent.runtime.base import (
+    KnownConditions,
+    Reasoner,
     ReasoningMapDraft,
     ReasoningMapNodeDraft,
     ReasoningResult,
+    TurnContext,
 )
 from backend.contracts.reasoning import AgentTurnResponse
 from backend.db.models import Conversation, GoalReasoningSession, Message, PlanNode
@@ -313,15 +316,15 @@ def _timeline_payload(
     return payload
 
 
-def build_weekly_tasks(phase_title: str, phase_description: str) -> tuple[str, ...]:
-    """从阶段派生本周可执行的小任务(确定性,5 条)。"""
+def build_weekly_tasks(phase_title: str, phase_description: str) -> tuple[dict[str, object], ...]:
+    """从阶段派生可展开的周任务：动作、内容、产出、验收与预计时间。"""
     base = phase_description.rstrip("。")
     return (
-        f"{phase_title}:确认本周要交出的最小成果",
-f"{phase_title}:完成关键的一步 —— {base}",
-        f"{phase_title}:做出一个可检查的产出",
-f"{phase_title}:记录卡点与下一步",
-        f"{phase_title}:复盘并按需要更新下周计划",
+        {"action": "确定", "content": base, "output": "本周最小成果说明", "acceptance": "写清本周要交出的一个成果", "minutes": 30},
+        {"action": "练习", "content": base, "output": "一份可运行的练习", "acceptance": "能独立完成关键步骤并运行", "minutes": 90},
+        {"action": "制作", "content": base, "output": "可检查的阶段产出", "acceptance": "产出可打开、运行或演示", "minutes": 120},
+        {"action": "记录", "content": base, "output": "卡点与解决记录", "acceptance": "至少记录一个问题和下一步", "minutes": 30},
+        {"action": "复盘", "content": base, "output": "下周调整清单", "acceptance": "确认完成项并写出下周第一步", "minutes": 30},
 )
 
 
@@ -385,6 +388,32 @@ async def _append_assistant(db, ctx, *, reply: str, conversation: Conversation |
         request_id=uuid.uuid4().hex,
         prompt_version="v01-template",
     )
+
+
+async def build_ai_weekly_tasks(
+    reasoner: Reasoner | None, ctx: WorkspaceContext, phase: PlanNode
+) -> tuple[dict[str, object], ...] | None:
+    """由阶段三模型生成五字段任务；模型/结构不可用时返回 None 给调用方走显式保底。"""
+    if reasoner is None:
+        return None
+    turn = TurnContext(
+        current_date=today_in(ctx.timezone).isoformat(), weekday="", timezone=ctx.timezone,
+        workspace_title=ctx.workspace.title or "", workspace_intent=ctx.workspace.intent or "",
+        known=KnownConditions(), purpose="v1_weekly_plan",
+        reasoning_section=(
+            f"阶段：{phase.title}\n内容：{phase.description or '未填写'}\n"
+            f"验收：{phase.acceptance_criteria or '未填写'}"
+        ),
+        user_message="为这个已确认阶段生成本周任务明细。",
+    )
+    result = await reasoner.reason(turn)
+    draft = result.v1_weekly_plan
+    if result.degraded or draft is None:
+        return None
+    return tuple({
+        "action": task.action, "content": task.content, "output": task.output,
+        "acceptance": task.acceptance, "minutes": task.estimate_minutes,
+    } for task in draft.tasks)
     return await conversation_service.append_reply(
         db, ctx, conversation=conversation, result=result
     )
@@ -715,6 +744,7 @@ async def generate_weekly_plan(
     *,
     trace,
     include_monthly: bool = False,
+    reasoner: Reasoner | None = None,
 ) -> AgentTurnResponse:
     """从已确认时间线的第一个阶段派生“本周计划 + 下周预览”。
 
@@ -764,6 +794,16 @@ async def generate_weekly_plan(
     actions: list[dict] = []
     this_week = phases[0]
     next_week = phases[1] if len(phases) > 1 else phases[0]
+    week_start = today_in(ctx.timezone) - timedelta(days=today_in(ctx.timezone).weekday())
+    ai_task_sets: dict[uuid.UUID, tuple[dict[str, object], ...]] = {}
+    if reasoner is not None:
+        for phase in {this_week.id: this_week, next_week.id: next_week}.values():
+            generated = await build_ai_weekly_tasks(reasoner, ctx, phase)
+            if generated is None:
+                from backend.services.errors import InvalidInput
+
+                raise InvalidInput("模型没有生成完整的周任务明细，请重试后再创建周计划。")
+            ai_task_sets[phase.id] = generated
     counter = 0
     for label, phase in (("本周计划", this_week), ("下周预览", next_week)):
         phase_handle = handle_of.get(str(phase.id))
@@ -812,28 +852,27 @@ async def generate_weekly_plan(
                 "op": "create_node",
                 "localId": week_ref,
                 "parentRef": phase_handle,
-                "title": f"{week_title} · 第 {version} 版",
+                # 周起始日必须放在标题末尾；首页用末尾日期准确聚合这一周的正式任务。
+                "title": f"{week_title} · 第 {version} 版 · {week_start.isoformat()}",
                 "nodeType": "stage",
                 "purpose": "planning",
                 "description": f"第 {version} 版 · 来源阶段:{phase.title}\n"
                 + (phase.description or "")[:400],
             }
         )
-        for task in build_weekly_tasks(phase.title, phase.description or phase.title):
+        for task in (ai_task_sets.get(phase.id) or build_weekly_tasks(phase.title, phase.description or phase.title)):
             counter += 1
             actions.append(
                 {
                     "op": "create_node",
                     "localId": f"n{9100 + counter}",
                     "parentRef": week_ref,
-                    "title": task,
+                    "title": f"{task['action']}：{task['output']}",
                     "nodeType": "task",
                     "purpose": "planning",
-                    "description": (
-                        f"第 {version} 版 · 所属:{label} · {phase.title}\n"
-                        f"来源阶段:{phase.title}\n"
-                        f"完成标准:{phase.acceptance_criteria or '见阶段说明'}"
-                    ),
+                    "description": f"动作：{task['action']}\n内容：{task['content']}\n产出：{task['output']}\n所属：{label} · {phase.title}",
+                    "acceptanceCriteria": str(task["acceptance"]),
+                    "estimateMinutes": int(task["minutes"]),
                 }
             )
 
@@ -896,7 +935,8 @@ async def generate_weekly_plan(
         conversation_id=conversation.id if conversation else None,
         actions=tuple(actions),
         handles=handles,
-        reasoning="由已确认时间线的第一个阶段派生的月度里程碑、本周计划与下周预览(版本化替换,旧版本归档)。",
+        reasoning=("由 AI 根据已确认阶段生成周任务明细。" if reasoner is not None else "模型未参与，本次使用保底周任务模板。")
+        + "月度里程碑、本周计划与下周预览均为待确认提案。",
         assistant_message=None,
         trigger_type=RevisionTrigger.INITIAL_PLAN,
     )

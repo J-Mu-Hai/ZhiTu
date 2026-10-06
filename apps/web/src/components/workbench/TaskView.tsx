@@ -1,6 +1,6 @@
 'use client';
 import { useMemo, useState } from 'react';
-import { Check, Clock3, ArrowUpRight } from 'lucide-react';
+import { Check, Clock3, ChevronDown } from 'lucide-react';
 import { useDemo } from '@/features/growth/provider';
 import { isInSpace } from '@/features/growth/selectors';
 import { categories } from '@/features/growth/categories';
@@ -53,8 +53,18 @@ function topStageOf(node: GrowthNode, nodes: Record<string, GrowthNode>): string
   return top;
 }
 
+function weeklyTaskFields(node: GrowthNode) {
+  const values: Record<string, string> = {};
+  for (const line of (node.description ?? '').split('\n')) {
+    const match = /^(动作|内容|产出|所属)：\s*(.+)$/.exec(line.trim());
+    if (match) values[match[1]] = match[2];
+  }
+  return values;
+}
+
 export function TaskView() {
   const { growth, selectedId, select, apply, spaceId } = useDemo(); const [filter, setFilter] = useState('全部');
+  const [expandedTask, setExpandedTask] = useState<string | null>(null);
   // `purpose !== 'information'` 那一半不是可选的修饰:信息用途的节点**不进排期**
   // (它在服务端的排期查询里就被排掉了,「今天」也不会给它安排时间),把它当任务列在
   // 这里,用户会对着一个既没有勾选框、又永远不会出现在日历上的条目反复找原因。
@@ -162,6 +172,6 @@ export function TaskView() {
       ? '这几天没有安排。计划里已经有排好的场次，切到别的时间范围看看。'
       : '这个范围里还没有安排到具体某天的任务。计划里的节点都带截止时间，但“哪天做”还没有排——打开「排期」预览一次，就能把它们落到具体日期上。'
     : '当前范围没有任务。可以回到路径，在这个空间添加一个新节点。'}</p>}<div className="filter-row">{['全部','本阶段','本周','今天'].map(f => <button key={f} className={filter === f ? 'active' : ''} onClick={() => setFilter(f)}>{f}</button>)}</div><div className="stage-summary"><div><span className="eyebrow">{currentPhase === growth.goalId ? '当前空间' : '当前阶段'}{stageNode?.deadline ? ` · 截止 ${stageNode.deadline}` : ''}</span><h3>{stageNode?.title ?? growth.title}</h3></div>{stageTasks.length > 0 && <><strong>{progress}<small>%</small></strong><div className="progress-track"><span style={{ width: `${progress}%` }}/></div></>}</div>
-    {groups.map(group => <section className={`task-group ${group.className}`} key={group.id}><header><span>{group.number}</span><h3>{group.title}</h3><small>{group.tasks.filter(n => n.status === 'completed').length} / {group.tasks.length}</small></header>{group.tasks.map(n => <div className={`task-row ${selectedId === n.id ? 'selected-row' : ''} ${n.status === 'completed' ? 'completed-row' : ''}`} key={n.id}><button className="task-check" aria-label={`${n.status === 'completed' ? '取消完成' : '完成'}${n.title}`} aria-pressed={n.status === 'completed'} onClick={() => apply({ type: 'UPDATE_STATUS', nodeId: n.id, status: n.status === 'completed' ? 'pending' : 'completed' })}>{n.status === 'completed' && <Check size={13}/>}</button><button className="task-detail" onClick={() => select(n.id)}><span>{n.title}{n.estimatedHours && <small><Clock3 size={11}/>预计 {n.estimatedHours}h</small>}</span><time>{n.scheduledDate?.slice(5).replace('-', ' / ')}</time><ArrowUpRight size={14}/></button></div>)}</section>)}
+    {groups.map(group => <section className={`task-group ${group.className}`} key={group.id}><header><span>{group.number}</span><h3>{group.title}</h3><small>{group.tasks.filter(n => n.status === 'completed').length} / {group.tasks.length}</small></header>{group.tasks.map(n => { const fields = weeklyTaskFields(n); const open = expandedTask === n.id; return <div className={`task-row ${selectedId === n.id ? 'selected-row' : ''} ${n.status === 'completed' ? 'completed-row' : ''}`} key={n.id}><button className="task-check" aria-label={`${n.status === 'completed' ? '取消完成' : '完成'}${n.title}`} aria-pressed={n.status === 'completed'} onClick={() => apply({ type: 'UPDATE_STATUS', nodeId: n.id, status: n.status === 'completed' ? 'pending' : 'completed' })}>{n.status === 'completed' && <Check size={13}/>}</button><button className="task-detail" aria-expanded={open} onClick={() => setExpandedTask(open ? null : n.id)}><span>{n.title}{n.estimatedHours && <small><Clock3 size={11}/>预计 {n.estimatedHours}h</small>}</span><time>{open ? '收起详情' : n.scheduledDate?.slice(5).replace('-', ' / ')}</time><ChevronDown className={open ? 'task-chevron is-open' : 'task-chevron'} size={16}/></button>{open && <div className="task-spec"><p><b>动作</b><span>{fields.动作 || '未生成'}</span></p><p><b>内容</b><span>{fields.内容 || n.description || '未生成'}</span></p><p><b>产出</b><span>{fields.产出 || '未生成'}</span></p><p><b>验收标准</b><span>{n.acceptanceCriteria || '未生成'}</span></p><p><b>预计时间</b><span>{n.estimateMinutes ? `${n.estimateMinutes} 分钟` : '未生成'}</span></p></div>}</div>; })}</section>)}
   </div>;
 }

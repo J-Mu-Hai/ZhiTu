@@ -77,6 +77,24 @@ export function TodayPlanTabs({ onChanged }: { onChanged?: () => void } = {}) {
     }
   }
 
+  /** 把本周清单中的一项明确放到“今天”。这不是复制任务，只为同一个任务建立今日场次。 */
+  async function putOnToday(task: backend.AgendaWeekTaskView, workspaceId: string) {
+    setBusyNode(task.nodeId);
+    setError(null);
+    try {
+      await backend.createSession(workspaceId, {
+        nodeId: task.nodeId,
+        scheduledDate: data?.today ?? new Date().toISOString().slice(0, 10),
+        plannedMinutes: task.estimateMinutes ?? 30,
+      });
+      await afterWrite(workspaceId);
+    } catch (cause) {
+      setError(cause instanceof ApiError ? cause.message : '没有加入今天的安排，请重试。');
+    } finally {
+      setBusyNode(null);
+    }
+  }
+
   const weekGroups = useMemo(() => {
     const groups = new Map<string, { title: string; plans: backend.AgendaWeekPlanView[] }>();
     for (const plan of data?.weekPlans ?? []) {
@@ -140,6 +158,7 @@ export function TodayPlanTabs({ onChanged }: { onChanged?: () => void } = {}) {
                     {plan.tasks.map(task => {
                       const date = taskDate(task);
                       const done = task.status === 'completed';
+                      const isToday = task.sessions.some(session => session.scheduledDate === data.today);
                       return (
                         <div className={`today-plan-row${done ? ' done' : ''}`} key={task.nodeId} data-testid="week-task" data-node-id={task.nodeId}>
                           <button type="button" className="task-check" aria-label={`${done ? '取消完成' : '完成'}${task.title}`} aria-pressed={done} disabled={busyNode === task.nodeId} onClick={() => void toggle(task.nodeId, plan.workspaceId, task.status)}>
@@ -154,6 +173,14 @@ export function TodayPlanTabs({ onChanged }: { onChanged?: () => void } = {}) {
                               {task.sessions.length === 0 && ' · 待安排'}
                             </span>
                           </div>
+                          <button
+                            type="button"
+                            className="today-plan-pick"
+                            disabled={isToday || busyNode === task.nodeId || done}
+                            onClick={() => void putOnToday(task, plan.workspaceId)}
+                          >
+                            {isToday ? '已安排今天' : '安排到今天'}
+                          </button>
                           <ChevronRight size={14} />
                         </div>
                       );

@@ -788,6 +788,25 @@ class V1TimelineAlignmentDraft:
 
 
 @dataclass(frozen=True, slots=True)
+class V1WeeklyTaskDraft:
+    """阶段三中由模型给出的一个可执行周任务。"""
+
+    action: str
+    content: str
+    output: str
+    acceptance: str
+    estimate_minutes: int
+
+
+@dataclass(frozen=True, slots=True)
+class V1WeeklyPlanDraft:
+    """阶段三的窄输出：只允许生成当前阶段的周任务明细。"""
+
+    summary: str = ""
+    tasks: tuple[V1WeeklyTaskDraft, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class V1StrategyDraft:
     """规划智能体重构 V1:**战略合成回合**的窄契约。
 
@@ -848,6 +867,8 @@ class ReasoningResult:
     #: 时间架构共创回合的假设与问题。
     #: **只有 `purpose == v1_timeline_alignment` 会读它。**
     v1_timeline_alignment: V1TimelineAlignmentDraft | None = None
+    #: 阶段三周任务细化。每项均带动作、内容、产出、验收与预计分钟数。
+    v1_weekly_plan: V1WeeklyPlanDraft | None = None
     request_id: str = ""
     prompt_version: str = ""
     model_name: str | None = None

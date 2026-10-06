@@ -101,6 +101,7 @@ export function toGrowthNode(node: PlanNodePayload, sessions: GrowthSession[] = 
     status: toStatus(node.status),
     archived: node.status === 'archived',
     priority: node.priority,
+    acceptanceCriteria: node.acceptanceCriteria ?? undefined,
     startDate: start,
     endDate: end,
     scheduledDate: nextUp ?? dates[0],

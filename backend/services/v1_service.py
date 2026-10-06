@@ -2784,9 +2784,13 @@ async def on_proposal_confirmed(
             payload={"proposal": {"id": str(proposal_id), "kind": "timeline", "status": "applied"}},
         )
         await db.commit()
-        # 时间线确认后**自动进入本周计划**(确定性,不需要模型;仍落成待确认提案)。
+        # 时间线确认后自动进入阶段三：用当前运行时把已确认阶段细化为带五字段的周任务。
+        # 运行时不可用时 v01 会明确走保底，而不会伪装成 AI 生成。
         try:
-            await generate_weekly_plan(db, ctx, session)
+            from backend.agent.runtime import build_reasoner
+            from backend.core.config import settings
+
+            await generate_weekly_plan(db, ctx, session, reasoner=build_reasoner(settings))
         except Exception:
             session.v1_status = V1_STATUS_FAILED
             session.v1_error = "本周计划没有自动生成,可以点「生成本周计划」重试。"
@@ -2832,6 +2836,7 @@ async def generate_weekly_plan(
     *,
     trace=None,
     include_monthly: bool = True,
+    reasoner=None,
 ) -> AgentTurnResponse:
     """从已确认时间线派生**月度里程碑 + 本周计划 + 下周预览**。
 
@@ -2852,7 +2857,7 @@ async def generate_weekly_plan(
     if await v01_service._has_open_proposal(db, ctx):
         return await _response(db, ctx, session, changed=False, trace=trace)
     response = await v01_service.generate_weekly_plan(
-        db, ctx, root, session, trace=trace, include_monthly=include_monthly
+        db, ctx, root, session, trace=trace, include_monthly=include_monthly, reasoner=reasoner
     )
     if await v01_service._has_open_proposal(db, ctx):
         await _audit(
@@ -3644,7 +3649,7 @@ async def advance_v1_workflow(
     if entry_event == "weekly_review_due":
         return await weekend_review(db, ctx, session, trace=trace)
     if entry_event == "weekly_refinement_requested":
-        return await generate_weekly_plan(db, ctx, session, trace=trace)
+        return await generate_weekly_plan(db, ctx, session, trace=trace, reasoner=reasoner)
     if entry_event == "daily_refinement_requested":
         return await generate_daily_plan(db, ctx, session, trace=trace)
     if entry_event == "direction_reselection_requested":

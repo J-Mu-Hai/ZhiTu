@@ -155,7 +155,7 @@ export function TimelineView() {
   );
   // 阶段方框卡固定宽度(200–260),内容决定高度;非 V1 正式卡片仍用紧凑宽度。
   const cardWidth = draft
-    ? Math.min(260, Math.max(200, size.width * .18))
+    ? Math.min(210, Math.max(168, size.width * .145))
     : Math.min(164, Math.max(126, size.width * .23));
   // 草案阶段全部铺开:按阶段数增加轨道,而不是把卡片藏进“另有 N 项”。
   const layers = draft
@@ -551,12 +551,17 @@ export function TimelineView() {
     {/* 交互说明只说一次,而且是给读屏的;**不再用常驻说明条占空间**。 */}
     <p id="timeline-help" className={styles.srOnly}>滚轮缩放；拖动空白平移；Shift 加滚轮或触控板横向滚动平移；方向键平移，加号减号缩放，Home 回到今天。改具体安排请用「排期」。</p>
     {/* 统一的中央时间轴:五档快捷尺度 + 滚轮/触控板缩放 + 拖拽平移。 */}
+    <div className={styles.timelineToolbar}>
+    <label className={styles.timelineStart}>起点
+      <input type="date" value={timelineAnchor} aria-label="时间线起点日期" onChange={event => setTimelineAnchor(event.target.value)} />
+    </label>
     <div className={styles.presets} data-testid="timeline-presets" role="group" aria-label="时间尺度">
       {(Object.keys(zoomPresets) as ZoomLevel[]).map(preset => (
         <button key={preset} type="button" className={level === preset ? styles.presetActive : ''} aria-pressed={level === preset} onClick={() => zoomTo(zoomPresets[preset])}>
           {zoomLabels[preset]}
         </button>
       ))}
+    </div>
     </div>
     <span className={styles.zoomHint}>滚轮缩放 · 拖动空白平移</span>
     {/* R2:V1 粗时间架构草案走主轴;顶部只留一条状态 + 操作,不再另摆一块预览。 */}
@@ -569,12 +574,6 @@ export function TimelineView() {
               : '已生成粗时间架构草案，等待你确认'
             : '时间架构已确认'}
         </span>
-        {relativeAxis && (
-          <label className={styles.draftAnchor}>
-            起点
-            <input type="date" value={timelineAnchor} aria-label="预测起点日期" onChange={event => setTimelineAnchor(event.target.value)} />
-          </label>
-        )}
         {draftIsPending && reasoning?.v01TimelineProposalId && (
           <div className={styles.draftActions}>
             <button type="button" className={styles.draftConfirm} disabled={deciding} onClick={() => { void confirmRemote(reasoning.v01TimelineProposalId as string); }}>
@@ -653,7 +652,8 @@ export function TimelineView() {
             // 卡片以阶段区间中点居中,并夹在安全边距内 —— 首/尾阶段卡不被裁切。
             const cardLeft = Math.max(SAFE_EDGE, Math.min(size.width - cardWidth - SAFE_EDGE, barCenterX - cardWidth / 2));
             const cardCenterX = cardLeft + cardWidth / 2;
-            const barEdgeY = cardUpper ? barY : barY + 12;
+            // 事件卡的引线终点是主时间轴上的里程碑点；下方阶段条只表达持续区间。
+            const barEdgeY = axisY;
             const cardEdgeY = cardUpper ? cardY + 66 : cardY;
             const showSummary = level === 'year' || level === 'quarter' || level === 'month';
             const showRange = level !== 'day';
@@ -664,6 +664,7 @@ export function TimelineView() {
               <svg className={styles.lines} aria-hidden="true">
                 <path className={styles.phaseConnector} d={`M ${barCenterX} ${barEdgeY} L ${barCenterX} ${cardEdgeY} L ${cardCenterX} ${cardEdgeY}`} />
               </svg>
+              <span className={styles.phaseMarker} style={{ left: barCenterX - 7, top: axisY - 7 }} aria-hidden="true" />
               {/*
                * **覆盖条只表达“从何时到何时”。** 干净的一条色带,最多放一个极短的
                * “阶段 N”;空间不够直接隐藏,不截断、不塞标题和成果。
@@ -700,9 +701,19 @@ export function TimelineView() {
                 onClick={() => choose(id)}
                 onPointerDown={e => beginItem(e, item)}
               >
-                <strong className={styles.phaseCardTitle}>{item.node.title}</strong>
+                <span className={styles.phaseCardKicker}>
+                  <Flag size={14}/>{phaseIndex === v01Items.length ? '阶段交付' : phaseIndex === 1 ? '阶段里程碑' : '重要节点'}
+                </span>
+                <strong className={styles.phaseCardTitle}>{draftSource?.deliverable || item.node.title}</strong>
                 {showRange && <span className={styles.phaseCardRange}>{cardRange}</span>}
-                {showSummary && cardSummary && <span className={styles.phaseCardSummary}>{cardSummary}</span>}
+                {cardSummary && <span className={styles.phaseCardSummary}>{cardSummary}</span>}
+                {draftSource?.completionCriteria && (
+                  <span className={styles.phaseCriteria}>
+                    {draftSource.completionCriteria.split(/[；;。]/).filter(Boolean).slice(0, 2).map((criterion, index) => (
+                      <span key={index}>✓ {criterion.trim()}</span>
+                    ))}
+                  </span>
+                )}
               </button>
             </>;
           })()}
@@ -726,13 +737,19 @@ export function TimelineView() {
         const isMilestone = item.node.type === 'milestone' || item.node.title.startsWith('月度里程碑');
         const phaseTitle = item.node.parentId ? growth.nodes[item.node.parentId]?.title ?? '' : '';
         const picked = selectedId === item.node.id;
-        return <div
+        const markerX = Math.max(0, Math.min(size.width, x(item.start)));
+        const markerColor = isMilestone ? '#d69b2d' : '#628fc2';
+        const cardTop = laneY.dailyBase + lane * 28;
+        return <>
+          <svg className={styles.lines} aria-hidden="true"><path className={styles.phaseConnector} style={{ stroke: markerColor }} d={`M ${markerX} ${axisY} L ${markerX} ${cardTop - 6} L ${left + 18} ${cardTop - 6}`} /></svg>
+          <span className={styles.phaseMarker} style={{ left: markerX - 7, top: axisY - 7, '--color': markerColor } as CSSProperties} aria-hidden="true" />
+        <div
           key={id}
           data-testid="v1-month-node"
           data-node-id={item.node.id}
           data-selected={picked ? 'true' : 'false'}
           className={`${styles.monthNode} ${isMilestone ? styles.monthNodeMilestone : ''} ${picked ? styles.monthNodeSelected : ''}`}
-          style={{ left, top: laneY.dailyBase + lane * 28 }}
+          style={{ left, top: cardTop }}
           title={`${item.node.title} · ${dateString(item.start)}`}
           onClick={() => select(item.node.id)}
           onPointerDown={event => event.stopPropagation()}
@@ -740,7 +757,7 @@ export function TimelineView() {
           <span className={styles.monthNodeTag}>{isMilestone ? '里程碑' : '任务'}</span>
           <strong>{item.node.title}</strong>
           <small>{phaseTitle || dateString(item.start)}</small>
-        </div>;
+        </div></>;
       })}
       {/* 周尺度:当前**未归档**的“本周计划 / 下周预览”节点,放在周计划轨道。 */}
       {weekItems.map(item => {
@@ -763,10 +780,15 @@ export function TimelineView() {
           className={`${styles.weekBar} ${isPreview ? styles.weekBarPreview : ''} ${isCurrent ? styles.weekBarCurrent : ''} ${selectedId === item.node.id ? styles.trackSelected : ''}`}
           style={{ left: nodeLeft, top: laneY.weeklyBase + lane * laneY.weeklyStep }}
           title={`${item.node.title} · ${tasks.length} 项`}
+          role="button"
+          tabIndex={0}
+          onClick={() => select(item.node.id)}
+          onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); select(item.node.id); } }}
         >
           <span className={styles.weekBarTag}>{isPreview ? '下周预览' : '本周计划'}</span>
           <strong>{phaseTitle}</strong>
-          <small>{tasks.length === 0 ? '暂无任务' : `${unfinished} 项待办${topTask ? ` · ${topTask.title}` : ''}`}</small>
+          <small>{tasks.length === 0 ? '暂无任务' : `${unfinished} 项待办`}</small>
+          {tasks.slice(0, 3).map(task => <span className={styles.weekTaskPreview} key={task.id}>• {task.title}</span>)}
         </div>;
       })}
       {/* 日尺度:已确认的日工作块(排期场次),放在日轨道,不与阶段条/周计划重叠。 */}

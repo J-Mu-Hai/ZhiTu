@@ -25,6 +25,8 @@ export interface GrowthNode {
   id: string;
   title: string;
   description?: string;
+  /** 做完的可观察标准。周任务详情与节点编辑器共用这一真实字段。 */
+  acceptanceCriteria?: string;
   type: 'goal' | 'capability' | 'stage' | 'task' | 'milestone';
   /**
    * 用途轴。**与 `type` 正交**,不是它的第六个取值。
