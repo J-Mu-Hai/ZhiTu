@@ -55,8 +55,11 @@ def upgrade() -> None:
         "UPDATE goal_reasoning_sessions SET intake_questions_asked = 0 "
         "WHERE intake_questions_asked IS NULL"
     )
+    # 写 `FALSE` 而不是 `0`:这一列是 Boolean,SQLite 会把整数 0 存进去,PostgreSQL
+    # 则报 `column "dates_calibrated" is of type boolean but expression is of type
+    # integer` 直接终止迁移。字面量 `FALSE` 两边都认,也就不需要按方言分支。
     op.execute(
-        "UPDATE goal_reasoning_sessions SET dates_calibrated = 0 "
+        "UPDATE goal_reasoning_sessions SET dates_calibrated = FALSE "
         "WHERE dates_calibrated IS NULL"
     )
     with op.batch_alter_table('goal_reasoning_sessions', schema=None) as batch_op:
