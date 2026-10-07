@@ -83,6 +83,8 @@ from backend.agent.prompts.v1_timeline_repair import (
 )
 from backend.agent.prompts.v1_weekly_plan import (
     PROMPT_VERSION as V1_WEEKLY_PLAN_PROMPT_VERSION,
+)
+from backend.agent.prompts.v1_weekly_plan import (
     V1_WEEKLY_PLAN_SYSTEM_PROMPT,
 )
 from backend.agent.runtime.base import ReasoningResult, TurnContext

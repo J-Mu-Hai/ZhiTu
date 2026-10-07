@@ -1191,6 +1191,25 @@ function useWorkspaceState(user: AccountProfile | null, space: SpaceInfo) {
     await reloadPlan();
   }, [reloadPlan]);
 
+  // 首页勾选完成、加入今日安排等写入并不一定发生在当前工作台组件里。
+  // 收到同空间的变更事件后统一重拉，时间线、任务栏和画布不会继续显示旧状态。
+  useEffect(() => {
+    const refreshIfCurrent = (workspaceId?: string) => {
+      if (workspaceId === space.id) void refreshPlan().catch(() => undefined);
+    };
+    const onPlanUpdated = (event: Event) => {
+      const workspaceId = (event as CustomEvent<{ workspaceId?: string }>).detail?.workspaceId;
+      refreshIfCurrent(workspaceId);
+    };
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== 'zhitu:plan-updated' || !event.newValue) return;
+      try { refreshIfCurrent(JSON.parse(event.newValue).workspaceId); } catch { /* ignore malformed external value */ }
+    };
+    window.addEventListener('zhitu:plan-updated', onPlanUpdated);
+    window.addEventListener('storage', onStorage);
+    return () => { window.removeEventListener('zhitu:plan-updated', onPlanUpdated); window.removeEventListener('storage', onStorage); };
+  }, [refreshPlan, space.id]);
+
   /**
    * 规划智能体重构 V1(P4):生成本周计划 / 日计划 / 周末回顾入口。
    *

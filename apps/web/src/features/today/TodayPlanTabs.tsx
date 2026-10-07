@@ -58,6 +58,9 @@ export function TodayPlanTabs({ onChanged }: { onChanged?: () => void } = {}) {
   async function afterWrite(workspaceId: string) {
     await refresh();
     if (isRealSpace && workspaceId === activeWorkspaceId) await refreshPlan();
+    // 通知同页和其它标签页中的同一空间重取正式计划。
+    window.dispatchEvent(new CustomEvent('zhitu:plan-updated', { detail: { workspaceId } }));
+    window.localStorage.setItem('zhitu:plan-updated', JSON.stringify({ workspaceId, at: Date.now() }));
     // 顶部「本周时间线」也读同一份聚合,让它一起重取。
     onChanged?.();
   }
@@ -165,7 +168,7 @@ export function TodayPlanTabs({ onChanged }: { onChanged?: () => void } = {}) {
                             {done && <Check size={13} />}
                           </button>
                           <div className="today-plan-row-main">
-                            <Link className="today-plan-title" href={`/workbench?workspace=${encodeURIComponent(plan.workspaceId)}&view=tasks`}>{task.title}</Link>
+                            <Link className="today-plan-title" href={`/workbench?workspace=${encodeURIComponent(plan.workspaceId)}&view=tasks&scope=week&node=${encodeURIComponent(task.nodeId)}`}>{task.title}</Link>
                             <span className="today-plan-meta">
                               {plan.workspaceTitle}
                               {plan.stageTitle && ` · ${plan.stageTitle}`}
@@ -211,7 +214,7 @@ export function TodayPlanTabs({ onChanged }: { onChanged?: () => void } = {}) {
                     {done && <Check size={13} />}
                   </button>
                   <div className="today-plan-row-main">
-                    <Link className="today-plan-title" href={`/workbench?workspace=${encodeURIComponent(item.workspaceId)}&view=timeline`}>{item.title}</Link>
+                    <Link className="today-plan-title" href={`/workbench?workspace=${encodeURIComponent(item.workspaceId)}&view=tasks&scope=week&node=${encodeURIComponent(item.nodeId)}`}>{item.title}</Link>
                     <span className="today-plan-meta">
                       {item.workspaceTitle}
                       {item.stageTitle && ` · ${item.stageTitle}`}
@@ -248,10 +251,7 @@ function AgendaAddForm({ mode, data, onClose, onSaved }: {
   const [stageId, setStageId] = useState(phases[0]?.stageId ?? '');
   const phase = phases.find(item => item.stageId === stageId) ?? phases[0];
   const [title, setTitle] = useState('');
-  const [date, setDate] = useState(mode === 'day' ? data.today : '');
-  const [description, setDescription] = useState('');
-  const [time, setTime] = useState('');
-  const [minutes, setMinutes] = useState('30');
+  const [deadline, setDeadline] = useState('');
   const [createPlan, setCreatePlan] = useState(true);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -263,13 +263,6 @@ function AgendaAddForm({ mode, data, onClose, onSaved }: {
     setWorkspaceId(nextId);
     const next = data.targets.find(target => target.workspaceId === nextId);
     setStageId(next?.phases[0]?.stageId ?? '');
-  }
-
-  function parsedStartMinute(): number | null {
-    if (!time) return null;
-    const [hours, mins] = time.split(':').map(Number);
-    if (!Number.isFinite(hours) || !Number.isFinite(mins)) return null;
-    return Math.max(0, Math.min(24 * 60 - 1, hours * 60 + mins));
   }
 
   async function submit(event: React.FormEvent) {
@@ -294,8 +287,7 @@ function AgendaAddForm({ mode, data, onClose, onSaved }: {
           title: title.trim(),
           nodeType: 'task',
           planningLevel: 'week',
-          deadline: date || null,
-          description: description.trim() || null,
+          deadline: deadline || null,
         });
       } else {
         const created = await backend.createNode(workspaceId, {
@@ -303,18 +295,12 @@ function AgendaAddForm({ mode, data, onClose, onSaved }: {
           title: title.trim(),
           nodeType: 'task',
           planningLevel: 'day',
-          deadline: date,
-          description: description.trim() || null,
+          deadline: deadline || null,
         });
-        const parsed = Number(minutes);
-        const planned = Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : 30;
-        const startMinute = parsedStartMinute();
-        const endMinute = startMinute === null ? null : Math.min(24 * 60, startMinute + planned);
         await backend.createSession(workspaceId, {
           nodeId: created.node.id,
-          scheduledDate: date,
-          plannedMinutes: planned,
-          ...(startMinute !== null && endMinute !== null && endMinute > startMinute ? { startMinute, endMinute } : {}),
+          scheduledDate: data.today,
+          plannedMinutes: 30,
         });
       }
       await onSaved(workspaceId);
@@ -353,8 +339,8 @@ function AgendaAddForm({ mode, data, onClose, onSaved }: {
             </label>
           </div>
 
-          <label>标题
-            <input autoFocus value={title} onChange={event => setTitle(event.target.value)} placeholder={mode === 'week' ? '例如:写第一版脚本' : '例如:整理今天的笔记'} disabled={saving} />
+          <label>要做什么
+            <input autoFocus value={title} onChange={event => setTitle(event.target.value)} placeholder={mode === 'week' ? '例如：完成循环与分支练习脚本' : '例如：整理今天的循环练习笔记'} disabled={saving} />
           </label>
 
           {needsPlan && (
@@ -364,25 +350,11 @@ function AgendaAddForm({ mode, data, onClose, onSaved }: {
             </label>
           )}
 
-          <div className="today-plan-form-row">
-            <label>{mode === 'week' ? '日期(可选)' : '日期'}
-              <input type="date" value={date} onChange={event => setDate(event.target.value)} disabled={saving} required={mode === 'day'} />
-            </label>
-            {mode === 'day' && (
-              <>
-                <label>开始时间(可选)
-                  <input type="time" value={time} onChange={event => setTime(event.target.value)} disabled={saving} />
-                </label>
-                <label>预计分钟
-                  <input type="number" min={1} value={minutes} onChange={event => setMinutes(event.target.value)} disabled={saving} />
-                </label>
-              </>
-            )}
-          </div>
-
-          <label>说明(可选)
-            <input value={description} onChange={event => setDescription(event.target.value)} disabled={saving} />
+          <label>截止日（可选）
+            <input type="date" value={deadline} onChange={event => setDeadline(event.target.value)} disabled={saving} />
           </label>
+
+          {mode === 'day' && <p className="today-plan-quiet">将自动安排到今天，默认预留 30 分钟；之后可在排期页调整。</p>}
 
           {formError && <p className="today-plan-error" role="alert">{formError}</p>}
 

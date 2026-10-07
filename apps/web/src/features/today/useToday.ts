@@ -114,6 +114,14 @@ export function useToday(enabled: boolean) {
           setError('这条记录没有落库，请重试。');
           return false;
         }
+        // 首页“确认完成”表达的是用户对整项任务的确认，而不仅是一场排期的执行记录。
+        // 显式走节点更新接口，确保计划版本、任务面板与时间线都收到同一份 completed 状态。
+        if (result === 'completed') {
+          await backend.updateNode(response.record.workspaceId, response.record.nodeId, { status: 'completed' });
+          const detail = { workspaceId: response.record.workspaceId };
+          window.dispatchEvent(new CustomEvent('zhitu:plan-updated', { detail }));
+          window.localStorage.setItem('zhitu:plan-updated', JSON.stringify({ ...detail, at: Date.now() }));
+        }
         keys.current.delete(slot);
         setError(null);
         await refresh();

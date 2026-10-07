@@ -1,10 +1,12 @@
 'use client';
-import { useMemo, useState } from 'react';
-import { Check, Clock3, ChevronDown } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
+import { Check, Clock3, ChevronDown, Loader2, RefreshCw } from 'lucide-react';
 import { useDemo } from '@/features/growth/provider';
 import { isInSpace } from '@/features/growth/selectors';
 import { categories } from '@/features/growth/categories';
 import { todayInTimeZone, weekBounds } from '@/features/growth/timeline';
+import { fetchDeviations } from '@/lib/backend';
 import type { GrowthNode } from '@/types/growth';
 
 /**
@@ -63,8 +65,34 @@ function weeklyTaskFields(node: GrowthNode) {
 }
 
 export function TaskView() {
-  const { growth, selectedId, select, apply, spaceId } = useDemo(); const [filter, setFilter] = useState('全部');
+  const { growth, selectedId, select, apply, spaceId, replan, replanState, isRealSpace, workspaceId } = useDemo(); const [filter, setFilter] = useState('本周');
   const [expandedTask, setExpandedTask] = useState<string | null>(null);
+  const [replanHint, setReplanHint] = useState<{ title: string; detail: string } | null>(null);
+  const params = useSearchParams();
+  // 首页的任务链接带 node 参数：落到任务页即展开同一项的五字段详情。
+  useEffect(() => {
+    const nodeId = params.get('node');
+    if (params.get('scope') === 'week') setFilter('本周');
+    if (!nodeId || !growth.nodes[nodeId]) return;
+    setExpandedTask(nodeId);
+    select(nodeId);
+  }, [params, growth.nodes, select]);
+  // 连续三天的触发由服务端基于“已记录为未完成”的执行事实判断；未打卡不算失败。
+  // 这里只展示建议，不会自动改任何计划。
+  useEffect(() => {
+    if (!isRealSpace || !workspaceId) { setReplanHint(null); return; }
+    let cancelled = false;
+    void fetchDeviations(workspaceId).then((result) => {
+      if (!cancelled) {
+        const signal = result.deviations.find(item => item.code === 'THREE_CONSECUTIVE_SETBACK_DAYS' || item.code === 'AHEAD_OF_WEEKLY_PLAN');
+        setReplanHint(signal ? {
+          title: signal.code === 'AHEAD_OF_WEEKLY_PLAN' ? '进度领先，可以商量下一步' : '建议重新规划',
+          detail: signal.detail,
+        } : null);
+      }
+    }).catch(() => { if (!cancelled) setReplanHint(null); });
+    return () => { cancelled = true; };
+  }, [isRealSpace, workspaceId]);
   // `purpose !== 'information'` 那一半不是可选的修饰:信息用途的节点**不进排期**
   // (它在服务端的排期查询里就被排掉了,「今天」也不会给它安排时间),把它当任务列在
   // 这里,用户会对着一个既没有勾选框、又永远不会出现在日历上的条目反复找原因。
@@ -161,13 +189,14 @@ export function TaskView() {
     const order = categories.map(category => category.id as string);
     // 已知分类按示例数据里的顺序在前,其余的按标题排 —— 顺序必须是稳定的,否则
     // 每次重渲染这几组会在屏幕上换位置。
+    const planRank = (title: string) => title.startsWith('本周计划') ? 0 : title.startsWith('下周预览') ? 2 : 1;
     return [...buckets.entries()]
-      .sort(([a], [b]) => (order.indexOf(a) + 1 || order.length + 1) - (order.indexOf(b) + 1 || order.length + 1) || a.localeCompare(b))
+      .sort(([a], [b]) => planRank(buckets.get(a)?.title ?? '') - planRank(buckets.get(b)?.title ?? '') || (order.indexOf(a) + 1 || order.length + 1) - (order.indexOf(b) + 1 || order.length + 1) || a.localeCompare(b))
       .map(([, bucket], index) => ({ ...bucket, number: bucket.number || String(index + 1).padStart(2, '0') }));
   }, [filtered, growth]);
 
   const stageNode = growth.nodes[currentPhase];
-  return <div className="task-view scroll-area"><div className="section-heading"><div><span className="eyebrow">MAKE IT HAPPEN</span><h2>让下一步，清晰一点。</h2></div><span className="muted">{filtered.length} 项任务</span></div>{filtered.length === 0 && <p className="empty-note">{filter === '今天' || filter === '本周'
+  return <div className="task-view scroll-area"><div className="section-heading"><div><span className="eyebrow">MAKE IT HAPPEN</span><h2>让下一步，清晰一点。</h2></div><div className="task-heading-actions"><button type="button" className="text-button" disabled={replanState.busy} onClick={() => void replan()} title="AI 会根据已记录的执行情况生成待确认的调整方案">{replanState.busy ? <Loader2 className="spin" size={13}/> : <RefreshCw size={13}/>} {replanState.busy ? '正在分析执行情况…' : '重新规划'}</button><span className="muted">{filtered.length} 项任务</span></div></div>{replanHint && <div className="replan-suggestion"><div><b>{replanHint.title}</b><span>{replanHint.detail}</span></div><button type="button" className="text-button" disabled={replanState.busy} onClick={() => void replan()}>和 AI 商量</button></div>}{replanState.message && <p className={replanState.degraded ? 'replan-note degraded' : 'replan-note'} role="status">{replanState.message}</p>}{filtered.length === 0 && <p className="empty-note">{filter === '今天' || filter === '本周'
     ? hasAnySession
       ? '这几天没有安排。计划里已经有排好的场次，切到别的时间范围看看。'
       : '这个范围里还没有安排到具体某天的任务。计划里的节点都带截止时间，但“哪天做”还没有排——打开「排期」预览一次，就能把它们落到具体日期上。'

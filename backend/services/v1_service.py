@@ -326,9 +326,12 @@ def _record_discussion_answer(
     analysis = dict(question.v1_analysis or {})
     facts = list(analysis.get("knownFacts") or [])
     clean = content.strip()
-    if classification in (INPUT_STRATEGIC_FACT, INPUT_USER_PREFERENCE, INPUT_USER_CORRECTION) and clean:
-        if clean not in facts:
-            facts.append(clean)
+    if (
+        classification in (INPUT_STRATEGIC_FACT, INPUT_USER_PREFERENCE, INPUT_USER_CORRECTION)
+        and clean
+        and clean not in facts
+    ):
+        facts.append(clean)
     analysis["knownFacts"] = facts
     analysis["discussionAnswer"] = clean
     analysis["discussionCount"] = max(1, int(analysis.get("discussionCount", 0) or 0) + 1)

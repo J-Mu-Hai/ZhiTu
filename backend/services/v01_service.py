@@ -316,15 +316,36 @@ def _timeline_payload(
     return payload
 
 
-def build_weekly_tasks(phase_title: str, phase_description: str) -> tuple[dict[str, object], ...]:
-    """从阶段派生可展开的周任务：动作、内容、产出、验收与预计时间。"""
-    base = phase_description.rstrip("。")
+def build_weekly_tasks(
+    phase_title: str,
+    phase_description: str,
+    *,
+    workspace_title: str = "",
+    workspace_intent: str = "",
+) -> tuple[dict[str, object], ...]:
+    """从阶段派生可展开的周任务；保底也必须继承阶段的具体内容。
+
+    模型不可用时过去会落下“确定/练习/制作”这样的空模板，虽然五字段齐全，
+    却与阶段的知识点断开。保底计划不是万能模板：先识别阶段资料，再给出能直接
+    执行的同一条主线任务。Python 基础是竞赛演示中最常见的阶段，单独提供细颗粒
+    的可靠保底；其余阶段至少把阶段资料直接写进每一项任务的对象与验收里。
+    """
+    material = f"{workspace_title}\n{workspace_intent}\n{phase_title}\n{phase_description}".lower()
+    if "python" in material or "循环" in phase_title or "分支" in phase_title:
+        return (
+            {"action": "安装", "content": "下载 Python 3，完成安装并在终端配置/确认 python 命令", "output": "Python 环境验证截图或终端记录", "acceptance": "终端执行 python --version 成功，能进入交互式解释器并退出", "minutes": 30},
+            {"action": "编写", "content": "用变量、input()、print() 写一个读取两个数字并输出和与差的脚本", "output": "input_output.py", "acceptance": "输入两组数字均能输出正确的和与差，代码从空白文件独立写出", "minutes": 45},
+            {"action": "实现", "content": "用 if / elif / else 完成分数等级或奇偶数判断", "output": "condition_check.py", "acceptance": "至少覆盖 3 个分支；边界输入能得到预期结果", "minutes": 60},
+            {"action": "实现", "content": "分别用 for 和 while 写累加、九九乘法表或指定次数输入循环，并使用 break/continue", "output": "loop_practice.py", "acceptance": "两个循环都可运行，能解释循环条件、退出条件和 break/continue 的作用", "minutes": 75},
+            {"action": "整合", "content": "把输入、条件分支和循环组合成一个命令行小程序，例如猜数字或菜单计算器", "output": "cli_mini_app.py", "acceptance": "程序至少包含一次输入、一个条件判断和一个循环，可连续运行并正常退出", "minutes": 90},
+            {"action": "验收", "content": "脱离教程从空白文件重写一个包含输入、if/else 与循环的 10–20 行脚本", "output": "weekly_python_check.py 与错误记录", "acceptance": "脚本可运行；记录至少 1 个报错、定位原因和修复方式", "minutes": 60},
+        )
+    base = (phase_description or phase_title).rstrip("。")
     return (
-        {"action": "确定", "content": base, "output": "本周最小成果说明", "acceptance": "写清本周要交出的一个成果", "minutes": 30},
-        {"action": "练习", "content": base, "output": "一份可运行的练习", "acceptance": "能独立完成关键步骤并运行", "minutes": 90},
-        {"action": "制作", "content": base, "output": "可检查的阶段产出", "acceptance": "产出可打开、运行或演示", "minutes": 120},
-        {"action": "记录", "content": base, "output": "卡点与解决记录", "acceptance": "至少记录一个问题和下一步", "minutes": 30},
-        {"action": "复盘", "content": base, "output": "下周调整清单", "acceptance": "确认完成项并写出下周第一步", "minutes": 30},
+        {"action": "拆解", "content": f"从阶段资料中圈定本周先完成的具体部分：{base}", "output": f"{phase_title}的本周子目标清单", "acceptance": "清单包含一个本周可交付成果、所需材料和完成边界", "minutes": 25},
+        {"action": "执行", "content": f"围绕“{base}”完成第一个可验证步骤", "output": f"{phase_title}的步骤一成果", "acceptance": "成果能被打开、运行、演示或由他人复核", "minutes": 90},
+        {"action": "完成", "content": f"继续完成“{base}”中直接支撑阶段验收的核心部分", "output": f"{phase_title}的核心阶段产出", "acceptance": "达到阶段描述中的一项明确成果要求，而非只阅读或浏览材料", "minutes": 120},
+        {"action": "验证", "content": f"按阶段要求检查并修正“{base}”的结果", "output": f"{phase_title}的验收记录", "acceptance": "列出检查结果、一个发现的问题及对应修正", "minutes": 45},
 )
 
 
@@ -388,6 +409,9 @@ async def _append_assistant(db, ctx, *, reply: str, conversation: Conversation |
         request_id=uuid.uuid4().hex,
         prompt_version="v01-template",
     )
+    return await conversation_service.append_reply(
+        db, ctx, conversation=conversation, result=result
+    )
 
 
 async def build_ai_weekly_tasks(
@@ -410,13 +434,24 @@ async def build_ai_weekly_tasks(
     draft = result.v1_weekly_plan
     if result.degraded or draft is None:
         return None
-    return tuple({
+    tasks = tuple({
         "action": task.action, "content": task.content, "output": task.output,
         "acceptance": task.acceptance, "minutes": task.estimate_minutes,
     } for task in draft.tasks)
-    return await conversation_service.append_reply(
-        db, ctx, conversation=conversation, result=result
-    )
+    # 即使字段形状正确，模型也可能交回“练习一份可运行的练习”这种空任务。
+    # Python 阶段要求每项任务实际点名本阶段对象；不满足时宁可用明确、可追溯的
+    # Python 保底任务，也不能让抽象模板混入用户计划。
+    material = f"{ctx.workspace.title or ''}\n{ctx.workspace.intent or ''}\n{phase.title}\n{phase.description or ''}".lower()
+    if "python" in material:
+        anchors = ("python", "安装", "input", "print", "变量", "if", "else", "条件", "for", "while", "循环", "break", "continue")
+        if any(not any(anchor in " ".join(str(item[key]).lower() for key in ("content", "output", "acceptance")) for anchor in anchors) for item in tasks):
+            return build_weekly_tasks(
+                phase.title,
+                phase.description or phase.title,
+                workspace_title=ctx.workspace.title or "",
+                workspace_intent=ctx.workspace.intent or "",
+            )
+    return tasks
 
 
 async def _response(db, ctx, session, *, message=None, changed: bool = False, trace=None, code: str | None = None):
@@ -860,7 +895,12 @@ async def generate_weekly_plan(
                 + (phase.description or "")[:400],
             }
         )
-        for task in (ai_task_sets.get(phase.id) or build_weekly_tasks(phase.title, phase.description or phase.title)):
+        for task in (ai_task_sets.get(phase.id) or build_weekly_tasks(
+            phase.title,
+            phase.description or phase.title,
+            workspace_title=ctx.workspace.title or "",
+            workspace_intent=ctx.workspace.intent or "",
+        )):
             counter += 1
             actions.append(
                 {

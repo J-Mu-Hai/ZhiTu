@@ -127,7 +127,17 @@ async def detect(db: AsyncSession, ctx: WorkspaceContext) -> tuple[Deviation, ..
             )
         )
 
-    deviations.extend(await _recorded_deviations(db, ctx, today))
+    recorded = await _recorded_deviations(db, ctx, today)
+    deviations.extend(recorded)
+    # “连续三天没有完成”不能由没有打卡推断出来：未记录不等于没做。
+    # 这里只汇总用户已明确记录为跳过/部分完成/失败的场次，作为重规划触发事实；
+    # 如何调整仍交给模型，并且必须由用户确认才会写回计划。
+    streak = await _three_day_setback_streak(db, ctx, today)
+    if streak is not None:
+        deviations.insert(0, streak)
+    ahead = await _ahead_of_weekly_plan(db, ctx, today)
+    if ahead is not None:
+        deviations.insert(0, ahead)
     deviations.extend(await _overdue_nodes(db, ctx, today))
     return tuple(deviations[:MAX_DEVIATIONS])
 
@@ -199,6 +209,103 @@ async def _recorded_deviations(
             )
         )
     return deviations
+
+
+async def _three_day_setback_streak(
+    db: AsyncSession, ctx: WorkspaceContext, today: date
+) -> Deviation | None:
+    """返回最近连续三天的、用户已确认的执行偏差。
+
+    今天尚未结束，因此从昨天向前检查三个自然日。没有打卡不会被算成未完成。
+    """
+    dates = tuple(today - timedelta(days=offset) for offset in (1, 2, 3))
+    rows = await db.execute(
+        select(ScheduledSession.scheduled_date)
+        .join(ExecutionRecord, ExecutionRecord.session_id == ScheduledSession.id)
+        .where(
+            ExecutionRecord.user_id == ctx.user.user_id,
+            ExecutionRecord.workspace_id == ctx.id,
+            ExecutionRecord.result != ExecutionResult.COMPLETED,
+            ScheduledSession.scheduled_date.in_(dates),
+            ScheduledSession.status.not_in(
+                (ScheduledSessionStatus.CANCELED, ScheduledSessionStatus.MOVED)
+            ),
+        )
+        .distinct()
+    )
+    affected = {row[0] for row in rows.all()}
+    if not all(day in affected for day in dates):
+        return None
+    shown = "、".join(day.strftime("%m/%d") for day in reversed(dates))
+    return Deviation(
+        code="THREE_CONSECUTIVE_SETBACK_DAYS",
+        workspace_id=ctx.id,
+        detail=(
+            f"你在连续 3 天（{shown}）都记录了未完成或只完成部分的安排。"
+            "当前节奏可能不再适合，应先调整本周剩余任务，再调整后续时间线。"
+        ),
+        is_question=False,
+        days_ago=1,
+        facts={"dates": [day.isoformat() for day in reversed(dates)], "consecutiveDays": 3},
+    )
+
+
+async def _ahead_of_weekly_plan(
+    db: AsyncSession, ctx: WorkspaceContext, today: date
+) -> Deviation | None:
+    """识别“完成率显著领先于本周时间进度”的正向重规划机会。
+
+    这是一次邀请，而不是加码：AI 必须与用户商量是提前推进、提高产出质量，
+    还是把领先时间留作缓冲。周末已没有足够的决策窗口，不再打扰用户。
+    """
+    days_left = 6 - today.weekday()
+    if days_left < 2:
+        return None
+    weeks = await db.execute(
+        select(PlanNode.id).where(
+            PlanNode.workspace_id == ctx.id,
+            PlanNode.title.startswith("本周计划"),
+            PlanNode.status.in_((NodeStatus.PENDING, NodeStatus.DOING)),
+            PlanNode.deleted_at.is_(None),
+        )
+    )
+    week_ids = list(weeks.scalars())
+    if not week_ids:
+        return None
+    tasks = await db.execute(
+        select(PlanNode.status).where(
+            PlanNode.parent_id.in_(week_ids),
+            PlanNode.deleted_at.is_(None),
+        )
+    )
+    statuses = list(tasks.scalars())
+    total = len(statuses)
+    done = sum(status is NodeStatus.COMPLETED for status in statuses)
+    if total < 3:
+        return None
+    completion = done / total
+    expected_by_today = (today.weekday() + 1) / 7
+    # 至少领先约 35 个百分点，且已完成过半，才算“明显领先”。
+    if completion < 0.5 or completion < expected_by_today + 0.35:
+        return None
+    return Deviation(
+        code="AHEAD_OF_WEEKLY_PLAN",
+        workspace_id=ctx.id,
+        detail=(
+            f"本周任务已完成 {done}/{total}（{round(completion * 100)}%），"
+            f"明显领先于当前周进度，距离周末还有 {days_left} 天。"
+            "可以和 AI 商量：提前推进下一阶段、提高本周产出质量，或保留为缓冲。"
+        ),
+        is_question=False,
+        days_ago=0,
+        facts={
+            "completed": done,
+            "total": total,
+            "completionRate": completion,
+            "daysLeft": days_left,
+            "expectedRate": expected_by_today,
+        },
+    )
 
 
 async def _overdue_nodes(db: AsyncSession, ctx: WorkspaceContext, today: date) -> list[Deviation]:
@@ -384,7 +491,13 @@ def _replan_request(deviations: tuple[Deviation, ...], question_count: int) -> s
             f"其中前 {question_count} 条是**没有记录**的场次 —— 没有记录不等于没完成,"
             "不要把它们当成用户没做到,也不要把它们当成已完成。"
         )
-    lines.append("不要新增用户没有提过的东西。如果这些事实不需要调整计划,就不要提任何变更。")
+    lines.append(
+        "请优先保留已完成项目；若事实显示用户进度领先，请先和用户商量是提前推进、"
+        "提高产出质量，还是保留缓冲，不要擅自加码。若需要调整，先把本周剩余任务改成具体可执行的动作，"
+        "再顺延或压缩后续阶段的时间线。每一项新/改任务必须明确动作、学习/工作内容、"
+        "可交付产出、验收标准和预计时长。不要新增用户没有提过的目标；如果这些事实"
+        "不需要调整计划，就不要提任何变更。"
+    )
     return "\n".join(lines)
 
 

@@ -15,11 +15,10 @@
 这条路由的响应体里有 `saved`。数据库写不进去时返回 503 且 `saved: false`,绝不退回
 内存 —— 用户据此决定要不要再录一次,而谎报成功会让那条记录永久消失。
 
-## 记录一场不会顺手把节点标成完成
+## 场次完成与任务状态
 
-一个任务是"三个月内写完文献综述",它有 8 场安排。做完第 3 场不代表这个任务完成了。
-节点状态是**用户对任务整体的判断**,不是场次的加法 —— 系统替他加总,等于替他宣布
-一件他没说过的事。所以这里只改场次,节点状态一律不动(用户自己可以在节点上勾)。
+首页的“确认完成”是用户对**任务本身**的确认：无论该任务有几场安排，都立刻把任务
+节点同步为 completed。用户若只是完成一部分，应使用“做了一部分”，不会触发同步。
 
 ## `scheduled_sessions.actual_minutes` 是**合计**
 
@@ -60,6 +59,7 @@ from backend.db.base import utcnow
 from backend.db.models import DomainEvent, ExecutionRecord, PlanNode, ScheduledSession, Workspace
 from backend.db.models.enums import (
     ExecutionResult,
+    NodeStatus,
     ScheduledSessionStatus,
     WorkspaceStatus,
 )
@@ -178,6 +178,7 @@ async def record_execution(
         # 改一遍场次行,而"双击"最终变成两次实际写入。
         await db.flush()
         await _apply_to_session(db, session, parsed_result)
+        await _sync_node_completion(db, session, parsed_result)
         db.add(
             DomainEvent(
                 user_id=user_id,
@@ -245,6 +246,20 @@ async def _apply_to_session(
     # 不刷新的话返回给客户端的是改动前的旧状态。
     for field, value in values.items():
         setattr(session, field, value)
+
+
+async def _sync_node_completion(
+    db: AsyncSession, session: ScheduledSession, result: ExecutionResult
+) -> None:
+    """首页确认完成即同步对应任务节点，确保首页、任务栏和时间线只读一套状态。"""
+    if result is not ExecutionResult.COMPLETED:
+        return
+    await db.execute(
+        update(PlanNode)
+        .where(PlanNode.id == session.node_id, PlanNode.workspace_id == session.workspace_id)
+        .values(status=NodeStatus.COMPLETED)
+        .execution_options(synchronize_session=False)
+    )
 
 
 async def _response_for(
