@@ -283,7 +283,6 @@ export default function SpacesPage() {
                 value={title}
                 maxLength={60}
                 onChange={(event) => setTitle(event.target.value)}
-                placeholder="例如：2027 保研计划"
               />
             </label>
             <label>
@@ -292,7 +291,6 @@ export default function SpacesPage() {
                 value={intent}
                 maxLength={240}
                 onChange={(event) => setIntent(event.target.value)}
-                placeholder="例如：系统准备科研、课程和夏令营"
               />
             </label>
             <p>创建后可在工作台中与 AI 一起建立路径、排入时间线并确认调整。</p>
