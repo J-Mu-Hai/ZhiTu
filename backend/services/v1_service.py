@@ -3688,6 +3688,7 @@ async def advance_v1_workflow(
     #: 首轮战略判断要**落成一条助手消息**给用户看。以前模型的 `reply` 在这里被丢掉,
     #: 用户只看到一张「需要回答」的问题卡 —— 体感就是"刚说一句 AI 就开始审问"。
     first_reply: str | None = None
+    first_result: ReasoningResult | None = None
     if stage == V1_INITIAL_THINKING:
         # **进入空间就实际启动首轮整体判断**,而不是干等用户先输入。
         root = await reasoning_service.root_plan_node(db, ctx)
@@ -3713,11 +3714,12 @@ async def advance_v1_workflow(
         )
         if not result.degraded and (result.reply or "").strip():
             first_reply = result.reply
+            first_result = result
         advanced = True
     elif stage == V1_GOAL_REFRAME and not session.v1_strategic_thesis:
         root = await reasoning_service.root_plan_node(db, ctx)
         goal = (root.title if root else "") or "这个目标"
-        await _run_assessment(
+        result = await _run_assessment(
             db,
             ctx,
             session,
@@ -3726,6 +3728,9 @@ async def advance_v1_workflow(
             classification=INPUT_STRATEGIC_FACT,
             trigger=entry_event,
         )
+        if not result.degraded and (result.reply or "").strip():
+            first_reply = result.reply
+            first_result = result
         advanced = True
     elif (
         stage in (V1_PROBLEM_STRUCTURE, V1_FACTOR_ANALYSIS)
@@ -3807,8 +3812,12 @@ async def advance_v1_workflow(
             },
         )
     # 首轮判断已经生成:先把"我替你想了什么"说给用户听,再让他回答问题。
+    # **必须把真实的 `result` 传进去** —— 否则 `_append_assistant` 会用默认的
+    # `DIRECT_LLM`,来源徽标就把 openjiuwen 标成直连模型。
     first_message = (
-        await _append_assistant(db, ctx, reply=first_reply) if first_reply else None
+        await _append_assistant(db, ctx, reply=first_reply, result=first_result)
+        if first_reply
+        else None
     )
     return await _response(
         db, ctx, session, message=first_message, changed=advanced, trace=trace
