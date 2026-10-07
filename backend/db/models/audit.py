@@ -44,8 +44,18 @@ class AgentAuditEvent(UuidPk, TimestampMixin, Base):
         ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
     )
     #: V1 会话。可空但推荐 —— 审计几乎都发生在目标推理会话里。
+    #:
+    #: 约束名**显式写短**。走命名约定会拼出
+    #: `fk_agent_audit_events_goal_reasoning_session_id_goal_reasoning_sessions`(71 字符),
+    #: 超过 PostgreSQL 的 63 字节标识符上限,建表直接报 `IdentifierError`。
+    #: SQLite 没有这个上限,所以只有真库会炸。同一个字符串在迁移
+    #: `d0e1f2a3b4c5` 里也用了一遍,两边必须一致(见 test_migration_matches_models)。
     goal_reasoning_session_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("goal_reasoning_sessions.id", ondelete="SET NULL")
+        ForeignKey(
+            "goal_reasoning_sessions.id",
+            ondelete="SET NULL",
+            name="fk_agent_audit_events_goal_reasoning_session_id",
+        )
     )
     #: 每个空间**单调递增**的稳定序号。导出按它升序,跨重启不变。
     sequence: Mapped[int] = mapped_column(Integer, nullable=False)

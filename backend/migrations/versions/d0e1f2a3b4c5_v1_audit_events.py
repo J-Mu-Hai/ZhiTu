@@ -55,7 +55,10 @@ def upgrade() -> None:
         ),
         sa.ForeignKeyConstraint(
             ['goal_reasoning_session_id'], ['goal_reasoning_sessions.id'],
-            name='fk_agent_audit_events_goal_reasoning_session_id_goal_reasoning_sessions',
+            # 短名是必须的:命名约定拼出来的
+            # `fk_agent_audit_events_goal_reasoning_session_id_goal_reasoning_sessions`
+            # 有 71 字符,超过 PostgreSQL 的 63 上限(模型侧同名,见 models/audit.py)。
+            name='fk_agent_audit_events_goal_reasoning_session_id',
             ondelete='SET NULL',
         ),
         sa.PrimaryKeyConstraint('id', name='pk_agent_audit_events'),
